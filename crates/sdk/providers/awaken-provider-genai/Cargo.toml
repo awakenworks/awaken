@@ -35,7 +35,9 @@ tracing = "0.1"
 
 [dev-dependencies]
 awaken-ext-builtin-tools.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 schemars = "1"
+tempfile = "3"
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "macros",

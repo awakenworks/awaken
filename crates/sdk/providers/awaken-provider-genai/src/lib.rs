@@ -44,6 +44,11 @@ mod openai_responses;
 pub use openai_responses::OpenAiResponsesExecutor;
 mod stop_reason;
 pub use stop_reason::map_stop_reason;
+mod tool_images;
+pub use tool_images::{
+    MAX_TOOL_IMAGE_BYTES_PER_REQUEST, MAX_TOOL_IMAGES_PER_REQUEST, MAX_TOOL_IMAGES_PER_STEP,
+    shape_tool_result_images,
+};
 mod transcript_projection;
 
 use transcript_projection::{
@@ -624,6 +629,9 @@ fn to_genai_request_with_adapter(
 ) -> Result<GenaiChatRequest> {
     let mut messages: Vec<ChatMessage> = Vec::with_capacity(request.messages.len());
     let dialect = transcript_dialect(adapter);
+    // Parts of the request-only user message that follows a run of tool messages,
+    // on a wire whose tool role is text-only. It exists nowhere but this request.
+    let mut pending_tool_images: Vec<ContentPart> = Vec::new();
     for message in &request.messages {
         let row_state = message
             .content
@@ -633,6 +641,12 @@ fn to_genai_request_with_adapter(
             });
         if !row_state.should_replay() {
             continue;
+        }
+        if message.role != Role::Tool {
+            flush_tool_images(&mut messages, &mut pending_tool_images);
+        }
+        if dialect != TranscriptDialect::Anthropic {
+            collect_tool_images(&message.content, &mut pending_tool_images)?;
         }
         let mut parts: Vec<ContentPart> = message
             .content
@@ -684,6 +698,7 @@ fn to_genai_request_with_adapter(
         };
         messages.push(genai_message);
     }
+    flush_tool_images(&mut messages, &mut pending_tool_images);
 
     let tools: Vec<GenaiTool> = request
         .tools
@@ -738,6 +753,41 @@ fn to_genai_request_with_adapter(
         genai_request = genai_request.with_tools(tools);
     }
     Ok(genai_request)
+}
+
+fn collect_tool_images(blocks: &[ContentBlock], pending: &mut Vec<ContentPart>) -> Result<()> {
+    for block in blocks {
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            ..
+        } = block
+        else {
+            continue;
+        };
+        for nested in content {
+            if let ContentBlock::Image { source } = nested {
+                pending.push(ContentPart::Text(format!(
+                    "Image from tool call {tool_use_id}:"
+                )));
+                pending.push(ContentPart::Binary(to_genai_binary(source)?));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Emit the collected tool images as one user message after all tool messages of
+/// a turn, so every `tool_call_id` is answered before any other role appears.
+fn flush_tool_images(messages: &mut Vec<ChatMessage>, pending: &mut Vec<ContentPart>) {
+    if pending.is_empty() {
+        return;
+    }
+    let mut parts = vec![ContentPart::Text(
+        transcript_projection::TOOL_IMAGE_MESSAGE_LABEL.to_owned(),
+    )];
+    parts.append(pending);
+    messages.push(ChatMessage::user(parts));
 }
 
 /// Map one neutral content block onto zero or more `genai` content parts. The
@@ -838,7 +888,7 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Vec
             },
         ) => Ok(vec![ContentPart::ToolResponse(ToolResponse::new(
             tool_use_id.clone(),
-            transcript_projection::tool_result_text(content),
+            transcript_projection::tool_response_text(content),
         ))]),
         (
             ProviderPartKind::Reasoning | ProviderPartKind::SignedThinking,

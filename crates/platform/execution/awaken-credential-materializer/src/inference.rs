@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_inference_endpoint::InferenceExecutorMaterializer;
-use awaken_runtime_contract::ModelBinding;
+use awaken_provider_genai::shape_tool_result_images;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
@@ -21,6 +21,7 @@ use awaken_runtime_contract::resolved::{
     Backend, ModelProvisioning, ProviderAccessKind, ResolvedModelCandidate,
 };
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::{ImageInput, ModelBinding};
 
 use crate::PinnedCredentialMaterializer;
 use awaken_credential_contract::AttemptCredentialRealization;
@@ -84,10 +85,18 @@ impl CredentialInferenceMaterializer {
             access_kind,
             endpoint,
             unspecified_reasoning,
+            image_input,
             ..
         } = candidate.provisioning()
         else {
             return Ok(None);
+        };
+
+        let shaped = |inner: Arc<dyn LlmExecutor>| -> Arc<dyn LlmExecutor> {
+            Arc::new(ToolImageExecutor {
+                inner,
+                image_input: *image_input,
+            })
         };
 
         if *access_kind == ProviderAccessKind::Brokered {
@@ -107,7 +116,7 @@ impl CredentialInferenceMaterializer {
                 local_run_correlation,
                 context.ownership.clone(),
             )
-            .map(|executor| Some(Arc::new(executor) as Arc<dyn LlmExecutor>));
+            .map(|executor| Some(shaped(Arc::new(executor))));
         }
 
         let secret = self
@@ -130,10 +139,10 @@ impl CredentialInferenceMaterializer {
             *unspecified_reasoning,
         )
         .map_err(|error| error.to_string())?;
-        Ok(Some(Arc::new(PinnedModelExecutor {
+        Ok(Some(shaped(Arc::new(PinnedModelExecutor {
             inner,
             upstream_model: endpoint.upstream_model.clone(),
-        })))
+        }))))
     }
 
     /// Realize one complete publication candidate through the exact attempt
@@ -148,6 +157,38 @@ impl CredentialInferenceMaterializer {
             .await
             .ok()
             .flatten()
+    }
+}
+
+/// Applies one route's frozen image capability and the request image budget to
+/// each outbound request. Every Provider route, direct or brokered, passes through
+/// here, so no wire dialect can decide this differently.
+struct ToolImageExecutor {
+    inner: Arc<dyn LlmExecutor>,
+    image_input: ImageInput,
+}
+
+#[async_trait]
+impl LlmExecutor for ToolImageExecutor {
+    fn effect_scope(
+        &self,
+        request: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        self.inner.effect_scope(request)
+    }
+
+    async fn infer(&self, mut request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        shape_tool_result_images(&mut request.messages, self.image_input);
+        self.inner.infer(request).await
+    }
+
+    async fn infer_streaming(
+        &self,
+        mut request: ChatRequest,
+        sink: &dyn DeltaSink,
+    ) -> Result<ChatResponse, LlmError> {
+        shape_tool_result_images(&mut request.messages, self.image_input);
+        self.inner.infer_streaming(request, sink).await
     }
 }
 
@@ -512,6 +553,83 @@ mod tests {
             awaken_inference_endpoint::brokered_inference::BrokeredInferenceError,
         > {
             panic!("no grant was acquired")
+        }
+    }
+
+    #[tokio::test]
+    async fn every_provider_call_applies_the_routes_image_capability() {
+        // Test design. Causes: C1 the route Rejects or Accepts images; C2 buffered
+        // or streaming call. Effects: E1 Rejected => the inner provider sees the
+        // explicit error text, no image, and is_error set, on both modes; E2
+        // Accepted => the inner provider sees the image unchanged; E3 the caller's
+        // own transcript is not what is rewritten: the decorator takes its request
+        // by value and the caller's copy still holds the image.
+        use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
+        use awaken_agent_contract::agent::message::Role;
+        use awaken_runtime_contract::llm::ChatMessage;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct Capture(Mutex<Vec<ChatRequest>>);
+        #[async_trait]
+        impl LlmExecutor for Capture {
+            async fn infer(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+                self.0.lock().unwrap().push(request);
+                Err(LlmError::Provider("captured".into()))
+            }
+        }
+
+        let image = ContentBlock::image_base64("image/png", "AA==");
+        let request = ChatRequest {
+            model_binding: ModelBinding::parse("p", "m", "b").unwrap(),
+            inference: Default::default(),
+            messages: vec![ChatMessage {
+                role: Role::Tool,
+                content: vec![ContentBlock::tool_result(
+                    "c1",
+                    vec![ContentBlock::text("Image p1.png"), image.clone()],
+                )],
+            }],
+            tools: Vec::new(),
+        };
+        for (image_input, delivered) in
+            [(ImageInput::Rejected, false), (ImageInput::Accepted, true)]
+        {
+            for streaming in [false, true] {
+                let capture = Arc::new(Capture::default());
+                let executor = ToolImageExecutor {
+                    inner: capture.clone(),
+                    image_input,
+                };
+                let sent = request.clone();
+                let _ = if streaming {
+                    executor.infer_streaming(sent, &crate::NoopDeltaSink).await
+                } else {
+                    executor.infer(sent).await
+                };
+                let captured = capture.0.lock().unwrap();
+                let ContentBlock::ToolResult {
+                    content, is_error, ..
+                } = &captured[0].messages[0].content[0]
+                else {
+                    panic!("tool result expected");
+                };
+                assert_eq!(content.contains(&image), delivered, "E1/E2");
+                assert_eq!(*is_error, !delivered, "E1/E2");
+                if !delivered {
+                    let text = extract_text(content);
+                    assert!(text.contains("Image p1.png"), "{text}");
+                    assert!(text.contains("does not support image input"), "{text}");
+                    assert!(text.contains("numeric checks"), "{text}");
+                }
+                assert!(
+                    matches!(
+                        &request.messages[0].content[0],
+                        ContentBlock::ToolResult { content, .. } if content.contains(&image)
+                    ),
+                    "E3"
+                );
+            }
         }
     }
 

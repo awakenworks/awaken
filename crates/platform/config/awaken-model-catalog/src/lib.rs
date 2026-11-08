@@ -180,6 +180,11 @@ pub struct ModelAttributes {
     /// Max output tokens the model emits, when published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    /// Whether the model accepts image input. `Some(false)` makes every route to
+    /// this model answer a tool's image with an explicit error; absent means the
+    /// catalog does not say, and images are sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_image_input: Option<bool>,
     /// Field-level origin. Values stay flat and convenient for runtime consumers;
     /// management surfaces use this map to explain whether each fact was authored,
     /// observed from a provider API, or supplied by Awaken's curated registry.
@@ -467,7 +472,11 @@ impl ModelAttributes {
         }
         if self.max_output_tokens.is_some() {
             self.provenance
-                .insert("max_output_tokens".into(), provenance);
+                .insert("max_output_tokens".into(), provenance.clone());
+        }
+        if self.supports_image_input.is_some() {
+            self.provenance
+                .insert("supports_image_input".into(), provenance);
         }
         self
     }
@@ -498,6 +507,7 @@ impl ModelAttributes {
             let populated = match field.as_str() {
                 "context_window" => self.context_window.is_some(),
                 "max_output_tokens" => self.max_output_tokens.is_some(),
+                "supports_image_input" => self.supports_image_input.is_some(),
                 _ => false,
             };
             if !populated {
@@ -673,6 +683,15 @@ impl ProviderCatalog {
         self.model_attributes
             .get(model_id)
             .and_then(|a| a.max_output_tokens)
+    }
+
+    /// Whether a model's [`ModelAttributes`] declare image input. `None` means the
+    /// catalog does not say, which stays distinct from a declared `Some(false)`.
+    #[must_use]
+    pub fn supports_image_input(&self, model_id: &str) -> Option<bool> {
+        self.model_attributes
+            .get(model_id)
+            .and_then(|a| a.supports_image_input)
     }
 }
 
@@ -1175,6 +1194,7 @@ mod tests {
             ModelAttributes {
                 context_window: Some(200_000),
                 max_output_tokens: Some(64_000),
+                supports_image_input: None,
                 provenance: Default::default(),
             },
         );
@@ -1189,6 +1209,46 @@ mod tests {
     }
 
     #[test]
+    fn image_input_is_a_tri_state_and_stamps_only_when_declared() {
+        // Decision table: declared true/false => that value, one provenance entry,
+        // and provenance validates; absent or unknown model => None, none stamped;
+        // false is not collapsed into absent. Provenance naming the absent field
+        // is rejected like every other attribute's.
+        let mut c = catalog();
+        for (model, declared) in [
+            ("vision", Some(true)),
+            ("text-only", Some(false)),
+            ("bare", None),
+        ] {
+            let attributes = ModelAttributes {
+                supports_image_input: declared,
+                ..Default::default()
+            }
+            .stamped(ModelAttributeSource::Manual, 1);
+            assert_eq!(
+                attributes.provenance.contains_key("supports_image_input"),
+                declared.is_some()
+            );
+            attributes.validate(model).unwrap();
+            c.model_attributes.insert(model.into(), attributes);
+            assert_eq!(c.supports_image_input(model), declared);
+        }
+        assert_eq!(c.supports_image_input("no-such-model"), None);
+
+        let forged = ModelAttributes {
+            provenance: BTreeMap::from([(
+                "supports_image_input".into(),
+                ModelAttributeProvenance {
+                    source: ModelAttributeSource::Manual,
+                    observed_at_unix_ms: 1,
+                },
+            )]),
+            ..Default::default()
+        };
+        assert!(forged.validate("m").is_err());
+    }
+
+    #[test]
     fn populated_attributes_are_stamped_per_field_and_unknown_stays_unknown() {
         // Test design — Causes: C1 neither token limit is known; C2 context only;
         // C3 output only; C4 both are known and the caller supplies one trusted
@@ -1200,6 +1260,7 @@ mod tests {
         let stamped = ModelAttributes {
             context_window: Some(200_000),
             max_output_tokens: Some(32_000),
+            supports_image_input: None,
             provenance: BTreeMap::from([(
                 "forged".into(),
                 ModelAttributeProvenance {
@@ -1599,6 +1660,7 @@ mod tests {
             ModelAttributes {
                 context_window: Some(300_000),
                 max_output_tokens: Some(64_000),
+                supports_image_input: None,
                 provenance: BTreeMap::new(),
             }
             .stamped(ModelAttributeSource::Manual, 201),
@@ -1727,6 +1789,7 @@ mod tests {
             ModelAttributes {
                 context_window: Some(200_000),
                 max_output_tokens: None,
+                supports_image_input: None,
                 provenance: Default::default(),
             },
         );

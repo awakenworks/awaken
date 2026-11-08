@@ -156,6 +156,7 @@ pub awaken_agent_contract::agent::content::SearchResultContent::kind: awaken_age
 pub awaken_agent_contract::agent::content::SearchResultContent::text: alloc::string::String
 impl awaken_agent_contract::agent::content::SearchResultContent
 pub fn awaken_agent_contract::agent::content::SearchResultContent::text(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::agent::content::elide_tool_result_images(&mut [awaken_agent_contract::agent::content::ContentBlock], &str) -> usize
 pub fn awaken_agent_contract::agent::content::extract_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
 pub mod awaken_agent_contract::agent::delegation
 pub enum awaken_agent_contract::agent::delegation::DelegationError

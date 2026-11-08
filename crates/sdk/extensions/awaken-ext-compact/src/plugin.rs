@@ -20,6 +20,7 @@ use crate::backend::{CompactArtifact, CompactBackend, CompactRequest};
 use crate::config::CompactConfig;
 use crate::fold::{prefetch_fold_point, token_fold_point};
 use async_trait::async_trait;
+use awaken_agent_contract::agent::content::{ContentBlock, elide_tool_result_images};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_agent_contract::content_fingerprint;
@@ -32,11 +33,35 @@ use awaken_runtime_contract::plugin::{
 
 /// A rough, deterministic token estimate (~4 chars/token) over a message slice.
 /// Cheap enough to run every `BeforeInference` without a real tokenizer; it drives
-/// the publication-frozen token-aware compaction trigger (`max_tokens`).
+/// the publication-frozen token-aware compaction trigger (`max_tokens`). An image
+/// has no text but costs real context, so each counts as [`IMAGE_ESTIMATE_CHARS`];
+/// otherwise a conversation of screenshots would never reach the trigger.
 fn estimate_tokens(messages: &[Message]) -> u64 {
-    let chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
+    let chars: usize = messages
+        .iter()
+        .map(|m| m.text_content().len() + image_count(&m.content) * IMAGE_ESTIMATE_CHARS)
+        .sum();
     (chars / 4) as u64
 }
+
+fn image_count(blocks: &[ContentBlock]) -> usize {
+    blocks
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Image { .. } => 1,
+            ContentBlock::ToolResult { content, .. } => image_count(content),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// A full-size image costs about 1600×1600/750 ≈ 3400 tokens on the provider
+/// published scale. Round up to 4000 tokens because this also sets the trigger.
+const IMAGE_ESTIMATE_CHARS: usize = 4_000 * 4;
+
+/// What the summarizer sees in place of a tool's image: the base64 belongs to the
+/// raw transcript, and the summarizing model may not accept images at all.
+const COMPACTED_IMAGE_NOTE: &str = "[Image from this tool result omitted during compaction; read the file again if it is still needed.]";
 
 /// The plugin id under which compaction is activated (G30).
 pub const COMPACT_PLUGIN_ID: &str = "compact";
@@ -190,6 +215,9 @@ impl CompactHook {
 
     fn seed(&self, conversation: &[Message], fold_to: usize) -> Vec<Message> {
         let mut seed = conversation[..fold_to].to_vec();
+        for message in &mut seed {
+            elide_tool_result_images(&mut message.content, COMPACTED_IMAGE_NOTE);
+        }
         let prompt = self
             .config
             .instructions
@@ -500,6 +528,127 @@ mod tests {
         // The estimate sums text across messages before dividing (6+6 = 12 → 3),
         // not per-message flooring (which would give 1+1 = 2).
         assert_eq!(estimate_tokens(&[msg("abcdef"), msg("ghijkl")]), 3);
+    }
+
+    fn tool_image(call: &str, data: &str) -> Message {
+        Message::new(
+            MessageId(format!("tool-{call}")),
+            Role::Tool,
+            vec![ContentBlock::tool_result(
+                call,
+                vec![
+                    ContentBlock::text("abcd"),
+                    ContentBlock::image_base64("image/png", data),
+                ],
+            )],
+        )
+    }
+
+    #[test]
+    fn estimate_tokens_counts_images_without_counting_their_base64() {
+        // Cause/effect table: E1 an image in a tool result costs the flat image
+        // estimate plus its text; E2 a directly attached image costs the same;
+        // E3 the base64 length has no effect, since providers bill by pixels.
+        let per_image = (IMAGE_ESTIMATE_CHARS / 4) as u64;
+        assert_eq!(estimate_tokens(&[tool_image("c", "AA==")]), per_image + 1);
+        assert_eq!(
+            estimate_tokens(&[Message::new(
+                MessageId("u".into()),
+                Role::User,
+                vec![ContentBlock::image_base64("image/png", "AA==")],
+            )]),
+            per_image
+        );
+        assert_eq!(
+            estimate_tokens(&[tool_image("c", &"A".repeat(1_000_000))]),
+            per_image + 1
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn images_alone_reach_the_token_trigger() {
+        // Test design — Cause: a conversation whose only weight is tool images.
+        // Effect: the trigger fires at the estimated cost of those images, and a
+        // window one image wider does not fire. Before images were counted this
+        // conversation estimated at a few tokens and would never compact.
+        let conversation = vec![
+            tool_image("c1", "AA=="),
+            tool_image("c2", "AA=="),
+            msg("tail"),
+        ];
+        for (window, fires) in [(8_000, true), (8_100, false)] {
+            let backend = fake_backend(None);
+            let plugin = CompactPlugin::new(CompactConfig {
+                keep_last: 1,
+                max_tokens: Some(window),
+                ..Default::default()
+            })
+            .with_backend("thread-a", backend.clone());
+            let hook = &plugin.resolve().phase_hooks[0];
+            hook.on_phase(&phase_ctx(), &conversation, &Store::new())
+                .await
+                .unwrap();
+            assert_eq!(
+                !backend.summarized.lock().unwrap().is_empty(),
+                fires,
+                "window {window}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_summarizer_receives_a_note_instead_of_old_tool_images() {
+        // Test design — Causes: C1 an old tool result holds an image and text; C2
+        // a newer tool result is inside keep_last; C3 the user attached an image.
+        // Effects: E1 the summary seed holds the note and the text, never the
+        // base64, with the tool_use_id pairing intact; E2 the seed key does not
+        // change between attempts; E3 the committed conversation handed to the
+        // hook keeps its image, so the raw transcript stays complete; E4 the
+        // user's own image stays in the seed, because it is not tool output.
+        let user_image = Message::new(
+            MessageId("u".into()),
+            Role::User,
+            vec![ContentBlock::image_url("https://example.invalid/u.png")],
+        );
+        let conversation = vec![
+            user_image.clone(),
+            tool_image("old", "OLDBASE64"),
+            tool_image("new", "NEWBASE64"),
+        ];
+        let backend = fake_backend(None);
+        let plugin = CompactPlugin::new(CompactConfig {
+            keep_last: 1,
+            max_tokens: Some(1),
+            ..Default::default()
+        })
+        .with_backend("thread-a", backend.clone());
+        let hook = &plugin.resolve().phase_hooks[0];
+        hook.on_phase(&phase_ctx(), &conversation, &Store::new())
+            .await
+            .unwrap();
+
+        let summarized = backend.summarized.lock().unwrap();
+        let seed = &summarized[0].seed;
+        let json = serde_json::to_string(seed).unwrap();
+        assert!(!json.contains("OLDBASE64"), "E1 {json}");
+        assert!(!json.contains("NEWBASE64"), "E1 keep_last is not folded");
+        assert_eq!(
+            seed[1].content,
+            vec![ContentBlock::tool_result(
+                "old",
+                vec![
+                    ContentBlock::text("abcd"),
+                    ContentBlock::text(COMPACTED_IMAGE_NOTE),
+                ],
+            )],
+            "E1"
+        );
+        assert_eq!(seed[0], user_image, "E4");
+        assert_eq!(
+            image_count(&conversation[1].content),
+            1,
+            "E3 the input transcript is not mutated"
+        );
     }
 
     #[test]

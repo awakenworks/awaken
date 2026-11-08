@@ -69,8 +69,8 @@ pub use resolution::{
     ResolutionManifest, ResolutionManifestError, ResolvedInputRef, ResolvedInputVersion,
 };
 pub use resolved::{
-    CatalogFingerprint, InferenceEndpoint, ModelBinding, ProviderExecutionProfile, ResolvedSpec,
-    UnspecifiedReasoning,
+    CatalogFingerprint, ImageInput, InferenceEndpoint, ModelBinding, ProviderExecutionProfile,
+    ResolvedSpec, UnspecifiedReasoning,
 };
 pub use resolver::{
     AgentSnapshotResolver, PublishedAgentSnapshotSource, RunResolver,

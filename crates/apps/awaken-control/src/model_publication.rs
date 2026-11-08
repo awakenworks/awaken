@@ -1725,6 +1725,7 @@ mod tests {
             ModelAttributes {
                 context_window: Some(200_000),
                 max_output_tokens: Some(40_000),
+                supports_image_input: None,
                 provenance: Default::default(),
             },
         );
@@ -1736,6 +1737,49 @@ mod tests {
             .unwrap();
         assert_eq!(resolved.context_window, Some(200_000));
         assert_eq!(resolved.max_output_tokens, Some(40_000));
+    }
+
+    #[tokio::test]
+    async fn declared_image_support_freezes_into_the_published_route() {
+        // Decision table, catalog fact => frozen route policy: Some(false) =>
+        // Rejected; Some(true) => Accepted; absent => Accepted, since an unstated
+        // capability stays permissive. An Accepted route omits the field on the
+        // wire, so routes published before this attribute keep their fingerprint.
+        for (declared, expected) in [
+            (Some(false), awaken_runtime_contract::ImageInput::Rejected),
+            (Some(true), awaken_runtime_contract::ImageInput::Accepted),
+            (None, awaken_runtime_contract::ImageInput::Accepted),
+        ] {
+            let mut catalog = catalog(&["primary"]);
+            catalog.model_attributes.insert(
+                "primary".into(),
+                ModelAttributes {
+                    supports_image_input: declared,
+                    ..Default::default()
+                },
+            );
+            let credentials = resolver(&["unused"]).await.credentials;
+            let resolved = direct_resolver(catalog, credentials)
+                .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+                .await
+                .unwrap();
+            let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+                image_input, ..
+            } = resolved.primary.provisioning()
+            else {
+                panic!("expected a Provider route");
+            };
+            assert_eq!(*image_input, expected, "{declared:?}");
+            let wire = serde_json::to_string(&resolved.primary).unwrap();
+            assert_eq!(
+                wire.contains("image_input"),
+                declared == Some(false),
+                "{wire}"
+            );
+            let back: awaken_runtime_contract::resolved::ResolvedModelCandidate =
+                serde_json::from_str(&wire).unwrap();
+            assert_eq!(back, resolved.primary, "the frozen policy round-trips");
+        }
     }
 
     #[tokio::test]

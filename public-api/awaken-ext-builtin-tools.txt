@@ -16,6 +16,12 @@ pub awaken_ext_builtin_tools::ManagedWebRouteError::Invalid
 pub awaken_ext_builtin_tools::ManagedWebRouteError::Unavailable
 impl core::fmt::Display for awaken_ext_builtin_tools::ManagedWebRouteError
 pub fn awaken_ext_builtin_tools::ManagedWebRouteError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum awaken_ext_builtin_tools::ReadOutput
+pub awaken_ext_builtin_tools::ReadOutput::Image
+pub awaken_ext_builtin_tools::ReadOutput::Image::data: alloc::string::String
+pub awaken_ext_builtin_tools::ReadOutput::Image::description: alloc::string::String
+pub awaken_ext_builtin_tools::ReadOutput::Image::media_type: alloc::string::String
+pub awaken_ext_builtin_tools::ReadOutput::Text(alloc::string::String)
 pub enum awaken_ext_builtin_tools::Toolset
 pub awaken_ext_builtin_tools::Toolset::Coordination
 pub awaken_ext_builtin_tools::Toolset::Delegation
@@ -176,10 +182,10 @@ pub const awaken_ext_builtin_tools::ReadTool::DEFAULT_MAX_FILE_BYTES: u64
 pub fn awaken_ext_builtin_tools::ReadTool::new(&awaken_ext_builtin_tools::HandToolContext) -> Self
 impl awaken_tool_contract::tool::Tool for awaken_ext_builtin_tools::ReadTool
 pub type awaken_ext_builtin_tools::ReadTool::Args = awaken_ext_builtin_tools::ReadArgs
-pub type awaken_ext_builtin_tools::ReadTool::Output = alloc::string::String
+pub type awaken_ext_builtin_tools::ReadTool::Output = awaken_ext_builtin_tools::ReadOutput
 pub const awaken_ext_builtin_tools::ReadTool::DESCRIPTION: &'static str
 pub const awaken_ext_builtin_tools::ReadTool::ID: &'static str
-pub fn awaken_ext_builtin_tools::ReadTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::ReadArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_builtin_tools::ReadTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::ReadArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_builtin_tools::ReadOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_ext_builtin_tools::SendMessageArgs
 pub awaken_ext_builtin_tools::SendMessageArgs::agent_id: core::option::Option<alloc::string::String>
 pub awaken_ext_builtin_tools::SendMessageArgs::message: alloc::string::String

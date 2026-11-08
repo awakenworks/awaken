@@ -22,7 +22,7 @@ pub use coordination::{
 pub use erasure::{Erased, erase};
 pub use hand::{
     BashArgs, BashLaunchPreparation, BashTool, EditArgs, EditTool, GlobArgs, GlobTool, GrepArgs,
-    GrepTool, HandToolContext, ReadArgs, ReadTool, WriteArgs, WriteTool,
+    GrepTool, HandToolContext, ReadArgs, ReadOutput, ReadTool, WriteArgs, WriteTool,
 };
 pub use web::{
     ANTHROPIC_PROVIDER_ID, AWAKEN_CLOUD_PROVIDER_ID, AWAKEN_DIRECT_PROVIDER_ID,

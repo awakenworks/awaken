@@ -3991,6 +3991,13 @@
             },
             "description": "Field-level origin. Values stay flat and convenient for runtime consumers;\nmanagement surfaces use this map to explain whether each fact was authored,\nobserved from a provider API, or supplied by Awaken's curated registry.",
             "type": "object"
+          },
+          "supports_image_input": {
+            "description": "Whether the model accepts image input. `Some(false)` makes every route to\nthis model answer a tool's image with an explicit error; absent means the\ncatalog does not say, and images are sent.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "title": "ModelAttributes",
@@ -4591,6 +4598,13 @@
                 },
                 "description": "Field-level origin. Values stay flat and convenient for runtime consumers;\nmanagement surfaces use this map to explain whether each fact was authored,\nobserved from a provider API, or supplied by Awaken's curated registry.",
                 "type": "object"
+              },
+              "supports_image_input": {
+                "description": "Whether the model accepts image input. `Some(false)` makes every route to\nthis model answer a tool's image with an explicit error; absent means the\ncatalog does not say, and images are sent.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               }
             },
             "type": "object"
@@ -6124,6 +6138,13 @@
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "supports_image_input": {
+            "default": null,
+            "type": [
+              "boolean",
               "null"
             ]
           }

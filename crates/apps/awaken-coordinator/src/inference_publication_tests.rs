@@ -803,6 +803,7 @@ mod tests {
                 credential: Some(Box::new(direct_credential)),
                 endpoint,
                 unspecified_reasoning,
+                image_input: Default::default(),
                 acp,
             },
         )

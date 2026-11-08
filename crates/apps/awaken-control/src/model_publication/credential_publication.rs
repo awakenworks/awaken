@@ -19,7 +19,9 @@ use awaken_credential_vault::{
 use awaken_model_catalog::{ApiDialect, Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::AcpExecutionProfile;
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
-use awaken_runtime_contract::{InferenceEndpoint, ProviderExecutionProfile, UnspecifiedReasoning};
+use awaken_runtime_contract::{
+    ImageInput, InferenceEndpoint, ProviderExecutionProfile, UnspecifiedReasoning,
+};
 
 use super::CatalogModelPublicationResolver;
 
@@ -41,6 +43,15 @@ fn unspecified_reasoning(provider_slug: &str, dialect: ApiDialect) -> Unspecifie
         UnspecifiedReasoning::Disabled
     } else {
         UnspecifiedReasoning::ProviderDefault
+    }
+}
+
+/// Only a declared `false` refuses images; a catalog that does not say stays
+/// permissive, so publishing an attribute is what changes a route's behavior.
+const fn image_input(supports_image_input: Option<bool>) -> ImageInput {
+    match supports_image_input {
+        Some(false) => ImageInput::Rejected,
+        Some(true) | None => ImageInput::Accepted,
     }
 }
 
@@ -204,6 +215,7 @@ impl CatalogModelPublicationResolver {
             .ok_or_else(|| unavailable(format!("endpoint {} has no base URL", endpoint.id.0)))?;
         let route_ref = format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version);
         let reasoning = unspecified_reasoning(provider.slug.as_str(), endpoint.dialect);
+        let image_input = image_input(catalog.supports_image_input(&offering.model_id));
         let endpoint = InferenceEndpoint {
             adapter_kind: endpoint.dialect.adapter_kind().to_string(),
             api_dialect: endpoint.dialect.as_str().to_string(),
@@ -301,6 +313,7 @@ impl CatalogModelPublicationResolver {
                 reasoning,
             ),
         }
+        .map(|candidate| candidate.with_image_input(image_input))
         .map_err(|error| PublicationResolutionError::CandidateUnavailable {
             binding: error_binding,
             reason: error.to_string(),

@@ -1121,6 +1121,9 @@ pub enum awaken_runtime_contract::resolved::ContextPolicy
 pub awaken_runtime_contract::resolved::ContextPolicy::KeepAll
 pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast
 pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast::keep_last: usize
+pub enum awaken_runtime_contract::resolved::ImageInput
+pub awaken_runtime_contract::resolved::ImageInput::Accepted
+pub awaken_runtime_contract::resolved::ImageInput::Rejected
 pub enum awaken_runtime_contract::resolved::InferencePlacementMechanism
 pub awaken_runtime_contract::resolved::InferencePlacementMechanism::AnthropicRequestBody
 pub awaken_runtime_contract::resolved::InferencePlacementMechanism::FrozenRegionalRoute
@@ -1148,6 +1151,7 @@ pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::access_kind:
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::acp: core::option::Option<alloc::boxed::Box<awaken_runtime_contract::resolved::AcpExecutionProfile>>
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::credential: core::option::Option<alloc::boxed::Box<awaken_agent_contract::credential::reference::CredentialAccess>>
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::endpoint: alloc::boxed::Box<awaken_runtime_contract::resolved::InferenceEndpoint>
+pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::image_input: awaken_runtime_contract::resolved::ImageInput
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::provider_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::route_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::scope_id: awaken_agent_contract::scope::ScopeId
@@ -1343,6 +1347,7 @@ pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(a
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_agent_contract::scope::ScopeId>, core::option::Option<awaken_agent_contract::credential::reference::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::AcpExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_profile(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_agent_contract::scope::ScopeId>, core::option::Option<awaken_agent_contract::credential::reference::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::ProviderExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_reasoning(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_agent_contract::scope::ScopeId>, core::option::Option<awaken_agent_contract::credential::reference::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::UnspecifiedReasoning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::with_image_input(self, awaken_runtime_contract::resolved::ImageInput) -> Self
 impl core::convert::AsRef<awaken_runtime_contract::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::ModelBinding
 impl core::ops::deref::Deref for awaken_runtime_contract::resolved::ResolvedModelCandidate
@@ -1911,6 +1916,9 @@ pub fn awaken_runtime_contract::IdBound::allows(&self, &str) -> bool
 pub fn awaken_runtime_contract::IdBound::is_deny_all(&self) -> bool
 impl core::default::Default for awaken_runtime_contract::IdBound
 pub fn awaken_runtime_contract::IdBound::default() -> Self
+pub enum awaken_runtime_contract::ImageInput
+pub awaken_runtime_contract::ImageInput::Accepted
+pub awaken_runtime_contract::ImageInput::Rejected
 pub enum awaken_runtime_contract::PhaseHookPoint
 pub awaken_runtime_contract::PhaseHookPoint::AfterInference
 pub awaken_runtime_contract::PhaseHookPoint::AfterTool

@@ -175,6 +175,27 @@ impl UnspecifiedReasoning {
     }
 }
 
+/// Whether a route's model may be sent image blocks returned by tools. Compiled
+/// once from the catalog at publication, per candidate, because a fallback may
+/// be a different model from the one the session started on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageInput {
+    /// The model accepts images, or the catalog does not say. Unspecified stays
+    /// permissive, as model modalities always have.
+    #[default]
+    Accepted,
+    /// The catalog declares that this model does not accept images.
+    Rejected,
+}
+
+impl ImageInput {
+    #[must_use]
+    const fn is_accepted(&self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+}
+
 /// Provider-route execution facts that are orthogonal to endpoint and
 /// credential selection. Grouping them prevents constructors from expressing
 /// this one policy as an error-prone sequence of positional arguments.
@@ -674,6 +695,10 @@ pub enum ModelProvisioning {
             skip_serializing_if = "UnspecifiedReasoning::is_provider_default"
         )]
         unspecified_reasoning: UnspecifiedReasoning,
+        /// Whether this route's model accepts images from tool results. Absent
+        /// on the wire when accepted, so existing route fingerprints are stable.
+        #[serde(default, skip_serializing_if = "ImageInput::is_accepted")]
+        image_input: ImageInput,
         /// Present only when an external ACP executor consumes this Provider
         /// route. Native execution leaves it absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]

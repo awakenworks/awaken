@@ -704,6 +704,7 @@ async fn put_model_attributes(
     let attrs = ModelAttributes {
         context_window: request.context_window,
         max_output_tokens: request.max_output_tokens,
+        supports_image_input: request.supports_image_input,
         provenance: Default::default(),
     }
     .stamped(ModelAttributeSource::Manual, state.clock_ms());
@@ -725,6 +726,8 @@ pub struct PutModelAttributesRequest {
     pub context_window: Option<u32>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub supports_image_input: Option<bool>,
 }
 
 async fn get_catalog(

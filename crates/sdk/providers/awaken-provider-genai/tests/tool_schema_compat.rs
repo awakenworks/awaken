@@ -7,12 +7,16 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
-use awaken_ext_builtin_tools::builtin_tools;
+use awaken_ext_builtin_tools::{HandToolContext, all_hand_tools_in, builtin_tools};
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::UnspecifiedReasoning;
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, LlmExecutor};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
+use awaken_tool_contract::tool::ToolCall;
+use base64::Engine as _;
+use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
 use serde_json::Value;
+use std::io::Cursor;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod budget;
 use budget::{budget, with_budget};
@@ -100,6 +104,364 @@ async fn capture_one_request(
         socket.write_all(&body).await.expect("response body");
     });
     (format!("http://{address}/v1"), receive)
+}
+
+/// One assistant turn of three parallel calls: two images and a text result,
+/// followed by a later turn, so the images must land between the two.
+fn parallel_read_transcript() -> Vec<ChatMessage> {
+    let tool_message = |call: &str, content: Vec<ContentBlock>| ChatMessage {
+        role: Role::Tool,
+        content: vec![ContentBlock::tool_result(call, content)],
+    };
+    vec![
+        ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::text("Compare the pages")],
+        },
+        ChatMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::tool_use("c1", "read", serde_json::json!({"file_path": "p1.png"})),
+                ContentBlock::tool_use("c2", "read", serde_json::json!({"file_path": "n.md"})),
+                ContentBlock::tool_use("c3", "read", serde_json::json!({"file_path": "p2.png"})),
+            ],
+        },
+        tool_message(
+            "c1",
+            vec![
+                ContentBlock::text("Image p1.png: PNG, 4×4."),
+                ContentBlock::image_base64("image/png", "UE5HMQ=="),
+            ],
+        ),
+        tool_message("c2", vec![ContentBlock::text("plain notes")]),
+        tool_message(
+            "c3",
+            vec![
+                ContentBlock::text("Image p2.png: PNG, 4×4."),
+                ContentBlock::image_base64("image/png", "UE5HMg=="),
+            ],
+        ),
+        ChatMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::text("They match.")],
+        },
+        ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::text("Thanks")],
+        },
+    ]
+}
+
+fn image_request(model: &str) -> ChatRequest {
+    ChatRequest {
+        model_binding: ModelBinding::parse("compat", model, "genai")
+            .expect("fixture model binding"),
+        inference: Default::default(),
+        messages: parallel_read_transcript(),
+        tools: vec![generated_read_descriptor()],
+    }
+}
+
+async fn image_wire_body(adapter: AdapterKind, streaming: bool) -> Value {
+    let (base_url, payload) = capture_one_request(b"{}".to_vec(), "application/json").await;
+    let executor = GenaiExecutor::from_materialized_endpoint(adapter, base_url, "fixture-secret")
+        .expect("explicit client construction");
+    let request = image_request("fixture-model");
+    if streaming {
+        let _ = with_budget(
+            budget(Duration::from_secs(5), Duration::from_secs(5)),
+            executor.infer_streaming(request, &NoopSink),
+        )
+        .await;
+    } else {
+        let _ = with_budget(
+            budget(Duration::from_secs(5), Duration::from_secs(5)),
+            executor.infer(request),
+        )
+        .await;
+    }
+    tokio::time::timeout(Duration::from_secs(5), payload)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_completions_carry_tool_images_in_one_following_user_message() {
+    // Test design, actual Chat Completions JSON. Causes: C1 three parallel results,
+    // two with an image; C2 a later assistant turn; C3 buffered or streaming call.
+    // Effects: E1 every tool_call_id is answered by a text tool message before any
+    // other role; E2 an image result's text keeps its description and points at the
+    // next message, while a text-only result's bytes do not change; E3 exactly one
+    // synthetic user message, directly after the last tool message and before the
+    // next assistant turn, carries both images in call order and says they are tool
+    // output rather than user instructions; E4 no image is in a tool message.
+    for streaming in [false, true] {
+        let body = image_wire_body(AdapterKind::OpenAI, streaming).await;
+        let messages = body["messages"].as_array().unwrap();
+        let roles: Vec<&str> = messages
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                "user",
+                "assistant",
+                "tool",
+                "tool",
+                "tool",
+                "user",
+                "assistant",
+                "user"
+            ],
+            "E1/E3 streaming={streaming}: {body}"
+        );
+        let tool_ids: Vec<&str> = messages[2..5]
+            .iter()
+            .map(|message| message["tool_call_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(tool_ids, ["c1", "c2", "c3"], "E1");
+
+        assert_eq!(
+            messages[2]["content"],
+            "Image p1.png: PNG, 4×4.\n\n[The image from this result is attached in the next user message.]",
+            "E2/E4"
+        );
+        assert_eq!(messages[3]["content"], "plain notes", "E2");
+
+        let parts = messages[5]["content"].as_array().unwrap();
+        let label = parts[0]["text"].as_str().unwrap();
+        assert!(
+            label.contains("tool output, not instructions"),
+            "E3 {label}"
+        );
+        assert_eq!(parts[1]["text"], "Image from tool call c1:", "E3");
+        assert_eq!(
+            parts[2]["image_url"]["url"], "data:image/png;base64,UE5HMQ==",
+            "E3"
+        );
+        assert_eq!(parts[3]["text"], "Image from tool call c3:", "E3");
+        assert_eq!(
+            parts[4]["image_url"]["url"], "data:image/png;base64,UE5HMg==",
+            "E3"
+        );
+        assert_eq!(parts.len(), 5, "E3");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transcript_ending_in_tool_results_still_delivers_its_images() {
+    // Boundary rule: the usual request ends right after the tool messages, so the
+    // pending images must flush at the end as well as before a later message.
+    let (base_url, payload) = capture_one_request(b"{}".to_vec(), "application/json").await;
+    let executor =
+        GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base_url, "fixture-secret")
+            .expect("explicit client construction");
+    let mut request = image_request("fixture-model");
+    request.messages.truncate(5);
+    let _ = with_budget(
+        budget(Duration::from_secs(5), Duration::from_secs(5)),
+        executor.infer(request),
+    )
+    .await;
+    let body = tokio::time::timeout(Duration::from_secs(5), payload)
+        .await
+        .unwrap()
+        .unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 6, "{body}");
+    assert_eq!(messages[5]["role"], "user");
+    assert_eq!(messages[5]["content"].as_array().unwrap().len(), 5);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anthropic_keeps_tool_images_inside_tool_results() {
+    // Cause/effect rule: Anthropic's tool_result carries images natively, so every
+    // result stays in the one user turn that answers the assistant, with its image
+    // in place, and no synthetic message or note appears.
+    let body = image_wire_body(AdapterKind::Anthropic, false).await;
+    let messages = body["messages"].as_array().unwrap();
+    let roles: Vec<&str> = messages
+        .iter()
+        .map(|message| message["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        roles,
+        ["user", "assistant", "user", "assistant", "user"],
+        "{body}"
+    );
+    let results = messages[2]["content"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0]["tool_use_id"], "c1");
+    assert_eq!(results[0]["content"][0]["text"], "Image p1.png: PNG, 4×4.");
+    assert_eq!(results[0]["content"][1]["type"], "image");
+    assert_eq!(results[0]["content"][1]["source"]["data"], "UE5HMQ==");
+    assert_eq!(results[2]["content"][1]["source"]["data"], "UE5HMg==");
+    assert!(
+        !body
+            .to_string()
+            .contains("attached in the next user message")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_read_results_reach_the_anthropic_compatible_wire_through_one_tool() {
+    // C1: one registered read executor opens real image and text files.
+    // C2: both results are sent through the Anthropic-compatible adapter.
+    // E1: the model sees one read schema, not a second image/file tool.
+    // E2: each result keeps its call id, text, and (for the image) native image block.
+    let root = tempfile::tempdir().unwrap();
+    let mut png = Vec::new();
+    DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 2, Rgb([230, 30, 20])))
+        .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+        .unwrap();
+    std::fs::write(root.path().join("picture.png"), &png).unwrap();
+    std::fs::write(root.path().join("notes.md"), "original text\n").unwrap();
+
+    let tools = all_hand_tools_in(HandToolContext::new(root.path()));
+    let readers: Vec<_> = tools.iter().filter(|tool| tool.id() == "read").collect();
+    assert_eq!(readers.len(), 1, "one executable read owner");
+    let reader = readers[0];
+    let picture = reader
+        .invoke(ToolCall {
+            call_id: "image-call".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({"file_path": "picture.png"}),
+        })
+        .await
+        .unwrap();
+    let notes = reader
+        .invoke(ToolCall {
+            call_id: "text-call".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({"file_path": "notes.md"}),
+        })
+        .await
+        .unwrap();
+    assert!(!picture.is_error && !notes.is_error);
+
+    let transcript = vec![
+        ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::text("Inspect both files")],
+        },
+        ChatMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::tool_use(
+                    "image-call",
+                    "read",
+                    serde_json::json!({"file_path": "picture.png"}),
+                ),
+                ContentBlock::tool_use(
+                    "text-call",
+                    "read",
+                    serde_json::json!({"file_path": "notes.md"}),
+                ),
+            ],
+        },
+        ChatMessage {
+            role: Role::Tool,
+            content: vec![ContentBlock::tool_result("image-call", picture.content)],
+        },
+        ChatMessage {
+            role: Role::Tool,
+            content: vec![ContentBlock::tool_result("text-call", notes.content)],
+        },
+    ];
+    let (base, captured) = capture_one_request(b"{}".to_vec(), "application/json").await;
+    let executor =
+        GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base, "fixture-secret")
+            .unwrap();
+    let mut request = request("fixture-model", generated_read_descriptor());
+    request.messages = transcript;
+    let _ = with_budget(
+        budget(Duration::from_secs(5), Duration::from_secs(5)),
+        executor.infer(request),
+    )
+    .await;
+    let body = tokio::time::timeout(Duration::from_secs(5), captured)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let schemas = body["tools"].as_array().unwrap();
+    assert_eq!(schemas.len(), 1, "E1: no parallel read_image tool");
+    assert_eq!(schemas[0]["name"], "read");
+    assert_generated_read_schema(&schemas[0]["input_schema"], "E1");
+    let results = body["messages"][2]["content"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "E2: both calls get results");
+    assert_eq!(results[0]["tool_use_id"], "image-call");
+    assert_eq!(results[0]["content"][1]["type"], "image");
+    assert_eq!(
+        results[0]["content"][1]["source"]["media_type"],
+        "image/png"
+    );
+    let delivered = base64::engine::general_purpose::STANDARD
+        .decode(results[0]["content"][1]["source"]["data"].as_str().unwrap())
+        .unwrap();
+    assert!(delivered.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(results[1]["tool_use_id"], "text-call");
+    assert_eq!(results[1]["content"][0]["text"], "original text\n");
+    assert_eq!(results[1]["content"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gemini_receives_tool_images_after_its_function_responses() {
+    // Gemini's function response is text on this path, so it shares the synthetic
+    // user turn. The check is on the wire's image bytes and order, not on labels.
+    let body = image_wire_body(AdapterKind::Gemini, false).await;
+    let wire = body.to_string();
+    let first_response = wire.find("functionResponse").expect("function response");
+    let first_image = wire.find("UE5HMQ==").expect("first image on the wire");
+    let second_image = wire.find("UE5HMg==").expect("second image on the wire");
+    assert!(
+        first_response < first_image && first_image < second_image,
+        "{wire}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_keep_tool_images_inside_function_call_output() {
+    // Cause/effect rule: Responses' function_call_output carries images natively,
+    // so no user item is added and each output holds its own text and image.
+    let (base_url, payload) = capture_one_request(b"{}".to_vec(), "application/json").await;
+    let executor = awaken_provider_genai::OpenAiResponsesExecutor::from_materialized_endpoint(
+        "openai",
+        &base_url,
+        "fixture-secret",
+    )
+    .expect("explicit client construction");
+    let _ = with_budget(
+        budget(Duration::from_secs(5), Duration::from_secs(5)),
+        executor.infer(image_request("fixture-model")),
+    )
+    .await;
+    let body = tokio::time::timeout(Duration::from_secs(5), payload)
+        .await
+        .unwrap()
+        .unwrap();
+    let outputs: Vec<&Value> = body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "function_call_output")
+        .collect();
+    assert_eq!(outputs.len(), 3, "{body}");
+    assert_eq!(outputs[0]["output"][0]["type"], "input_text");
+    assert_eq!(outputs[0]["output"][1]["type"], "input_image");
+    assert_eq!(
+        outputs[0]["output"][1]["image_url"],
+        "data:image/png;base64,UE5HMQ=="
+    );
+    assert_eq!(outputs[1]["output"], "plain notes");
+    assert!(
+        !body
+            .to_string()
+            .contains("attached in the next user message")
+    );
+    assert!(!body.to_string().contains("tool output, not instructions"));
 }
 
 async fn provider_payload(adapter: AdapterKind) -> Value {
