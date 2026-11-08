@@ -84,9 +84,14 @@ process.env.CARGO_TARGET_DIR ??= path.join(REPO_ROOT, 'target');
 export const E2E_HOME_ROOT = fs.mkdtempSync(path.join(tmpdir(), 'awaken-e2e-home-'));
 export const E2E_HOME = path.join(E2E_HOME_ROOT, 'home');
 fs.mkdirSync(`${E2E_HOME}/.awaken`, { recursive: true });
+// `acp_clis = []`: like the generic production-composition helper below, these
+// scenario processes do not exercise ACP host discovery. The co-located
+// registered Worker an AllInOne scenario prepares would otherwise discover and
+// install ACP adapters from the network on every start; ACP scenarios author
+// their exact selection through their own production config.
 fs.writeFileSync(
   `${E2E_HOME}/.awaken/config.toml`,
-  `data_dir = ${JSON.stringify(`${E2E_HOME_ROOT}/data`)}\nidentity_mode = "no-login"\nsandbox_tier = "local"\n`,
+  `data_dir = ${JSON.stringify(`${E2E_HOME_ROOT}/data`)}\nidentity_mode = "no-login"\nsandbox_tier = "local"\nacp_clis = []\n`,
 );
 process.on('exit', () => cleanupFixtureTree(E2E_HOME_ROOT));
 
