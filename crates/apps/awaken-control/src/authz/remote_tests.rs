@@ -90,8 +90,10 @@ struct CloudIamFixture {
 
 #[test]
 fn remote_management_keeps_the_original_introspected_workspace_before_pdp() {
-    // The PDP would Allow the shared service at either Workspace. The same
-    // key must authorize only its home Workspace, even with both live grants.
+    // Cause/effect decision rows: K1 bound ws_cloud + installed ws_foreign +
+    // no selector -> use ws_cloud; K2 explicit matching path/Header -> allow;
+    // K3 foreign/conflicting path/Header -> 403 before PDP/handler even when
+    // PDP would Allow both; K4 malformed/repeated Header -> 400 before effects.
     let fixture = cloud_iam_fixture();
     let authz = connect_key_fixture(fixture.base_url);
     let calls = Arc::new(AtomicUsize::new(0));
@@ -113,17 +115,43 @@ fn remote_management_keeps_the_original_introspected_workspace_before_pdp() {
         ));
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
-        for (workspace, status) in [
-            ("ws_cloud", StatusCode::OK),
-            ("ws_foreign", StatusCode::FORBIDDEN),
+        for (path, headers, status) in [
+            (None, vec![], StatusCode::OK),
+            (Some("ws_cloud"), vec![], StatusCode::OK),
+            (None, vec!["ws_cloud"], StatusCode::OK),
+            (Some("ws_cloud"), vec!["ws_cloud"], StatusCode::OK),
+            (Some("ws_foreign"), vec![], StatusCode::FORBIDDEN),
+            (None, vec!["ws_foreign"], StatusCode::FORBIDDEN),
+            (Some("ws_cloud"), vec!["ws_foreign"], StatusCode::FORBIDDEN),
+            (None, vec![""], StatusCode::BAD_REQUEST),
+            (None, vec!["ws_cloud", "ws_cloud"], StatusCode::BAD_REQUEST),
         ] {
-            let request = key_request(workspace);
-            assert_eq!(app.clone().oneshot(request).await.unwrap().status(), status);
+            let mut request = key_request(path.unwrap_or("ws_cloud"));
+            if path.is_none() {
+                request
+                    .extensions_mut()
+                    .remove::<awaken_authz_enforce::RequestTenancy>();
+            }
+            request
+                .extensions_mut()
+                .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                    "ws_foreign".into(),
+                ));
+            for header in headers {
+                request
+                    .headers_mut()
+                    .append("anthropic-workspace-id", header.parse().unwrap());
+            }
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), status, "path={path:?}");
+            if status == StatusCode::OK {
+                assert_eq!(response.headers()["anthropic-workspace-id"], "ws_cloud");
+            }
         }
     });
-    assert_eq!(fixture.token_introspections.load(Ordering::SeqCst), 2);
-    assert_eq!(fixture.authorization_bearers.lock().unwrap().len(), 1);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.token_introspections.load(Ordering::SeqCst), 9);
+    assert_eq!(fixture.authorization_bearers.lock().unwrap().len(), 4);
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
 }
 
 fn connect_key_fixture(base_url: String) -> Arc<RemoteManagementAuthz> {
@@ -146,6 +174,9 @@ fn connect_key_fixture(base_url: String) -> Arc<RemoteManagementAuthz> {
 fn key_request(workspace: &str) -> Request {
     Request::builder()
         .uri("/v1/config/catalog")
+        .extension(awaken_authz_enforce::RequestTenancy {
+            workspace_id: workspace.into(),
+        })
         .extension(awaken_runtime_contract::runs::scope::WorkspaceScope(
             workspace.into(),
         ))

@@ -4,8 +4,8 @@ use awaken_api_contract::{SUITE_NAVIGATION_PATH, SuiteNavigation};
 use awaken_ui_artifact::CONSOLE_ARTIFACT_MANIFEST_PATH;
 use axum::body::Body;
 use axum::extract::Path;
-use axum::http::{StatusCode, header};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 
@@ -19,7 +19,7 @@ pub fn mount(app: Router) -> Router {
 pub fn mount_with_navigation(app: Router, navigation: SuiteNavigation) -> Router {
     Router::new()
         .route("/", get(index))
-        .route("/w/{*path}", get(index))
+        .route("/w/{*path}", get(workspace_index))
         .route("/assets/{*path}", get(asset))
         .route(CONSOLE_ARTIFACT_MANIFEST_PATH, get(console_artifact))
         .route(
@@ -34,6 +34,35 @@ pub fn mount_with_navigation(app: Router, navigation: SuiteNavigation) -> Router
 
 async fn index() -> Response {
     response("index.html", false)
+}
+
+async fn workspace_index(Path(path): Path<String>, headers: HeaderMap) -> Response {
+    // `/w/{workspace}` is a browser location, never an SDK base URL. Returning
+    // HTML for a nested API request lets SDK pagination report a false empty
+    // success. Keep browser documents while refusing API-shaped or JSON calls.
+    let nested_api = path
+        .split_once('/')
+        .is_some_and(|(_, tail)| tail == "v1" || tail.starts_with("v1/"));
+    let json_request = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(',').any(|part| {
+                let media = part.trim().split(';').next().unwrap_or_default();
+                media == "application/json" || media.ends_with("+json")
+            })
+        });
+    if nested_api || json_request || headers.contains_key("anthropic-version") {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(awaken_protocol_managed::types::ErrorResponse::new(
+                "not_found_error",
+                "SDK requests must use the service origin as base URL",
+            )),
+        )
+            .into_response();
+    }
+    index().await
 }
 
 async fn asset(Path(path): Path<String>) -> Response {
@@ -96,6 +125,96 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
+
+    #[tokio::test]
+    async fn workspace_browser_routes_cannot_mask_sdk_api_mistakes() {
+        // Causes: C1 browser vs nested API path; C2 absent/wildcard/HTML/JSON
+        // Accept; C3 SDK version Header; C4 GET/HEAD vs write. Effects: only
+        // browser documents are HTML 200; nested APIs/JSON/SDK are typed 404,
+        // HEAD strips the body; writes remain 405; missing assets stay 404.
+        // Decision rows independently vary C1/C2/C3 and cover C4's classes.
+        for (path, accept, sdk, expected) in [
+            ("/w/ws/overview", None, false, StatusCode::OK),
+            ("/w/ws/overview", Some("*/*"), false, StatusCode::OK),
+            ("/w/ws/overview", Some("text/html"), false, StatusCode::OK),
+            (
+                "/w/ws/overview",
+                Some("application/json"),
+                false,
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "/w/ws/overview",
+                Some("application/problem+json; q=1"),
+                false,
+                StatusCode::NOT_FOUND,
+            ),
+            ("/w/ws/overview", None, true, StatusCode::NOT_FOUND),
+            ("/w/ws/v1/agents", None, false, StatusCode::NOT_FOUND),
+            (
+                "/w/ws/v1/agents",
+                Some("text/html"),
+                false,
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            for method in ["GET", "HEAD"] {
+                let mut request = Request::builder().method(method).uri(path);
+                if let Some(accept) = accept {
+                    request = request.header(header::ACCEPT, accept);
+                }
+                if sdk {
+                    request = request.header("anthropic-version", "2023-06-01");
+                }
+                let response = mount(Router::new())
+                    .oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    expected,
+                    "{method}/{path}/{accept:?}/{sdk}"
+                );
+                let content_type = response.headers()[header::CONTENT_TYPE]
+                    .to_str()
+                    .unwrap()
+                    .to_owned();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                if expected == StatusCode::NOT_FOUND {
+                    assert_eq!(content_type, "application/json");
+                    if method == "GET" {
+                        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                        assert_eq!(value["type"], "error");
+                        assert_eq!(value["error"]["type"], "not_found_error");
+                    }
+                } else {
+                    assert_eq!(content_type, "text/html; charset=utf-8");
+                }
+                if method == "HEAD" {
+                    assert!(body.is_empty());
+                }
+            }
+        }
+        for (method, path, expected) in [
+            ("POST", "/w/ws/v1/agents", StatusCode::METHOD_NOT_ALLOWED),
+            ("GET", "/assets/nonexistent.js", StatusCode::NOT_FOUND),
+        ] {
+            assert_eq!(
+                mount(Router::new())
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(path)
+                            .body(Body::empty())
+                            .unwrap()
+                    )
+                    .await
+                    .unwrap()
+                    .status(),
+                expected
+            );
+        }
+    }
 
     /// Cause graph:
     /// embedded index/assets + canonical API fallback -> one hosted surface;

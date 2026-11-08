@@ -877,29 +877,48 @@ async fn mg6_token_admin_rejects_an_unregistered_foreign_workspace() {
 async fn mg7_path_workspace_mismatch_is_403() {
     let (dir, iam) = fresh_iam();
     let bootstrap = admin_token(dir.path());
+    let bound_workspace = iam.authenticate(&bootstrap).unwrap().1;
+    let ws = bound_workspace.0.as_str();
     let app = guarded_app(iam);
-    // Stamp a foreign path tenancy (as `workspace_path_scope` would) — it
-    // must equal the token's workspace or the guard fences it.
-    let mut req = Request::builder()
-        .method("GET")
-        .uri("/v1/config/catalog")
-        .header("authorization", format!("Bearer {bootstrap}"))
-        .body(Body::empty())
-        .unwrap();
-    req.extensions_mut()
-        .insert(awaken_authz_enforce::RequestTenancy {
-            workspace_id: "wrkspc_other".into(),
-        });
-    let resp = app.clone().oneshot(req).await.unwrap();
-    let (s, err) = resp_parts(resp).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "{err}");
-    assert!(
-        err["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("workspace path"),
-        "{err}"
-    );
+    // Cause/effect rows: bound default Workspace + foreign installation stamp
+    // + absent/matching selectors -> 200 at the Key Workspace; foreign path or
+    // Header -> 403; malformed/repeated Header -> 400. These are the embedded
+    // PEP counterparts of the Cloud introspection fixture, with the same kernel.
+    for (path, headers, expected) in [
+        (None, vec![], StatusCode::OK),
+        (Some(ws), vec![ws], StatusCode::OK),
+        (Some("wrkspc_other"), vec![], StatusCode::FORBIDDEN),
+        (None, vec!["wrkspc_other"], StatusCode::FORBIDDEN),
+        (Some(ws), vec!["wrkspc_other"], StatusCode::FORBIDDEN),
+        (None, vec![""], StatusCode::BAD_REQUEST),
+        (None, vec![ws, ws], StatusCode::BAD_REQUEST),
+    ] {
+        let mut builder = Request::get("/v1/config/catalog")
+            .header("authorization", format!("Bearer {bootstrap}"));
+        for value in headers {
+            builder = builder.header("anthropic-workspace-id", value);
+        }
+        let mut req = builder.body(Body::empty()).unwrap();
+        req.extensions_mut()
+            .insert(awaken_runtime_contract::runs::scope::WorkspaceScope(
+                "wrkspc_other".into(),
+            ));
+        if let Some(path) = path {
+            req.extensions_mut()
+                .insert(awaken_authz_enforce::RequestTenancy {
+                    workspace_id: path.into(),
+                });
+        }
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let workspace = resp.headers().get("anthropic-workspace-id").cloned();
+        let (status, body) = resp_parts(resp).await;
+        assert_eq!(status, expected);
+        match expected {
+            StatusCode::OK => assert_eq!(workspace.unwrap(), ws),
+            StatusCode::FORBIDDEN => assert_eq!(body["error"]["type"], "permission_error"),
+            _ => assert_eq!(body["error"]["type"], "invalid_request_error"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

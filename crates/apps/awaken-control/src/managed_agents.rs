@@ -1033,6 +1033,7 @@ mod tests {
                 "workspace-a",
                 &created.id,
                 AgentUpdateParams {
+                    execution_identity: None,
                     version: Some(retrieved.version),
                     name: None,
                     model: None,

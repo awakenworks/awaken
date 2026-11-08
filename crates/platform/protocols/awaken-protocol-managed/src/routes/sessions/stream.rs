@@ -119,12 +119,20 @@ pub(super) fn replay_is_terminal_after(
     }
 }
 
-fn sse_frame(frame: &StreamFrame) -> SseEvent {
+fn sse_frame(
+    frame: &StreamFrame,
+    api_version: crate::common::api_version::ManagedApiVersion,
+) -> SseEvent {
     // The SDK dispatches on the SSE `event:` name; the JSON body carries the same
     // `type` plus the fields (committed event, or a stream-only preview).
     SseEvent::default()
         .event(frame.type_str())
-        .data(frame.data())
+        .data(match frame {
+            StreamFrame::Committed(event) => {
+                serde_json::to_string(&api_version.wrap(event)).expect("Event serializes")
+            }
+            StreamFrame::Preview(_) => frame.data(),
+        })
 }
 
 fn accept_preview_frame(
@@ -149,6 +157,7 @@ pub(super) struct LiveSseSource {
     pub(super) revision: u64,
     pub(super) current: bool,
     pub(super) deadline: Option<MonoDeadline>,
+    pub(super) api_version: ManagedApiVersion,
 }
 
 /// Snapshot, broadcast wake, silent-period reconciliation and lag recovery all
@@ -169,6 +178,7 @@ where
     F: Fn(Event) -> Option<Event> + Send + Sync + 'static,
 {
     let deadline = source.deadline;
+    let api_version = source.api_version;
     let stream = async_stream::stream! {
         let mut delivery = CommittedEventDelivery::default();
         let mut preview_event_ids = HashSet::new();
@@ -180,7 +190,7 @@ where
             let Some(event) = project(event) else { continue; };
             terminal_hint = replay_is_terminal_after(terminal_hint, event.type_str(), terminal_scope);
             match delivery.accept(&event) {
-                Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event))),
+                Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event), api_version)),
                 Ok(false) => {},
                 Err(error) => { yield Err(error); return; },
             }
@@ -215,7 +225,7 @@ where
                     &source.session_id, &source.owner_scope).await
             {
                 match delivery.accept(&event) {
-                    Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event))),
+                    Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event), api_version)),
                     Ok(false) => {},
                     Err(error) => { yield Err(error); return; },
                 }
@@ -279,7 +289,7 @@ where
                         if event.type_str() == "agent.message" {
                             for preview in projector.take_for_committed(&event.id) {
                                 if accept_preview_frame(&preview, previews, &mut preview_event_ids) {
-                                    yield Ok(sse_frame(&StreamFrame::Preview(preview)));
+                                    yield Ok(sse_frame(&StreamFrame::Preview(preview), api_version));
                                 }
                             }
                         } else if matches!(event.type_str(), "agent.thread_message_sent"
@@ -289,7 +299,7 @@ where
                         }
                     }
                     terminal_hint |= is_terminal(&StreamFrame::Committed(event.clone()), terminal_scope);
-                    yield Ok(sse_frame(&StreamFrame::Committed(event)));
+                    yield Ok(sse_frame(&StreamFrame::Committed(event), api_version));
                 }
                 if tail_due { continue; }
             }
@@ -330,7 +340,7 @@ where
                         // This producer has already committed the deletion. Its
                         // root is gone and cannot be reconstructed as history.
                         match delivery.accept(&event) {
-                            Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event))),
+                            Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event), api_version)),
                             Ok(false) => {},
                             Err(error) => { yield Err(error); return; },
                         }
@@ -354,7 +364,7 @@ where
                             .1.project(event);
                         for frame in frames {
                             if accept_preview_frame(&frame, previews, &mut preview_event_ids) {
-                                yield Ok(sse_frame(&StreamFrame::Preview(frame)));
+                                yield Ok(sse_frame(&StreamFrame::Preview(frame), api_version));
                             }
                         }
                     }

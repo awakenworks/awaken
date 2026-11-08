@@ -21,9 +21,10 @@ use axum::{Json, Router};
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
 
+use crate::common::api_version::{ApiWire, ManagedApiVersion};
 use crate::common::headers::{
-    ANTHROPIC_API_VERSION, DREAMING_BETA, MANAGED_BETA, MEMORY_BETA, ManagedCapability,
-    USER_PROFILES_BETA_LATEST, has_capability,
+    DREAMING_BETA, MANAGED_BETA, MEMORY_BETA, ManagedCapability, USER_PROFILES_BETA_LATEST,
+    has_capability,
 };
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::preview::ThreadPreviewProjector;
@@ -103,9 +104,10 @@ fn reject_unsupported_thread_time_filter(raw: Option<&str>) -> Result<(), WireEr
 fn thread_time_v2(
     thread: &SessionThread,
     time: crate::state::SessionThreadTimeEvidence,
+    api_version: ManagedApiVersion,
 ) -> serde_json::Value {
     crate::types::session::history_time_v2(
-        thread,
+        &api_version.wrap(thread),
         &[
             ("created_at", time.created_at_unix_ms),
             ("updated_at", time.updated_at_unix_ms),
@@ -117,9 +119,10 @@ fn thread_time_v2(
 fn session_time_v2(
     session: &Session,
     time: crate::state::SessionRootTimeEvidence,
+    api_version: ManagedApiVersion,
 ) -> serde_json::Value {
     crate::types::session::history_time_v2(
-        session,
+        &api_version.wrap(session),
         &[
             ("created_at", time.created_at_unix_ms),
             ("updated_at", time.updated_at_unix_ms),
@@ -370,24 +373,8 @@ pub async fn enforce_managed_beta(
     req: Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    // Both supported SDK anchors currently send the same API date. Validate an
-    // explicit date, but retain missing-header acceptance for Awaken's legacy
-    // raw clients; a package version is never inferred from telemetry headers.
-    if req
-        .headers()
-        .get("anthropic-version")
-        .is_some_and(|value| value.to_str().ok() != Some(ANTHROPIC_API_VERSION))
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                "invalid_request_error",
-                format!(
-                    "unsupported `anthropic-version`; this endpoint supports {ANTHROPIC_API_VERSION}"
-                ),
-            )),
-        )
-            .into_response();
+    if let Err(error) = ManagedApiVersion::from_headers(req.headers()) {
+        return error.into_response();
     }
     let path = req.uri().path();
     // Workspace-addressed routes are rewritten by an inner composition layer.
@@ -504,10 +491,11 @@ pub async fn enforce_managed_beta(
 
 async fn create_session(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     headers: HeaderMap,
     ManagedJson(req): ManagedJson<SessionCreateParams>,
-) -> Result<(StatusCode, HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, HeaderMap, Json<ApiWire<Session>>), (StatusCode, Json<ErrorResponse>)> {
     req.validate_public()
         .map_err(|message| error_response(StateError::Run(RunError::bad_request(message))))?;
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
@@ -519,7 +507,7 @@ async fn create_session(
         None => Box::pin(state.create_session(req, &workspace_id)).await,
     }
     .map_err(error_response)?;
-    let (response_headers, body) = versioned_session_response(&state, &session.id)?;
+    let (response_headers, body) = versioned_session_response(&state, &session.id, api_version)?;
     Ok((StatusCode::OK, response_headers, body))
 }
 
@@ -530,6 +518,7 @@ pub(crate) fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<String
 
 async fn retrieve_session(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
@@ -548,14 +537,15 @@ async fn retrieve_session(
     // only the protocol's existing pure-Interrupt recovery path.
     match version {
         HistoryTimeVersion::V1 => {
-            versioned_session_response(&state, &id).map(IntoResponse::into_response)
+            versioned_session_response(&state, &id, api_version).map(IntoResponse::into_response)
         }
         HistoryTimeVersion::V2 => {
             let (session, revision, time) = state
                 .get_session_with_revision_and_time(&id)
                 .map_err(error_response)?;
-            let (headers, _) = versioned_session_response_at_revision(session.clone(), revision);
-            let value = session_time_v2(&session, time);
+            let (headers, _) =
+                versioned_session_response_at_revision(session.clone(), revision, api_version);
+            let value = session_time_v2(&session, time, api_version);
             Ok((headers, Json(value)).into_response())
         }
     }
@@ -564,24 +554,30 @@ async fn retrieve_session(
 fn versioned_session_response(
     state: &ManagedState,
     session_id: &str,
-) -> Result<(HeaderMap, Json<Session>), WireErr> {
+    api_version: ManagedApiVersion,
+) -> Result<(HeaderMap, Json<ApiWire<Session>>), WireErr> {
     let (session, revision) = state
         .get_session_with_revision(session_id)
         .map_err(error_response)?;
-    Ok(versioned_session_response_at_revision(session, revision))
+    Ok(versioned_session_response_at_revision(
+        session,
+        revision,
+        api_version,
+    ))
 }
 
 fn versioned_session_response_at_revision(
     session: Session,
     revision: awaken_session_types::SessionRevision,
-) -> (HeaderMap, Json<Session>) {
+    api_version: ManagedApiVersion,
+) -> (HeaderMap, Json<ApiWire<Session>>) {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::ETAG,
         HeaderValue::from_str(&format!("\"{}\"", revision.0))
             .expect("numeric Session revision is a valid ETag"),
     );
-    (headers, Json(session))
+    (headers, Json(api_version.wrap(session)))
 }
 
 type WireErr = (StatusCode, Json<ErrorResponse>);
@@ -604,6 +600,7 @@ fn session_projection_error(
 /// tenancy-fenced, so a workspace never lists another's).
 async fn list_sessions(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     RawQuery(raw): RawQuery,
     headers: HeaderMap,
@@ -616,7 +613,7 @@ async fn list_sessions(
                 .list_sessions_scoped_durable(&scope)
                 .await
                 .map_err(error_response)?;
-            Ok(Json(session_list_page(data, &params)?).into_response())
+            Ok(Json(api_version.wrap(session_list_page(data, &params)?)).into_response())
         }
         HistoryTimeVersion::V2 => {
             let rows = state
@@ -630,7 +627,7 @@ async fn list_sessions(
                 .collect();
             let data = rows.into_iter().map(|(session, _)| session).collect();
             let page = session_list_page(data, &params)?;
-            Ok(Json(page.history_time_v2(&times)).into_response())
+            Ok(Json(page.history_time_v2(&times, api_version)).into_response())
         }
     }
 }
@@ -638,10 +635,11 @@ async fn list_sessions(
 /// `POST /v1/sessions/:id` — update `title` (null clears) + patch `metadata`.
 async fn update_session(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
     headers: HeaderMap,
     ManagedJson(body): ManagedJson<crate::types::SessionUpdateParams>,
-) -> Result<(HeaderMap, Json<Session>), WireErr> {
+) -> Result<(HeaderMap, Json<ApiWire<Session>>), WireErr> {
     body.validate()
         .map_err(|message| error_response(StateError::Run(RunError::bad_request(message))))?;
     state.ensure_session(&id).await.map_err(error_response)?;
@@ -728,6 +726,7 @@ async fn update_session(
     Ok(versioned_session_response_at_revision(
         session,
         response_revision,
+        api_version,
     ))
 }
 
@@ -746,12 +745,13 @@ async fn delete_session(
 /// `POST /v1/sessions/:id/archive`.
 async fn archive_session(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
-) -> Result<Json<Session>, WireErr> {
+) -> Result<Json<ApiWire<Session>>, WireErr> {
     state
         .archive_session(&id)
         .await
-        .map(Json)
+        .map(|value| Json(api_version.wrap(value)))
         .map_err(error_response)
 }
 
@@ -759,6 +759,7 @@ async fn archive_session(
 
 async fn list_threads(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
     headers: HeaderMap,
@@ -779,14 +780,14 @@ async fn list_threads(
         HistoryTimeVersion::V1 => state
             .list_threads(&id)
             .map(PageCursor::single)
-            .map(Json)
+            .map(|value| Json(api_version.wrap(value)))
             .map(IntoResponse::into_response)
             .map_err(error_response),
         HistoryTimeVersion::V2 => {
             let rows = state.list_threads_with_time(&id).map_err(error_response)?;
             let data = rows
                 .iter()
-                .map(|(thread, time)| thread_time_v2(thread, *time))
+                .map(|(thread, time)| thread_time_v2(thread, *time, api_version))
                 .collect();
             Ok(Json(PageCursor::single(data)).into_response())
         }
@@ -795,6 +796,7 @@ async fn list_threads(
 
 async fn get_thread(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path((id, tid)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, WireErr> {
@@ -806,38 +808,40 @@ async fn get_thread(
     match version {
         HistoryTimeVersion::V1 => state
             .get_thread(&id, &tid)
-            .map(Json)
+            .map(|value| Json(api_version.wrap(value)))
             .map(IntoResponse::into_response)
             .map_err(error_response),
         HistoryTimeVersion::V2 => {
             let (thread, time) = state
                 .get_thread_with_time(&id, &tid)
                 .map_err(error_response)?;
-            Ok(Json(thread_time_v2(&thread, time)).into_response())
+            Ok(Json(thread_time_v2(&thread, time, api_version)).into_response())
         }
     }
 }
 
 async fn archive_thread(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path((id, tid)): Path<(String, String)>,
-) -> Result<Json<SessionThread>, WireErr> {
+) -> Result<Json<ApiWire<SessionThread>>, WireErr> {
     state.ensure_session(&id).await.map_err(error_response)?;
     state
         .archive_thread(&id, &tid)
         .await
-        .map(Json)
+        .map(|value| Json(api_version.wrap(value)))
         .map_err(error_response)
 }
 
 /// Thread events are a typed projection of the Session's one committed event log.
 async fn list_thread_events(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path((id, tid)): Path<(String, String)>,
     RawQuery(raw): RawQuery,
     ManagedQuery(query): ManagedQuery<PageQuery>,
     headers: HeaderMap,
-) -> Result<Json<ListEventsResponse>, WireErr> {
+) -> Result<Json<ApiWire<ListEventsResponse>>, WireErr> {
     let version = history_time_version(&headers)?;
     let filter = (version == HistoryTimeVersion::V2)
         .then(|| parse_event_list_filter(raw.as_deref()))
@@ -859,7 +863,7 @@ async fn list_thread_events(
             |event| filter.includes_without_time(event),
         ),
     }
-    .map(Json)
+    .map(|value| Json(api_version.wrap(value)))
     .map_err(error_response)
 }
 
@@ -1041,6 +1045,7 @@ pub(crate) fn parse_event_list_filter(raw: Option<&str>) -> Result<EventListFilt
 
 async fn stream_thread_events(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path((id, tid)): Path<(String, String)>,
     RawQuery(raw): RawQuery,
     headers: HeaderMap,
@@ -1096,6 +1101,7 @@ async fn stream_thread_events(
             revision,
             current: observation == ProjectionObservationDecision::UseRefreshed,
             deadline,
+            api_version,
         },
         snapshot,
         rx,
@@ -1496,10 +1502,11 @@ fn event_data_subject(headers: &HeaderMap) -> Result<Option<String>, WireErr> {
 
 async fn send_events(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
     headers: HeaderMap,
     ManagedJson(req): ManagedJson<SendEventsRequest>,
-) -> Result<Json<SendEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<ApiWire<SendEventsResponse>>, (StatusCode, Json<ErrorResponse>)> {
     // Anthropic's Messages SDK projects request-grain `user_profile_id` to this
     // header. Reuse the context carrier for Managed events without adding an
     // out-of-contract field to the strict event envelope.
@@ -1508,17 +1515,18 @@ async fn send_events(
     state
         .send_events_attributed(&id, req, data_subject_id, idempotency_key)
         .await
-        .map(Json)
+        .map(|value| Json(api_version.wrap(value)))
         .map_err(error_response)
 }
 
 async fn list_events(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
     ManagedQuery(query): ManagedQuery<PageQuery>,
     headers: HeaderMap,
-) -> Result<Json<ListEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<ApiWire<ListEventsResponse>>, (StatusCode, Json<ErrorResponse>)> {
     let version = history_time_version(&headers)?;
     let order = parse_event_list_order(raw.as_deref())?;
     let filter = parse_event_list_filter(raw.as_deref())?;
@@ -1537,12 +1545,13 @@ async fn list_events(
             |event| filter.includes(event),
             |event| filter.includes_without_time(event),
         )
-        .map(Json)
+        .map(|value| Json(api_version.wrap(value)))
         .map_err(error_response)
 }
 
 async fn stream_events(
     ManagedRequestState(state): ManagedRequestState,
+    api_version: ManagedApiVersion,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
     headers: HeaderMap,
@@ -1589,6 +1598,7 @@ async fn stream_events(
             revision,
             current: observation == ProjectionObservationDecision::UseRefreshed,
             deadline,
+            api_version,
         },
         snapshot,
         rx,

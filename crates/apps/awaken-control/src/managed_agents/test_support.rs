@@ -99,6 +99,7 @@ impl ModelPublicationResolver for RejectModelResolver {
 }
 pub(super) fn create_params(name: &str) -> AgentCreateParams {
     AgentCreateParams {
+        execution_identity: None,
         name: name.into(),
         model: ModelInput::Id("model-a".into()),
         description: None,
@@ -131,6 +132,7 @@ pub(super) fn create_params(name: &str) -> AgentCreateParams {
 }
 pub(super) fn update_params(version: u64) -> AgentUpdateParams {
     AgentUpdateParams {
+        execution_identity: None,
         version: Some(version),
         name: Some("renamed".into()),
         model: None,

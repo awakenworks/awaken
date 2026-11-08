@@ -313,3 +313,22 @@ the catalog explicitly shared per the decision above) suffices.
   deployment has no Org, the deployment operator is the controller
   ([ADR-0050](0050-telemetry-content-capture-consent-and-gdpr-erasure.md)). ADRs that cite this one for the opaque `ScopeId` (0052, 0059,
   0061) stay correct; the `ScopedRepo` mechanism of D3 was never built.
+
+## 2026-11-09 amendment: authenticated key scope precedes installation context
+
+A Workspace-bound credential remains the authority for ordinary flat API
+requests. The installed `WorkspaceScope` is ownership fallback for a composition,
+not a caller selection and not a replacement for an authenticated Key binding.
+The existing `RequestTenancy` extension identifies trusted path/domain selection;
+`anthropic-workspace-id` is an untrusted HTTP selection. All explicit selectors
+must agree and remain within the credential authority through `resolve_scope`.
+An unbound principal still requires its existing PDP authorization for the chosen
+Workspace; selecting one never supplies a grant.
+
+The shared HTTP enforcement owner collects selectors once. Embedded and Cloud
+PEPs use that same projection and the tenancy kernel before installing the
+resolved request scope. The remote adapter retains IAM's complete verified
+credential. Invalid or conflicting selectors, an expired/revoked credential, a
+PDP denial or an unavailable authority cannot reach a repository mutation. The
+request origin, SDK telemetry and process default never widen Key authority.
+No Key directory, credential cache, tenant store or execution identity is added.

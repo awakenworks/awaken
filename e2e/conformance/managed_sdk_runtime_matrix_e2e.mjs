@@ -16,7 +16,8 @@ import {
 import { pass, waitForSessionEventReceipt, withScenarioServer } from '../harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const CLIENTS = (await loadConformanceClients()).map(({ version, Client, root }) => (
+const qualified = await loadConformanceClients();
+const CLIENTS = qualified.map(({ version, Client, root }) => (
   [version, Client, root]
 ));
 
@@ -104,11 +105,11 @@ async function exerciseResponseContext(baseURL, clientSpec) {
   pass(`official SDK ${version} observes real response context`);
 }
 
-async function exerciseCell(baseURL, runtime, creatorSpec, operatorSpec) {
+async function exerciseCell(baseURL, runtime, creatorSpec, operatorSpec, creatorDate, operatorDate) {
   const [creatorVersion, Creator] = creatorSpec;
   const [operatorVersion, Operator] = operatorSpec;
-  const creator = new Creator({ apiKey: 'e2e-dummy', baseURL });
-  const operator = new Operator({ apiKey: 'e2e-dummy', baseURL });
+  const creator = new Creator({ apiKey: 'e2e-dummy', baseURL, ...(creatorDate ? {defaultHeaders: {'anthropic-version': creatorDate}} : {}) });
+  const operator = new Operator({ apiKey: 'e2e-dummy', baseURL, ...(operatorDate ? {defaultHeaders: {'anthropic-version': operatorDate}} : {}) });
   const agent = runtime === 'acp' ? 'acp-agent' : 'native-assistant';
   const session = await creator.beta.sessions.create({
     agent,
@@ -118,6 +119,8 @@ async function exerciseCell(baseURL, runtime, creatorSpec, operatorSpec) {
   try {
     const retrieved = await operator.beta.sessions.retrieve(session.id, { betas: BETAS });
     assert.equal(retrieved.id, session.id, `${runtime}: cross-version retrieve`);
+    if (creatorDate) assert.equal('execution_identity' in session.agent, creatorDate === '2026-10-21');
+    if (operatorDate) assert.equal('execution_identity' in retrieved.agent, operatorDate === '2026-10-21');
     const receipt = await operator.beta.sessions.events.send(session.id, {
       events: [{
         type: 'user.message',
@@ -161,7 +164,7 @@ async function exerciseCell(baseURL, runtime, creatorSpec, operatorSpec) {
     assert.ok(archived.archived_at, `${runtime}: archive`);
     const deleted = await operator.beta.sessions.delete(session.id, { betas: BETAS });
     assert.equal(deleted.type, 'session_deleted', `${runtime}: delete`);
-    pass(`${runtime} Session handoff ${creatorVersion} -> ${operatorVersion}`);
+    pass(`${runtime} Session handoff ${creatorVersion}/${creatorDate ?? "default"} -> ${operatorVersion}/${operatorDate ?? "default"}`);
   } catch (error) {
     try { await creator.beta.sessions.delete(session.id, { betas: BETAS }); } catch {}
     throw error;
@@ -173,6 +176,22 @@ await withScenarioServer('acp', 'echo', Number(process.env.E2E_PORT), async (bas
   for (const runtime of ['native', 'acp']) {
     for (const creator of CLIENTS) {
       for (const operator of CLIENTS) await exerciseCell(baseURL, runtime, creator, operator);
+    }
+  }
+  // Date handoff decision table, orthogonal to historical SDK permutations:
+  // C1 creator legacy/current; C2 operator legacy/current; C3 Native/ACP.
+  // V1 all eight cells preserve the frozen runtime and committed receipt;
+  // V2 response identity belongs to each request date, not Session creation
+  // date; V3 old/new date clients can operate the same Session without a new
+  // store or another executor. The current qualified SDK supplies transport;
+  // exact newer SDK declaration qualification remains its separate oracle.
+  const currentIndex = qualified.findIndex(({role}) => role === 'current_oracle');
+  assert.ok(currentIndex >= 0);
+  for (const runtime of ['native', 'acp']) {
+    for (const creatorDate of ['2023-06-01', '2026-10-21']) {
+      for (const operatorDate of ['2023-06-01', '2026-10-21']) {
+        await exerciseCell(baseURL, runtime, CLIENTS[currentIndex], CLIENTS[currentIndex], creatorDate, operatorDate);
+      }
     }
   }
 }, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' });
