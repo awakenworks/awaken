@@ -37,7 +37,49 @@ pub(super) fn creation_model_route(
     )
 }
 
+/// Freeze the Session-scoped publication of an inline Agent: one the
+/// Workspace does not publish. A Worker executes only an exact publication,
+/// so a Worker-placed Session pins the one `freeze` builds; it never enters
+/// the Workspace catalog and the Session addresses it through its baseline.
+///
+/// Decision table (causes → effect):
+/// | Rule | Workspace publication | placement | effect |
+/// |---|---|---|---|
+/// | F1 | the Session pins one | any | none: the Session pins that revision; `freeze` is not called |
+/// | F2 | none | Worker | `freeze`'s publication; its refusal refuses the create before persistence |
+/// | F3 | none | Local | none: the local claim pool generates the host default per Run; `freeze` is not called |
+pub(super) fn inline_agent_publication(
+    published: bool,
+    placement: SessionRuntimePlacement,
+    freeze: impl FnOnce() -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, RunError>,
+) -> Result<Option<Box<awaken_runtime_contract::ExecutableAgentSnapshot>>, RunError> {
+    match (published, placement) {
+        (true, _) | (false, SessionRuntimePlacement::Local) => Ok(None),
+        (false, SessionRuntimePlacement::Worker) => freeze().map(Box::new).map(Some),
+    }
+}
+
 impl SessionCreationCommands {
+    /// [`inline_agent_publication`] for one create, from the selected
+    /// Runtime's publication of the unpublished Agent `(agent_id, model_ref,
+    /// delegate_ids)`. A refusal runs the caller's `compensation` of the
+    /// participants it already applied, then refuses the create.
+    pub(super) async fn freeze_inline_agent_publication(
+        &self,
+        published: bool,
+        (agent_id, model_ref, delegate_ids): (&str, &str, &[String]),
+        compensation: impl std::future::Future<Output = ()>,
+    ) -> Result<Option<Box<awaken_runtime_contract::ExecutableAgentSnapshot>>, RunError> {
+        let frozen = inline_agent_publication(published, self.runtime_placement(), || {
+            self.queries
+                .unpublished_agent_publication(agent_id, model_ref, delegate_ids)
+        });
+        if frozen.is_err() {
+            compensation.await;
+        }
+        frozen
+    }
+
     /// Exact immutable fact written into a newly compiled Session baseline.
     #[must_use]
     pub fn runtime_placement(&self) -> SessionRuntimePlacement {
@@ -356,6 +398,51 @@ impl SessionCreationCommands {
 #[cfg(test)]
 mod route_tests {
     use super::*;
+
+    #[test]
+    fn inline_agent_publication_follows_its_decision_table() {
+        let frozen = || {
+            awaken_session_execution_contract::unpublished_agent_publication(
+                "assistant",
+                "model",
+                Vec::new(),
+                &[],
+            )
+        };
+        let never = || -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, RunError> {
+            panic!("a Session that needs no inline publication never freezes one")
+        };
+        for placement in [
+            SessionRuntimePlacement::Local,
+            SessionRuntimePlacement::Worker,
+        ] {
+            assert!(
+                inline_agent_publication(true, placement, never)
+                    .unwrap()
+                    .is_none(),
+                "F1 {placement:?}"
+            );
+        }
+        let pinned = inline_agent_publication(false, SessionRuntimePlacement::Worker, frozen)
+            .unwrap()
+            .expect("F2 a Worker-placed inline Session pins a frozen publication");
+        assert_eq!(
+            *pinned,
+            frozen().unwrap(),
+            "F2 exactly the Runtime's publication"
+        );
+        let refused = inline_agent_publication(false, SessionRuntimePlacement::Worker, || {
+            Err(RunError::bad_request("invalid model"))
+        })
+        .expect_err("F2 a refused freeze refuses the create");
+        assert_eq!(refused.message, "invalid model", "F2 the refusal is kept");
+        assert!(
+            inline_agent_publication(false, SessionRuntimePlacement::Local, never)
+                .unwrap()
+                .is_none(),
+            "F3"
+        );
+    }
 
     #[test]
     fn creation_route_selection_preserves_override_priority_and_entry_backend_spelling() {

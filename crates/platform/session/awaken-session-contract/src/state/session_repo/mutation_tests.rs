@@ -52,6 +52,7 @@ pub(super) fn session(id: &str, revision: SessionRevision) -> PersistedSession {
                     runtime_placement: crate::state::SessionRuntimePlacement::Local,
                     agent_id: "assistant".into(),
                     agent_revision: None,
+                    inline_agent_publication: None,
                     model: "model".into(),
                     execution_model_ref: "model".into(),
                     model_override: None,
@@ -1302,6 +1303,53 @@ fn repository_failure_policy_is_closed_and_exhaustive() {
 }
 
 #[test]
+fn terminal_failure_command_follows_its_decision_table() {
+    // Causes: C1 the execution state (every state); C2 a cause and an
+    // optional source Run. Effects: E1 a live root records the cause, its
+    // time and source and enters ActivationFailed in one command; E2 a failed
+    // root replays without change; E3 a Terminated root is refused unchanged.
+    use SessionExecutionState as State;
+    let source = Some(awaken_agent_contract::agent::run::Id("run-1".into()));
+    for (from, rule) in [
+        (State::Preparing, "T1"),
+        (State::Activating, "T1"),
+        (State::Running, "T1"),
+        (State::Rescheduling, "T1"),
+        (State::Idle, "T1"),
+        (State::ActivationFailed, "T2"),
+        (State::Terminated, "T3"),
+    ] {
+        let mut root = session("terminal-failure", SessionRevision(1));
+        root.execution = from;
+        let mut aggregate = crate::state::SessionAggregate::try_from(root.clone()).unwrap();
+        let result = aggregate.lifecycle().fail_terminally_at(
+            "refused permanently".into(),
+            700,
+            source.clone(),
+        );
+        let after = aggregate.into_snapshot();
+        match rule {
+            "T1" => {
+                assert_eq!(result, Ok(true), "{rule} {from}");
+                assert_eq!(after.execution, State::ActivationFailed, "{rule} {from}");
+                let progress = after.realization_progress();
+                assert_eq!(progress.last_error(), Some("refused permanently"), "{rule}");
+                assert_eq!(progress.failed_at_unix_ms(), Some(700), "{rule}");
+                assert_eq!(progress.failure_source_run_id(), source.as_ref(), "{rule}");
+            }
+            "T2" => {
+                assert_eq!(result, Ok(false), "{rule}");
+                assert_eq!(after, root, "{rule} replays without change");
+            }
+            _ => {
+                assert!(result.is_err(), "{rule}");
+                assert_eq!(after, root, "{rule} refused unchanged");
+            }
+        }
+    }
+}
+
+#[test]
 fn execution_transition_decision_table_fails_closed() {
     // Test design — Causes: every execution-state pair and the Idle/Running
     // activity-admission partition are evaluated. Effects: permitted pairs
@@ -1337,8 +1385,7 @@ fn execution_transition_decision_table_fails_closed() {
             let expected = from == to
                 || (!from.is_terminal()
                     && match to {
-                        State::Terminated => true,
-                        State::ActivationFailed => from != State::Idle,
+                        State::Terminated | State::ActivationFailed => true,
                         State::Activating => matches!(
                             from,
                             State::Preparing | State::Running | State::Rescheduling

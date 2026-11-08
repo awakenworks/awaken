@@ -1047,6 +1047,20 @@ impl $crate::SessionCoordinationReads for $ty {
             > {
                 $crate::CapabilityRuntime::capabilities(self)
             }
+
+            /// The unpublished Agent's publication over this runtime's
+            /// advertised surface, which is empty.
+            fn unpublished_agent_publication(
+                &self,
+                agent_id: &str,
+                model_ref: &str,
+                delegate_ids: &[String],
+            ) -> Result<
+                ::awaken_runtime_contract::ExecutableAgentSnapshot,
+                ::awaken_runtime_contract::runs::RunError,
+            > {
+                $crate::unpublished_agent_publication(agent_id, model_ref, Vec::new(), delegate_ids)
+            }
         }
     };
 }

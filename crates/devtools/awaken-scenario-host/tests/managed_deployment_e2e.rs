@@ -162,8 +162,12 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     // transport becomes unavailable only after that create projection commits;
     // C3 the same
     // DeploymentRun is retried after response loss. Effects: E1 launch returns
-    // the committed Session, E2 C2 leaves that Session visible and retryable,
-    // E3 C3 returns the same Session. K1 DeploymentRun records Session creation,
+    // the committed Session, E2 C2 leaves that Session visible: its frozen
+    // publication is missing, which no retry can admit, so lifecycle execution
+    // settles the Session terminally with that refusal as its durable cause
+    // instead of re-queueing it forever (`refused_run_settlement` R2),
+    // E3 C3 meets that one terminal Session: the replay reports its terminal
+    // occupation and creates no second Session. K1 DeploymentRun records Session creation,
     // while the Session root is the sole Event/lifecycle authority; no follow-up
     // launch executor or compensating delete exists. Rules: D1 C1 -> E1;
     // D2 C1+C2 -> E2; D3 C1+C2+C3 -> E3.
@@ -272,31 +276,57 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     runtime_publications
         .available
         .store(false, Ordering::Release);
-    let error = Box::pin(
+    Box::pin(
         managed
             .sessions
             .event_batches()
             .drive_session_event_batches(&awaken_session_types::SessionId::from(&session_id), None),
     )
     .await
-    .expect_err("D2 lifecycle execution must observe the unavailable publication");
+    .expect("D2 lifecycle execution settles the unavailable publication terminally");
+    let failed = awaken_session_application::SessionRootReads::session(
+        managed.sessions.queries().as_ref(),
+        &awaken_session_types::SessionId::from(&session_id),
+    )
+    .await
+    .expect("D2 the committed Session root remains");
+    assert_eq!(
+        failed.execution,
+        awaken_session_contract::SessionExecutionState::ActivationFailed,
+        "D2 terminal"
+    );
     assert!(
-        error.to_string().contains("publication"),
-        "D2 expected publication failure: {error}"
+        failed
+            .realization_progress()
+            .last_error()
+            .is_some_and(|cause| cause.contains("publication")),
+        "D2 the missing publication is the durable cause: {:?}",
+        failed.realization_progress().last_error()
     );
     assert_eq!(
         managed.managed.get_session(&session_id).unwrap().id,
         session_id,
         "D2/E2"
     );
+    // The replayed DeploymentRun meets its own, now terminally failed,
+    // Session: create replay reports that terminal occupation and never
+    // creates a second Session for the run.
+    let replayed = launcher.launch(request).await;
     assert!(
         matches!(
-            launcher.launch(request).await,
-            DeploymentLaunchOutcome::Created {
-                session_id: replayed
-            } if replayed == session_id
+            &replayed,
+            DeploymentLaunchOutcome::Failed {
+                error: awaken_deployment_application::DeploymentRunFailure::SessionCreationRejectedError {
+                    message
+                }
+            } if message == "session_create_terminal_conflict"
         ),
-        "D3/E3"
+        "D3/E3: {replayed:?}"
+    );
+    assert_eq!(
+        managed.managed.get_session(&session_id).unwrap().id,
+        session_id,
+        "D3/E3 the one Session of the run remains"
     );
 }
 

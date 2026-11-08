@@ -148,7 +148,7 @@ async function main() {
       );
       pass('erasure is idempotent — retry returned the same accountability receipt');
       },
-      { mode: 'management', extraEnv: env },
+      { mode: 'management', extraEnv: env, placement: 'worker' },
     );
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });

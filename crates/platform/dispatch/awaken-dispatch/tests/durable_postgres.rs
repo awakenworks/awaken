@@ -2509,11 +2509,45 @@ impl harness::untrustworthy_generation::Poison for PostgresPoison {
         .rows_affected();
         assert_eq!(changed, 1, "poisoned exactly {run_id}");
     }
+
+    async fn poison_generation(&self, run_id: &str, epoch: i64, reserved: bool) {
+        let mut connection = self.0.acquire().await.unwrap();
+        if epoch < 0 {
+            // The schema refuses a negative counter; the corruption this row
+            // stands for (a restore that skipped constraints, a hand edit) is
+            // not bound by it. Only this test schema loses them.
+            sqlx::raw_sql(
+                "DO $$ DECLARE c record; BEGIN \
+                 FOR c IN SELECT conname FROM pg_constraint \
+                 WHERE conrelid = 'runtime_dispatch'::regclass AND contype = 'c' \
+                 AND pg_get_constraintdef(oid) LIKE '%lease_epoch%' LOOP \
+                 EXECUTE format('ALTER TABLE runtime_dispatch DROP CONSTRAINT %I', c.conname); \
+                 END LOOP; END $$;",
+            )
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        }
+        let sql = if reserved {
+            "UPDATE runtime_dispatch SET lease_epoch = $1, status = 'reserved', \
+             lease_until = 0 WHERE run_id = $2 AND status = 'pending'"
+        } else {
+            "UPDATE runtime_dispatch SET lease_epoch = $1 WHERE run_id = $2"
+        };
+        let changed = sqlx::query(sql)
+            .bind(epoch)
+            .bind(run_id)
+            .execute(&mut *connection)
+            .await
+            .unwrap()
+            .rows_affected();
+        assert_eq!(changed, 1, "poisoned exactly {run_id}");
+    }
 }
 
 #[tokio::test]
 async fn postgres_claim_scans_dead_letter_an_untrustworthy_generation_and_continue() {
-    // Decision table U1-U7: tests/harness/untrustworthy_generation.rs.
+    // Decision table U1-U11: tests/harness/untrustworthy_generation.rs.
     let Some(pool) = harness::schema_pool("t_pg_untrustworthy_generation").await else {
         return;
     };
@@ -2524,7 +2558,23 @@ async fn postgres_claim_scans_dead_letter_an_untrustworthy_generation_and_contin
         &store,
         &PostgresPoison(pool),
         i64::MAX as u64,
-        false,
+        i64::MAX,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn postgres_claim_scans_skip_a_negative_generation_and_report_it_once() {
+    // Decision table U12: tests/harness/untrustworthy_generation.rs.
+    let Some(pool) = harness::schema_pool("t_pg_negative_generation").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    harness::untrustworthy_generation::assert_negative_generation_rows(
+        &store,
+        &PostgresPoison(pool),
     )
     .await;
 }

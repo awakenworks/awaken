@@ -190,6 +190,9 @@ impl SessionError {
             "session_environment_rebuild_source_unavailable" => {
                 ("unknown_error", RetryStatus::Terminal)
             }
+            // The Worker has no credential-refresh capability: no retry can
+            // add it, so the failure is terminal, never retry-exhausted.
+            "mcp_credential_refresh_unavailable" => ("unknown_error", RetryStatus::Terminal),
             _ => ("unknown_error", RetryStatus::Exhausted),
         };
         Self {
@@ -273,12 +276,15 @@ mod tests {
     /// | R12  | model_not_found           | irrelevant        | model_request_failed_error      | absent          | terminal     |
     /// | R13  | content_filtered          | irrelevant        | model_request_failed_error      | absent          | terminal     |
     /// | R15  | session_environment_rebuild_source_unavailable | irrelevant | unknown_error | absent | terminal |
+    /// | R16  | mcp_credential_refresh_unavailable | no | unknown_error | absent | terminal |
     /// R8/R9 a classified, exhausted model request preserves its cause and
     /// stays usable; it is not the separate ExecutionUnknown/terminal decision.
     /// R10-R13 known permanent model refusals stay terminal, never retry-exhausted.
     /// R14 unrecognized faults retain the existing generic fallback.
     /// R15 a Session whose Environment source closed with nothing to rebuild
     /// from failed for good: terminal, not retry-exhausted.
+    /// R16 a Worker without the MCP credential-refresh capability cannot
+    /// gain it by retrying: terminal, not retry-exhausted.
     /// R5-R7 distinguish rate, overload and hard usage causes at the existing
     /// classifier. All three have no MCP server field; a terminal Run with an
     /// exhausted retry budget must not be advertised as retrying.
@@ -401,6 +407,14 @@ mod tests {
                 "R15",
                 "session_environment_rebuild_source_unavailable",
                 "the closed Session Environment source has no retained volume or Repository to rebuild from",
+                "unknown_error",
+                None,
+                RetryStatus::Terminal,
+            ),
+            (
+                "R16",
+                "mcp_credential_refresh_unavailable",
+                "MCP credential refresh requires a Coordinator refresh adapter, and this Worker has none",
                 "unknown_error",
                 None,
                 RetryStatus::Terminal,

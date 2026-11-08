@@ -247,6 +247,8 @@ struct State {
     completions: Vec<CompletionRecord>,
     /// Dispatch-authority transitions in the same order as their mutations.
     operations: Vec<crate::dispatch::StoredDispatchEvent>,
+    /// Rows whose untrustworthy claim generation the scans already reported.
+    reported: crate::ReportedClaimGenerations,
 }
 
 impl State {
@@ -259,6 +261,7 @@ impl State {
             outbox: Vec::new(),
             completions: Vec::new(),
             operations: Vec::new(),
+            reported: crate::ReportedClaimGenerations::default(),
         }
     }
 }
@@ -783,7 +786,7 @@ fn claim_next_local(
     refuse_untrustworthy_expired_leases(state, now_ms);
     let Some(run_id) = select_where(state, now_ms, None, |row| {
         (row.cancellation_requested || can_claim_locally(&row.request.placement))
-            && claim_generation_admits(row)
+            && claim_generation_admits(&state.reported, row)
             && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
                 can_admit_claim_credentials(
                     &row.request,
@@ -1088,7 +1091,7 @@ impl awaken_dispatch_contract::DispatchClaims for MemoryDispatchStore {
         let capabilities = installed_worker_credential_capabilities(worker)?;
         refuse_untrustworthy_expired_leases(&mut state, now_ms);
         let Some(run_id) = select_where(&state, now_ms, Some(worker), |row| {
-            if !claim_generation_admits(row) {
+            if !claim_generation_admits(&state.reported, row) {
                 return false;
             }
             if row.cancellation_requested {
@@ -1768,7 +1771,7 @@ impl awaken_dispatch_contract::DispatchControlClaims for MemoryDispatchStore {
         let capabilities = installed_worker_credential_capabilities(requester)?;
         refuse_untrustworthy_expired_leases(&mut state, now_ms);
         let run_id = select_where(&state, now_ms, Some(requester), |row| {
-            if !claim_generation_admits(row) {
+            if !claim_generation_admits(&state.reported, row) {
                 return false;
             }
             if row.cancellation_requested {

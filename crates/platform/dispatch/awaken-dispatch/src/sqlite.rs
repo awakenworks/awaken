@@ -349,6 +349,8 @@ pub struct SqliteDispatchStore {
     /// commit database write without holding a database transaction open.
     authority: Arc<tokio::sync::Mutex<()>>,
     clock: Arc<dyn awaken_time::WallClock>,
+    /// Rows whose untrustworthy claim generation the scans already reported.
+    reported: crate::ReportedClaimGenerations,
 }
 
 /// The authority guard and the store's one connection, held together for one
@@ -413,6 +415,7 @@ impl SqliteDispatchStore {
             pool,
             authority: Arc::new(tokio::sync::Mutex::new(())),
             clock,
+            reported: crate::ReportedClaimGenerations::default(),
         })
     }
 
@@ -480,7 +483,7 @@ impl SqliteDispatchStore {
                 attempt_owner,
                 attempt_epoch,
             )) => {
-                let epoch = durable_u64("dispatch lease epoch", epoch)?;
+                let epoch = crate::stored_claim_epoch(epoch)?;
                 match classify_commit_epoch_admission(
                     true,
                     owner.is_some(),

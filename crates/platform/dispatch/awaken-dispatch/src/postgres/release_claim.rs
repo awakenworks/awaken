@@ -49,7 +49,7 @@ async fn release_claim_transaction(
     let active_attempt_epoch = current
         .try_get::<Option<i64>, _>("active_attempt_epoch")
         .map_err(store_error)?
-        .map(|value| durable_u64("dispatch attempt epoch", value))
+        .map(crate::stored_claim_epoch)
         .transpose()?;
     let slot = PhysicalAttemptSlot::from_facts(
         active_attempt_owner.is_some(),

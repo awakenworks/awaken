@@ -52,6 +52,7 @@ fn profiled_observed_session(id: &str) -> PersistedSession {
             runtime_placement: source.runtime_placement,
             agent_id: source.agent_id,
             agent_revision: source.agent_revision,
+            inline_agent_publication: None,
             model: source.model,
             execution_model_ref: source.execution_model_ref,
             model_override: source.model_override,

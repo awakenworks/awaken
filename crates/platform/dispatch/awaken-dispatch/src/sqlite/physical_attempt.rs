@@ -85,12 +85,12 @@ impl SqliteDispatchStore {
             let _ = tx.rollback().await;
             return Ok(AttemptAdmission::Fenced);
         };
-        let persisted_epoch = durable_u64("dispatch lease epoch", current.lease_epoch)?;
+        let persisted_epoch = crate::stored_claim_epoch(current.lease_epoch)?;
         let active_epoch = current
             .active_epoch
-            .map(|value| durable_u64("dispatch attempt epoch", value))
+            .map(crate::stored_claim_epoch)
             .transpose()?;
-        let retired_epoch = durable_u64("retired attempt epoch", current.retired_epoch)?;
+        let retired_epoch = crate::stored_claim_epoch(current.retired_epoch)?;
         let live = awaken_dispatch_contract::attempt_epoch_is_open(claim.epoch, retired_epoch)
             && current.status == "running"
             && current.lease_owner.as_deref() == Some(&claim.owner)
@@ -185,9 +185,7 @@ impl SqliteDispatchStore {
         let (slot, closing, original) = if let Some((owner, epoch, binding, request, closing)) =
             current
         {
-            let epoch = epoch
-                .map(|value| durable_u64("dispatch attempt epoch", value))
-                .transpose()?;
+            let epoch = epoch.map(crate::stored_claim_epoch).transpose()?;
             let slot = PhysicalAttemptSlot::from_facts(
                 owner.is_some(),
                 epoch.is_some(),
@@ -271,9 +269,7 @@ impl SqliteDispatchStore {
         let Some((owner, epoch)) = row else {
             return Ok(SettleOutcome::Fenced);
         };
-        let epoch = epoch
-            .map(|value| durable_u64("physical attempt epoch", value))
-            .transpose()?;
+        let epoch = epoch.map(crate::stored_claim_epoch).transpose()?;
         let slot = PhysicalAttemptSlot::from_facts(
             owner.is_some(),
             epoch.is_some(),

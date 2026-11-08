@@ -1545,8 +1545,11 @@ export function startUpstream(behavior, opts = {}) {
 export function realServerEnv(
   behavior,
   upstream,
-  { mode = 'real', extraEnv = {}, modelUpstream = {} } = {},
+  { mode = 'real', extraEnv = {}, modelUpstream = {}, placement = 'local' } = {},
 ) {
+  if (placement !== 'local' && placement !== 'worker') {
+    throw new Error(`realServerEnv placement must be 'local' or 'worker', got ${placement}`);
+  }
   return {
     AWAKEN_MODEL_MODE: mode,
     // scenario-host consumes its typed Deployment from explicit fixture input;
@@ -1559,8 +1562,10 @@ export function realServerEnv(
     // provider keys selected it: its own claim pool. Several of these specs
     // observe behaviour the co-located registered Worker does not have yet
     // (w5-slices.md §10, §15); moving them is that lane's flip, not a
-    // consequence of where the model is configured. Host-backed modes ignore it.
-    SESSION_DEPLOYMENT_PLACEMENT: 'local',
+    // consequence of where the model is configured. A spec the registered
+    // Worker already serves passes `placement: 'worker'` and runs the shipped
+    // topology; the option goes away with this line. Host-backed modes ignore it.
+    ...(placement === 'local' ? { SESSION_DEPLOYMENT_PLACEMENT: 'local' } : {}),
     // `modelUpstream: null` is a scenario that runs no inference: no binding.
     ...(modelUpstream === null ? {} : modelUpstreamEnv(upstream, modelUpstream)),
     ...extraEnv,

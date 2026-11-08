@@ -135,8 +135,52 @@ pub struct McpCredentialMaterialization<'a> {
 mod staging;
 use staging::{McpStagingOwner, StagingAdmission};
 
+/// The refresh material of one resolved MCP bearer, from the realization
+/// mechanism, whether the credential carries a refresh configuration, and the
+/// Worker's credential-refresh capability.
+///
+/// Decision table (causes → effect):
+/// | Rule | mechanism | refresh configured | refresh factory | effect |
+/// |---|---|---|---|---|
+/// | M1 | not WorkerRelay | any | any | no refresher: the holder refreshes nothing on this Worker |
+/// | M2 | WorkerRelay | yes | present | the factory's refresh-token exchanger for the credential |
+/// | M3 | WorkerRelay | yes | absent | refused terminally (`mcp_credential_refresh_unavailable`, a classified fault): the capability is absent, so no retry can add it and none spends the retry budget |
+/// | M4 | WorkerRelay | no | present | the factory's bearer reloader at the credential's revision |
+/// | M5 | WorkerRelay | no | absent | no refresher: the bearer is used as resolved |
+fn mcp_refresh_material(
+    realization_kind: awaken_credential_contract::CredentialRealizationKind,
+    credential: &awaken_agent_contract::credential::CredentialRef,
+    refresh: Option<&awaken_agent_contract::credential::CredentialRefreshAccess>,
+    factory: Option<&dyn CredentialRefreshFactory>,
+) -> Result<Option<Box<crate::mcp_material::McpRefreshMaterial>>, RunError> {
+    if realization_kind != awaken_credential_contract::CredentialRealizationKind::WorkerRelay {
+        return Ok(None);
+    }
+    let source = awaken_credential_contract::CredentialSourceId(credential.id.clone());
+    let refresher = match (refresh, factory) {
+        (Some(refresh), Some(factory)) => factory.refresher(source, refresh.clone()),
+        (Some(_), None) => {
+            return Err(RunError::classified(
+                MCP_CREDENTIAL_REFRESH_UNAVAILABLE_CODE,
+                "MCP credential refresh requires a Coordinator refresh adapter, and this Worker has none",
+            ));
+        }
+        (None, Some(factory)) => factory.bearer_reloader(source, credential.revision),
+        (None, None) => return Ok(None),
+    };
+    Ok(Some(Box::new(crate::mcp_material::McpRefreshMaterial(
+        refresher,
+    ))))
+}
+
+/// The code of an MCP credential whose refresh this Worker cannot perform.
+pub(crate) const MCP_CREDENTIAL_REFRESH_UNAVAILABLE_CODE: &str =
+    "mcp_credential_refresh_unavailable";
+
 #[cfg(test)]
 mod preparation_tests;
+#[cfg(test)]
+mod refresh_material_tests;
 
 // Runtime realization of one Session-owned MCP attachment generation.
 impl McpSessions {
@@ -593,36 +637,12 @@ impl McpSessions {
                                 error.to_string(),
                             )
                         })?;
-                    let refresh = if realization_kind == CredentialRealizationKind::WorkerRelay {
-                        match access.refresh.as_ref() {
-                            Some(refresh) => Some(Box::new(crate::mcp_material::McpRefreshMaterial(
-                                credentials
-                                    .refresh_factory
-                                    .ok_or_else(|| {
-                                        RunError::unavailable_classified(
-                                            "mcp_credential_refresh_unavailable",
-                                            "MCP credential refresh requires a Coordinator refresh adapter",
-                                        )
-                                    })?
-                                    .refresher(
-                                        awaken_credential_contract::CredentialSourceId(
-                                            access.credential.id.clone(),
-                                        ),
-                                        refresh.clone(),
-                                    ),
-                            ))),
-                            None => credentials.refresh_factory.map(|factory| {
-                                Box::new(crate::mcp_material::McpRefreshMaterial(factory.bearer_reloader(
-                                    awaken_credential_contract::CredentialSourceId(
-                                        access.credential.id.clone(),
-                                    ),
-                                    access.credential.revision,
-                                )))
-                            }),
-                        }
-                    } else {
-                        None
-                    };
+                    let refresh = mcp_refresh_material(
+                        realization_kind,
+                        &access.credential,
+                        access.refresh.as_ref(),
+                        credentials.refresh_factory,
+                    )?;
                     (Some(bearer), refresh, Some(realization_kind), None)
                 }
             }
