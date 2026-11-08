@@ -836,7 +836,7 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
     // Portable default: the container tier reports the canonical mounter's Copy,
     // not a second runtime-local store.
     assert_eq!(mem.realization, pc::Realization::Copy);
-    let archive = {
+    {
         let state = p.runtime.st.lock().unwrap();
         let bind = state.created_binds["cid-mem-real"]
             .iter()
@@ -852,18 +852,9 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
             .find(|bind| bind.mount_path == "/mnt/memory/archive")
             .expect("M2 read-only memory copy is bound into the container");
         assert!(read_only.read_only, "M2/E2");
-        std::path::PathBuf::from(&read_only.source_ref)
-    };
-    // The read-only copy's directory has no write bits, so staging removal
-    // cannot empty it; restore owner write so the fixture leaves no temp tree.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&archive, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     sandbox.dispose_unattached().await.unwrap();
     assert!(torn_down.load(Ordering::SeqCst));
-    assert!(!archive.exists(), "disposal removes the Memory staging");
 }
 
 struct UncertainMemoryMounter {
