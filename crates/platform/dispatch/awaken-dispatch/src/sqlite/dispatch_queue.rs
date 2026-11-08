@@ -40,9 +40,11 @@ async fn first_admissible_in_band(
         let cancellation_requested = cancellation_requested != 0;
         let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
         let operation = claim_credential_operation(terminal_resolution, cancellation_requested);
-        if next_claim_epoch(lease_epoch).is_ok_and(|epoch| {
-            can_admit_claim_credentials(&request, capabilities, epoch, now_ms, operation)
-        }) {
+        if crate::sql_claim_generation_admits(&run_id, lease_epoch)
+            && next_claim_epoch(lease_epoch).is_ok_and(|epoch| {
+                can_admit_claim_credentials(&request, capabilities, epoch, now_ms, operation)
+            })
+        {
             return Ok(Some(run_id));
         }
     }
@@ -471,12 +473,14 @@ impl awaken_dispatch_contract::DispatchClaims for SqliteDispatchStore {
         let (_authority, mut conn) = self.with_conn().await?;
         let p = NS;
         let mut tx = immediate(&mut conn).await?;
+        refuse_untrustworthy_expired_leases(&mut tx, p, now_ms).await?;
         let picked = match select_claim_band(&mut tx, p, true, now_ms, capabilities).await? {
             Some(run_id) => Some(run_id),
             None => select_claim_band(&mut tx, p, false, now_ms, capabilities).await?,
         };
 
         let Some(run_id) = picked else {
+            tx.commit().await.map_err(store_error)?;
             return Ok(None);
         };
         let claimed = claim_exact_transaction(
@@ -502,6 +506,7 @@ impl awaken_dispatch_contract::DispatchClaims for SqliteDispatchStore {
         let (_authority, mut conn) = self.with_conn().await?;
         let p = NS;
         let mut tx = immediate(&mut conn).await?;
+        refuse_untrustworthy_expired_leases(&mut tx, p, now_ms).await?;
         let thread_available = thread_available_for_claim(p);
         let sql = format!(
             "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
@@ -534,6 +539,9 @@ impl awaken_dispatch_contract::DispatchClaims for SqliteDispatchStore {
                     cancellation_requested,
                     lease_epoch,
                 ) = row;
+                if !crate::sql_claim_generation_admits(&run_id, lease_epoch) {
+                    continue;
+                }
                 let cancellation_requested = cancellation_requested != 0;
                 let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
                 if request
@@ -1149,20 +1157,8 @@ impl awaken_dispatch_contract::DispatchMaintenance for SqliteDispatchStore {
         let p = NS;
         let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
         let mut tx = immediate(&mut conn).await?;
-        let candidates = sqlx::query_as::<
-            _,
-            (
-                String,
-                Option<String>,
-                i64,
-                i64,
-                i64,
-                Option<String>,
-                Option<i64>,
-            ),
-        >(&format!(
-            "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested, \
-             active_attempt_owner, active_attempt_epoch \
+        let candidates = sqlx::query_as::<_, ExpiredLeaseRow>(&format!(
+            "SELECT {EXPIRED_LEASE_COLUMNS} \
              FROM {p}_dispatch WHERE status = 'running' \
              AND lease_until IS NOT NULL AND lease_until <= ?1 \
              AND attempt_count >= ?2 \
@@ -1175,87 +1171,19 @@ impl awaken_dispatch_contract::DispatchMaintenance for SqliteDispatchStore {
         .await
         .map_err(store_error)?;
         let mut quarantined = 0;
-        for (
-            run_id,
-            owner,
-            epoch,
-            attempt_count,
-            cancellation_requested,
-            active_attempt_owner,
-            active_attempt_epoch,
-        ) in candidates
-        {
-            let Some(owner) = owner else {
-                return Err(DispatchError::Rejected(
-                    "expired running dispatch has no persisted lease owner".to_string(),
-                ));
-            };
-            let claim_epoch = durable_u64("dispatch lease epoch", epoch)?;
-            // The SQL above only prefilters. The slot disposition is decided
-            // here, on the locked row, by the one kernel every backend shares.
-            let slot = awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
-                active_attempt_owner.is_some(),
-                active_attempt_epoch.is_some(),
-                active_attempt_owner.as_deref() == Some(owner.as_str()),
-                active_attempt_epoch == Some(epoch),
-            );
-            if !slot.permits_settlement()
-                && !slot.quarantine_admits_occupation(cancellation_requested != 0)
+        for row in candidates {
+            if dead_letter_expired_lease(
+                &mut tx,
+                p,
+                row,
+                LeaseLossReason::RetryExhausted,
+                expired_before_ms,
+                now_ms,
+            )
+            .await?
             {
-                continue;
+                quarantined += 1;
             }
-            let current = crate::persisted_dispatch_transition(
-                "running",
-                epoch,
-                cancellation_requested != 0,
-            )?;
-            let awaken_dispatch_contract::GuardedTransition::Applied(next) =
-                current.exhaust_retries(claim_epoch, true)
-            else {
-                continue;
-            };
-            let changed = sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET status = ?4, \
-                 lease_owner = NULL, lease_until = NULL, dead_lettered_at = ?1 \
-                 WHERE run_id = ?2 AND status = 'running' AND lease_epoch = ?3"
-            ))
-            .bind(crate::clock::db_millis(expired_before_ms))
-            .bind(&run_id)
-            .bind(epoch)
-            .bind(crate::dispatch_state_db(next.state))
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?
-            .rows_affected();
-            if changed == 0 {
-                continue;
-            }
-            let claim = RunClaim {
-                run_id: RunId(run_id),
-                owner,
-                epoch: claim_epoch,
-            };
-            insert_operation(
-                &mut tx,
-                p,
-                &DispatchOperation::LeaseLost {
-                    claim: claim.clone(),
-                    reason: LeaseLossReason::RetryExhausted,
-                },
-                now_ms,
-            )
-            .await?;
-            insert_operation(
-                &mut tx,
-                p,
-                &DispatchOperation::DeadLettered {
-                    claim,
-                    attempt_count: durable_u64("dispatch attempt count", attempt_count)?,
-                },
-                now_ms,
-            )
-            .await?;
-            quarantined += 1;
         }
         tx.commit().await.map_err(store_error)?;
         Ok(quarantined)

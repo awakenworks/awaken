@@ -1459,9 +1459,11 @@ mod tests {
             server.abort();
             let _ = server.await;
         }
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
+        // Bound but not listening for the rest of the test: refused, and no
+        // parallel test can take the port (a dropped listener frees it).
+        let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+        reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = reserved.local_addr().unwrap();
         let source =
             HttpWorkerObservationSource::new(format!("http://{address}"), "secret").unwrap();
         assert!(

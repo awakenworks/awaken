@@ -70,8 +70,9 @@ fn candidate_retry_due() -> &'static str {
 
 /// An exhausted epoch cannot pass the existing discovery admission check.
 /// Prune that permanent runnable front before decoding candidate payloads.
-/// Reservation recovery retains its existing first-page handling; other
-/// malformed epochs still reach the canonical exact admission error.
+/// An expired lease at that generation was already dead-lettered by
+/// `refuse_untrustworthy_expired_leases` before discovery; reservation rows
+/// are not pruned and are skipped, observed, by `candidate_is_admissible`.
 fn candidate_epoch_not_exhausted() -> &'static str {
     "d.lease_epoch < 9223372036854775807"
 }
@@ -181,6 +182,13 @@ fn candidate_is_admissible(
     let status: String = row.try_get("status").map_err(store_error)?;
     let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(store_error)?;
     let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
+    // Only reservation rows reach here at an exhausted generation (the SQL
+    // prunes the rest); a reservation recovery would refuse it in the exact
+    // transaction and abort this whole scan, so it is skipped here instead.
+    let run_id: String = row.try_get("run_id").map_err(store_error)?;
+    if !crate::sql_claim_generation_admits(&run_id, lease_epoch) {
+        return Ok(false);
+    }
     let terminal_resolution = matches!(status.as_str(), "reserved" | "reservation_running");
     let operation = claim_credential_operation(terminal_resolution, cancellation_requested != 0);
     let credentials_admitted = next_claim_epoch(lease_epoch).is_ok_and(|epoch| {
@@ -274,6 +282,7 @@ impl PostgresDispatchStore {
         audience: CandidateAudience<'_>,
     ) -> Result<Option<Claimed>, DispatchError> {
         let discovery = async {
+            refuse_untrustworthy_expired_leases(&self.pool).await?;
             let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
             let sql = candidate_page_sql(audience.local());
             let first = sqlx::query(&sql)

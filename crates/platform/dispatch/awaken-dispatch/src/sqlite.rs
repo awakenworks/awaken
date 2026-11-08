@@ -85,6 +85,11 @@ mod claim;
 use claim::{
     claim_exact_transaction, claim_exact_transaction_with_mode, claim_retry_exhausted_transaction,
 };
+mod integrity;
+use integrity::{
+    EXPIRED_LEASE_COLUMNS, ExpiredLeaseRow, dead_letter_expired_lease,
+    refuse_untrustworthy_expired_leases,
+};
 
 /// Errors from constructing or migrating the dispatch store. Claim/settle-time
 /// failures use the neutral [`DispatchError`].

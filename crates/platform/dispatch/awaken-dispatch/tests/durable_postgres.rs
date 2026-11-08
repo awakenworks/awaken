@@ -2481,3 +2481,50 @@ use awaken_dispatch_contract::{
     DispatchClaimOwnership as _, DispatchClaims as _, DispatchControlClaims as _,
     DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _, InboxRead as _,
 };
+
+/// Writes an untrustworthy generation straight into the PostgreSQL row, as the
+/// corruption, bad migration or tampering the refusal exists for would.
+struct PostgresPoison(sqlx::PgPool);
+
+impl harness::untrustworthy_generation::Poison for PostgresPoison {
+    async fn poison(&self, run_id: &str, expired_attempts: Option<u64>) {
+        let changed = match expired_attempts {
+            Some(attempts) => sqlx::query(
+                "UPDATE runtime_dispatch SET lease_epoch = $1, attempt_count = $2, \
+                 lease_until = 0 WHERE run_id = $3 AND status = 'running'",
+            )
+            .bind(i64::MAX)
+            .bind(i64::try_from(attempts).unwrap())
+            .bind(run_id),
+            None => sqlx::query(
+                "UPDATE runtime_dispatch SET lease_epoch = $1 WHERE run_id = $2 \
+                 AND status = 'pending'",
+            )
+            .bind(i64::MAX)
+            .bind(run_id),
+        }
+        .execute(&self.0)
+        .await
+        .unwrap()
+        .rows_affected();
+        assert_eq!(changed, 1, "poisoned exactly {run_id}");
+    }
+}
+
+#[tokio::test]
+async fn postgres_claim_scans_dead_letter_an_untrustworthy_generation_and_continue() {
+    // Decision table U1-U7: tests/harness/untrustworthy_generation.rs.
+    let Some(pool) = harness::schema_pool("t_pg_untrustworthy_generation").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    harness::untrustworthy_generation::assert_untrustworthy_generation_rows(
+        &store,
+        &PostgresPoison(pool),
+        i64::MAX as u64,
+        false,
+    )
+    .await;
+}
