@@ -27,7 +27,8 @@ mod control;
 mod control_component;
 #[cfg(any(test, feature = "test-support"))]
 pub use colocated_test_process::{
-    ColocatedTestProcess, ColocatedTestWorkerInputs, start_ephemeral_all_in_one_with_worker,
+    ColocatedTestProcess, ColocatedTestStores, ColocatedTestWorkerInputs,
+    start_all_in_one_with_worker,
 };
 mod coordinator_execution;
 mod credential_probe;
@@ -76,7 +77,7 @@ use axum::Router;
 use exact_host_model::ExactHostModelPublicationResolver;
 #[cfg(any(test, feature = "test-support"))]
 use local_process_stores::in_memory_process_stores;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 use local_process_stores::open_local_process_stores;
 #[cfg(test)]
 use local_process_stores::{
@@ -195,24 +196,11 @@ pub async fn prepare_all_in_one_process_with_execution(
     .await
 }
 
-/// Hermetic all-in-one startup for tests and embedders that explicitly want
-/// volatile stores. It never consults the standard deployment config path.
-#[cfg(any(test, feature = "test-support"))]
-pub async fn build_ephemeral_all_in_one_router(execution: Box<dyn ColocatedExecution>) -> Router {
-    prepare_ephemeral_all_in_one_process(execution)
-        .await
-        .0
-        .public_router
-}
-
-/// One volatile composition, retaining its lifecycle and a borrowed Session
-/// read authority for the in-crate management test. The public Router helper
-/// selects this same assembly and discards the borrowed view. No second store
-/// or test-only public startup API is introduced.
-#[cfg(any(test, feature = "test-support"))]
-async fn prepare_ephemeral_all_in_one_process(
-    execution: Box<dyn ColocatedExecution>,
-) -> (
+/// One volatile management-only composition, retaining its lifecycle and a
+/// borrowed Session read authority for the in-crate management test. It runs
+/// no Session, so it starts no Worker; its Coordinator owns no claim pool.
+#[cfg(test)]
+async fn prepare_ephemeral_all_in_one_process() -> (
     ProcessRouters,
     Arc<dyn awaken_session_contract::SessionRepository>,
 ) {
@@ -223,7 +211,7 @@ async fn prepare_ephemeral_all_in_one_process(
         .expect("AllInOne borrows its selected Session authority")
         .sessions
         .clone();
-    let options = exact_host_model::local_test_process_options(&stores, execution);
+    let options = exact_host_model::registered_test_process_options(&stores);
     let process = prepare_runtime_routers(
         stores,
         None,
@@ -410,9 +398,12 @@ pub async fn build_all_in_one_service_with_execution_inputs(
 }
 
 /// Build the management router over in-memory stores with an explicit host default
-/// model injected — a **test-only** seam so an integration test can drive the real
-/// management router with a deterministic (mock) model, keeping the mock out of the
-/// production process.
+/// model injected, its Sessions running on this process's local claim pool.
+///
+/// Retained only for the MCP tests whose behaviour exists solely on that
+/// placement (inline initial-realization failure at create, mid-connect OAuth
+/// refresh); every other test runs the shipped topology through
+/// [`start_all_in_one_with_worker`].
 #[cfg(any(test, feature = "test-support"))]
 pub async fn build_all_in_one_router_with_model(
     model: Arc<dyn LlmExecutor>,
@@ -437,64 +428,6 @@ pub async fn build_all_in_one_router_with_model(
     .await
     .expect("prepare test-support modeled all-in-one process")
     .public_router
-}
-
-/// [`prepare_all_in_one_process_with_execution`] with explicit persistence inputs (no environment
-/// read): durable all-in-one over `dir`, sealing secrets under `key`.
-/// Exposed so a restart test can rebuild a router over one directory across
-/// simulated process lifetimes without racing on process-global env vars.
-/// No IAM guard; available only to explicit test-support deployments.
-#[cfg(any(test, feature = "test-support"))]
-pub async fn build_durable_all_in_one_router(
-    dir: &std::path::Path,
-    key: &[u8; 32],
-    execution: Box<dyn ColocatedExecution>,
-) -> Router {
-    let stores = open_local_process_stores(dir, key)
-        .await
-        .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
-    let options = exact_host_model::local_test_process_options(&stores, execution);
-    prepare_runtime_routers(
-        stores,
-        None,
-        None,
-        None,
-        PublicationModelSupply::PublishedProviders,
-        options,
-    )
-    .await
-    .expect("prepare durable all-in-one process")
-    .public_router
-}
-
-/// [`build_durable_all_in_one_router`] with the embedded IAM guard enabled — the
-/// typed self-managed identity startup. Returns the
-/// [`ManagementAuthz`] handle too so a test (or an embedding) can mint further
-/// workspace tokens against the same policy state.
-#[cfg(any(test, feature = "test-support"))]
-pub async fn build_secured_all_in_one_router(
-    dir: &std::path::Path,
-    key: &[u8; 32],
-    execution: Box<dyn ColocatedExecution>,
-) -> (Router, Arc<ManagementAuthz>) {
-    let stores = open_local_process_stores(dir, key)
-        .await
-        .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
-    // IAM judges tokens on the same wall clock the stores stamp with.
-    let iam = embedded_iam(dir, stores.clock.clone()).expect("prepare secured test IAM");
-    let options = exact_host_model::local_test_process_options(&stores, execution);
-    let router = prepare_runtime_routers(
-        stores,
-        Some(iam.clone()),
-        None,
-        None,
-        PublicationModelSupply::PublishedProviders,
-        options,
-    )
-    .await
-    .expect("prepare secured all-in-one process")
-    .public_router;
-    (router, iam)
 }
 
 fn resolve_model_services(
