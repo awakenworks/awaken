@@ -891,7 +891,8 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn standalone_queued_interrupt_settles_without_starting_a_pool_or_calling_the_model() {
-    // Causes: C1 durable foreground delivery has enqueued its exact Run; C2 no
+    // Causes: C0 the ordinary standalone context is prepared; C1 durable
+    // foreground delivery has enqueued its exact Run; C2 no
     // pool was started and no physical attempt entered; C3 interrupt; C4 replay.
     // Effects: E1 the same Run commits Cancelled and its waiting caller returns;
     // E2 no pool, model call or replacement Run is created; E3 replay changes no
@@ -915,6 +916,15 @@ async fn standalone_queued_interrupt_settles_without_starting_a_pool_or_calling_
         .build()
         .unwrap();
     let thread = "standalone-queued-cancel";
+    // Q0 establishes C0 through the same context constructor Run uses. Cold
+    // setup can await the Environment lifecycle lock and resource assembly;
+    // Q1's unchanged 2s observer starts after that precondition. A controlled
+    // 3s hold of the real lifecycle guard makes the former boundary fail
+    // before admission, while this boundary preserves every Q1/Q2 assertion.
+    host.run_assembly
+        .ctx_for(thread, None)
+        .await
+        .expect("Q0 standalone context prepared before queue observation");
     let driver = host.clone();
     let mut running =
         tokio::spawn(async move { driver.session_runs.run(None, thread, user("go")).await });
