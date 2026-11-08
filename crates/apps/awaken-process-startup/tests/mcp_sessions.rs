@@ -65,11 +65,11 @@ async fn build_all_in_one_router() -> awaken_process_startup::ColocatedTestProce
     .await
 }
 
-/// The tests that pin inline initial MCP realization failure at Session
-/// create and mid-connect OAuth refresh run on the local claim pool: today
-/// only that placement installs the MCP credential refresh factory
-/// (`ColocatedExecutionInputs::credential_refresh`). They move to the
-/// registered Worker once it carries that capability.
+/// The tests that pin inline (unpublished) Agent Sessions, whose initial MCP
+/// realization fails at Session create, run on the local claim pool. Their
+/// registered-Worker forms (`registered_worker_*` below) publish the Agent,
+/// because a Worker-placed Session executes a pinned Agent publication, and
+/// observe the realization failure on the Session after its first Run.
 async fn build_local_placement_router() -> Router {
     awaken_process_startup::build_all_in_one_router_with_model(
         Arc::new(McpToolModel),
@@ -1539,4 +1539,491 @@ async fn mcp_oauth_validate_attempts_the_refresh_exchange_over_the_management_ro
             .iter()
             .all(|(_, bearer)| bearer == "Bearer expired-token")
     );
+}
+
+// ---------------------------------------------------------------------------
+// The shipped topology: Sessions run on the co-located registered Worker.
+//
+// The AllInOne the `awaken` launcher ships claims every Run on its registered
+// Worker over the loopback Worker transport. The suites below drive the same
+// MCP credential scenarios through that Worker: the Vault-backed refresh
+// exchange and its reseal run on the Worker's own credential authority, and
+// a refused realization is a terminal Session failure observed through the
+// public projection instead of a create-time HTTP error.
+//
+// Worker-placed Sessions execute a pinned Agent publication, so these
+// scenarios publish the calculator Agent instead of naming an inline one.
+// ---------------------------------------------------------------------------
+
+/// The co-located Worker drains and deregisters before its private surface
+/// stops; the process lifecycle reports no failed task.
+async fn shut_down_registered_worker_process(
+    process: awaken_process_startup::ColocatedTestProcess,
+) {
+    process
+        .service_lifecycle
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .expect("the AllInOne test process drains cleanly");
+}
+
+/// Author and publish the calculator Agent `agent` bound to the MCP server
+/// `calc` at `url`, pre-authorized like [`always_allow_mcp_agent_with_server`].
+async fn publish_calc_agent(app: &Router, agent: &str, url: &str) {
+    let (s, body) = call(
+        app,
+        "PUT",
+        &format!("/v1/config/agents/{agent}"),
+        Some(json!({
+            "name": "Calculator",
+            "model": {
+                "mode": "pinned",
+                "provider_identity_ref": "default",
+                "model_ref": "management",
+                "backend_ref": "genai"
+            },
+            "system": "Use the calculator tool and report its result.",
+            "mcp_servers": [{ "name": "calc", "url": url }],
+            "tools": always_allow_mcp_tools("calc")
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let (s, body) = call(
+        app,
+        "POST",
+        &format!("/v1/config/agents/{agent}/publish"),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+}
+
+/// Create a Session of the published `agent`, selecting `vault_id` when given.
+async fn create_published_mcp_session_response(
+    app: &Router,
+    agent: &str,
+    vault_id: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut body = json!({
+        "agent": agent,
+        "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+    });
+    if let Some(vault_id) = vault_id {
+        body["vault_ids"] = json!([vault_id]);
+    }
+    call(app, "POST", "/v1/sessions", Some(body)).await
+}
+
+async fn create_published_mcp_session(app: &Router, agent: &str, vault_id: &str) -> String {
+    let (s, session) = create_published_mcp_session_response(app, agent, Some(vault_id)).await;
+    assert_eq!(s, StatusCode::OK, "{session}");
+    session["id"].as_str().unwrap().to_string()
+}
+
+/// Drive the first Run of `session` and observe its terminal realization
+/// failure. A registered Worker realizes a Session when it claims that
+/// Session's first Run, so the accepted message is the cause; the effects are
+/// one terminal `session.error` naming the MCP server, no tool result, and the
+/// Session's terminated status. Returns the error's message.
+async fn wait_for_terminal_mcp_realization_failure(app: &Router, session: &str) -> String {
+    let (s, receipt) = send_user_message(app, session, "add 2 3").await;
+    assert_eq!(s, StatusCode::OK, "{receipt}");
+    let uri = format!("/v1/sessions/{session}/events?limit=500");
+    let reader = app.clone();
+    let list = awaken_protocol_managed_testkit::wait_for_session_events(
+        DurableFact::committed_event_after(&receipt, "session.error"),
+        std::time::Duration::from_secs(20),
+        "the initial MCP realization to fail terminally",
+        move || {
+            let app = reader.clone();
+            let uri = uri.clone();
+            async move {
+                let (status, list) = call(&app, "GET", &uri, None).await;
+                (status.as_u16(), list)
+            }
+        },
+        |events| events.iter().any(|event| event["type"] == "session.error"),
+    )
+    .await;
+    let events = list["data"].as_array().expect("Managed Event projection");
+    let errors = events
+        .iter()
+        .filter(|event| event["type"] == "session.error")
+        .collect::<Vec<_>>();
+    assert_eq!(errors.len(), 1, "one terminal failure: {events:?}");
+    let error = &errors[0]["error"];
+    assert_eq!(
+        error["retry_status"]["type"], "terminal",
+        "a refused realization is never retried: {error}"
+    );
+    assert_eq!(error["mcp_server_name"], "calc", "{error}");
+    assert!(
+        events
+            .iter()
+            .all(|event| event["type"] != "agent.mcp_tool_result"),
+        "no MCP tool ran: {events:?}"
+    );
+    let (s, projected) = call(app, "GET", &format!("/v1/sessions/{session}"), None).await;
+    assert_eq!(s, StatusCode::OK, "{projected}");
+    assert_eq!(projected["status"], "terminated", "{projected}");
+    let message = error["message"].as_str().unwrap_or_default().to_string();
+    assert!(
+        message.contains("mcp server `calc`"),
+        "the failure names the server: {message}"
+    );
+    message
+}
+
+/// Registered-Worker form of
+/// [`session_inline_mcp_server_with_vault_credential_converses_across_runs`]:
+/// C1 a published Agent binds the MCP server and the Session selects the exact
+/// matching Vault; C2 two user messages run on that Session on the registered
+/// Worker. Effects: E1 the first Run receives 5, E2 the second reuses the
+/// binding and receives 42, E3 each read waits for its receipt's idle boundary,
+/// E4 the Worker drains cleanly. M1=C1+C2=>E1+E2+E3+E4.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_worker_mcp_server_with_vault_credential_converses_across_runs() {
+    let url = mock_calc_mcp().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
+    let vault_id = vault_with_calc_credential(&app, &url).await;
+    publish_calc_agent(&app, "calc-agent", &url).await;
+    let id = create_published_mcp_session(&app, "calc-agent", &vault_id).await;
+
+    let (s, receipt) = send_user_message(&app, &id, "add 2 3").await;
+    assert_eq!(s, StatusCode::OK);
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the first Worker MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
+    let tool_use = events
+        .iter()
+        .find(|e| e["type"] == "agent.mcp_tool_use")
+        .expect("an agent.mcp_tool_use event");
+    assert_eq!(tool_use["name"], "mcp__calc__add");
+    let tool_result = events
+        .iter()
+        .find(|e| e["type"] == "agent.mcp_tool_result")
+        .expect("an agent.mcp_tool_result event");
+    assert_eq!(tool_result["content"][0]["text"], "5");
+    assert!(
+        agent_messages(&events).iter().any(|m| m.contains('5')),
+        "final message reports 5: {events:?}"
+    );
+
+    let (s, receipt) = send_user_message(&app, &id, "add 40 2").await;
+    assert_eq!(s, StatusCode::OK);
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the second Worker MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "agent.mcp_tool_result" && e["content"][0]["text"] == "42"),
+        "second Run's tool result is 42: {events:?}"
+    );
+    assert!(
+        agent_messages(&events).iter().any(|m| m.contains("42")),
+        "second Run's final message reports 42"
+    );
+    shut_down_registered_worker_process(process).await;
+}
+
+/// Registered-Worker form of [`missing_vault_credential_fails_initial_mcp_realization_loudly`]:
+/// C1 the Session binds the authenticated server but selects no Vault; C2 its
+/// first Run is accepted. Effects: E1 create is accepted (realization belongs
+/// to the Worker that claims the first Run), E2 the Worker's initial
+/// realization fails terminally with one `session.error` naming the
+/// server, E3 the Session is terminated and no tool runs. F1=C1+C2=>E1+E2+E3.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_worker_missing_vault_credential_fails_initial_mcp_realization_loudly() {
+    let url = mock_calc_mcp().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
+    publish_calc_agent(&app, "calc-agent", &url).await;
+    let (s, session) = create_published_mcp_session_response(&app, "calc-agent", None).await;
+    assert_eq!(s, StatusCode::OK, "{session}");
+    let id = session["id"].as_str().unwrap().to_string();
+    wait_for_terminal_mcp_realization_failure(&app, &id).await;
+    shut_down_registered_worker_process(process).await;
+}
+
+/// Registered-Worker form of [`expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed`]
+/// with the same causes, effects and decision rule R1: the Worker's realization
+/// exchanges the expired bearer once, retries with the replacement, reseals it,
+/// and a later Session reuses it without another grant.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_worker_refreshes_an_expired_mcp_oauth_token_mid_connect_and_reseals_it() {
+    let mock = Arc::new(Mutex::new(OauthMock {
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow(secret):
+        ..OauthMock::default()
+    }));
+    let url = mock_oauth_calc_mcp(mock.clone()).await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
+    let vault_id =
+        vault_with_refreshable_credential(&app, &url, "expired-token", json!({ "type": "none" }))
+            .await;
+    publish_calc_agent(&app, "calc-agent", &url).await;
+    let id = create_published_mcp_session(&app, "calc-agent", &vault_id).await;
+
+    let (s, receipt) = send_user_message(&app, &id, "add 2 3").await;
+    assert_eq!(s, StatusCode::OK);
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the refreshed Worker MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "agent.mcp_tool_result" && e["content"][0]["text"] == "5"),
+        "the tool result is 5 despite the expired token: {events:?}"
+    );
+    {
+        let m = mock.lock().unwrap();
+        assert_eq!(m.grants.len(), 1, "one challenge, one grant");
+        let grant = &m.grants[0];
+        assert!(grant.contains("grant_type=refresh_token"), "{grant}");
+        assert!(grant.contains("refresh_token=rt-fixed"), "{grant}");
+        assert!(grant.contains("client_id=cli-1"), "{grant}");
+        assert!(grant.contains("scope=tools"), "{grant}");
+        assert_eq!(m.requests[0].0, "initialize");
+        assert_eq!(m.requests[0].1, "Bearer expired-token");
+        assert_eq!(
+            m.requests
+                .iter()
+                .filter(|(_, bearer)| bearer.as_str() == "Bearer expired-token")
+                .count(),
+            1,
+            "the expired bearer is never sent again after the refresh"
+        );
+        let tool_call = m
+            .requests
+            .iter()
+            .find(|(method, _)| method == "tools/call")
+            .expect("a tools/call reached the mock");
+        assert_eq!(tool_call.1, "Bearer new-token");
+    }
+
+    // The resealed access token serves a second Session with no new grant.
+    let id2 = create_published_mcp_session(&app, "calc-agent", &vault_id).await;
+    let (s, receipt) = send_user_message(&app, &id2, "add 40 2").await;
+    assert_eq!(s, StatusCode::OK);
+    let events = wait_for_session_events(
+        &app,
+        &id2,
+        &receipt,
+        "the resealed-token Worker MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "agent.mcp_tool_result" && e["content"][0]["text"] == "42"),
+        "the second session's tool result is 42: {events:?}"
+    );
+    {
+        let m = mock.lock().unwrap();
+        assert_eq!(
+            m.grants.len(),
+            1,
+            "the resealed token connects the second session with no new grant"
+        );
+        assert!(
+            !m.requests[m.requests.len().saturating_sub(4)..]
+                .iter()
+                .any(|(_, bearer)| bearer.as_str() == "Bearer expired-token"),
+            "the second session never presented the expired token"
+        );
+    }
+    shut_down_registered_worker_process(process).await;
+}
+
+/// Registered-Worker form of [`refused_refresh_exchange_fails_initial_realization_with_the_challenge`]:
+/// C1 the stored bearer is expired; C2 the token endpoint refuses the grant.
+/// Effects: E1 create is accepted, E2 the exchange is attempted exactly once,
+/// E3 the initial realization fails terminally carrying the original 401
+/// challenge, E4 the Session is terminated. R2=C1+C2=>E1+E2+E3+E4.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_worker_refused_refresh_exchange_fails_initial_realization_with_the_challenge() {
+    let mock = Arc::new(Mutex::new(OauthMock::default()));
+    let url = mock_oauth_calc_mcp(mock.clone()).await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
+    let vault_id =
+        vault_with_refreshable_credential(&app, &url, "expired-token", json!({ "type": "none" }))
+            .await;
+    publish_calc_agent(&app, "calc-agent", &url).await;
+    let (s, session) =
+        create_published_mcp_session_response(&app, "calc-agent", Some(&vault_id)).await;
+    assert_eq!(s, StatusCode::OK, "{session}");
+    let id = session["id"].as_str().unwrap().to_string();
+    let message = wait_for_terminal_mcp_realization_failure(&app, &id).await;
+    assert!(message.contains("auth challenge: HTTP 401"), "{message}");
+    {
+        let m = mock.lock().unwrap();
+        assert_eq!(m.grants.len(), 1, "the exchange was attempted exactly once");
+    }
+    shut_down_registered_worker_process(process).await;
+}
+
+/// Registered-Worker form of [`expired_token_run_succeeds_with_client_secret_basic_refresh`]
+/// with the same decision rule B1: the grant authenticates with exactly the
+/// RFC 6749 §2.3.1 Basic header and neither client field in the form body.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_worker_expired_token_run_succeeds_with_client_secret_basic_refresh() {
+    let mock = Arc::new(Mutex::new(OauthMock {
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow(secret):
+        client_auth: Some(MockClientAuth::Basic {
+            header: expected_basic_header(),
+        }),
+        ..OauthMock::default()
+    }));
+    let url = mock_oauth_calc_mcp(mock.clone()).await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
+    let vault_id = vault_with_refreshable_credential(
+        &app,
+        &url,
+        "expired-token",
+        json!({ "type": "client_secret_basic", "client_secret": BASIC_CLIENT_SECRET }),
+    )
+    .await;
+    publish_calc_agent(&app, "calc-agent", &url).await;
+    let id = create_published_mcp_session(&app, "calc-agent", &vault_id).await;
+
+    let (s, receipt) = send_user_message(&app, &id, "add 2 3").await;
+    assert_eq!(s, StatusCode::OK);
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the Basic-auth Worker MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "agent.mcp_tool_result" && e["content"][0]["text"] == "5"),
+        "the tool result is 5 despite the expired token: {events:?}"
+    );
+    {
+        let m = mock.lock().unwrap();
+        assert_eq!(m.grants.len(), 1, "one challenge, one grant");
+        let grant = &m.grants[0];
+        assert!(grant.contains("grant_type=refresh_token"), "{grant}");
+        assert!(grant.contains("refresh_token=rt-fixed"), "{grant}");
+        assert!(!grant.contains("client_id="), "{grant}");
+        assert!(!grant.contains("client_secret="), "{grant}");
+        assert_eq!(
+            m.grant_authorizations[0].as_deref(),
+            Some(expected_basic_header().as_str()),
+            "the exact Basic wire"
+        );
+    }
+    shut_down_registered_worker_process(process).await;
+}
+
+/// Registered-Worker form of [`expired_token_run_succeeds_with_client_secret_post_refresh`]
+/// with the same decision rule P1: both client fields ride in the form body and
+/// no Authorization header is sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_worker_expired_token_run_succeeds_with_client_secret_post_refresh() {
+    let mock = Arc::new(Mutex::new(OauthMock {
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow(secret):
+        client_auth: Some(MockClientAuth::Post {
+            client_secret: "cs-post-secret".to_string(), // awaken-allow(secret):
+        }),
+        ..OauthMock::default()
+    }));
+    let url = mock_oauth_calc_mcp(mock.clone()).await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
+    let vault_id = vault_with_refreshable_credential(
+        &app,
+        &url,
+        "expired-token",
+        json!({ "type": "client_secret_post", "client_secret": "cs-post-secret" }), // awaken-allow(secret):
+    )
+    .await;
+    publish_calc_agent(&app, "calc-agent", &url).await;
+    let id = create_published_mcp_session(&app, "calc-agent", &vault_id).await;
+
+    let (s, receipt) = send_user_message(&app, &id, "add 40 2").await;
+    assert_eq!(s, StatusCode::OK);
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the POST-auth Worker MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "agent.mcp_tool_result" && e["content"][0]["text"] == "42"),
+        "the tool result is 42 despite the expired token: {events:?}"
+    );
+    {
+        let m = mock.lock().unwrap();
+        assert_eq!(m.grants.len(), 1, "one challenge, one grant");
+        let grant = &m.grants[0];
+        assert!(grant.contains("client_id=cli-1"), "{grant}");
+        assert!(grant.contains("client_secret=cs-post-secret"), "{grant}");
+        assert_eq!(m.grant_authorizations[0], None, "no Basic header for post");
+    }
+    shut_down_registered_worker_process(process).await;
+}
+
+/// Registered-Worker form of
+/// [`wrong_client_secret_refuses_initial_realization_and_surfaces_the_challenge`]
+/// with the same decision rule F1: a wrong confidential-client secret is one
+/// refused grant, and the initial realization fails terminally carrying the
+/// server's 401 challenge.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_worker_wrong_client_secret_refuses_initial_realization_with_the_challenge() {
+    let mock = Arc::new(Mutex::new(OauthMock {
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow(secret):
+        client_auth: Some(MockClientAuth::Basic {
+            header: expected_basic_header(),
+        }),
+        ..OauthMock::default()
+    }));
+    let url = mock_oauth_calc_mcp(mock.clone()).await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
+    let vault_id = vault_with_refreshable_credential(
+        &app,
+        &url,
+        "expired-token",
+        json!({ "type": "client_secret_basic", "client_secret": "not-the-secret" }), // awaken-allow(secret):
+    )
+    .await;
+    publish_calc_agent(&app, "calc-agent", &url).await;
+    let (s, session) =
+        create_published_mcp_session_response(&app, "calc-agent", Some(&vault_id)).await;
+    assert_eq!(s, StatusCode::OK, "{session}");
+    let id = session["id"].as_str().unwrap().to_string();
+    let message = wait_for_terminal_mcp_realization_failure(&app, &id).await;
+    assert!(message.contains("auth challenge: HTTP 401"), "{message}");
+    {
+        let m = mock.lock().unwrap();
+        assert_eq!(m.grants.len(), 1, "the exchange was attempted exactly once");
+        assert!(
+            !m.valid_tokens.iter().any(|token| token == "new-token"),
+            "no replacement token was issued"
+        );
+    }
+    shut_down_registered_worker_process(process).await;
 }

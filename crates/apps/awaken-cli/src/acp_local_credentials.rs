@@ -426,6 +426,14 @@ impl PreparedLocalWorker {
             )),
             clock.clone(),
         );
+        // The same Vault authority recovers an expired MCP OAuth bearer: the
+        // exact-revision refresh exchange and its reseal stay with the stores
+        // this Worker already materializes from.
+        let refresh = Arc::new(awaken_control::VaultRefreshFactory::new(
+            self.stores.credentials.clone(),
+            self.stores.secrets.clone(),
+            clock.clone(),
+        ));
         let mut builder = configured_worker_builder(
             upstream,
             deployment,
@@ -433,6 +441,7 @@ impl PreparedLocalWorker {
             clock,
             self.inference_override.clone(),
         )?
+        .with_credential_refresh_factory(refresh)
         .with_admin_tools(self.admin_tools.clone())
         .without_admin_surface();
         if let Some(resolver) = &self.resolver {

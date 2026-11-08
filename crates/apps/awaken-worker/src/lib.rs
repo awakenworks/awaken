@@ -151,6 +151,8 @@ pub struct WorkerNodeBuilder {
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    credential_refresh_factory:
+        Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>>,
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
@@ -265,6 +267,7 @@ impl WorkerNodeBuilder {
             application: WorkerApplicationSource::default(),
             tool_gate: None,
             credential_materializer: None,
+            credential_refresh_factory: None,
             mcp_relay_outbound_proxy: None,
             brokered_acp_model_access: None,
             remote_attempt: None,
@@ -540,6 +543,20 @@ impl WorkerNodeBuilder {
         credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
     ) -> Self {
         self.credential_materializer = Some(credentials);
+        self
+    }
+
+    /// Install the challenge-recovery factory of the same credential authority
+    /// that backs [`Self::with_credential_materializer`]. A Worker whose
+    /// materializer reads the deployment's Vault recovers an expired MCP OAuth
+    /// bearer through it (exact-revision refresh exchange and reseal); a Worker
+    /// without one refuses an MCP credential that needs refresh as unavailable.
+    #[must_use]
+    pub fn with_credential_refresh_factory(
+        mut self,
+        factory: Arc<dyn awaken_credential_contract::CredentialRefreshFactory>,
+    ) -> Self {
+        self.credential_refresh_factory = Some(factory);
         self
     }
 
@@ -969,6 +986,7 @@ impl WorkerNodeBuilder {
             application: self.application,
             tool_gate: self.tool_gate,
             credential_materializer: self.credential_materializer,
+            credential_refresh_factory: self.credential_refresh_factory,
             mcp_relay_outbound_proxy: self.mcp_relay_outbound_proxy,
             brokered_acp_model_access: self.brokered_acp_model_access,
             remote_attempt: self.remote_attempt,
@@ -1067,6 +1085,8 @@ pub struct WorkerNode {
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    credential_refresh_factory:
+        Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>>,
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
@@ -1650,6 +1670,9 @@ impl WorkerNode {
             .with_repository_binding_verifier(remote_repositories);
         if let Some(realizer) = self.mcp_attachment_realizer {
             execution = execution.with_mcp_attachment_realizer(realizer);
+        }
+        if let Some(factory) = self.credential_refresh_factory {
+            execution = execution.with_credential_refresh_factory(factory);
         }
         deps = deps.with_session_execution(execution);
         let authority = Arc::new(lifecycle::WorkerAuthorityProof::default());
