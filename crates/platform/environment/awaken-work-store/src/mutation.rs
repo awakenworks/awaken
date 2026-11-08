@@ -683,12 +683,28 @@ fn work_lease_epoch_is_exact_nonnegative_and_nonwrapping() {
                 Ok(Ok(database)) => {
                     assert!(i128::from(database) == i128::from(current) + 1);
                 }
-                Ok(Err(WorkQueueError::LeaseGenerationIntegrity(_))) | Err(EpochExhausted) => {
+                // X4: only the signed column's top has no representable
+                // successor, and it is the permanent integrity refusal.
+                Ok(Err(WorkQueueError::LeaseGenerationIntegrity(violation))) => {
                     assert!(current == i64::MAX);
+                    assert!(violation == EpochIntegrityViolation::Exhausted);
+                }
+                Ok(Err(WorkQueueError::Storage(_))) => {
+                    unreachable!("encoding a granted epoch is never a storage failure")
+                }
+                // Every decodable column value is at most i64::MAX, so the
+                // u64 counter itself always has a successor.
+                Err(EpochExhausted) => {
+                    unreachable!("a decoded lease_epoch column always has a u64 successor")
                 }
             }
         }
         Err(WorkQueueError::Storage(_)) => assert!(current < 0),
+        // X2: the column default 0 decodes as never granted, so decoding
+        // the column itself never classifies an integrity failure.
+        Err(WorkQueueError::LeaseGenerationIntegrity(_)) => {
+            unreachable!("decoding the lease_epoch column never classifies integrity")
+        }
     }
 }
 
