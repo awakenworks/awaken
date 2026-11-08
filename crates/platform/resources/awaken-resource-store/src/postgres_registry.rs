@@ -23,7 +23,7 @@ fn indeterminate(error: impl ToString) -> RegistryRepositoryError {
 }
 
 fn corrupt(error: impl ToString) -> RegistryRepositoryError {
-    RegistryRepositoryError::CorruptData(error.to_string())
+    RegistryRepositoryError::CorruptData(error.to_string().into())
 }
 
 impl PostgresResourceStore {
@@ -88,9 +88,9 @@ impl PostgresResourceStore {
         aggregate: &T,
     ) -> Result<ReplaceOutcome, RegistryRepositoryError> {
         let next = expected_revision.checked_next().ok_or_else(|| {
-            RegistryRepositoryError::CorruptData(format!(
-                "resource `{id}` exhausted aggregate revisions"
-            ))
+            RegistryRepositoryError::CorruptData(
+                format!("resource `{id}` exhausted aggregate revisions").into(),
+            )
         })?;
         let sql = "UPDATE resource_catalog_entry SET revision = $4, data = $5 \
              WHERE kind = $1 AND id = $2 AND revision = $3";
@@ -158,7 +158,10 @@ impl ResourceRegistryRepository for PostgresResourceStore {
                     stored.aggregate.definition().id
                 )));
             }
-            stored.aggregate.validate_integrity().map_err(corrupt)?;
+            stored
+                .aggregate
+                .validate_integrity()
+                .map_err(RegistryRepositoryError::from_integrity)?;
         }
         Ok(stored)
     }
@@ -196,7 +199,9 @@ impl ResourceRegistryRepository for PostgresResourceStore {
                         "row id `{id}` does not match aggregate identity"
                     )));
                 }
-                aggregate.validate_integrity().map_err(corrupt)
+                aggregate
+                    .validate_integrity()
+                    .map_err(RegistryRepositoryError::from_integrity)
             })
             .await?
             .into_iter()
@@ -215,7 +220,9 @@ impl ResourceRegistryRepository for PostgresResourceStore {
                         "row id `{id}` does not match aggregate identity"
                     )));
                 }
-                aggregate.validate_integrity().map_err(corrupt)
+                aggregate
+                    .validate_integrity()
+                    .map_err(RegistryRepositoryError::from_integrity)
             })
             .await?
             .into_iter()
@@ -237,7 +244,10 @@ impl ResourceRegistryRepository for PostgresResourceStore {
                     stored.aggregate.definition().id
                 )));
             }
-            stored.aggregate.validate_integrity().map_err(corrupt)?;
+            stored
+                .aggregate
+                .validate_integrity()
+                .map_err(RegistryRepositoryError::from_integrity)?;
         }
         Ok(stored)
     }

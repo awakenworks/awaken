@@ -227,7 +227,7 @@ impl<C: Sync> RepositoryBindingVerifier<C> for RegistryRepositoryBindingVerifier
                     detail: format!("resource `{id}` config version {version:?} was not found"),
                 },
                 awaken_resource_contract::ResourceRegistryError::CorruptData(detail) => {
-                    RepositoryBindingVerifierError::CorruptAuthority { detail }
+                    RepositoryBindingVerifierError::CorruptAuthority { detail: detail.to_string() }
                 }
                 awaken_resource_contract::ResourceRegistryError::AuthorityUnavailable {
                     detail,

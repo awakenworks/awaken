@@ -15,8 +15,9 @@ use awaken_resource_contract::{
     MemoryStoreDefinition, PublishMemoryStoreConfig, PublishRepositoryConfig, RegisterMemoryStore,
     RegisterRepository, RegistryRepositoryError, ReplaceOutcome, RepositoryAggregate,
     RepositoryConfigVersion, RepositoryDefinition, RepositoryRegistration,
-    RepositoryRegistrationMode, ResourceAdministration, ResourceInventory, ResourceRegistryError,
-    ResourceRegistryRepository, ResourceState, Stored, UpdateMemoryStoreProfile,
+    RepositoryRegistrationMode, ResourceAdministration, ResourceInventory, ResourceKind,
+    ResourceRegistryError, ResourceRegistryRepository, ResourceState, Stored,
+    UpdateMemoryStoreProfile,
 };
 
 pub struct RegistryApplication {
@@ -127,6 +128,27 @@ impl RegistryApplication {
             preparation,
         })
     }
+}
+
+// This live-binding role has an already-frozen configuration coordinate. A
+// complete, matching Active definition whose exact immutable history cannot
+// currently be read is a dependency observation failure. Inventory/creation
+// never take this projection; every other integrity refusal remains unchanged.
+fn frozen_binding_read_error(
+    error: ResourceRegistryError,
+    kind: ResourceKind,
+    workspace_id: &str,
+    id: &str,
+    version: ConfigVersion,
+) -> ResourceRegistryError {
+    if let ResourceRegistryError::CorruptData(data) = &error
+        && data.is_missing_current_config_for(kind, workspace_id, id, version)
+    {
+        return ResourceRegistryError::AuthorityUnavailable {
+            detail: error.to_string(),
+        };
+    }
+    error
 }
 
 fn registry_error(error: RegistryRepositoryError) -> ResourceRegistryError {
@@ -467,7 +489,16 @@ impl LiveResourceBindingVerifier for RegistryApplication {
         version: ConfigVersion,
     ) -> Result<(), ResourceRegistryError> {
         self.memory(id)
-            .await?
+            .await
+            .map_err(|error| {
+                frozen_binding_read_error(
+                    error,
+                    ResourceKind::MemoryStore,
+                    workspace_id,
+                    id,
+                    version,
+                )
+            })?
             .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?
             .aggregate
             .verify_live_binding(workspace_id, version)
@@ -480,7 +511,16 @@ impl LiveResourceBindingVerifier for RegistryApplication {
         version: ConfigVersion,
     ) -> Result<(), ResourceRegistryError> {
         self.repository(id)
-            .await?
+            .await
+            .map_err(|error| {
+                frozen_binding_read_error(
+                    error,
+                    ResourceKind::Repository,
+                    workspace_id,
+                    id,
+                    version,
+                )
+            })?
             .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?
             .aggregate
             .verify_live_binding(workspace_id, version)
@@ -496,6 +536,142 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn frozen_binding_observation_retries_only_its_exact_missing_active_history() {
+        // Causes: C1 typed MissingCurrentConfig; C2 kind/workspace/id/version
+        // equal the accepted binding; C3 Active. R1 C1+C2+C3 -> existing
+        // AuthorityUnavailable (still Err, no resource authorization). R2
+        // negate one C2/C3 fact -> original CorruptData. R3 unclassified
+        // corruption, including equal display text, and bad user input remain
+        // unchanged. Public inventory never invokes this live-role projection.
+        use awaken_resource_contract::{RegistryDataCorruption, ResourceTarget};
+        for kind in [ResourceKind::MemoryStore, ResourceKind::Repository] {
+            let missing =
+                ResourceRegistryError::CorruptData(RegistryDataCorruption::MissingCurrentConfig {
+                    target: ResourceTarget::new("workspace", kind, "resource"),
+                    version: ConfigVersion::INITIAL,
+                    state: ResourceState::Active,
+                });
+            let rows = [
+                (
+                    "R1",
+                    kind,
+                    "workspace",
+                    "resource",
+                    ConfigVersion::INITIAL,
+                    true,
+                ),
+                (
+                    "R2 kind",
+                    ResourceKind::File,
+                    "workspace",
+                    "resource",
+                    ConfigVersion::INITIAL,
+                    false,
+                ),
+                (
+                    "R2 workspace",
+                    kind,
+                    "foreign",
+                    "resource",
+                    ConfigVersion::INITIAL,
+                    false,
+                ),
+                (
+                    "R2 id",
+                    kind,
+                    "workspace",
+                    "foreign",
+                    ConfigVersion::INITIAL,
+                    false,
+                ),
+                (
+                    "R2 version",
+                    kind,
+                    "workspace",
+                    "resource",
+                    ConfigVersion(2),
+                    false,
+                ),
+            ];
+            for (rule, requested_kind, workspace, id, version, retry) in rows {
+                let result = frozen_binding_read_error(
+                    missing.clone(),
+                    requested_kind,
+                    workspace,
+                    id,
+                    version,
+                );
+                assert_eq!(
+                    matches!(result, ResourceRegistryError::AuthorityUnavailable { .. }),
+                    retry,
+                    "{rule}"
+                );
+                if !retry {
+                    assert_eq!(result, missing, "{rule} original failure");
+                }
+            }
+            for state in [
+                ResourceState::Suspended,
+                ResourceState::Archived,
+                ResourceState::Deleted,
+            ] {
+                let stopped = ResourceRegistryError::CorruptData(
+                    RegistryDataCorruption::MissingCurrentConfig {
+                        target: ResourceTarget::new("workspace", kind, "resource"),
+                        version: ConfigVersion::INITIAL,
+                        state,
+                    },
+                );
+                assert_eq!(
+                    frozen_binding_read_error(
+                        stopped.clone(),
+                        kind,
+                        "workspace",
+                        "resource",
+                        ConfigVersion::INITIAL
+                    ),
+                    stopped,
+                    "R2 state"
+                );
+            }
+            let ResourceRegistryError::CorruptData(facts) = &missing else {
+                unreachable!()
+            };
+            let untrusted = ResourceRegistryError::CorruptData(facts.to_string().into());
+            assert_eq!(
+                untrusted.to_string(),
+                missing.to_string(),
+                "R3 equal diagnostics"
+            );
+            for error in [
+                untrusted,
+                ResourceRegistryError::ConfigNotFound {
+                    id: "resource".into(),
+                    version: ConfigVersion::INITIAL,
+                },
+                ResourceRegistryError::IdentityRejected {
+                    detail: "bad".into(),
+                },
+                ResourceRegistryError::EncodingFailure {
+                    detail: "bad".into(),
+                },
+            ] {
+                assert_eq!(
+                    frozen_binding_read_error(
+                        error.clone(),
+                        kind,
+                        "workspace",
+                        "resource",
+                        ConfigVersion::INITIAL
+                    ),
+                    error,
+                    "R3"
+                );
+            }
+        }
+    }
 
     #[test]
     fn repository_outcomes_keep_their_cause_at_the_application_boundary() {

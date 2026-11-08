@@ -154,9 +154,9 @@ impl AggregateRevision {
 
     pub fn new(value: u64) -> Result<Self, RegistryRepositoryError> {
         if value == 0 || value > Self::MAX {
-            Err(RegistryRepositoryError::CorruptData(format!(
-                "aggregate revision {value} is outside the portable database range"
-            )))
+            Err(RegistryRepositoryError::CorruptData(
+                format!("aggregate revision {value} is outside the portable database range").into(),
+            ))
         } else {
             Ok(Self(value))
         }
@@ -222,6 +222,63 @@ pub enum ReplaceOutcome {
     ConcurrentModification,
 }
 
+/// Catalog integrity observations retained through storage adapters.
+/// An unclassified diagnostic never establishes a recoverable binding fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryDataCorruption {
+    /// Decode, identity or structural integrity failed without trusted facts.
+    Untrusted(String),
+    /// All preceding integrity checks passed, but the definition's current
+    /// immutable history is absent. This remains corruption for inventory.
+    MissingCurrentConfig {
+        target: crate::ResourceTarget,
+        version: ConfigVersion,
+        state: ResourceState,
+    },
+}
+
+impl std::fmt::Display for RegistryDataCorruption {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Untrusted(detail) => formatter.write_str(detail),
+            Self::MissingCurrentConfig { target, .. } => write!(
+                formatter,
+                "{:?} `{}` current config version is missing",
+                target.kind, target.resource_id
+            ),
+        }
+    }
+}
+
+impl From<String> for RegistryDataCorruption {
+    fn from(detail: String) -> Self {
+        Self::Untrusted(detail)
+    }
+}
+
+impl From<&str> for RegistryDataCorruption {
+    fn from(detail: &str) -> Self {
+        Self::Untrusted(detail.to_owned())
+    }
+}
+
+impl RegistryDataCorruption {
+    /// Facts for the exact Active configuration a frozen binding retained.
+    #[must_use]
+    pub fn is_missing_current_config_for(
+        &self,
+        kind: crate::ResourceKind,
+        workspace_id: &str,
+        id: &str,
+        version: ConfigVersion,
+    ) -> bool {
+        matches!(self, Self::MissingCurrentConfig { target, version: missing, state }
+            if target.kind == kind && target.workspace_id == workspace_id
+                && target.resource_id == id && *missing == version
+                && *state == ResourceState::Active)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourceRegistryError {
     #[error("resource `{0}` is already registered")]
@@ -251,7 +308,7 @@ pub enum ResourceRegistryError {
     #[error("resource registry request encoding failed: {detail}")]
     EncodingFailure { detail: String },
     #[error("resource registry data is corrupt: {0}")]
-    CorruptData(String),
+    CorruptData(RegistryDataCorruption),
     #[error("resource registry authority unavailable: {detail}")]
     AuthorityUnavailable { detail: String },
     #[error("resource registry outcome is indeterminate: {detail}")]
@@ -267,11 +324,23 @@ pub enum RegistryRepositoryError {
     #[error("resource `{0}` was concurrently modified")]
     ConcurrentModification(String),
     #[error("stored resource registry data is corrupt: {0}")]
-    CorruptData(String),
+    CorruptData(RegistryDataCorruption),
     /// The repository supplied no definitive receipt. Mutation callers must
     /// reuse their existing identity/CAS, not infer that no write occurred.
     #[error("resource registry repository outcome is indeterminate: {detail}")]
     Indeterminate { detail: String },
+}
+
+impl RegistryRepositoryError {
+    /// Preserve catalog validation facts; decode/encoding diagnostics stay
+    /// untrusted and never become an observation of an exact missing history.
+    #[must_use]
+    pub fn from_integrity(error: ResourceRegistryError) -> Self {
+        match error {
+            ResourceRegistryError::CorruptData(data) => Self::CorruptData(data),
+            other => Self::CorruptData(other.to_string().into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,9 +373,9 @@ fn validate_definition(
     current: ConfigVersion,
 ) -> Result<(), ResourceRegistryError> {
     if id.trim().is_empty() || workspace_id.trim().is_empty() || current.0 == 0 {
-        return Err(ResourceRegistryError::CorruptData(format!(
-            "resource registry aggregate `{id}` has an invalid definition"
-        )));
+        return Err(ResourceRegistryError::CorruptData(
+            format!("resource registry aggregate `{id}` has an invalid definition").into(),
+        ));
     }
     Ok(())
 }
@@ -529,10 +598,13 @@ impl MemoryStoreAggregate {
         self.config(self.definition.current_config_version)
             .cloned()
             .ok_or_else(|| {
-                ResourceRegistryError::CorruptData(format!(
-                    "MemoryStore `{}` current config version is missing",
-                    self.definition.id
-                ))
+                ResourceRegistryError::CorruptData(
+                    format!(
+                        "MemoryStore `{}` current config version is missing",
+                        self.definition.id
+                    )
+                    .into(),
+                )
             })
     }
 
@@ -831,10 +903,13 @@ impl RepositoryAggregate {
         self.config(self.definition.current_config_version)
             .cloned()
             .ok_or_else(|| {
-                ResourceRegistryError::CorruptData(format!(
-                    "Repository `{}` current config version is missing",
-                    self.definition.id
-                ))
+                ResourceRegistryError::CorruptData(
+                    format!(
+                        "Repository `{}` current config version is missing",
+                        self.definition.id
+                    )
+                    .into(),
+                )
             })
     }
 
@@ -918,17 +993,27 @@ fn validate_memory_store_integrity(
     )?;
     for (version, config) in configs {
         if config.memory_store_id != definition.id || config.version != *version {
-            return Err(ResourceRegistryError::CorruptData(format!(
-                "MemoryStore `{}` config version {} is corrupt",
-                definition.id, version.0
-            )));
+            return Err(ResourceRegistryError::CorruptData(
+                format!(
+                    "MemoryStore `{}` config version {} is corrupt",
+                    definition.id, version.0
+                )
+                .into(),
+            ));
         }
     }
     if configs.is_empty() || !configs.contains_key(&definition.current_config_version) {
-        return Err(ResourceRegistryError::CorruptData(format!(
-            "MemoryStore `{}` current config version is missing",
-            definition.id
-        )));
+        return Err(ResourceRegistryError::CorruptData(
+            RegistryDataCorruption::MissingCurrentConfig {
+                target: crate::ResourceTarget::new(
+                    &definition.workspace_id,
+                    crate::ResourceKind::MemoryStore,
+                    definition.id.as_str(),
+                ),
+                version: definition.current_config_version,
+                state: definition.state,
+            },
+        ));
     }
     Ok(())
 }
@@ -946,10 +1031,17 @@ fn validate_repository_integrity(
         validate_repository_config(definition.id.as_str(), *version, config)?;
     }
     if configs.is_empty() || !configs.contains_key(&definition.current_config_version) {
-        return Err(ResourceRegistryError::CorruptData(format!(
-            "Repository `{}` current config version is missing",
-            definition.id
-        )));
+        return Err(ResourceRegistryError::CorruptData(
+            RegistryDataCorruption::MissingCurrentConfig {
+                target: crate::ResourceTarget::new(
+                    &definition.workspace_id,
+                    crate::ResourceKind::Repository,
+                    definition.id.as_str(),
+                ),
+                version: definition.current_config_version,
+                state: definition.state,
+            },
+        ));
     }
     Ok(())
 }
@@ -960,10 +1052,9 @@ fn validate_repository_config(
     config: &RepositoryConfigVersion,
 ) -> Result<(), ResourceRegistryError> {
     if config.repository_id.as_str() != id || config.version != version {
-        Err(ResourceRegistryError::CorruptData(format!(
-            "Repository `{id}` config version {} is corrupt",
-            version.0
-        )))
+        Err(ResourceRegistryError::CorruptData(
+            format!("Repository `{id}` config version {} is corrupt", version.0).into(),
+        ))
     } else if config.initial_branch.is_some() && config.initial_commit.is_some() {
         Err(ResourceRegistryError::ConfigurationRejected {
             detail: "Repository checkout cannot select both branch and commit".into(),
@@ -1204,6 +1295,88 @@ pub trait ResourceRegistryRepository: Send + Sync {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+
+    #[test]
+    fn missing_current_history_keeps_typed_facts_after_other_integrity_checks() {
+        // Cause/effect table: C1 valid definition; C2 every present history
+        // entry has its exact resource/version; C3 current history is absent.
+        // I1 C1+C2+C3 -> typed missing observation, including exact target,
+        // state and version. I2 !C1+C3 or !C2+C3 -> Untrusted first. A matching
+        // diagnostic String cannot create I1, and storage conversion must
+        // preserve I1 rather than parsing/rebuilding its display text.
+        let definition = MemoryStoreDefinition {
+            id: "memory".into(),
+            workspace_id: "workspace".into(),
+            name: "Memory".into(),
+            description: String::new(),
+            metadata: Default::default(),
+            state: ResourceState::Active,
+            current_config_version: ConfigVersion::INITIAL,
+            timestamps: Default::default(),
+        };
+        let missing = validate_memory_store_integrity(&definition, &BTreeMap::new()).unwrap_err();
+        let ResourceRegistryError::CorruptData(facts) = &missing else {
+            panic!("I1 corruption")
+        };
+        assert!(facts.is_missing_current_config_for(
+            crate::ResourceKind::MemoryStore,
+            "workspace",
+            "memory",
+            ConfigVersion::INITIAL
+        ));
+        let RegistryRepositoryError::CorruptData(retained) =
+            RegistryRepositoryError::from_integrity(missing.clone())
+        else {
+            panic!("I1 storage")
+        };
+        assert_eq!(retained, *facts, "I1 facts survive storage");
+        let text = RegistryDataCorruption::from(facts.to_string());
+        assert!(
+            !text.is_missing_current_config_for(
+                crate::ResourceKind::MemoryStore,
+                "workspace",
+                "memory",
+                ConfigVersion::INITIAL
+            ),
+            "I2 equal text is not trusted facts"
+        );
+        let mut invalid = definition.clone();
+        invalid.id = "".into();
+        assert!(matches!(
+            validate_memory_store_integrity(&invalid, &BTreeMap::new()),
+            Err(ResourceRegistryError::CorruptData(
+                RegistryDataCorruption::Untrusted(_)
+            ))
+        ));
+        let invalid_history = BTreeMap::from([(
+            ConfigVersion(2),
+            MemoryStoreConfigVersion {
+                memory_store_id: "foreign".into(),
+                version: ConfigVersion(2),
+                retention_policy: Default::default(),
+            },
+        )]);
+        assert!(matches!(
+            validate_memory_store_integrity(&definition, &invalid_history),
+            Err(ResourceRegistryError::CorruptData(
+                RegistryDataCorruption::Untrusted(_)
+            ))
+        ));
+        let invalid_version = BTreeMap::from([(
+            ConfigVersion(2),
+            MemoryStoreConfigVersion {
+                memory_store_id: "memory".into(),
+                version: ConfigVersion(3),
+                retention_policy: Default::default(),
+            },
+        )]);
+        assert!(matches!(
+            validate_memory_store_integrity(&definition, &invalid_version),
+            Err(ResourceRegistryError::CorruptData(
+                RegistryDataCorruption::Untrusted(_)
+            ))
+        ));
+    }
 
     #[test]
     fn repository_creation_receipts_preserve_legacy_compatibility_and_validate_integrity() {

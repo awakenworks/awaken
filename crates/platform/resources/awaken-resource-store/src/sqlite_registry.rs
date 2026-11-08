@@ -22,7 +22,7 @@ fn indeterminate(error: impl ToString) -> RegistryRepositoryError {
 }
 
 fn corrupt(error: impl ToString) -> RegistryRepositoryError {
-    RegistryRepositoryError::CorruptData(error.to_string())
+    RegistryRepositoryError::CorruptData(error.to_string().into())
 }
 
 /// Any SQLite constraint failure (the primary result code of every extended
@@ -95,9 +95,9 @@ impl SqliteResourceStore {
         aggregate: &T,
     ) -> Result<ReplaceOutcome, RegistryRepositoryError> {
         let next = expected_revision.checked_next().ok_or_else(|| {
-            RegistryRepositoryError::CorruptData(format!(
-                "resource `{id}` exhausted aggregate revisions"
-            ))
+            RegistryRepositoryError::CorruptData(
+                format!("resource `{id}` exhausted aggregate revisions").into(),
+            )
         })?;
         let data = serde_json::to_string(aggregate).map_err(corrupt)?;
         let changed = sqlx::query(
@@ -165,7 +165,10 @@ impl ResourceRegistryRepository for SqliteResourceStore {
                     stored.aggregate.definition().id
                 )));
             }
-            stored.aggregate.validate_integrity().map_err(corrupt)?;
+            stored
+                .aggregate
+                .validate_integrity()
+                .map_err(RegistryRepositoryError::from_integrity)?;
         }
         Ok(stored)
     }
@@ -203,7 +206,9 @@ impl ResourceRegistryRepository for SqliteResourceStore {
                         "row id `{id}` does not match aggregate identity"
                     )));
                 }
-                aggregate.validate_integrity().map_err(corrupt)
+                aggregate
+                    .validate_integrity()
+                    .map_err(RegistryRepositoryError::from_integrity)
             })
             .await?
             .into_iter()
@@ -222,7 +227,9 @@ impl ResourceRegistryRepository for SqliteResourceStore {
                         "row id `{id}` does not match aggregate identity"
                     )));
                 }
-                aggregate.validate_integrity().map_err(corrupt)
+                aggregate
+                    .validate_integrity()
+                    .map_err(RegistryRepositoryError::from_integrity)
             })
             .await?
             .into_iter()
@@ -244,7 +251,10 @@ impl ResourceRegistryRepository for SqliteResourceStore {
                     stored.aggregate.definition().id
                 )));
             }
-            stored.aggregate.validate_integrity().map_err(corrupt)?;
+            stored
+                .aggregate
+                .validate_integrity()
+                .map_err(RegistryRepositoryError::from_integrity)?;
         }
         Ok(stored)
     }
@@ -304,6 +314,59 @@ mod tests {
             },
         )
         .expect("valid CAS fixture")
+    }
+
+    #[tokio::test]
+    async fn catalog_validation_facts_survive_sqlite_reads_without_trusting_other_corruption() {
+        // S1 valid definition/history except missing current config -> the
+        // typed observation survives decode, row-identity and integrity checks.
+        // S2 forged row identity or history plus the same absence -> Untrusted
+        // first. Both load/list remain Err; no partial aggregate is returned.
+        let store = SqliteResourceStore::in_memory().await.unwrap();
+        let original = memory();
+        store.insert_memory_store(&original).await.unwrap();
+        let mut missing = serde_json::to_value(&original).unwrap();
+        missing["configs"] = serde_json::json!({});
+        let mut wrong_id = missing.clone();
+        wrong_id["definition"]["id"] = serde_json::json!("foreign");
+        let mut wrong_history = missing.clone();
+        wrong_history["configs"] = serde_json::json!({"2": {
+            "memory_store_id":"foreign", "version":2, "retention_policy":{}
+        }});
+        for (rule, wire, observed_missing) in [
+            ("S1", missing, true),
+            ("S2 row id", wrong_id, false),
+            ("S2 history", wrong_history, false),
+        ] {
+            sqlx::query(&format!(
+                "UPDATE {REGISTRY_NS}_entry SET data = ?1 WHERE kind = ?2 AND id = ?3"
+            ))
+            .bind(wire.to_string())
+            .bind(MEMORY)
+            .bind("memory-cas")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+            let RegistryRepositoryError::CorruptData(facts) =
+                store.load_memory_store("memory-cas").await.unwrap_err()
+            else {
+                panic!("{rule} corruption");
+            };
+            assert_eq!(
+                facts.is_missing_current_config_for(
+                    awaken_resource_contract::ResourceKind::MemoryStore,
+                    "workspace",
+                    "memory-cas",
+                    ConfigVersion::INITIAL
+                ),
+                observed_missing,
+                "{rule}"
+            );
+            assert!(
+                store.list_memory_stores("workspace").await.is_err(),
+                "{rule} closed inventory"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

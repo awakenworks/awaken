@@ -8,7 +8,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  cleanupFixtureTree,
   managedWorkspaceClient,
+  listManagedSessionEvents,
+  assertPendingReceiptHasNoRuntimeEffects,
   spawnProduction,
   stopServer as stop,
   hardKillServer,
@@ -17,11 +20,10 @@ import {
   waitForValue,
 } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { persistPreparedGeneration, sessionResourceEnvelope } from './fixtures/session_resource_activation.mjs';
 import {
-  parseDurableJson,
   sqliteExec,
   sqliteRows,
-  stringifyDurableJson,
 } from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38439);
@@ -141,61 +143,12 @@ function writeCatalogRaw(database, kind, id, data) {
   );
 }
 
-function sessionEnvelope(database, sessionId) {
-  const rows = sqliteRows(
-    database,
-    `SELECT aggregate_json FROM managed_session WHERE session_id=${sqlQuote(sessionId)}`,
-  );
-  assert.equal(rows.length, 1, `missing Session ${sessionId}`);
-  assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
-  const envelope = parseDurableJson(rows[0].aggregate_json);
-  assert.equal(envelope.format, 'awaken.session.v2');
-  return envelope;
-}
-
 function sessionAggregate(database, sessionId) {
-  return sessionEnvelope(database, sessionId).aggregate;
+  return sessionResourceEnvelope(database, sessionId).aggregate;
 }
 
 function sessionResources(database, sessionId) {
   return sessionAggregate(database, sessionId).resources;
-}
-
-function persistPreparedGeneration(database, sessionId) {
-  const envelope = sessionEnvelope(database, sessionId);
-  const aggregate = envelope.aggregate;
-  const state = aggregate.resources;
-  const revision = state.revision + 1;
-  const previous = state.activations.map((activation) => ({
-    ...activation,
-    state: activation.state === 'active' ? 'releasing' : activation.state,
-  }));
-  const prepared = state.activations
-    .filter((activation) => activation.state === 'active')
-    .map((activation) => ({
-      ...activation,
-      activation_id: `${sessionId}:${revision}:${activation.binding_id}`,
-      revision,
-      state: 'prepared',
-      attempts: 0,
-    }));
-  assert.ok(prepared.length > 0);
-  const next = {
-    revision,
-    active: state.active,
-    pending: state.active,
-    activations: [...previous, ...prepared],
-  };
-  sqliteExec(
-    database,
-    `UPDATE managed_session SET aggregate_json=${sqlQuote(stringifyDurableJson({
-      ...envelope,
-      aggregate: {
-        ...aggregate,
-        resources: next,
-      },
-    }))} WHERE session_id=${sqlQuote(sessionId)}`,
-  );
 }
 
 async function main() {
@@ -275,6 +228,7 @@ async function main() {
     // durable command perform the first real attempt and commit the generation;
     // no second User command is allowed. Listener readiness alone performs no
     // hidden Worker-owned effect.
+    const historyBeforeDenial = await listManagedSessionEvents(client, session.id, [MANAGED_BETA]);
     const deniedReceipt = await driveSession(
       client,
       session.id,
@@ -337,7 +291,17 @@ async function main() {
     assert.equal(deniedMemory.activations.at(-1).state, 'prepared');
     assert.equal(deniedMemory.activations.at(-1).attempts, 0);
     assert.equal(deniedMemory.activations.at(-1).last_error, undefined);
-    assert.equal(deniedReceipt.processed_at, null);
+    // Read the original receipt back from durable SDK history: the send
+    // response is an immutable admission snapshot and cannot prove it stayed
+    // pending after a realization refusal. A terminal root used to consume it
+    // here, leaving no command for repair to resume.
+    assertPendingReceiptHasNoRuntimeEffects({
+      history: await listManagedSessionEvents(client, session.id, [MANAGED_BETA]),
+      priorHistory: historyBeforeDenial,
+      receiptId: deniedReceipt.id,
+      forbiddenEventTypes: new Set(['agent.message', 'session.status_terminated']),
+      description: 'corrupt catalog retains its original command',
+    });
 
     // Repair only the missing immutable histories. The already-persisted Session
     // generation remains unchanged and must be the generation that later commits.
@@ -431,7 +395,7 @@ async function main() {
   } finally {
     await stop(server).catch(() => {});
     await upstream.close();
-    fs.rmSync(directory, { recursive: true, force: true });
+    cleanupFixtureTree(directory);
   }
 }
 

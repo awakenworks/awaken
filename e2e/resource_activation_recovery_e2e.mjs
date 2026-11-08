@@ -18,8 +18,8 @@ import {
 } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { stableFingerprintFixture } from './fixtures/stable_fingerprint_fixture.mjs';
+import { persistPreparedGeneration, sessionResourceEnvelope } from './fixtures/session_resource_activation.mjs';
 import {
-  parseDurableJson,
   sqliteExec,
   sqliteRows,
   sqliteRun,
@@ -125,23 +125,9 @@ function terminalCleanupEffectId(sessionId) {
 }
 
 function sessionRow(database, sessionId) {
-  const rows = sqliteRows(
-    database,
-    `SELECT aggregate_json FROM managed_session WHERE session_id=${sqlQuote(sessionId)}`,
-  );
-  assert.equal(rows.length, 1, `missing durable Session ${sessionId}`);
-  assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
-  const envelope = parseDurableJson(rows[0].aggregate_json);
-  // Fresh roots use the Session Store's current v2 writer. Historical v1
-  // normalization has its own exact upgrade test and is not this fault seam.
-  assert.equal(envelope.format, 'awaken.session.v2');
+  const envelope = sessionResourceEnvelope(database, sessionId);
   const aggregate = envelope.aggregate;
-  return {
-    envelope,
-    aggregate,
-    status: aggregate.status,
-    resources: aggregate.resources,
-  };
+  return { envelope, aggregate, status: aggregate.status, resources: aggregate.resources };
 }
 
 function requiredRealizationLease(database, sessionId) {
@@ -155,55 +141,6 @@ function terminalCleanupReceiptRecorded(aggregate, sessionId) {
   const cleanup = aggregate.terminal_cleanup;
   return cleanup?.state === 'completed'
     || cleanup?.completions?.[sessionId]?.thread_id === sessionId;
-}
-
-function updateSessionRow(database, sessionId, status, resources) {
-  const row = sessionRow(database, sessionId);
-  // Fault-injection constraint: mutate only current aggregate-owned fields.
-  // Archive visibility belongs to `disposition`; fabricating the retired
-  // `archived_at` compatibility field would turn a recovery case into corrupt
-  // storage before the behavior under test can run.
-  const aggregate = {
-    ...row.aggregate,
-    status,
-    resources,
-  };
-  sqliteExec(
-    database,
-    `UPDATE managed_session SET aggregate_json=${sqlQuote(stringifyDurableJson({
-      ...row.envelope,
-      aggregate,
-    }))}
-       WHERE session_id=${sqlQuote(sessionId)}`,
-  );
-}
-
-function persistPreparedGeneration(database, sessionId) {
-  const row = sessionRow(database, sessionId);
-  assert.equal(row.status, 'idle');
-  assert.equal(row.resources.pending, undefined);
-  const revision = row.resources.revision + 1;
-  const previous = row.resources.activations.map((activation) => ({
-    ...activation,
-    state: activation.state === 'active' ? 'releasing' : activation.state,
-  }));
-  const prepared = row.resources.activations
-    .filter((activation) => activation.state === 'active')
-    .map((activation) => ({
-      ...activation,
-      activation_id: `${sessionId}:${revision}:${activation.binding_id}`,
-      revision,
-      state: 'prepared',
-      attempts: 0,
-      last_error: 'process died before realization',
-    }));
-  assert.ok(prepared.length > 0);
-  updateSessionRow(database, sessionId, 'idle', {
-    revision,
-    active: row.resources.active,
-    pending: row.resources.active,
-    activations: [...previous, ...prepared],
-  });
 }
 
 function persistTerminalRelease(database, sessionId) {
@@ -333,7 +270,7 @@ async function main() {
     assert.equal(crashedProcess.signalCode, null, 'original process has no prior exit');
     await hardKillServer(crashedProcess);
     assert.equal(crashedProcess.signalCode, 'SIGKILL', 'observe the exact original child exit');
-    persistPreparedGeneration(sessionsDatabase, recovering.id);
+    persistPreparedGeneration(sessionsDatabase, recovering.id, { lastError: 'process died before realization' });
     persistTerminalRelease(sessionsDatabase, terminating.id);
 
     server = start(directory);

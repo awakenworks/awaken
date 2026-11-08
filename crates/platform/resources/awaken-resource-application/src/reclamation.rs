@@ -167,7 +167,9 @@ fn registry_guard_error(error: ResourceRegistryError) -> ResourcePurgeError {
     // This read is an admission witness, not a cleanup result. A failed
     // dependency observation cannot authorize physical reclamation.
     match error {
-        ResourceRegistryError::CorruptData(detail) => ResourcePurgeError::CorruptData { detail },
+        ResourceRegistryError::CorruptData(detail) => ResourcePurgeError::CorruptData {
+            detail: detail.to_string(),
+        },
         other => ResourcePurgeError::IncompleteReferenceObservation {
             detail: other.to_string(),
         },
