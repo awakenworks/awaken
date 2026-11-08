@@ -505,15 +505,23 @@ impl StagingGuard {
         }
     }
 
-    fn remove(mut self) {
-        self.remove_on_drop = true;
+    /// Remove the staging tree now and report the outcome, which `Drop`
+    /// cannot. On failure the guard keeps its path, so a retried release
+    /// attempts the same tree again.
+    fn remove(&mut self) -> std::io::Result<()> {
+        restore_target::remove_staging_tree(&self.path)?;
+        self.remove_on_drop = false;
+        Ok(())
     }
 }
 
 impl Drop for StagingGuard {
     fn drop(&mut self) {
         if self.remove_on_drop {
-            let _ = std::fs::remove_dir_all(&self.path);
+            // Compensation for staging that never reached a container. A drop
+            // has no caller to report to; explicit release goes through
+            // `remove`, which does report.
+            let _ = restore_target::remove_staging_tree(&self.path);
         }
     }
 }
@@ -693,6 +701,11 @@ fn make_memory_tree_accessible(
             .path();
         let metadata = std::fs::symlink_metadata(&path)
             .map_err(|e| pc::SandboxError::backend("make_memory_tree_accessible", e))?;
+        if metadata.file_type().is_symlink() {
+            // `set_permissions` follows a link, so projecting one would change
+            // its target, which may lie outside the copy.
+            continue;
+        }
         if metadata.is_dir() {
             make_memory_tree_accessible(&path, access)?;
         }
@@ -1573,9 +1586,12 @@ impl ContainerCleanupState {
             .lock()
             .map_err(|poisoned| pc::SandboxError::backend("release staging", poisoned))?;
         admit(&mut || {
-            if let Some(staging) = staging.take() {
-                staging.remove();
+            if let Some(guard) = staging.as_mut() {
+                guard
+                    .remove()
+                    .map_err(|error| pc::SandboxError::backend("release staging", error))?;
             }
+            *staging = None;
             Ok(())
         })
     }
