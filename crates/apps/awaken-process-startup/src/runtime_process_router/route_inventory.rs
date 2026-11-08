@@ -65,16 +65,9 @@ async fn assemble(shape: Shape, iam_root: &std::path::Path) -> ProcessRouters {
         awaken_control::embedded_iam(iam_root, stores.clock.clone())
             .expect("prepare secured route inventory IAM")
     });
-    let mut process = crate::exact_host_model::local_test_process_options(
-        &stores,
-        Box::new(awaken_cli::LocalExecution::workdir()),
-    );
-    // Physical execution placement installs Host executors, never routes; the
-    // local placement would also need the release `awaken-sandbox` companion,
-    // which a library test does not build. Every shape uses Worker placement.
-    if let Some(deployment) = process.deployment.as_mut() {
-        deployment.disable_local_pool = true;
-    }
+    let mut process = crate::exact_host_model::registered_test_process_options(&stores);
+    // Physical execution placement installs Host executors, never routes:
+    // every shape uses the registered Worker placement the product ships.
     process.role = role;
     process.control_service = control_service;
     super::prepare_runtime_routers(

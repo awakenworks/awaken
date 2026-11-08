@@ -53,6 +53,26 @@ pub fn colocated_test_worker(
     Arc::new(worker)
 }
 
+/// Start an AllInOne test process whose Sessions run on its co-located
+/// registered Worker over loopback. `model` publishes one deterministic host
+/// executor under its model reference; `None` resolves publications from the
+/// authored catalog.
+#[cfg(feature = "test-support")]
+pub async fn start_test_all_in_one(
+    stores: awaken_process_startup::ColocatedTestStores<'_>,
+    model: Option<(Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, &str)>,
+) -> awaken_process_startup::ColocatedTestProcess {
+    let model = model.map(|(executor, model_ref)| {
+        let binding =
+            awaken_runtime_contract::resolved::ModelBinding::parse("default", model_ref, "genai")
+                .expect("a deterministic test model reference is a valid native binding");
+        (executor, binding)
+    });
+    awaken_process_startup::start_all_in_one_with_worker(stores, model, colocated_test_worker)
+        .await
+        .expect("start the AllInOne test process with its co-located Worker")
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -23,7 +23,9 @@ mod local_model;
 #[cfg(feature = "test-support")]
 mod scenario_process;
 #[cfg(feature = "test-support")]
-pub use scenario_process::{build_all_in_one_service_with_host_customizer, colocated_test_worker};
+pub use scenario_process::{
+    build_all_in_one_service_with_host_customizer, colocated_test_worker, start_test_all_in_one,
+};
 mod memory_data_plane;
 
 use std::sync::Arc;

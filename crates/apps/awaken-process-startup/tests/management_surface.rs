@@ -1,6 +1,5 @@
 //! The composed product plane serves the canonical Worker readiness projection.
 
-use awaken_process_startup::build_ephemeral_all_in_one_router as build_all_in_one_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -40,7 +39,12 @@ async fn the_product_plane_can_read_worker_fleet_readiness() {
     // surface had before: the Coordinator served no `/v1/workers/readiness`,
     // so Flow's hosted fleet adapter received a permanent 404 and reported the
     // work store as unavailable.
-    let app = build_all_in_one_router(Box::new(awaken_cli::LocalExecution::default())).await;
+    let process = awaken_cli::start_test_all_in_one(
+        awaken_process_startup::ColocatedTestStores::Volatile,
+        None,
+    )
+    .await;
+    let app = process.public_router.clone();
 
     let (status, body) = call(
         &app,

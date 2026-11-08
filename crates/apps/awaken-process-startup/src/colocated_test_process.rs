@@ -1,7 +1,7 @@
 // @formal surface exclude=test_support_adapter
 // @formal reason: Test-support composition of the shipped co-located Worker topology; the Worker transport,
 // @formal reason: credential vault and drain order it wires are the production owners, proved where they live.
-//! Test-support AllInOne over volatile stores whose Sessions run on its
+//! Test-support AllInOne whose Sessions run on its
 //! co-located registered Worker, reached over a loopback private listener.
 //!
 //! This is the topology the `awaken` launcher ships: the Coordinator admits
@@ -24,11 +24,29 @@ pub struct ColocatedTestWorkerInputs {
     pub host_inference: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
 }
 
-/// A started volatile AllInOne process and the lifecycle that owns its
-/// co-located Worker.
+/// Which stores the test process opens.
+pub enum ColocatedTestStores<'a> {
+    /// Everything in process memory.
+    Volatile,
+    /// Durable stores under `dir`, secrets sealed under `key`, no IAM guard.
+    Durable {
+        dir: &'a std::path::Path,
+        key: &'a [u8; 32],
+    },
+    /// [`Self::Durable`] with the embedded IAM guard (self-managed identity).
+    Secured {
+        dir: &'a std::path::Path,
+        key: &'a [u8; 32],
+    },
+}
+
+/// A started AllInOne test process and the lifecycle that owns its
+/// co-located Worker. Dropping the lifecycle stops the Worker.
 pub struct ColocatedTestProcess {
     pub public_router: Router,
     pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+    /// The embedded IAM of a [`ColocatedTestStores::Secured`] process.
+    pub authz: Option<Arc<crate::ManagementAuthz>>,
 }
 
 /// The one host executor a deterministic test process publishes.
@@ -52,18 +70,41 @@ impl awaken_inference_endpoint::InferenceExecutorMaterializer for HostExecutorIn
     }
 }
 
-/// Start a volatile AllInOne process with its co-located registered Worker.
+/// Start an AllInOne test process with its co-located registered Worker.
 /// `model` publishes one deterministic host executor; `None` resolves
 /// publications from the authored catalog.
-pub async fn start_ephemeral_all_in_one_with_worker(
+pub async fn start_all_in_one_with_worker(
+    stores: ColocatedTestStores<'_>,
     model: Option<(
         Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
         awaken_runtime_contract::resolved::ModelBinding,
     )>,
     worker: impl FnOnce(ColocatedTestWorkerInputs) -> Arc<dyn crate::ColocatedWorker>,
 ) -> Result<ColocatedTestProcess, String> {
-    let (stores, credential_stores) =
-        crate::local_process_stores::in_memory_process_stores_with_credentials().await;
+    let (stores, authz) = match stores {
+        ColocatedTestStores::Volatile => (
+            crate::local_process_stores::in_memory_process_stores().await,
+            None,
+        ),
+        ColocatedTestStores::Durable { dir, key } => (
+            crate::local_process_stores::open_local_process_stores(dir, key).await?,
+            None,
+        ),
+        ColocatedTestStores::Secured { dir, key } => {
+            let stores = crate::local_process_stores::open_local_process_stores(dir, key).await?;
+            // IAM judges tokens on the same wall clock the stores stamp with.
+            let iam = crate::embedded_iam(dir, stores.clock.clone())?;
+            (stores, Some(iam))
+        }
+    };
+    let control = stores
+        .control
+        .as_ref()
+        .ok_or("an AllInOne test process owns Control stores")?;
+    let credential_stores = awaken_control::InferenceMaterializationStores {
+        credentials: control.credentials.clone(),
+        secrets: control.secrets.clone(),
+    };
     let clock = stores.clock.clone();
     let options = crate::exact_host_model::registered_test_process_options(&stores);
     let runtime = options
@@ -85,7 +126,7 @@ pub async fn start_ephemeral_all_in_one_with_worker(
     };
     let routers = crate::runtime_process_router::prepare_runtime_routers(
         stores,
-        None,
+        authz.clone(),
         None,
         None,
         model_supply,
@@ -127,6 +168,7 @@ pub async fn start_ephemeral_all_in_one_with_worker(
     Ok(ColocatedTestProcess {
         public_router,
         service_lifecycle,
+        authz,
     })
 }
 

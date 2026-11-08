@@ -388,14 +388,13 @@ def selftest() -> None:
         + "mod exact_host_model;\n"
         + any_gate
         + "mod local_process_stores;\n"
+        + any_gate
+        + "mod colocated_test_process;\n"
         + "\n".join(
             any_gate + f"pub async fn {name}() {{}}"
             for name in (
-                "build_ephemeral_all_in_one_router",
                 "prepare_all_in_one_process_with_scenario_model",
                 "build_all_in_one_router_with_model",
-                "build_durable_all_in_one_router",
-                "build_secured_all_in_one_router",
             )
         ),
         # O17 also covers the moved SDK-only helpers and their outer module.
@@ -405,6 +404,7 @@ def selftest() -> None:
             feature_gate + f"pub async fn {name}() {{}}"
             for name in (
                 "build_all_in_one_service_with_host_customizer",
+                "start_test_all_in_one",
             )
         ),
         FILE_STORE_SOURCE: any_gate + "pub struct InMemoryFileStore {}",

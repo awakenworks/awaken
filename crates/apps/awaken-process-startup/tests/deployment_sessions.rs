@@ -50,16 +50,11 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
     // local sandbox, independent of optional host capabilities such as bwrap.
     // Sessions run on the co-located registered Worker over loopback, the
     // topology the `awaken` launcher ships.
-    let process = awaken_process_startup::start_ephemeral_all_in_one_with_worker(
-        Some((
-            Arc::new(EchoModel),
-            awaken_runtime_contract::resolved::ModelBinding::parse("default", "echo", "genai")
-                .expect("the echo binding is a valid native binding"),
-        )),
-        awaken_cli::colocated_test_worker,
+    let process = awaken_cli::start_test_all_in_one(
+        awaken_process_startup::ColocatedTestStores::Volatile,
+        Some((Arc::new(EchoModel), "echo")),
     )
-    .await
-    .expect("start the AllInOne test process with its co-located Worker");
+    .await;
     let app = process.public_router.clone();
     let (status, agent) = call(
         &app,
