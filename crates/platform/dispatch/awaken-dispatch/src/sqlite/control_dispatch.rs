@@ -571,6 +571,7 @@ impl awaken_dispatch_contract::DispatchControlClaims for SqliteDispatchStore {
         let (_authority, mut conn) = self.with_conn().await?;
         let p = NS;
         let mut tx = immediate(&mut conn).await?;
+        refuse_untrustworthy_expired_leases(&mut tx, p, now_ms).await?;
         let thread_available = thread_available_for_claim(p);
         let sql = format!(
             "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
@@ -603,6 +604,9 @@ impl awaken_dispatch_contract::DispatchControlClaims for SqliteDispatchStore {
                     cancellation_requested,
                     lease_epoch,
                 ) = row;
+                if !crate::sql_claim_generation_admits(&run_id, lease_epoch) {
+                    continue;
+                }
                 let cancellation_requested = cancellation_requested != 0;
                 let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
                 if request
@@ -644,6 +648,7 @@ impl awaken_dispatch_contract::DispatchControlClaims for SqliteDispatchStore {
             selected
         };
         let Some(run_id) = selected else {
+            tx.commit().await.map_err(store_error)?;
             return Ok(None);
         };
         let claimed = claim_exact_transaction(

@@ -183,6 +183,70 @@ fn next_claim_epoch(previous_epoch: i64) -> Result<u64, DispatchError> {
     })
 }
 
+/// Whether a persisted SQL claim generation has no successor in the signed
+/// column's range: the exhausted class [`next_claim_epoch`] refuses. Pure, so a
+/// claim scan observes the refusal once, at its own decision site.
+#[cfg(feature = "durable")]
+const fn sql_claim_generation_exhausted(previous_epoch: i64) -> bool {
+    previous_epoch == i64::MAX
+}
+
+/// The SQL claim scans' admission of one candidate's generation: a generation
+/// with no successor is never selected, and each scan that reaches it observes
+/// it. An expired lease at that generation never reaches a scan: each adapter
+/// dead-letters it first.
+#[cfg(feature = "durable")]
+fn sql_claim_generation_admits(run_id: &str, lease_epoch: i64) -> bool {
+    if sql_claim_generation_exhausted(lease_epoch) {
+        observe_untrustworthy_claim_generation(run_id, UntrustworthyClaimGeneration::Skipped);
+        return false;
+    }
+    true
+}
+
+/// What a claim scan did with one dispatch whose lease generation has no
+/// successor. Consumers: the claim scans of every adapter (in-memory, SQLite,
+/// PostgreSQL) and their decision-table tests.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UntrustworthyClaimGeneration {
+    /// An expired lease: dead-lettered through the kernel's one retry
+    /// exhaustion transition, with `LeaseLost` naming the integrity code.
+    DeadLettered,
+    /// Not under an expired, settleable lease: never claimed by this scan,
+    /// which moves on to the next candidate.
+    Skipped,
+}
+
+/// The one error-level observation of a dispatch whose lease generation is
+/// untrustworthy, carrying the stable integrity code. A dead-lettered row is
+/// observed once, by the scan that settled it; a skipped row is observed by
+/// each scan that reaches it.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+fn observe_untrustworthy_claim_generation(run_id: &str, disposition: UntrustworthyClaimGeneration) {
+    let violation = awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted;
+    match disposition {
+        UntrustworthyClaimGeneration::DeadLettered => tracing::error!(
+            target: "awaken::lease_generation_integrity",
+            code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+            lease = "dispatch_claim",
+            run_id,
+            disposition = "dead_lettered",
+            %violation,
+            "lease generation integrity violated; dead-lettered this dispatch permanently"
+        ),
+        UntrustworthyClaimGeneration::Skipped => tracing::error!(
+            target: "awaken::lease_generation_integrity",
+            code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+            lease = "dispatch_claim",
+            run_id,
+            disposition = "skipped",
+            %violation,
+            "lease generation integrity violated; this dispatch is never claimed"
+        ),
+    }
+}
+
 /// Decode the authority-bearing SQL columns into the one transition kernel.
 /// Every SQL adapter uses this boundary before choosing a next state; unknown
 /// vocabulary and negative epochs fail closed instead of creating local policy.

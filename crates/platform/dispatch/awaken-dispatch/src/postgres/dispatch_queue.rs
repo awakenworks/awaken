@@ -504,6 +504,10 @@ impl awaken_dispatch_contract::DispatchClaims for PostgresDispatchStore {
         max_attempts: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
+        // A retry-exhausted lease whose generation has no successor can never
+        // be terminalized by a claim; it is dead-lettered here instead of
+        // aborting this selection forever (it would head every later one).
+        refuse_untrustworthy_expired_leases(&self.pool).await?;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         loop {
             // Discovery and the exact claim must use the same clock authority;
@@ -1008,86 +1012,16 @@ impl awaken_dispatch_contract::DispatchMaintenance for PostgresDispatchStore {
         .map_err(store_error)?;
         let mut quarantined = 0usize;
         for row in &rows {
-            let owner = row
-                .try_get::<Option<String>, _>("lease_owner")
-                .map_err(store_error)?
-                .ok_or_else(|| {
-                    DispatchError::Rejected(
-                        "expired running dispatch has no persisted lease owner".to_string(),
-                    )
-                })?;
-            let epoch = row.try_get::<i64, _>("lease_epoch").map_err(store_error)?;
-            let attempt_count = row
-                .try_get::<i64, _>("attempt_count")
-                .map_err(store_error)?;
-            let cancellation_requested: i64 =
-                row.try_get("cancel_requested").map_err(store_error)?;
-            let claim_epoch = durable_u64("dispatch lease epoch", epoch)?;
-            // The SQL above only prefilters. The slot disposition is decided here,
-            // on the locked row, by the one kernel every backend shares.
-            let active_attempt_owner: Option<String> =
-                row.try_get("active_attempt_owner").map_err(store_error)?;
-            let active_attempt_epoch: Option<i64> =
-                row.try_get("active_attempt_epoch").map_err(store_error)?;
-            let slot = PhysicalAttemptSlot::from_facts(
-                active_attempt_owner.is_some(),
-                active_attempt_epoch.is_some(),
-                active_attempt_owner.as_deref() == Some(owner.as_str()),
-                active_attempt_epoch == Some(epoch),
-            );
-            if !slot.permits_settlement()
-                && !slot.quarantine_admits_occupation(cancellation_requested != 0)
+            if dead_letter_expired_lease(
+                &mut tx,
+                row,
+                LeaseLossReason::RetryExhausted,
+                expired_before_ms,
+            )
+            .await?
             {
-                continue;
+                quarantined += 1;
             }
-            let current = crate::persisted_dispatch_transition(
-                "running",
-                epoch,
-                cancellation_requested != 0,
-            )?;
-            let awaken_dispatch_contract::GuardedTransition::Applied(next) =
-                current.exhaust_retries(claim_epoch, true)
-            else {
-                continue;
-            };
-            let run_id: String = row.try_get("run_id").map_err(store_error)?;
-            let changed = sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET status = $4, lease_owner = NULL, \
-                 lease_until = NULL, dead_lettered_at = $1 WHERE run_id = $2 \
-                 AND status = 'running' AND lease_epoch = $3"
-            ))
-            .bind(crate::clock::db_millis(expired_before_ms))
-            .bind(&run_id)
-            .bind(epoch)
-            .bind(crate::dispatch_state_db(next.state))
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?;
-            if changed.rows_affected() != 1 {
-                continue;
-            }
-            let claim = RunClaim {
-                run_id: RunId(run_id),
-                owner,
-                epoch: claim_epoch,
-            };
-            insert_operation(
-                &mut tx,
-                &DispatchOperation::LeaseLost {
-                    claim: claim.clone(),
-                    reason: LeaseLossReason::RetryExhausted,
-                },
-            )
-            .await?;
-            insert_operation(
-                &mut tx,
-                &DispatchOperation::DeadLettered {
-                    claim,
-                    attempt_count: durable_u64("dispatch attempt count", attempt_count)?,
-                },
-            )
-            .await?;
-            quarantined += 1;
         }
         tx.commit().await.map_err(store_error)?;
         Ok(quarantined)

@@ -381,15 +381,32 @@ impl InMemoryWorkQueue {
         {
             return Ok(None);
         }
-        let Some(wid) = works
-            .iter()
-            .filter(|(_, work)| work.environment_id == env_id && work.state.is_claimable())
-            .map(|(id, _)| id.clone())
-            .min()
-        else {
-            return Ok(None);
+        // The head of the queue is the oldest claimable item. One whose lease
+        // generation is untrustworthy is stopped here, permanently, and the
+        // item behind it becomes the head in this same claim.
+        let wid = loop {
+            let Some(wid) = works
+                .iter()
+                .filter(|(_, work)| work.environment_id == env_id && work.state.is_claimable())
+                .map(|(id, _)| id.clone())
+                .min()
+            else {
+                return Ok(None);
+            };
+            match book.claim_for(&wid, lease_owner, now_ms, LEASE_TTL_MS) {
+                Ok(_) => break wid,
+                Err(WorkQueueError::LeaseGenerationIntegrity(violation)) => {
+                    let work = works.get_mut(&wid).expect("just found");
+                    let stopped_at = awaken_time::utc::epoch_millis_to_rfc3339(now_ms);
+                    work.stop_requested_at = Some(stopped_at.clone());
+                    work.stopped_at = Some(stopped_at);
+                    work.state = WorkState::Stopped;
+                    session_token_sha256.remove(&wid);
+                    crate::session_access::observe_untrustworthy_work(env_id, &wid, violation);
+                }
+                Err(error) => return Err(error),
+            }
         };
-        book.claim_for(&wid, lease_owner, now_ms, LEASE_TTL_MS)?;
         let work = works.get_mut(&wid).expect("just found");
         work.state = WorkState::Active;
         work.started_at = Some(awaken_time::utc::epoch_millis_to_rfc3339(now_ms));
@@ -1010,6 +1027,21 @@ mod tests {
     ) {
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         (InMemoryWorkQueue::new(clock.clone()), clock)
+    }
+
+    /// Decision table W1-W4: `crate::tests::assert_untrustworthy_head_is_stopped`.
+    #[cfg(not(feature = "loom"))]
+    #[tokio::test]
+    async fn untrustworthy_head_is_stopped_and_the_queue_continues() {
+        let queue = q();
+        crate::tests::assert_untrustworthy_head_is_stopped(&queue, |work| {
+            queue.authority.lock().book.corrupt_epoch_for_test(
+                &work,
+                awaken_lease_contract::fence::Epoch::from_persisted(u64::MAX).unwrap(),
+            );
+            std::future::ready(())
+        })
+        .await;
     }
 
     // Pin the Anthropic wire vocabulary each `WorkState` renders to. This is the

@@ -25,6 +25,10 @@ pub(super) async fn claim_retry_exhausted_transaction(
 ) -> Result<Option<Claimed>, DispatchError> {
     let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
     let mut tx = immediate(conn).await?;
+    // A retry-exhausted lease whose generation has no successor can never be
+    // terminalized by a claim; it is dead-lettered here instead of aborting
+    // this selection forever (it would otherwise head every later one).
+    refuse_untrustworthy_expired_leases(&mut tx, prefix, now_ms).await?;
     let run_id = sqlx::query_scalar::<_, String>(&format!(
         "SELECT run_id FROM {prefix}_dispatch \
          WHERE status = 'running' AND lease_until IS NOT NULL \

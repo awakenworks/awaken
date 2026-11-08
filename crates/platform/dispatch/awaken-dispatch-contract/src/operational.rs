@@ -32,6 +32,11 @@ pub enum LeaseLossReason {
     /// The current owner could not yet acquire a subordinate execution
     /// resource and explicitly returned the still-unstarted claim to the queue.
     Relinquished,
+    /// The expired lease's persisted generation has no successor, so no
+    /// recovery claim can ever fence it. The row is dead-lettered permanently;
+    /// its wire spelling is the lease contract's stable integrity code
+    /// (`EpochIntegrityViolation::CODE`).
+    LeaseGenerationIntegrityViolated,
 }
 
 /// One valid dispatch-authority transition.
@@ -124,6 +129,25 @@ pub trait DispatchOperationalFeed: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integrity_lease_loss_is_spelled_as_the_lease_contract_code() {
+        // | Rule | reason                            | wire                               |
+        // | L1   | LeaseGenerationIntegrityViolated  | EpochIntegrityViolation::CODE      |
+        // | L2   | that wire                         | decodes to the same reason         |
+        let reason = LeaseLossReason::LeaseGenerationIntegrityViolated;
+        let wire = serde_json::to_value(reason).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::Value::from(awaken_lease_contract::fence::EpochIntegrityViolation::CODE),
+            "L1"
+        );
+        assert_eq!(
+            serde_json::from_value::<LeaseLossReason>(wire).unwrap(),
+            reason,
+            "L2"
+        );
+    }
 
     #[test]
     fn admitted_entry_preserves_exact_identity_and_refuses_malformed_inventory() {

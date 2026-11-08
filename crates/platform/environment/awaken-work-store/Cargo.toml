@@ -34,12 +34,13 @@ async-trait.workspace = true
 awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 serde_json.workspace = true
+tracing = "0.1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 # The portable scoped-migration bundle (one `work_queue` schema, both backends).
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
-awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
+awaken-reliability-testkit = { workspace = true, features = ["postgres", "tracing"] }
 uuid = { version = "1", features = ["v4"] }
 awaken-lease-testkit.workspace = true
 awaken-store-conformance.workspace = true

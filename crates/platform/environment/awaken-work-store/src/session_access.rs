@@ -12,7 +12,6 @@
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 use awaken_executable_environment_contract::SessionAccessDigest;
-use awaken_lease_contract::fence::EpochExhausted;
 use awaken_time::WallClockExt;
 use sqlx::sqlite::SqliteConnection;
 
@@ -31,7 +30,74 @@ type StoredClaimCandidate = (
 );
 type StoredLeaseAuthority = (Option<String>, i64, Option<i64>, Option<i64>);
 
+/// The one error-level observation of a queued Work item whose persisted lease
+/// generation is untrustworthy: the claim stopped it, permanently, and moved on
+/// to the next queued item. Carries the lease contract's stable integrity code.
+pub(super) fn observe_untrustworthy_work(
+    env_id: &str,
+    work_id: &str,
+    violation: awaken_lease_contract::fence::EpochIntegrityViolation,
+) {
+    tracing::error!(
+        target: "awaken::lease_generation_integrity",
+        code = awaken_lease_contract::fence::EpochIntegrityViolation::CODE,
+        lease = "work",
+        environment_id = env_id,
+        work_id,
+        disposition = "stopped",
+        %violation,
+        "lease generation integrity violated; stopped this Work item permanently"
+    );
+}
+
+/// The lease a claim grants over one queued candidate, or the integrity
+/// failure that refuses this candidate alone. Shared by both SQL claims.
+fn claim_candidate_authority(
+    candidate: &StoredClaimCandidate,
+    lease_owner: &str,
+    now_ms: u64,
+) -> Result<(LeaseAuthorityTuple<String, i64>, i64), WorkQueueError> {
+    let (_, _, owner, current_epoch, refreshed, expires) = candidate.clone();
+    let next = claim_stored_lease_authority(
+        owner,
+        current_epoch,
+        refreshed,
+        expires,
+        lease_owner.to_string(),
+        db_millis(now_ms),
+        lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
+    )?;
+    let epoch = stored_lease_epoch(next.granted_epoch()?)?;
+    Ok((next, epoch))
+}
+
 impl SqliteWorkQueue {
+    /// Stop one queued Work item whose lease generation is untrustworthy, the
+    /// way a retire stops it: terminal, lease authority cleared, generation
+    /// kept (nothing resets it), so no later claim selects it again.
+    async fn stop_untrustworthy(
+        tx: &mut SqliteConnection,
+        wid: &str,
+        now_ms: u64,
+    ) -> Result<(), WorkQueueError> {
+        let cleared = reclaimed_lease_authority();
+        sqlx::query(
+            "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
+             state = 'stopped', lease_owner = ?2, lease_expires_ms = ?3, \
+             lease_refreshed_ms = ?4, session_token_sha256 = NULL \
+             WHERE work_id = ?5 AND state = 'queued'",
+        )
+        .bind(awaken_time::utc::epoch_millis_to_rfc3339(now_ms))
+        .bind(cleared.owner)
+        .bind(cleared.expires_at)
+        .bind(cleared.refreshed_at)
+        .bind(wid)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
+        Ok(())
+    }
+
     pub(super) async fn claim_inner(
         conn: &mut SqliteConnection,
         env_id: &str,
@@ -74,29 +140,33 @@ impl SqliteWorkQueue {
             tx.commit().await.map_err(storage)?;
             return Ok(None);
         }
-        let selected: Option<StoredClaimCandidate> = sqlx::query_as(
-            "SELECT work_id, data_type, lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms FROM work_queue_item \
-             WHERE environment_id = ?1 AND state = 'queued' ORDER BY seq ASC LIMIT 1",
-        )
-        .bind(env_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?;
-        let Some((wid, data_type, owner, current_epoch, refreshed, expires)) = selected else {
-            tx.commit().await.map_err(storage)?;
-            return Ok(None);
+        // The head of the queue is the oldest queued item. One whose persisted
+        // lease generation is untrustworthy is stopped here, permanently, and
+        // the item behind it becomes the head in this same claim.
+        let (wid, data_type, next_authority, next_epoch) = loop {
+            let selected: Option<StoredClaimCandidate> = sqlx::query_as(
+                "SELECT work_id, data_type, lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms FROM work_queue_item \
+                 WHERE environment_id = ?1 AND state = 'queued' ORDER BY seq ASC LIMIT 1",
+            )
+            .bind(env_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage)?;
+            let Some(candidate) = selected else {
+                tx.commit().await.map_err(storage)?;
+                return Ok(None);
+            };
+            match claim_candidate_authority(&candidate, lease_owner, now_ms) {
+                Ok((next_authority, next_epoch)) => {
+                    break (candidate.0, candidate.1, next_authority, next_epoch);
+                }
+                Err(WorkQueueError::LeaseGenerationIntegrity(violation)) => {
+                    Self::stop_untrustworthy(&mut tx, &candidate.0, now_ms).await?;
+                    observe_untrustworthy_work(env_id, &candidate.0, violation);
+                }
+                Err(error) => return Err(error),
+            }
         };
-        let LeaseAuthorityDecision::Apply(next_authority) = lease_authority_transition(
-            stored_lease_authority(owner, current_epoch, refreshed, expires)?,
-            LeaseAuthorityCommand::Claim {
-                owner: lease_owner.to_string(),
-                refreshed_at: db_millis(now_ms),
-                expires_at: lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
-            },
-        ) else {
-            return Err(lease_generation_integrity(EpochExhausted));
-        };
-        let next_epoch = stored_lease_epoch(next_authority.granted_epoch()?)?;
         let session_access = session_access.filter(|_| data_type == "session");
         let token_hash = session_access.as_ref().map(SessionAccessDigest::as_str);
         sqlx::query(
@@ -481,6 +551,32 @@ impl SqliteWorkQueue {
 }
 
 impl PostgresWorkQueue {
+    /// Stop one queued Work item whose lease generation is untrustworthy, the
+    /// way a retire stops it: terminal, lease authority cleared, generation
+    /// kept (nothing resets it), so no later claim selects it again.
+    async fn stop_untrustworthy(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        wid: &str,
+        now_ms: u64,
+    ) -> Result<(), WorkQueueError> {
+        let cleared = reclaimed_lease_authority();
+        sqlx::query(
+            "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
+             state = 'stopped', lease_owner = $2, lease_expires_ms = $3, \
+             lease_refreshed_ms = $4, session_token_sha256 = NULL \
+             WHERE work_id = $5 AND state = 'queued'",
+        )
+        .bind(awaken_time::utc::epoch_millis_to_rfc3339(now_ms))
+        .bind(cleared.owner)
+        .bind(cleared.expires_at)
+        .bind(cleared.refreshed_at)
+        .bind(wid)
+        .execute(&mut **tx)
+        .await
+        .map_err(storage)?;
+        Ok(())
+    }
+
     pub(super) async fn claim_inner(
         &self,
         env_id: &str,
@@ -544,29 +640,33 @@ impl PostgresWorkQueue {
             tx.commit().await.map_err(storage)?;
             return Ok(None);
         }
-        let selected: Option<StoredClaimCandidate> = sqlx::query_as(
-            "SELECT work_id, data_type, lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms FROM work_queue_item \
-             WHERE environment_id = $1 AND state = 'queued' ORDER BY seq ASC LIMIT 1",
-        )
-        .bind(env_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?;
-        let Some((wid, data_type, owner, current_epoch, refreshed, expires)) = selected else {
-            tx.commit().await.map_err(storage)?;
-            return Ok(None);
+        // The head of the queue is the oldest queued item. One whose persisted
+        // lease generation is untrustworthy is stopped here, permanently, and
+        // the item behind it becomes the head in this same claim.
+        let (wid, data_type, next_authority, next_epoch) = loop {
+            let selected: Option<StoredClaimCandidate> = sqlx::query_as(
+                "SELECT work_id, data_type, lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms FROM work_queue_item \
+                 WHERE environment_id = $1 AND state = 'queued' ORDER BY seq ASC LIMIT 1",
+            )
+            .bind(env_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage)?;
+            let Some(candidate) = selected else {
+                tx.commit().await.map_err(storage)?;
+                return Ok(None);
+            };
+            match claim_candidate_authority(&candidate, lease_owner, now_ms) {
+                Ok((next_authority, next_epoch)) => {
+                    break (candidate.0, candidate.1, next_authority, next_epoch);
+                }
+                Err(WorkQueueError::LeaseGenerationIntegrity(violation)) => {
+                    Self::stop_untrustworthy(&mut tx, &candidate.0, now_ms).await?;
+                    observe_untrustworthy_work(env_id, &candidate.0, violation);
+                }
+                Err(error) => return Err(error),
+            }
         };
-        let LeaseAuthorityDecision::Apply(next_authority) = lease_authority_transition(
-            stored_lease_authority(owner, current_epoch, refreshed, expires)?,
-            LeaseAuthorityCommand::Claim {
-                owner: lease_owner.to_string(),
-                refreshed_at: db_millis(now_ms),
-                expires_at: lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
-            },
-        ) else {
-            return Err(lease_generation_integrity(EpochExhausted));
-        };
-        let next_epoch = stored_lease_epoch(next_authority.granted_epoch()?)?;
         let session_access = session_access.filter(|_| data_type == "session");
         let token_hash = session_access.as_ref().map(SessionAccessDigest::as_str);
         sqlx::query(
@@ -839,11 +939,12 @@ impl PostgresWorkQueue {
 mod epoch_tests {
     use super::*;
 
-    // E2 queued/MAX -> LeaseGenerationIntegrity(Exhausted), no REAL promotion/wrap;
+    // E2 queued/MAX -> the head is stopped permanently (never the poll's error,
+    // never promoted or wrapped), its generation kept and no bearer bound;
     // E3 MAX-1 -> exact MAX and one token. Negative epochs are forbidden by the
     // real schema and covered as corrupt numeric inputs by mutation's proof.
     // Exercise public claim_with_session_access, not just the numeric helper.
-    // Rejected transactions retain queued state, epoch, and absent bearer hash.
+    // The queue behind a stopped head: crate::tests::assert_untrustworthy_head_is_stopped.
     #[tokio::test]
     async fn sqlite_session_claim_fences_epoch_exhaustion() {
         let queue = SqliteWorkQueue::open_in_memory(system_clock())
@@ -874,11 +975,9 @@ mod epoch_tests {
                 assert!(outcome.unwrap().unwrap().session_access.is_some(), "E3");
             } else {
                 assert_eq!(
-                    outcome.map(|_| ()),
-                    Err(WorkQueueError::LeaseGenerationIntegrity(
-                        awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted
-                    )),
-                    "E1/E2 permanent integrity refusal, not a retryable Storage error"
+                    outcome.map(|claimed| claimed.is_none()),
+                    Ok(true),
+                    "E1/E2 the untrustworthy head is stopped, never the poll's error"
                 );
             }
             let row: (String, i64, Option<String>) = sqlx::query_as(
@@ -896,7 +995,7 @@ mod epoch_tests {
                     "E3 exact pre-minted digest bound with the lease"
                 );
             } else {
-                assert_eq!(row, ("queued".into(), epoch, None));
+                assert_eq!(row, ("stopped".into(), epoch, None), "E2");
             }
         }
     }
@@ -950,11 +1049,9 @@ mod epoch_tests {
                 assert!(outcome.unwrap().unwrap().session_access.is_some(), "E3");
             } else {
                 assert_eq!(
-                    outcome.map(|_| ()),
-                    Err(WorkQueueError::LeaseGenerationIntegrity(
-                        awaken_lease_contract::fence::EpochIntegrityViolation::Exhausted
-                    )),
-                    "E1/E2 permanent integrity refusal, not a retryable Storage error"
+                    outcome.map(|claimed| claimed.is_none()),
+                    Ok(true),
+                    "E1/E2 the untrustworthy head is stopped, never the poll's error"
                 );
             }
             let row: (String, i64, Option<String>) = sqlx::query_as("SELECT state, lease_epoch, session_token_sha256 FROM work_queue_item WHERE work_id = $1").bind(&work).fetch_one(&pool).await.unwrap();
@@ -966,7 +1063,7 @@ mod epoch_tests {
                     "E3 exact pre-minted digest bound with the lease"
                 );
             } else {
-                assert_eq!(row, ("queued".into(), epoch, None));
+                assert_eq!(row, ("stopped".into(), epoch, None), "E2");
             }
         }
     }
