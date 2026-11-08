@@ -578,5 +578,32 @@
     "log_sha256": "3b1b4902d40739b5a1fb2a638f3138076756634e2ad8ed8ac5446ae9c8b9ac0b",
     "historical": false,
     "entry_sha256": "a0e3a647c9bcfc1a0070e04855e1659d429285c6b0e2fce3ce5368f016c322c1"
+  },
+  {
+    "id": "E-NEXTEST-SELFTEST-20261108",
+    "receipt": "target/session-acceptance-evidence/E-NEXTEST-SELFTEST-20261108/receipt.json",
+    "receipt_sha256": "629631b7449cbc230e31fe674ce1544230f75aa84de606a653f2bd4ba68c2964",
+    "source": {
+      "head": "b01755764b5159bb96654f2c60e5e465b50810d2",
+      "dirty_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "platform": "native-Linux x86_64",
+    "passed": true,
+    "files_changed_during_run": [],
+    "scope": "nextest_execution self-test on the integration head b01755764b",
+    "argv": [
+      "python3",
+      "scripts/ci/nextest_execution.py",
+      "--self-test"
+    ],
+    "environment_names": [],
+    "exit": 0,
+    "seconds": 0.1,
+    "executed_count": 15,
+    "failed_count": 0,
+    "skipped_count": 0,
+    "log_sha256": "c9126ace4c0632a5384d872d1c011eb63a94eef6fa186f2376582e002db52d53",
+    "historical": false,
+    "entry_sha256": "24e14cd399904dd745d59795e19a4cdfaa00158b836cae0b7d77ba22bddbd4b6"
   }
 ]
