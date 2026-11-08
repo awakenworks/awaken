@@ -202,64 +202,100 @@ async fn lease_only_projection_does_not_create_an_unmaterialized_eager_environme
 
 #[tokio::test]
 async fn refused_run_free_preparation_closes_its_local_lease() {
+    use awaken_session_realization::worker_projection::SessionProjectionExecution as _;
     // C1 a Worker-claimed run-free preparation (no Run, no model claim);
     // C2 Control refuses the Activate after Stage, as `Conflict` does while an
     // interactive turn settles the same root (this fixture answers NotReady).
     // E1 preparation reports pending; E2 its local lease projection is closed,
     // so renewal stops and the durable lease expires for a later sweep instead
-    // of keeping an unfinished preparation live forever.
-    let storage = tempfile::tempdir().expect("owned storage");
-    let thread = "refused-run-free-preparation";
-    let control = Arc::new(crate::host::tests::fixtures::RemoteTerminalCleanupControl::default());
-    let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
-        .await
-        .with_store_dir(storage.path())
-        .await
-        .with_session_realization_control(control.clone()))
-    .build()
-    .expect("Host dependencies");
-    let activation = test_activation(thread, "unused-model-run");
-    let mut environment = eager_environment();
-    environment.sandbox_provisioning = awaken_provisioning_contract::SandboxProvisioning::OnToolUse;
-    let mut projection =
-        empty_frozen_projection_for_snapshot("workspace", environment, &activation.snapshot);
-    projection.agent_publication = Some(activation.snapshot);
-    let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
-        owner: "worker-a".into(),
-        runtime_incarnation: "worker-a".into(),
-        epoch: 1,
-        expires_at_unix_ms: u64::MAX,
-    };
-    let assignment = awaken_session_execution_contract::SessionPreparationAssignment {
-        session_id: awaken_session_types::SessionId::from(thread),
-        directive: awaken_session_execution_contract::SessionRealizationDirective {
-            projection,
-            authority: awaken_session_realization::test_support::test_lease_receipt(lease),
-            action: awaken_session_execution_contract::SessionRealizationAction::Stage {
-                prepare_session: false,
-                mcp_stages: vec![],
+    // of keeping an unfinished preparation live forever. C3 entry is either
+    // the preparation facade (L1) or the canonical already-serialized driver
+    // (L2). Both close before releasing that same permit; cleanup after the
+    // permit drops could revoke a later projection under the same generation.
+    for serialized in [false, true] {
+        let storage = tempfile::tempdir().expect("owned storage");
+        let thread = "refused-run-free-preparation";
+        let control =
+            Arc::new(crate::host::tests::fixtures::RemoteTerminalCleanupControl::default());
+        let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await
+            .with_session_realization_control(control.clone()))
+        .build()
+        .expect("Host dependencies");
+        let activation = test_activation(thread, "unused-model-run");
+        let mut environment = eager_environment();
+        environment.sandbox_provisioning =
+            awaken_provisioning_contract::SandboxProvisioning::OnToolUse;
+        let mut projection =
+            empty_frozen_projection_for_snapshot("workspace", environment, &activation.snapshot);
+        projection.agent_publication = Some(activation.snapshot);
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let assignment = awaken_session_execution_contract::SessionPreparationAssignment {
+            session_id: awaken_session_types::SessionId::from(thread),
+            directive: awaken_session_execution_contract::SessionRealizationDirective {
+                projection,
+                authority: awaken_session_realization::test_support::test_lease_receipt(lease),
+                action: awaken_session_execution_contract::SessionRealizationAction::Stage {
+                    prepare_session: false,
+                    mcp_stages: vec![],
+                },
             },
-        },
-    };
-    host.run_assembly
-        .prepare_session_without_run(&assignment)
-        .await
-        .expect_err("E1 a refused Activate leaves preparation pending");
-    let live = host
-        .run_assembly
-        .installed_sessions
-        .read(thread, |installed| {
-            installed
-                .realization
-                .execution()
-                .authority
-                .lease()
-                .is_some()
-        })
-        .expect("installed Sessions")
-        .unwrap_or(false);
-    assert!(
-        !live,
-        "E2 the refused run-free lease is no longer renewed locally"
-    );
+        };
+        let local_lease_live = || {
+            host.run_assembly
+                .installed_sessions
+                .read(thread, |installed| {
+                    installed
+                        .realization
+                        .execution()
+                        .authority
+                        .lease()
+                        .is_some()
+                })
+                .expect("installed Sessions")
+                .unwrap_or(false)
+        };
+        if serialized {
+            let permit = host
+                .run_assembly
+                .as_ref()
+                .sessions()
+                .acquire_realization(thread)
+                .await
+                .expect("L2 owns the canonical permit");
+            let synchronizer = awaken_session_realization::worker_projection::WorkerProjectionSynchronizer::for_directive(
+            host.run_assembly.as_ref(), &assignment.directive, None, None, false, None,
+        );
+            crate::application::worker_projection::drive_session_realization_with_synchronizer(
+                control.as_ref(),
+                assignment.directive.clone(),
+                synchronizer,
+                awaken_authority_clock::authority_proof_started().unwrap(),
+                &permit,
+            )
+            .await
+            .expect_err("L2 refused Activate leaves preparation pending");
+            assert!(
+                !local_lease_live(),
+                "L2 closes before the existing permit drops"
+            );
+            assert_eq!(permit.session_id().as_str(), thread);
+        } else {
+            host.run_assembly
+                .prepare_session_without_run(&assignment)
+                .await
+                .expect_err("L1 refused Activate leaves preparation pending");
+        }
+        assert!(
+            !local_lease_live(),
+            "E2 the refused run-free lease is no longer renewed locally"
+        );
+    }
 }
