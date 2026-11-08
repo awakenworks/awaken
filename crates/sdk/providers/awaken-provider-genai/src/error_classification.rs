@@ -454,9 +454,11 @@ mod tests {
         // existing classifier still grants only NotDispatched(TransportConnect).
         // R1=C1+C2 => E1+E2. The neighboring SSE table owns the contrasting
         // truncated-body => Unknown rule.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
+        // Bound but not listening for the whole test: refused, and no parallel
+        // test can take the port (a dropped listener frees it).
+        let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+        reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = reserved.local_addr().unwrap();
         let error = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -464,7 +466,7 @@ mod tests {
             .get(format!("http://{address}/private-context"))
             .send()
             .await
-            .expect_err("the bound listener has closed");
+            .expect_err("the reserved port does not listen");
         let diagnostic = TransportDiagnostic::of(&error);
         assert_eq!(diagnostic.kind, "connect");
         assert!(diagnostic.source_depth > 0);
