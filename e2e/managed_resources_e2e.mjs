@@ -13,20 +13,20 @@
 // prompt the host injected from the binding — so a correct read/write proves the
 // prompt reached the model.
 //
-// Run (from e2e/, with the KIMI key — note the base URL ends in `/v1/`, since the
-// executor posts to `{base_url}messages`):
-//   ANTHROPIC_API_KEY=sk-kimi-... ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1/ \
-//   ANTHROPIC_MODEL=kimi-k2-0905-preview node managed_resources_e2e.mjs
+// Run (from e2e/, with the KIMI key in the controller environment or ~/.bashrc;
+// the harness hands it to the server only through the config-plane API):
+//   node managed_resources_e2e.mjs
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
   FILES_BETA,
   allowManagedToolBoundaries,
+  modelUpstreamEnv,
   pass,
   withServer,
 } from './harness.mjs';
-import { loadKimiConfig } from './kimi_config.mjs';
+import { liveAnthropicCompatibleUpstream } from './model_upstream.mjs';
 import {
   aggregateUsage,
   emitEvaluation,
@@ -90,16 +90,9 @@ async function driveUntil(client, sid, text, check, { nudges = 2, nudgeText } = 
 }
 
 async function main() {
-  const kimi = loadKimiConfig();
-  if (!process.env.ANTHROPIC_API_KEY && kimi?.anthropicKey) {
-    Object.assign(process.env, {
-      ANTHROPIC_API_KEY: kimi.anthropicKey,
-      ANTHROPIC_BASE_URL: kimi.anthropicBase,
-      ANTHROPIC_MODEL: kimi.anthropicModel,
-    });
-  }
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.KIMI_API_KEY) {
-    console.log('SKIP managed_resources_e2e: no ANTHROPIC_API_KEY / KIMI_API_KEY set.');
+  const live = liveAnthropicCompatibleUpstream();
+  if (!live) {
+    console.log('SKIP managed_resources_e2e: no live Anthropic-compatible key (ANTHROPIC_API_KEY or ~/.bashrc).');
     return;
   }
   try {
@@ -262,7 +255,7 @@ async function main() {
         suite: 'managed_memory_real_eval_native',
         subject: 'memory-write-through-and-cross-session-recall',
         backend: 'native',
-        model: process.env.ANTHROPIC_MODEL ?? process.env.KIMI_MODEL ?? 'provider-default',
+        model: live.model,
         sampleSize: 1,
         metrics: {
           write_commit_rate: memContent.includes(MEMTOKEN) ? 1 : 0,
@@ -297,7 +290,7 @@ async function main() {
           unknown: quality.unknown,
         },
       }));
-    });
+    }, modelUpstreamEnv(null, live));
 
     console.log(process.env.AWAKEN_EVAL_MEMORY_ONLY === '1'
       ? 'E2E PASS: memory write-back/cross-session read verified end-to-end with a real model via the official SDK.'

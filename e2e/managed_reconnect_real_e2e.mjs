@@ -1,23 +1,20 @@
 // Real-model reconnect conformance for Managed Agents, driven by the official
 // Anthropic TypeScript SDK against awaken-server in `real` mode (backed by a
-// live Anthropic-compatible model — the KIMI_*/ANTHROPIC_* env config).
+// live Anthropic-compatible model bound through the config-plane API).
 //
 // The point echo mode can't make: with a real model a turn takes time, so we can
 // drop the SSE stream WHILE the turn is still in flight and prove that a client
 // which reconnects (reopen stream + events.list(), dedupe by id) still recovers
 // the whole turn — the missed events are filled from the authoritative history.
 //
-// Run: (from e2e/, with the KIMI config from ~/.bashrc — note the base needs the
-// trailing /v1/, the genai anthropic adapter appends `messages` to it)
-//   ANTHROPIC_API_KEY=sk-kimi-... \
-//   ANTHROPIC_BASE_URL=https://api.kimi.com/coding/v1/ \
-//   ANTHROPIC_MODEL=kimi-for-coding \
+// Run: (from e2e/, with the KIMI config from ~/.bashrc or a DeepSeek key; the
+// harness hands it to the server only through the config-plane API)
 //   node managed_reconnect_real_e2e.mjs
-// `real` mode also accepts the KIMI_API_KEY/KIMI_BASE_URL/KIMI_MODEL aliases.
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer, modelUpstreamEnv } from './harness.mjs';
+import { liveAnthropicCompatibleUpstream } from './model_upstream.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38141);
@@ -29,8 +26,9 @@ async function listAll(client, sessionId) {
 }
 
 async function main() {
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.KIMI_API_KEY) {
-    console.log('SKIP managed_reconnect_real_e2e: no ANTHROPIC_API_KEY / KIMI_API_KEY set.');
+  const live = liveAnthropicCompatibleUpstream();
+  if (!live) {
+    console.log('SKIP managed_reconnect_real_e2e: no live Anthropic-compatible key (ANTHROPIC_API_KEY or ~/.bashrc).');
     return;
   }
   try {
@@ -98,7 +96,7 @@ async function main() {
         { timeoutMs: 180_000 },
       );
       pass(`recovered the dropped turn via list+stream consolidation: ${JSON.stringify(text.slice(0, 80))}`);
-    });
+    }, modelUpstreamEnv(null, live));
 
     console.log('E2E PASS: managed reconnect recovers a real model turn dropped mid-flight via the TS SDK.');
     process.exitCode = 0;

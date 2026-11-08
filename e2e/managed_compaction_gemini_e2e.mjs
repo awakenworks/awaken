@@ -1,6 +1,6 @@
 // Real-LLM token-aware compaction e2e (Gemini). Drives a managed session through
 // the official @anthropic-ai/sdk against awaken-server in `compaction` mode
-// backed by a REAL model (Gemini AI Studio via AWAKEN_MODEL_SOURCE=gemini), with a
+// backed by a REAL model (Gemini AI Studio, bound through the config-plane API), with a
 // small *configured* context window (AWAKEN_COMPACT_MAX_TOKENS) so a handful of
 // large turns crosses the frozen effective window and the compactor sub-agent — itself a
 // real model run — folds the older slice. Proves the token-aware trigger fires
@@ -17,29 +17,28 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  modelUpstreamEnv,
   pass,
   spawnServer,
   stopServer,
   waitForPort,
   waitForSessionEventReceipt,
 } from './harness.mjs';
+import { liveGeminiUpstream } from './model_upstream.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38261);
 const BETAS = ['managed-agents-2026-04-01'];
-const KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+const live = liveGeminiUpstream();
 
 async function main() {
-  if (!KEY) {
+  if (!live) {
     console.log('SKIP managed_compaction_gemini_e2e: no GEMINI_API_KEY / GOOGLE_API_KEY set.');
     return;
   }
   // A small configured window: fold once the transcript reaches 0.5 * 1200 = 600
   // estimated tokens, keeping the last 2 messages verbatim.
   const { server, baseUrl } = spawnServer('compaction', PORT, {
-    AWAKEN_MODEL_SOURCE: 'gemini',
-    GEMINI_API_KEY: KEY,
-    GOOGLE_API_KEY: KEY,
-    GEMINI_MODEL: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
+    ...modelUpstreamEnv(null, live),
     AWAKEN_COMPACT_MAX_TOKENS: '600',
     AWAKEN_COMPACT_KEEP_LAST: '2',
   });

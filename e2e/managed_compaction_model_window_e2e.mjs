@@ -10,24 +10,27 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  modelUpstreamEnv,
   pass,
   spawnServer,
   stopServer,
   waitForPort,
   waitForSessionEventReceipt,
 } from './harness.mjs';
+import { liveAnthropicCompatibleUpstream } from './model_upstream.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38261);
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function main() {
-  if (!process.env.KIMI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
-    console.log('SKIP managed_compaction_model_window_e2e: no KIMI_API_KEY / ANTHROPIC_API_KEY set.');
+  const live = liveAnthropicCompatibleUpstream();
+  if (!live) {
+    console.log('SKIP managed_compaction_model_window_e2e: no live Anthropic-compatible key (KIMI/ANTHROPIC_API_KEY or ~/.bashrc).');
     return;
   }
   // The MODEL attribute supplies the window (1000 tokens); NO compaction override.
   const { server, baseUrl } = spawnServer('compaction', PORT, {
-    AWAKEN_MODEL_SOURCE: 'http',
+    ...modelUpstreamEnv(null, live),
     AWAKEN_MODEL_CONTEXT_WINDOW: '1000', // the model's published context window
     AWAKEN_COMPACT_KEEP_LAST: '2',
     // AWAKEN_COMPACT_MAX_TOKENS intentionally UNSET — the agent pins no window.

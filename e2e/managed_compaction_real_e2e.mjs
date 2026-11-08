@@ -1,6 +1,6 @@
 // Real-model token-aware compaction e2e. Drives a session through the official
 // Anthropic TS SDK against awaken-server in `compaction` mode backed by a
-// REAL Anthropic-compatible model (KIMI via AWAKEN_MODEL_SOURCE=http), with a
+// REAL Anthropic-compatible model (KIMI, bound through the config-plane API), with a
 // small *configured* context window (AWAKEN_COMPACT_MAX_TOKENS) so a handful of
 // large turns crosses the frozen effective window and the compactor sub-agent — itself a
 // real model run — folds the older slice. Proves the token-aware trigger fires
@@ -12,25 +12,28 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  modelUpstreamEnv,
   pass,
   spawnServer,
   stopServer,
   waitForPort,
   waitForSessionEventReceipt,
 } from './harness.mjs';
+import { liveAnthropicCompatibleUpstream } from './model_upstream.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38233);
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function main() {
-  if (!process.env.KIMI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
-    console.log('SKIP managed_compaction_real_e2e: no KIMI_API_KEY / ANTHROPIC_API_KEY set.');
+  const live = liveAnthropicCompatibleUpstream();
+  if (!live) {
+    console.log('SKIP managed_compaction_real_e2e: no live Anthropic-compatible key (KIMI/ANTHROPIC_API_KEY or ~/.bashrc).');
     return;
   }
   // A small configured window: fold once the transcript reaches 0.5 * 1000 = 500
   // estimated tokens, keeping the last 2 messages verbatim.
   const { server, baseUrl } = spawnServer('compaction', PORT, {
-    AWAKEN_MODEL_SOURCE: 'http',
+    ...modelUpstreamEnv(null, live),
     AWAKEN_COMPACT_MAX_TOKENS: '500',
     AWAKEN_COMPACT_KEEP_LAST: '2',
   });
