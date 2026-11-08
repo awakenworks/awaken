@@ -73,23 +73,27 @@ fn management_scenario_adapters(
 /// The env-selected AllInOne management scenario over one deterministic host
 /// executor. A process whose environment configures its model through ambient
 /// provider keys stays on its own claim pool
-/// ([`awaken_cli::scenario_requires_local_placement`], w5-slices.md §11);
-/// every other one runs the shipped co-located registered Worker.
+/// ([`awaken_cli::scenario_requires_local_placement`], w5-slices.md §11), as
+/// does one whose scenario names `SESSION_DEPLOYMENT_PLACEMENT=local`: the e2e
+/// harness's real-wire scenarios, which held that placement while ambient keys
+/// selected it and observe behaviour only it has so far (w5-slices.md §10,
+/// §15); every other one runs the shipped co-located registered Worker.
 async fn management_scenario_process(
     model: Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     model_ref: String,
     adapters: awaken_process_startup::ManagedServiceAdapters,
     observability: &awaken_observability::ObservabilityConfig,
 ) -> awaken_process_startup::PreparedProcess {
-    let execution = if awaken_cli::scenario_requires_local_placement() {
-        awaken_process_startup::ScenarioExecution::Local(Box::new(
-            awaken_cli::LocalExecution::default(),
-        ))
-    } else {
-        awaken_process_startup::ScenarioExecution::Worker(Box::new(
-            awaken_cli::scenario_worker_preparation,
-        ))
-    };
+    let execution =
+        if awaken_cli::scenario_requires_local_placement() || scenario_requests_local_placement() {
+            awaken_process_startup::ScenarioExecution::Local(Box::new(
+                awaken_cli::LocalExecution::default(),
+            ))
+        } else {
+            awaken_process_startup::ScenarioExecution::Worker(Box::new(
+                awaken_cli::scenario_worker_preparation,
+            ))
+        };
     awaken_process_startup::prepare_all_in_one_process_with_scenario_model(
         model,
         model_ref,
@@ -114,6 +118,16 @@ async fn provider_scenario_process(
         observability,
     )
     .await
+}
+
+/// The scenario's explicit placement selection (topology input, not model
+/// configuration): `local` keeps Sessions on this process's own claim pool.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
+fn scenario_requests_local_placement() -> bool {
+    std::env::var("SESSION_DEPLOYMENT_PLACEMENT").as_deref() == Ok("local")
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

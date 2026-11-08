@@ -1554,6 +1554,12 @@ export function realServerEnv(
     // Local substrate here. A substrate-specific test can still override this
     // through extraEnv and must fail closed when that substrate is unavailable.
     SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
+    // A real-wire AllInOne scenario keeps the placement it had while ambient
+    // provider keys selected it: its own claim pool. Several of these specs
+    // observe behaviour the co-located registered Worker does not have yet
+    // (w5-slices.md §10, §15); moving them is that lane's flip, not a
+    // consequence of where the model is configured. Host-backed modes ignore it.
+    SESSION_DEPLOYMENT_PLACEMENT: 'local',
     // `modelUpstream: null` is a scenario that runs no inference: no binding.
     ...(modelUpstream === null ? {} : modelUpstreamEnv(upstream, modelUpstream)),
     ...extraEnv,
