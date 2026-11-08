@@ -449,6 +449,12 @@ pub(super) async fn relinquish(
         } else {
             Ok(None)
         };
+        // Read the slot after the stop observation, which may have emptied it,
+        // and before the release that ends this claim's locked view of it.
+        let parked_session = match request.retry_after_ms {
+            Some(_) => parked_root_session(&service, &request.claim).await?,
+            None => None,
+        };
         let relinquished = match (request.retry_after_ms, request.attempt_failed) {
             (Some(retry_after_ms), true) => {
                 service
@@ -468,10 +474,116 @@ pub(super) async fn relinquish(
         .applied();
         let observation = observation?;
         tracing::debug!(?observation, "backoff predecessor process stop observation");
+        if let Some(session_id) = parked_session {
+            release_parked_session_work(&service, &session_id, &request.claim.owner).await?;
+        }
         Ok(json!({ "relinquished": relinquished }))
     }
     .await;
     respond(result)
+}
+
+/// Whether a deferred claim parks its Session's Environment Work.
+///
+/// The Work item is the Environment's single active admission, not the
+/// physical fence: the Dispatch attempt slot fences the Thread on its own, and
+/// it stays occupied until real stop evidence empties it. A root Session Run
+/// deferred behind an occupied slot has no execution to admit until then: it
+/// releases the Work so that the Environment admits its next Session. An empty
+/// slot is ordinary resolution backoff and keeps the Work for the retry. A
+/// child Run borrows its parent's Work and never releases it.
+///
+/// | Rule | root Run | slot     | effect                  |
+/// |------|----------|----------|-------------------------|
+/// | P1   | yes      | occupied | release the Work        |
+/// | P2   | yes      | empty    | keep the Work           |
+/// | P3   | no       | any      | keep the parent's Work  |
+///
+/// This settles nothing: no outcome, observer, Memory extraction or successor
+/// execution is decided, and a later claim of the same Run revives the Work
+/// through the ordinary claimed-Run acquisition and is blocked by the same slot.
+const fn deferral_parks_session_work(root_run: bool, slot_permits_settlement: bool) -> bool {
+    root_run && !slot_permits_settlement
+}
+
+/// The root Session whose Work this deferral parks, read under the exact
+/// claim's commit guard. A stale claim parks nothing.
+async fn parked_root_session(
+    service: &WorkerDispatchService,
+    claim: &awaken_dispatch::RunClaim,
+) -> Result<Option<String>, ApplicationError> {
+    let Some(guard) = service
+        .dispatch
+        .lock_commit_epoch(claim)
+        .await
+        .map_err(|error| ApplicationError::internal(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let dispatch = guard.request();
+    let root_run = dispatch.requires_session_work_authority()
+        && dispatch.thread_id() == dispatch.session_thread_id();
+    let session_id = dispatch.session_thread_id().0.clone();
+    let parks = deferral_parks_session_work(root_run, guard.permits_settlement());
+    guard
+        .release()
+        .await
+        .map_err(ApplicationError::unavailable)?;
+    Ok(parks.then_some(session_id))
+}
+
+/// Release the parked Session's Work when this Worker holds it, through the
+/// same acquire-then-release the settlement path uses. Another owner's lease
+/// or already released Work is left untouched.
+async fn release_parked_session_work(
+    service: &WorkerDispatchService,
+    session_id: &str,
+    worker_owner: &str,
+) -> Result<(), ApplicationError> {
+    let ownership = service
+        .session_work
+        .acquire_session_work(
+            &awaken_session_types::SessionId::from(session_id),
+            worker_owner,
+            awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
+        )
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+    if let awaken_session_application_contract::SessionWorkOwnership::Leased(lease) = ownership
+        && lease.owner() == worker_owner
+    {
+        let released = service
+            .session_work
+            .release_session_work(&lease)
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+        tracing::debug!(
+            session_id,
+            released,
+            "deferred root Run parked its Session Work behind an occupied attempt slot"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod parked_session_work_tests {
+    #[test]
+    fn only_a_root_run_behind_an_occupied_slot_parks_its_session_work() {
+        // Decision table P1-P3 of `deferral_parks_session_work`, exhaustively.
+        for (rule, root_run, slot_permits_settlement, parks) in [
+            ("P1", true, false, true),
+            ("P2", true, true, false),
+            ("P3", false, false, false),
+            ("P3", false, true, false),
+        ] {
+            assert_eq!(
+                super::deferral_parks_session_work(root_run, slot_permits_settlement),
+                parks,
+                "{rule}"
+            );
+        }
+    }
 }
 
 pub(super) async fn resolve_session_run_reservation(
