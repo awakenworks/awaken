@@ -37,12 +37,23 @@ impl SqliteDispatchStore {
         handoff: bool,
         binding: Option<&AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
-        let claim = claim.clone();
-        let binding = binding.cloned();
         let (_authority, mut conn) = self.with_conn().await?;
+        let mut tx = immediate(&mut conn).await?;
+        let admission =
+            Self::admit_physical_attempt_in(&mut tx, claim, now_ms, handoff, binding).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(admission)
+    }
+
+    async fn admit_physical_attempt_in(
+        tx: &mut SqliteConnection,
+        claim: &RunClaim,
+        now_ms: u64,
+        handoff: bool,
+        binding: Option<&AttemptExecutionBinding>,
+    ) -> Result<AttemptAdmission, DispatchError> {
         let p = NS;
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-        let mut tx = immediate(&mut conn).await?;
         let current: Option<PersistedAttemptFacts> = sqlx::query_as::<_, PersistedAttemptRow>(
             &format!(
                 "SELECT status, lease_owner, lease_epoch, lease_until, \
@@ -82,7 +93,6 @@ impl SqliteDispatchStore {
             },
         );
         let Some(current) = current else {
-            let _ = tx.rollback().await;
             return Ok(AttemptAdmission::Fenced);
         };
         let persisted_epoch = crate::stored_claim_epoch(current.lease_epoch)?;
@@ -134,9 +144,9 @@ impl SqliteDispatchStore {
             .transpose()?;
         crate::dispatch::verify_physical_attempt_binding(
             transition,
-            &claim,
+            claim,
             assignment.as_ref(),
-            binding.as_ref(),
+            binding,
             stored.as_ref().and_then(|a| a.binding.as_ref()),
         )?;
         if matches!(
@@ -144,9 +154,8 @@ impl SqliteDispatchStore {
             PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
         ) {
             let request: RunDispatch = serde_json::from_str(&current.request).map_err(json_err)?;
-            let operation =
-                crate::dispatch::physical_admission_operation(&claim, binding.as_ref(), &request);
-            insert_operation(&mut tx, p, operation, now_ms).await?;
+            let operation = crate::dispatch::physical_admission_operation(claim, binding, &request);
+            insert_operation(&mut *tx, p, operation, now_ms).await?;
             let binding_json = binding
                 .as_ref()
                 .map(serde_json::to_string)
@@ -164,7 +173,6 @@ impl SqliteDispatchStore {
             .await
             .map_err(store_error)?;
         }
-        tx.commit().await.map_err(store_error)?;
         Ok(admission)
     }
 }
@@ -288,5 +296,79 @@ impl SqliteDispatchStore {
         }
         tx.commit().await.map_err(store_error)?;
         Ok(outcome)
+    }
+}
+
+impl SqliteDispatchStore {
+    async fn admit_with_registry_transaction(
+        &self,
+        claim: &RunClaim,
+        binding: Option<&AttemptExecutionBinding>,
+        mut guard: awaken_worker_contract::WorkerIncarnationGuard,
+        handoff: bool,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        let Some((mut tx, registry_pool)) =
+            guard.take_resource::<(awaken_sqlite_pool::EmbeddedTransaction, EmbeddedPool)>()
+        else {
+            return crate::application::admit_with_incarnation_guard(
+                self, now_ms, claim, binding, guard, handoff,
+            )
+            .await;
+        };
+        let same_database = self.pool.shares_database(&registry_pool);
+        match same_database {
+            Err(error) => {
+                tx.rollback().await.map_err(store_error)?;
+                return Err(store_error(error));
+            }
+            Ok(false) => {
+                // Independently persisted Registry and Dispatch are a supported
+                // pairing. Keep the original exclusion through their operation.
+                let guard = awaken_worker_contract::WorkerIncarnationGuard::new_resource(
+                    guard.snapshot().clone(),
+                    (tx, registry_pool),
+                    |(tx, _pool)| async move { tx.rollback().await.map_err(|e| e.to_string()) },
+                );
+                return crate::application::admit_with_incarnation_guard(
+                    self, now_ms, claim, binding, guard, handoff,
+                )
+                .await;
+            }
+            Ok(true) => {}
+        }
+        let snapshot = guard.snapshot();
+        if snapshot.identity.lease_owner() != claim.owner
+            || binding.is_some_and(|binding| binding.worker() != &snapshot.identity)
+        {
+            tx.rollback().await.map_err(store_error)?;
+            return Err(DispatchError::Rejected(
+                "Registry guard does not match the physical attempt".into(),
+            ));
+        }
+        if !snapshot.standing(now_ms).holds_authority() {
+            tx.rollback().await.map_err(store_error)?;
+            return Ok(AttemptAdmission::Fenced);
+        }
+        // Never await a mutex whose owner may be waiting for this database.
+        // Busy means unavailable with zero effects, not a predecessor result.
+        let Ok(_authority) = self.authority.try_lock() else {
+            tx.rollback().await.map_err(store_error)?;
+            return Err(DispatchError::unavailable(
+                "Dispatch commit exclusion is busy",
+            ));
+        };
+        let result =
+            Self::admit_physical_attempt_in(&mut tx, claim, now_ms, handoff, binding).await;
+        match result {
+            Ok(admission) => {
+                tx.commit().await.map_err(store_error)?;
+                Ok(admission)
+            }
+            Err(error) => {
+                tx.rollback().await.map_err(store_error)?;
+                Err(error)
+            }
+        }
     }
 }

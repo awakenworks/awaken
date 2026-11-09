@@ -3760,6 +3760,7 @@ dependencies = [
  "awaken-sync",
  "futures-core",
  "futures-util",
+ "same-file",
  "sqlx",
  "tempfile",
  "thiserror",

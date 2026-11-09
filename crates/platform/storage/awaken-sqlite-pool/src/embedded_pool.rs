@@ -40,6 +40,7 @@ pub struct EmbeddedPool {
 struct Inner {
     pool: SqlitePool,
     _live: Option<LiveFile>,
+    database: Option<crate::identity::DatabaseFile>,
 }
 
 impl fmt::Debug for EmbeddedPool {
@@ -49,9 +50,30 @@ impl fmt::Debug for EmbeddedPool {
 }
 
 impl EmbeddedPool {
-    pub(crate) fn new(pool: SqlitePool, live: Option<LiveFile>) -> Self {
+    pub(crate) fn new(
+        pool: SqlitePool,
+        live: Option<LiveFile>,
+        database: Option<crate::identity::DatabaseFile>,
+    ) -> Self {
         Self {
-            inner: Arc::new(Inner { pool, _live: live }),
+            inner: Arc::new(Inner {
+                pool,
+                _live: live,
+                database,
+            }),
+        }
+    }
+
+    /// Whether both handles observe the same opened main database.
+    ///
+    /// Separate private memory databases and independent files are distinct.
+    /// A removed or replaced file is an error, never evidence for transferring
+    /// an existing transaction. This observation grants no domain authority.
+    pub fn shares_database(&self, other: &Self) -> Result<bool, sqlx::Error> {
+        match (&self.inner.database, &other.inner.database) {
+            (Some(left), Some(right)) => left.same_current_file(right),
+            (None, None) => Ok(Arc::ptr_eq(&self.inner, &other.inner)),
+            _ => Ok(false),
         }
     }
 

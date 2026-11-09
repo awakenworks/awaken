@@ -177,3 +177,31 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
   `crates/platform/committed-truth/awaken-store-sqlite/Cargo.toml:24` uses sqlx.
   [ADR-0008](0008-durable-postgres-commit-backend.md) D1 allowed only
   `awaken-store-postgres` to name `sqlx`; 32 manifests name it today.
+
+
+## Test design: guarded admission on a shared SQLite database
+
+The regression pairs the real Registry and Dispatch adapters on one database
+file, alongside the existing independent-database control. It checks the
+original incarnation exclusion through the physical slot and operation commit.
+Increasing the pool, admission deadline, or busy wait does not satisfy this
+contract; releasing the Registry before the slot write must remain a negative
+control.
+
+| Cause | Required effect | Owning check |
+| --- | --- | --- |
+| Registry and Dispatch use separate pools on one file; the Worker stands Ready | Complete the shared standing transcript without acquiring a second writer | `guarded_admission_conformance::sqlite_shared_file_guarded_admission_follows_incarnation_standing` |
+| Registry and Dispatch use independent databases | Preserve the existing standing transcript | `guarded_admission_conformance::sqlite_guarded_admission_follows_incarnation_standing` |
+| The incarnation is closed, expired, foreign, or mismatches the binding | Install no physical slot or operation | Shared standing transcript |
+| The Dispatch fenced-commit exclusion is busy | Return unavailable with zero effects, release the Registry transaction, then accept a fresh current attempt | `shared_database_busy_dispatch_exclusion_rolls_back_without_waiting_or_effects` |
+| The slot update fails after staging its operation | Roll back both records and release the original Registry transaction | `shared_database_slot_failure_rolls_back_operation_and_releases_original_registry` |
+| A successful acknowledgement is lost and the original claim repeats | Recover the original slot without another operation | The busy/replay regression above |
+| Opened file identities, journal aliases, or private memory databases differ | Do not infer transaction provenance from a filename label; replacement and aliases fail closed | `awaken-sqlite-pool` identity tests |
+| The HTTP caller drops while admission is in progress | Retain the existing completion-owner cancellation contract | Existing Dispatch HTTP completion/cancellation suite |
+
+Run the unchanged-adapter regression before the repair, retain the failure,
+and require exact source restoration after controlled regressions. Verify the
+same-file and independent-database controls, affected native suites, PostgreSQL
+controls, API checks, and normal hooks. A composing Flow Studio source gate
+separately qualifies its application and Worker lifecycle; a native owner
+result is not that product qualification.

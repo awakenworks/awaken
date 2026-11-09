@@ -89,6 +89,38 @@ async fn sqlite_guarded_admission_follows_incarnation_standing() {
 }
 
 #[tokio::test]
+async fn sqlite_shared_file_guarded_admission_follows_incarnation_standing() {
+    // The embedded product composition opens both native owners on one file.
+    // Their original Registry exclusion must be the Dispatch writer, rather
+    // than blocking a second BEGIN IMMEDIATE on that same database.
+    let temporary = tempfile::tempdir().unwrap();
+    let database = temporary.path().join("shared-process.db");
+    let clock = Arc::new(ManualClock::new(10_000_000));
+    let store = Arc::new(
+        SqliteDispatchStore::open(database.to_str().unwrap(), clock.clone())
+            .await
+            .unwrap(),
+    );
+    let directory = SqliteWorkerDirectory::open(&database).await.unwrap();
+    let transcript = assert_guarded_admission_follows_standing(
+        "sqlite-shared-file",
+        store.as_ref(),
+        &directory,
+        || {
+            let clock = clock.clone();
+            async move { clock.now_ms() }
+        },
+        |tag, worker| {
+            let store = store.clone();
+            async move { claim_with(store.as_ref(), tag, worker).await }
+        },
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), transcript)
+        .await
+        .expect("shared-file native admission must not wait on its own Registry transaction");
+}
+
+#[tokio::test]
 async fn postgres_guarded_admission_follows_incarnation_standing() {
     // The production pairing: Registry and Dispatch on one process pool, the
     // Registry transaction carried into the admission. Database time is the
