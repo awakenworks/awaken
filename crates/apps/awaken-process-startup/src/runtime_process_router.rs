@@ -168,6 +168,12 @@ async fn open_process_base(
         executable_environment_wiring,
         enrollment_signing_key,
     } = startup::prepare(&stores, process)?;
+    if let Some(projector) = process.managed_services.model_reference_projector.take() {
+        executable_agent_wiring
+            .catalog
+            .install_model_reference_projector(projector)
+            .map_err(|error| format!("install source model-reference projector: {error}"))?;
+    }
     let role = process.role;
     let runtime_authority = selected_runtime_authority(&mut process, &stores).await?;
     let placement = if process

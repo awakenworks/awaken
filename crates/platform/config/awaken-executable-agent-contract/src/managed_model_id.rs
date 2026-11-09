@@ -208,12 +208,33 @@ pub fn render_managed_model_id(selection: &ModelSelection) -> Result<String, Man
     }
 }
 
+/// Pure source-owned projection of frozen execution metadata to a public model ID.
+/// Implementations may not query a mutable catalog, resolve credentials or own
+/// registrations. IDs always use the one Managed authoring codec below.
+pub trait PublishedModelReferenceProjector: Send + Sync {
+    fn project(
+        &self,
+        candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+    ) -> Result<Option<ModelSelection>, ManagedModelIdError>;
+}
+
+/// Standalone Config, backend-owned and installed-executor reference projection.
+pub struct CanonicalPublishedModelReferenceProjector;
+impl PublishedModelReferenceProjector for CanonicalPublishedModelReferenceProjector {
+    fn project(
+        &self,
+        candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+    ) -> Result<Option<ModelSelection>, ManagedModelIdError> {
+        published_model_selection(candidate)
+    }
+}
+
 /// Project one already-published candidate to an ID the public authoring codec
 /// accepts. Provider/account identity is not the vendor coordinate, and the
 /// exact frozen route must not collapse into its bare model name.
-pub(crate) fn render_published_model_id(
+pub(crate) fn published_model_selection(
     candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
-) -> Result<Option<String>, ManagedModelIdError> {
+) -> Result<Option<ModelSelection>, ManagedModelIdError> {
     use awaken_runtime_contract::resolved::ModelProvisioning;
     let binding = candidate.binding();
     if binding.identity().1.is_empty() {
@@ -253,11 +274,7 @@ pub(crate) fn render_published_model_id(
         ModelProvisioning::HostExecutor => ModelSelection::Pinned(binding.clone()),
         ModelProvisioning::Remote { .. } => return Ok(None),
     };
-    let rendered = render_managed_model_id(&selection)?;
-    // Frozen publication metadata may predate this projection. A rendered ID
-    // must pass the same public admission before discovery advertises it.
-    parse_managed_model_id(&rendered)?;
-    Ok(Some(rendered))
+    Ok(Some(selection))
 }
 
 fn published_reference_id(reference: &str) -> Result<&str, ManagedModelIdError> {

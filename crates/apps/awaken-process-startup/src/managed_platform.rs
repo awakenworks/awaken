@@ -46,6 +46,10 @@ pub struct ManagedServiceAdapters {
     pub list_price_provider: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     pub tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
     pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
+    /// Pure hosted-source inverse projection over the existing immutable
+    /// executable catalog. It owns no model state or Control read path.
+    pub model_reference_projector:
+        Option<Arc<dyn awaken_executable_agent_contract::PublishedModelReferenceProjector>>,
     pub background_services: Vec<Arc<dyn ManagedBackgroundService>>,
     pub credential_material_delivery:
         Option<awaken_credential_contract::CredentialMaterialDelivery>,
@@ -64,6 +68,15 @@ pub struct ManagedServiceAdapters {
 }
 
 impl ManagedServiceAdapters {
+    #[must_use]
+    pub fn with_model_reference_projector(
+        mut self,
+        projector: Arc<dyn awaken_executable_agent_contract::PublishedModelReferenceProjector>,
+    ) -> Self {
+        self.model_reference_projector = Some(projector);
+        self
+    }
+
     /// Install the configured self-hosted transport at the same composition
     /// boundary as a product-supplied issuer. Ambiguous double installation is
     /// an error; neither delivery mechanism silently replaces the other.

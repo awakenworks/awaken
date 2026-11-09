@@ -8,15 +8,16 @@
 //! remain addressable after current availability changes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, OnceLock, RwLockReadGuard, RwLockWriteGuard};
 
 use async_trait::async_trait;
 use awaken_executable_agent_contract::{
-    ExecutableAgentInventorySource, ExecutableAgentProfileSource, ExecutableAgentRegistrar,
-    ExecutableAgentRegistration, ExecutableAgentRegistrationError,
-    ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationSource,
-    ExecutableAgentSessionProfile, ExecutableAgentWithdrawal, ExecutableAgentWithdrawalOutcome,
-    PublishedModelReference, project_current_model_publications,
+    CanonicalPublishedModelReferenceProjector, ExecutableAgentInventorySource,
+    ExecutableAgentProfileSource, ExecutableAgentRegistrar, ExecutableAgentRegistration,
+    ExecutableAgentRegistrationError, ExecutableAgentRegistrationOutcome,
+    ExecutableAgentRegistrationSource, ExecutableAgentSessionProfile, ExecutableAgentWithdrawal,
+    ExecutableAgentWithdrawalOutcome, PublishedModelReference, PublishedModelReferenceProjector,
+    project_current_model_publications,
 };
 use awaken_resource_contract::{
     InputResourceId, ResourceKind, ResourcePurgeError, ResourceReference, ResourceReferenceIndex,
@@ -166,12 +167,26 @@ fn installed_lifecycle_revision_never_rolls_back() {
 #[derive(Default)]
 pub struct ExecutableAgentCatalog {
     state: InvariantRwLock<CatalogState>,
+    model_reference_projector: OnceLock<Arc<dyn PublishedModelReferenceProjector>>,
 }
 
 impl ExecutableAgentCatalog {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Install the composition's pure source projector before its first model
+    /// read. A duplicate or late installation cannot change discovery policy.
+    pub fn install_model_reference_projector(
+        &self,
+        projector: Arc<dyn PublishedModelReferenceProjector>,
+    ) -> Result<(), ExecutableAgentRegistrationError> {
+        self.model_reference_projector.set(projector).map_err(|_| {
+            ExecutableAgentRegistrationError::Invalid(
+                "model reference projector is already installed or in use".into(),
+            )
+        })
     }
 
     /// Fail-closed: a poisoned catalog admits no current registration.
@@ -508,6 +523,9 @@ impl ExecutableAgentInventorySource for ExecutableAgentCatalog {
         workspace_id: &str,
     ) -> Result<Vec<PublishedModelReference>, ExecutableAgentRegistrationError> {
         let state = self.read_state()?;
+        let projector = self
+            .model_reference_projector
+            .get_or_init(|| Arc::new(CanonicalPublishedModelReferenceProjector));
         project_current_model_publications(
             state.current.iter().filter_map(|((workspace, _), entry)| {
                 (workspace == workspace_id)
@@ -520,6 +538,7 @@ impl ExecutableAgentInventorySource for ExecutableAgentCatalog {
                 .filter_map(|((workspace, _, _), registration)| {
                     (workspace == workspace_id).then_some(registration)
                 }),
+            projector.as_ref(),
         )
     }
 }
@@ -844,6 +863,68 @@ mod test_support {
 mod tests {
     use super::*;
     use crate::test_support::registration;
+
+    #[tokio::test]
+    async fn source_projector_is_immutable_and_shared_by_directory_and_readiness() {
+        // C1 source adapter is installed before the first model read; C2 it is
+        // installed twice; C3 either directory or Dream readiness reads it;
+        // C4 a default read happens before installation. Rules: R1 C1+C3 =>
+        // the same source-owned selection via the sole codec; R2 C2 or C4 =>
+        // refuse policy replacement, including an initially empty directory.
+        struct Source;
+        impl PublishedModelReferenceProjector for Source {
+            fn project(
+                &self,
+                _: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+            ) -> Result<
+                Option<awaken_executable_agent_contract::ModelSelection>,
+                awaken_executable_agent_contract::ManagedModelIdError,
+            > {
+                awaken_executable_agent_contract::parse_managed_model_id(
+                    "source-model;provider=vendor",
+                )
+                .map(Some)
+            }
+        }
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        catalog
+            .install_model_reference_projector(Arc::new(Source))
+            .unwrap();
+        assert!(
+            catalog
+                .install_model_reference_projector(Arc::new(Source))
+                .is_err(),
+            "R2 duplicate"
+        );
+        LocalExecutableAgentRegistrar::new(catalog.clone())
+            .register(registration(1, "fp-source"))
+            .await
+            .unwrap();
+        let directory = catalog
+            .current_model_publications("workspace-a")
+            .await
+            .unwrap();
+        let readiness = awaken_executable_agent_contract::current_model_references(
+            catalog.as_ref(),
+            "workspace-a",
+        )
+        .await
+        .unwrap();
+        assert_eq!(readiness, vec!["source-model;provider=vendor"], "R1");
+        assert_eq!(directory[0].model_reference, readiness[0], "R1");
+        let late = ExecutableAgentCatalog::new();
+        assert!(
+            late.current_model_publications("workspace-a")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            late.install_model_reference_projector(Arc::new(Source))
+                .is_err(),
+            "R2 late"
+        );
+    }
 
     #[tokio::test]
     async fn model_first_publication_survives_withdrawal_and_legacy_enrichment() {
