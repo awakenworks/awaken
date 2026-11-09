@@ -11,6 +11,8 @@ mod compile;
 mod config;
 /// Reusable MCP authoring definitions; execution remains Agent/Session-owned.
 pub mod mcp_config;
+/// Account-owned selection preferences, separate from definitions and authority.
+pub mod personal_selection;
 mod store;
 
 pub use agent_inputs::{AgentEnvironmentBinding, AgentInputConfig};

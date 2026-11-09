@@ -16,7 +16,7 @@ const POSTGRES_BASELINE: &str = include_str!("migrations/V0001__control_config.p
 const SQLITE_BASELINE: &str = include_str!("migrations/V0001__control_config.sqlite.sql");
 
 /// Build the one versioned config-schema stream. The two dialect bodies encode
-/// only database syntax differences; both establish the same five Control-owned
+/// only database syntax differences; both establish the same Control-owned
 /// tables and revision-capture behavior.
 pub fn config_bundle() -> Result<MigrationBundle, MigrationError> {
     with_current_migrations(compact_baseline()?)
@@ -60,6 +60,12 @@ fn with_current_migrations(history: MigrationBundle) -> Result<MigrationBundle, 
         include_str!("migrations/V0012__publication_commit_order.postgres.sql").trim(),
         include_str!("migrations/V0012__publication_commit_order.sqlite.sql").trim(),
     )?);
+    migrations.push(Migration::per_dialect(
+        13,
+        "native Account-owned Agent selection and original receipts",
+        include_str!("migrations/V0013__personal_agent_selection.postgres.sql").trim(),
+        include_str!("migrations/V0013__personal_agent_selection.sqlite.sql").trim(),
+    )?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
@@ -99,8 +105,8 @@ mod tests {
     #[tokio::test]
     async fn current_baseline_has_one_history_and_captures_exact_revisions() {
         /* Causes: C1 empty ledger; C2 insert generation 1; C3 update to
-         * generation 2; C4 exact V1/V11/V12 receipts on replay. Effects: E1 create only
-         * the five active Control tables; E2 append revision 1; E3 append
+         * generation 2; C4 exact V1/V11/V12/V13 receipts on replay. Effects: E1 create only
+         * the seven active Control tables; E2 append revision 1; E3 append
          * revision 2; E4 execute no SQL. Decision table: G1=C1=>E1;
          * G2=G1+C2=>E2; G3=G2+C3=>E3; G4=C4=>E4. */
         let bundle = config_bundle().expect("bundle");
@@ -110,10 +116,10 @@ mod tests {
                 .iter()
                 .map(Migration::version)
                 .collect::<Vec<_>>(),
-            [1, 11, 12]
+            [1, 11, 12, 13]
         );
         let (conn, runner) = memory().await;
-        assert_eq!(runner.run_bundle(&bundle).await.expect("G1").len(), 3);
+        assert_eq!(runner.run_bundle(&bundle).await.expect("G1").len(), 4);
         let tables = sqlx::query_scalar::<_, String>(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'config_%' \
              AND name NOT LIKE 'config_schema_migrations%' ORDER BY name",
@@ -131,6 +137,8 @@ mod tests {
                 "config_management_audit".to_owned(),
                 "config_management_effect".to_owned(),
                 "config_publication".to_owned(),
+                "config_personal_agent_selection".to_owned(),
+                "config_personal_agent_selection_receipt".to_owned(),
             ]),
             "G1/E1"
         );
@@ -177,7 +185,7 @@ mod tests {
         .execute(&conn)
         .await
         .unwrap();
-        assert_eq!(runner.run_bundle(&current).await.unwrap().len(), 1, "E1");
+        assert_eq!(runner.run_bundle(&current).await.unwrap().len(), 2, "E1");
         let verified: i64 = sqlx::query_scalar(
             "SELECT order_verified FROM config_publication WHERE fingerprint = 'fp'",
         )
