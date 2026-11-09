@@ -166,8 +166,7 @@ def _owned_routes(path: Path) -> list[tuple[str, str]]:
             continue
         end = _crate_boundary_workspace._balanced_end(syntax, opening, "(", ")")
         expression = syntax[match.end() : len(text) if end is None else end]
-        methods = set(METHOD.findall(expression))
-        for method in methods:
+        for method in set(METHOD.findall(expression)):
             owned.append((method.upper(), _normalized_path(match.group("path"))))
     return owned
 
