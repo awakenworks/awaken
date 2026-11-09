@@ -61,6 +61,10 @@ pub struct ContainerSandboxHandleV2 {
     pub adoption_fingerprint: pc::SandboxRealizationFingerprint,
     pub realization_fingerprint: pc::SandboxRealizationFingerprint,
     pub owned_paths: Vec<String>,
+    /// Original provider-effective rootfs, validated by the adoption
+    /// fingerprint before terminal use. Historical handles retain None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_rootfs: Option<crate::RootfsPlan>,
 }
 
 /// Current wire envelope. Restore keeps absent ordinary-realization authority;
@@ -75,6 +79,8 @@ struct ContainerSandboxHandleV3 {
     realization_fingerprint: Option<pc::SandboxRealizationFingerprint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     owned_paths: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    creation_rootfs: Option<crate::RootfsPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,6 +256,10 @@ pub trait ContainerHandleCodec: sealed::Sealed + Sized {
     fn container_adoption_fingerprint(
         &self,
     ) -> Result<Option<pc::SandboxRealizationFingerprint>, pc::SandboxError>;
+
+    /// Captured rootfs is evidence for terminal recovery, never a new image
+    /// selector or ordinary execution-adoption permission.
+    fn container_creation_rootfs(&self) -> Result<Option<crate::RootfsPlan>, pc::SandboxError>;
 }
 
 fn encode(
@@ -290,6 +300,14 @@ fn current_payload(
     handle: &pc::SandboxHandle,
 ) -> Result<ContainerSandboxHandleV3, pc::SandboxError> {
     let payload: ContainerSandboxHandleV3 = handle.decode_provider_payload()?;
+    let projected = container_version(handle) == Some(4);
+    if projected != payload.creation_rootfs.is_some()
+        || projected && (payload.adoption_fingerprint.is_none() || handle.restoration().is_some())
+    {
+        return Err(pc::SandboxError::invalid(
+            "container rootfs evidence requires its complete versioned realization",
+        ));
+    }
     let complete = matches!(
         (
             &payload.adoption_fingerprint,
@@ -304,11 +322,11 @@ fn current_payload(
         .as_ref()
         .and_then(ContainerContinuationHandle::projected_participants);
     if !complete
-        || original.is_none()
+        || !projected && original.is_none()
         || original.is_some_and(|original| {
             original.restoration().map(|(evidence, _)| evidence) != handle.restoration()
         })
-        || payload
+        || original.is_some() && payload
             .previous
             .runtime_handle
             .as_ref()
@@ -340,6 +358,19 @@ fn current_payload(
     Ok(payload)
 }
 
+fn legacy_v2_payload(
+    handle: &pc::SandboxHandle,
+) -> Result<ContainerSandboxHandleV2, pc::SandboxError> {
+    let payload: ContainerSandboxHandleV2 = handle.decode_provider_payload()?;
+    if payload.creation_rootfs.is_some() {
+        return Err(pc::SandboxError::invalid(
+            "original container rootfs requires container schema 4",
+        ));
+    }
+    legacy_payload(payload.previous.clone())?;
+    Ok(payload)
+}
+
 impl ContainerHandleCodec for pc::SandboxHandle {
     fn container(sandbox_id: impl Into<String>, payload: ContainerSandboxHandleV1) -> Self {
         if payload
@@ -356,6 +387,7 @@ impl ContainerHandleCodec for pc::SandboxHandle {
                     adoption_fingerprint: None,
                     realization_fingerprint: None,
                     owned_paths: None,
+                    creation_rootfs: None,
                 },
             );
         }
@@ -363,6 +395,9 @@ impl ContainerHandleCodec for pc::SandboxHandle {
     }
 
     fn container_v2(sandbox_id: impl Into<String>, payload: ContainerSandboxHandleV2) -> Self {
+        if payload.creation_rootfs.is_some() {
+            return encode(sandbox_id, 4, &payload);
+        }
         if payload
             .previous
             .runtime_handle
@@ -378,6 +413,7 @@ impl ContainerHandleCodec for pc::SandboxHandle {
                     adoption_fingerprint: Some(payload.adoption_fingerprint),
                     realization_fingerprint: Some(payload.realization_fingerprint),
                     owned_paths: Some(payload.owned_paths),
+                    creation_rootfs: None,
                 },
             );
         }
@@ -387,21 +423,16 @@ impl ContainerHandleCodec for pc::SandboxHandle {
     fn container_payload(&self) -> Result<ContainerSandboxHandleV1, pc::SandboxError> {
         match container_version(self) {
             Some(1) => self.decode_provider_payload().and_then(legacy_payload),
-            Some(2) => self
-                .decode_provider_payload::<ContainerSandboxHandleV2>()
-                .and_then(|payload| legacy_payload(payload.previous)),
-            Some(3) => current_payload(self).map(|payload| payload.previous),
+            Some(2) => legacy_v2_payload(self).map(|payload| payload.previous),
+            Some(3 | 4) => current_payload(self).map(|payload| payload.previous),
             _ => Err(self.provider_mismatch(CONTAINER)),
         }
     }
 
     fn container_physical_incarnation(&self) -> Result<String, pc::SandboxError> {
         let payload = match container_version(self) {
-            Some(2) => legacy_payload(
-                self.decode_provider_payload::<ContainerSandboxHandleV2>()?
-                    .previous,
-            )?,
-            Some(3) => {
+            Some(2) => legacy_v2_payload(self)?.previous,
+            Some(3 | 4) => {
                 let payload = current_payload(self)?;
                 if payload.adoption_fingerprint.is_none()
                     || payload.realization_fingerprint.is_none()
@@ -464,13 +495,19 @@ impl ContainerHandleCodec for pc::SandboxHandle {
                     legacy_payload(payload)?;
                     Ok(None)
                 }),
-            Some(2) => self
-                .decode_provider_payload::<ContainerSandboxHandleV2>()
-                .and_then(|payload| {
-                    legacy_payload(payload.previous)?;
-                    Ok(Some(payload.adoption_fingerprint))
-                }),
-            Some(3) => current_payload(self).map(|payload| payload.adoption_fingerprint),
+            Some(2) => legacy_v2_payload(self).map(|payload| Some(payload.adoption_fingerprint)),
+            Some(3 | 4) => current_payload(self).map(|payload| payload.adoption_fingerprint),
+            _ => Err(self.provider_mismatch(CONTAINER)),
+        }
+    }
+
+    fn container_creation_rootfs(&self) -> Result<Option<crate::RootfsPlan>, pc::SandboxError> {
+        match container_version(self) {
+            Some(4) => current_payload(self).map(|payload| payload.creation_rootfs),
+            Some(1..=3) => {
+                self.container_payload()?;
+                Ok(None)
+            }
             _ => Err(self.provider_mismatch(CONTAINER)),
         }
     }

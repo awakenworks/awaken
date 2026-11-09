@@ -20,6 +20,7 @@ fn batch_artifact_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle 
     pc::SandboxHandle::container_v2(
         &spec.scope,
         awaken_sandbox_container::ContainerSandboxHandleV2 {
+            creation_rootfs: None,
             previous: awaken_sandbox_container::ContainerSandboxHandleV1 {
                 container_id: format!("container-{}", spec.scope),
                 outputs_path: spec.outputs_path.clone(),

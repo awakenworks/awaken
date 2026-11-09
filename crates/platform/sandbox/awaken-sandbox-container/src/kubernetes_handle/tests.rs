@@ -60,6 +60,7 @@ fn frozen_plan_empty_codec_rejects_members_and_conflicting_envelope_fingerprints
         let handle = pc::SandboxHandle::container_v2(
             "original-session",
             crate::ContainerSandboxHandleV2 {
+                creation_rootfs: None,
                 previous: crate::ContainerSandboxHandleV1 {
                     container_id: "original-pod-name".into(),
                     outputs_path: "/outputs".into(),

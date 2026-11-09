@@ -299,6 +299,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     pub(super) fn adoption_plan(
         &self,
         spec: &pc::SandboxSpec,
+        creation_rootfs: Option<&RootfsPlan>,
     ) -> Result<(ContainerPlan, pc::SandboxRealizationFingerprint), pc::SandboxError> {
         let command = self
             .resident_hand
@@ -313,6 +314,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             self.clock.as_ref(),
         )
         .map_err(pc::SandboxError::from)?;
+        if let Some(rootfs) = creation_rootfs {
+            plan.rootfs = rootfs.clone();
+        }
         if let Some(hand) = &self.resident_hand {
             process_env::bind_resident_process_environment(&mut plan.env, &spec.outputs_path);
             plan.env
@@ -406,7 +410,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
 
         // A Session owns one live environment. The pure adoption plan is the
         // only projection of its provider-effective immutable configuration.
-        let (mut plan, adoption_fingerprint) = self.adoption_plan(spec)?;
+        let (mut plan, adoption_fingerprint) = self.adoption_plan(spec, None)?;
+        // Capture before package provisioning replaces plan.rootfs with the
+        // final image: adoption binds the original effective base rootfs.
+        let creation_rootfs = plan.rootfs.clone();
         // The same stable-scope decision owner first validates the already
         // authorized Session effect without requiring a resolved image. This
         // rejects foreign/newer/duplicate occupants before package build/push or
@@ -831,6 +838,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             continuation_excluded_paths: recovery::source_mount_paths(spec),
             adoption_fingerprint: Some(adoption_fingerprint),
             realization_fingerprint: Some(realization_fingerprint),
+            creation_rootfs: Some(creation_rootfs),
             memory_materializations,
             owned_paths: awaken_sync::LeafLock::new(recovery::source_mount_paths(spec)),
             adopted_handle: None,
@@ -1023,6 +1031,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             continuation_excluded_paths: payload.continuation_excluded_paths,
             adoption_fingerprint: handle.container_adoption_fingerprint()?,
             realization_fingerprint: handle.realization_fingerprint().cloned(),
+            creation_rootfs: handle.container_creation_rootfs()?,
             memory_materializations: handle
                 .memory_materializations()?
                 .unwrap_or_default()
@@ -1081,28 +1090,67 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // still verifies the durable fingerprints, fence and physical UIDs.
         // Execution recovery and terminal preparation retain their strict plan.
         if !retirement && let Some(stored) = decoded.adoption_fingerprint.as_ref() {
-            let (plan, expected) = self.adoption_plan(adoption.spec)?;
-            let historical_match = if *stored != expected
-                && purpose == SandboxObservationPurpose::TerminalCleanup
+            let terminal = purpose == SandboxObservationPurpose::TerminalCleanup
                 && effect_fence.is_some()
-            {
-                self.runtime
-                    .historical_terminal_configuration(
-                        adoption.handle.container_payload()?.runtime_handle.as_ref(),
-                    )
+                && adoption.handle.sandbox_id == adoption.spec.scope;
+            let original_rootfs = terminal
+                .then_some(decoded.creation_rootfs.as_ref())
+                .flatten();
+            let (mut plan, expected) = self.adoption_plan(adoption.spec, original_rootfs)?;
+            let mut compatible = expected == *stored;
+            if !compatible && terminal {
+                let mut historical = ContainerObservationExpectation::from_decoded(&decoded);
+                historical.purpose = purpose;
+                historical.effect_fence = effect_fence;
+                historical.retained_attempt = adoption.retained_attempt;
+                match self
+                    .runtime
+                    .historical_terminal_projection(historical)
+                    .await
                     .map_err(pc::SandboxError::from)?
-                    .is_some_and(|configuration| {
-                        container_adoption_fingerprint(
+                {
+                    Some(crate::ContainerTerminalHistory::Candidate {
+                        configuration,
+                        rootfs,
+                        resolved_image,
+                    }) => {
+                        if original_rootfs.is_none()
+                            && let Some(rootfs) = rootfs
+                        {
+                            plan.rootfs = rootfs;
+                        }
+                        compatible = container_adoption_fingerprint(
                             adoption.spec,
                             &plan,
                             self.resident_hand.as_ref(),
                             &configuration,
                         ) == *stored
-                    })
-            } else {
-                false
-            };
-            if *stored != expected && !historical_match {
+                            && resolved_image.as_ref().is_none_or(|image| {
+                                decoded.realization_fingerprint.as_ref()
+                                    == Some(&container_realization_fingerprint(
+                                        adoption.spec,
+                                        stored,
+                                        image,
+                                    ))
+                            });
+                    }
+                    Some(crate::ContainerTerminalHistory::Absent {
+                        physical_incarnation,
+                    }) => {
+                        if adoption.handle.container_physical_incarnation()? != physical_incarnation
+                        {
+                            return Err(pc::SandboxError::invalid(
+                                "historical absence names another physical incarnation",
+                            ));
+                        }
+                        return Ok(pc::SandboxObservation::DefinitivelyUnavailable {
+                            physical_incarnation: Some(physical_incarnation),
+                        });
+                    }
+                    None => {}
+                }
+            }
+            if !compatible {
                 return Ok(pc::SandboxObservation::Incompatible {
                     reason: format!(
                         "container provider-effective adoption configuration differs from its durable handle (expected={expected}, stored={stored})"
@@ -1173,7 +1221,7 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
     async fn prewarm_images(&self, specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
         let mut images = std::collections::BTreeSet::new();
         for spec in specs {
-            let (plan, _) = self.adoption_plan(spec)?;
+            let (plan, _) = self.adoption_plan(spec, None)?;
             // Coordinator must prepare package images first. Cache warmup never
             // becomes another package builder or materializes customer mounts.
             if plan.packages.is_empty() && spec.mounts.is_empty() {

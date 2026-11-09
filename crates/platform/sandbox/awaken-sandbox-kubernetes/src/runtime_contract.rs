@@ -206,19 +206,92 @@ impl ContainerRuntime for K8sRuntime {
         checkpoint::persist_checkpoint_upload(self, expectation, access, mutation).await
     }
 
-    fn historical_terminal_configuration(
+    async fn historical_terminal_projection(
         &self,
-        handle: Option<&awaken_sandbox_container::ContainerContinuationHandle>,
-    ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
-        // A typed V2 absence is not legacy missing evidence. Do not infer an
-        // old PVC's storage class/size from its UID or today's deployment.
-        if !matches!(handle.and_then(awaken_sandbox_container::ContainerContinuationHandle::kubernetes_incarnation), Some((pod_uid, None)) if !pod_uid.trim().is_empty())
+        expectation: ContainerObservationExpectation<'_>,
+    ) -> Result<Option<awaken_sandbox_container::ContainerTerminalHistory>, RuntimeError> {
+        use awaken_sandbox_container::{
+            ContainerContinuationHandle, ContainerTerminalHistory, RootfsPlan,
+        };
+        let handle = expectation.runtime_handle;
+        // Preserve the existing explicit no-claim historical candidate. It
+        // grants nothing and the provider still requires an exact hash match.
+        if matches!(handle.and_then(ContainerContinuationHandle::kubernetes_incarnation), Some((pod_uid, None)) if !pod_uid.trim().is_empty())
+            && !matches!(
+                handle,
+                Some(ContainerContinuationHandle::KubernetesContinuationV3 { .. })
+            )
+        {
+            let mut configuration = self.realization_configuration()?;
+            configuration.insert("continuation_volume".into(), "none".into());
+            return Ok(Some(ContainerTerminalHistory::Candidate {
+                configuration,
+                rootfs: None,
+                resolved_image: None,
+            }));
+        }
+        let Some(ContainerContinuationHandle::KubernetesContinuationV3 {
+            pod_uid,
+            participants,
+            ..
+        }) = handle
+        else {
+            return Ok(None);
+        };
+        if expectation.purpose != pc::SandboxObservationPurpose::TerminalCleanup
+            || expectation.effect_fence.is_none()
+            || expectation.adoption_fingerprint.is_none()
+            || expectation.realization_fingerprint.is_none()
+            || participants.namespace() != self.namespace
+            || participants.pod_uid() != pod_uid
         {
             return Ok(None);
         }
-        let mut configuration = self.realization_configuration()?;
-        configuration.insert("continuation_volume".into(), "none".into());
-        Ok(Some(configuration))
+        // The ONE observer proves all original Pod/PVC/participant identities.
+        // Backend errors and a live retained PVC never become total absence.
+        let observed = observation::observe(self, expectation).await?;
+        match observed {
+            pc::SandboxObservation::DefinitivelyUnavailable {
+                physical_incarnation: Some(physical_incarnation),
+            } if physical_incarnation == *pod_uid => {
+                return Ok(Some(ContainerTerminalHistory::Absent {
+                    physical_incarnation,
+                }));
+            }
+            pc::SandboxObservation::Ready
+            | pc::SandboxObservation::Terminal { .. }
+            | pc::SandboxObservation::Disposing { .. }
+            | pc::SandboxObservation::Provisioning { .. } => {}
+            _ => return Ok(None),
+        }
+        let pod = self
+            .pods()
+            .get(expectation.container_id)
+            .await
+            .map_err(backend)?;
+        if pod.metadata.uid.as_deref() != Some(pod_uid.as_str()) {
+            return Err(backend(
+                "historical image observation changed its Pod incarnation",
+            ));
+        }
+        let image = pod
+            .spec
+            .as_ref()
+            .and_then(|spec| {
+                spec.containers
+                    .iter()
+                    .find(|container| container.name == "agent")
+            })
+            .and_then(|container| container.image.clone())
+            .ok_or_else(|| backend("historical Pod has no exact agent image"))?;
+        // The provider recomputes BOTH fingerprints. The final image is only
+        // a base-rootfs candidate: a derived package image cannot be guessed
+        // into the old base when those immutable projections disagree.
+        Ok(Some(ContainerTerminalHistory::Candidate {
+            configuration: self.realization_configuration()?,
+            rootfs: Some(RootfsPlan::Image(image.clone())),
+            resolved_image: Some(image),
+        }))
     }
 
     fn realization_configuration(

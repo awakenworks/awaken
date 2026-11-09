@@ -2684,6 +2684,7 @@ async fn effect_fenced_total_absence_has_no_terminal_environment() {
     let handle = pc::SandboxHandle::container_v2(
         created.sandbox_id.clone(),
         crate::ContainerSandboxHandleV2 {
+            creation_rootfs: None,
             previous,
             adoption_fingerprint: created
                 .container_adoption_fingerprint()
@@ -3245,11 +3246,21 @@ impl ContainerRuntime for FakeRuntime {
             }))
     }
 
-    fn historical_terminal_configuration(
+    async fn historical_terminal_projection(
         &self,
-        _: Option<&crate::ContainerContinuationHandle>,
-    ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
-        Ok(self.st.lock().unwrap().historical_configuration.clone())
+        _: ContainerObservationExpectation<'_>,
+    ) -> Result<Option<crate::ContainerTerminalHistory>, RuntimeError> {
+        Ok(self
+            .st
+            .lock()
+            .unwrap()
+            .historical_configuration
+            .clone()
+            .map(|configuration| crate::ContainerTerminalHistory::Candidate {
+                configuration,
+                rootfs: None,
+                resolved_image: None,
+            }))
     }
     async fn missing_handle_terminal_evidence(
         &self,

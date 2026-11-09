@@ -297,6 +297,40 @@ startup and retry still invoke the same registrar from the same durable Control
 facts. The earlier Consequences statement that Control remains unready while a
 static registration domain is pending is superseded by this amendment.
 
+## Amendment 2026-11-09: model discovery preserves selectable publication identity
+
+The public model directory must return identifiers accepted by the ordinary
+Agent authoring path. Extracting only a publication's model name loses its
+provider surface and executor, collapsing distinct bindings and returning an
+ambiguous or wrong-runtime choice to an official SDK client.
+
+Keep the executable catalog and durable publication history as the sole
+availability/time authorities. The existing pure ModelSelection value and
+Managed model-id codec move together into the existing Config registration
+contract; Agent Config and Config Service re-export that one implementation.
+The model directory renders the complete frozen provider/endpoint/executor
+selection through this codec. It adds no model catalog, alias registry, default
+source priority, mutable lookup, credential authority or new service.
+
+Static ownership remains Config authoring/publication, Coordinator executable
+availability, and the Models API's wire projection. Dynamically, a Workspace
+read projects exact current bindings and their original durable publication
+times, the SDK takes one returned ID, and ordinary Agent creation resolves it
+through the same parser/resolver. Missing publication coordinates fail the
+read rather than becoming an empty or guessed model. Non-model A2A entries do
+not become local inference models. Cause/effect tests cover same-named routes,
+Native/ACP distinctions, encoded qualifiers, malformed history and the actual
+Models-to-Agent-create round trip without Workspace headers.
+
+The same codec distinguishes backend-owned ACP exact models syntactically:
+`model;executor=acp:cli;source=backend` is `BackendExact`; ordinary selectors
+retain their existing catalog `Target` meaning, including a partial ACP target.
+The explicit source qualifier cannot combine with provider axes. This preserves
+the published provisioning meaning without trying one source and falling back
+to another when discovery or credentials fail. Partial native targets remain
+valid authoring intent: catalog ambiguity/not-found is reported as its original
+cause rather than an invented missing-provider executable binding error.
+
 ## References
 
 - [Architecture overview](../design/architecture-overview.md)

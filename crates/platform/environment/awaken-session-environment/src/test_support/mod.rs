@@ -559,6 +559,7 @@ pub fn current_fake_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandl
     pc::SandboxHandle::container_v2(
         "session-container",
         awaken_sandbox_container::ContainerSandboxHandleV2 {
+            creation_rootfs: None,
             previous: awaken_sandbox_container::ContainerSandboxHandleV1 {
                 container_id: "container-session-container".into(),
                 outputs_path: spec.outputs_path.clone(),

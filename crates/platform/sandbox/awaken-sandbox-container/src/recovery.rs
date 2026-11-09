@@ -62,6 +62,7 @@ pub fn terminal_handle(
     Ok(pc::SandboxHandle::container_v2(
         &spec.scope,
         crate::ContainerSandboxHandleV2 {
+            creation_rootfs: None,
             previous: crate::ContainerSandboxHandleV1 {
                 container_id,
                 outputs_path: spec.outputs_path.clone(),
@@ -97,8 +98,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let Some(handle) = handle else {
             return Ok(None);
         };
-        let (plan, adoption) = self.adoption_plan(spec)?;
         let mut decoded = crate::DecodedContainerHandle::decode(handle)?;
+        let (plan, adoption) = self.adoption_plan(spec, decoded.creation_rootfs.as_ref())?;
         let Some(runtime_handle) = self
             .runtime
             .terminal_continuation(&plan, &adoption, &decoded)
@@ -110,6 +111,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         Ok(Some(pc::SandboxHandle::container_v2(
             &handle.sandbox_id,
             crate::ContainerSandboxHandleV2 {
+                creation_rootfs: decoded.creation_rootfs,
                 previous: decoded.payload,
                 adoption_fingerprint: decoded.adoption_fingerprint.ok_or_else(|| {
                     pc::SandboxError::invalid("terminal normalization lost adoption evidence")
@@ -133,7 +135,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         expected_effect_fence: Option<&pc::SandboxEffectFence>,
         admit: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
     ) -> Result<Option<ReconstructedTerminalHandle>, pc::SandboxError> {
-        let (plan, adoption_fingerprint) = self.adoption_plan(spec)?;
+        let (plan, adoption_fingerprint) = self.adoption_plan(spec, None)?;
         let evidence = self
             .runtime
             .missing_handle_terminal_evidence(&spec.scope, &plan, expected_effect_fence)

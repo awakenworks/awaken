@@ -1,3 +1,7 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: One pure Config contract codec maps public selectors to the existing
+// @formal reason: authoring value and back. Publication discovery uses the same renderer;
+// @formal reason: this module grants no model, credential, catalog or runtime authority.
 //! Managed Agents model-id ACL.
 //!
 //! The public field stays an opaque string exactly as the Managed Agents API
@@ -11,18 +15,36 @@
 
 use std::collections::BTreeMap;
 
-use awaken_agent_config::{ModelSelection, ModelTarget};
-use awaken_agent_contract::AcpSessionConfiguration;
+use crate::ModelSelection;
+use awaken_agent_contract::{AcpSessionConfiguration, ModelTarget};
 use awaken_runtime_contract::resolved::{Backend, ModelBinding};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ManagedModelIdError {
     #[error("model id must not be empty")]
     Empty,
-    #[error("invalid Managed model id `{0}`")]
-    Invalid(String),
+    #[error("invalid Managed model id: {0}")]
+    Invalid(ManagedModelIdRefusal),
     #[error("model selection cannot be represented by a Managed model id")]
     UnsupportedSelection,
+}
+
+/// Finite public-selector refusal classes. The codec carries no arbitrary
+/// diagnostic string; callers can classify grammar, encoding and intent errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ManagedModelIdRefusal {
+    #[error("malformed selector syntax")]
+    Syntax,
+    #[error("unsupported executor selection")]
+    Executor,
+    #[error("malformed component encoding")]
+    Encoding,
+    #[error("incomplete provider target")]
+    IncompleteTarget,
+    #[error("conflicting source and provider selectors")]
+    ConflictingSource,
+    #[error("invalid backend-owned model selection")]
+    BackendSelection,
 }
 
 /// Parse a Managed-compatible model string into authoring intent.
@@ -32,47 +54,46 @@ pub fn parse_managed_model_id(value: &str) -> Result<ModelSelection, ManagedMode
         return Err(ManagedModelIdError::Empty);
     }
     if value.chars().any(char::is_whitespace) {
-        return Err(ManagedModelIdError::Invalid(value.into()));
+        return Err(ManagedModelIdError::Invalid(ManagedModelIdRefusal::Syntax));
     }
 
     if let Some(profile) = value.strip_prefix("profile=") {
-        let profile_id = decode_component(profile, value)?;
+        let profile_id = decode_component(profile)?;
         if profile_id.is_empty() || profile_id.contains(';') {
-            return Err(ManagedModelIdError::Invalid(value.into()));
+            return Err(ManagedModelIdError::Invalid(ManagedModelIdRefusal::Syntax));
         }
         return Ok(ModelSelection::Profile { profile_id });
     }
 
     if let Some(executor) = value.strip_prefix("executor=") {
         if executor.contains(';') {
-            return Err(ManagedModelIdError::Invalid(value.into()));
+            return Err(ManagedModelIdError::Invalid(ManagedModelIdRefusal::Syntax));
         }
-        return executor_only(&decode_component(executor, value)?, value);
+        return executor_only(&decode_component(executor)?);
     }
 
     let mut parts = value.split(';');
-    let model_id = decode_component(parts.next().unwrap_or_default(), value)?;
+    let model_id = decode_component(parts.next().unwrap_or_default())?;
     if model_id.is_empty() {
-        return Err(ManagedModelIdError::Invalid(value.into()));
+        return Err(ManagedModelIdError::Invalid(ManagedModelIdRefusal::Syntax));
     }
     let mut qualifiers = BTreeMap::new();
     for part in parts {
         let Some((key, encoded)) = part.split_once('=') else {
-            return Err(ManagedModelIdError::Invalid(value.into()));
+            return Err(ManagedModelIdError::Invalid(ManagedModelIdRefusal::Syntax));
         };
-        if !matches!(key, "provider" | "api" | "endpoint" | "executor")
+        if !matches!(key, "provider" | "api" | "endpoint" | "executor" | "source")
             || encoded.is_empty()
-            || qualifiers
-                .insert(key, decode_component(encoded, value)?)
-                .is_some()
+            || qualifiers.insert(key, decode_component(encoded)?).is_some()
         {
-            return Err(ManagedModelIdError::Invalid(value.into()));
+            return Err(ManagedModelIdError::Invalid(ManagedModelIdRefusal::Syntax));
         }
     }
 
     let provider_id = qualifiers.remove("provider");
     let api_dialect = qualifiers.remove("api");
     let endpoint_name = qualifiers.remove("endpoint");
+    let source = qualifiers.remove("source");
     let executor = qualifiers
         .remove("executor")
         .unwrap_or_else(|| "native".into());
@@ -80,10 +101,33 @@ pub fn parse_managed_model_id(value: &str) -> Result<ModelSelection, ManagedMode
         || api_dialect.is_some() && provider_id.is_none()
         || endpoint_name.is_some() && (provider_id.is_none() || api_dialect.is_none())
     {
-        return Err(ManagedModelIdError::Invalid(value.into()));
+        return Err(ManagedModelIdError::Invalid(
+            ManagedModelIdRefusal::IncompleteTarget,
+        ));
     }
 
-    let backend_ref = parse_executor(&executor, value)?;
+    let backend_ref = parse_executor(&executor)?;
+    // Partial catalog Target and backend-owned exact model are distinct
+    // existing intents. Keep old selectors and make source explicit, so the
+    // canonical renderer/parser cannot silently change their meaning.
+    if let Some(source) = source {
+        if source != "backend"
+            || provider_id.is_some()
+            || api_dialect.is_some()
+            || endpoint_name.is_some()
+            || !matches!(Backend::from_ref(&backend_ref), Backend::Acp(_))
+        {
+            return Err(ManagedModelIdError::Invalid(
+                ManagedModelIdRefusal::ConflictingSource,
+            ));
+        }
+        return ModelSelection::try_backend_exact(
+            backend_ref,
+            model_id,
+            AcpSessionConfiguration::default(),
+        )
+        .map_err(|_| ManagedModelIdError::Invalid(ManagedModelIdRefusal::BackendSelection));
+    }
     match Backend::from_ref(&backend_ref) {
         Backend::Native | Backend::Acp(_) => Ok(ModelSelection::Target {
             target: ModelTarget {
@@ -96,25 +140,29 @@ pub fn parse_managed_model_id(value: &str) -> Result<ModelSelection, ManagedMode
             backend_ref,
             configuration: AcpSessionConfiguration::default(),
         }),
-        Backend::Remote(_) | Backend::Invalid(_) => Err(ManagedModelIdError::Invalid(value.into())),
+        Backend::Remote(_) | Backend::Invalid(_) => {
+            Err(ManagedModelIdError::Invalid(ManagedModelIdRefusal::Syntax))
+        }
     }
 }
 
-fn executor_only(executor: &str, original: &str) -> Result<ModelSelection, ManagedModelIdError> {
-    let backend_ref = parse_executor(executor, original)?;
+fn executor_only(executor: &str) -> Result<ModelSelection, ManagedModelIdError> {
+    let backend_ref = parse_executor(executor)?;
     match Backend::from_ref(&backend_ref) {
         Backend::Acp(_) => {
             ModelSelection::try_backend_default(backend_ref, AcpSessionConfiguration::default())
-                .map_err(|_| ManagedModelIdError::Invalid(original.into()))
+                .map_err(|_| ManagedModelIdError::Invalid(ManagedModelIdRefusal::Executor))
         }
         Backend::Remote(_) => ModelBinding::parse("", "", backend_ref)
             .map(ModelSelection::Pinned)
-            .map_err(|_| ManagedModelIdError::Invalid(original.into())),
-        Backend::Native | Backend::Invalid(_) => Err(ManagedModelIdError::Invalid(original.into())),
+            .map_err(|_| ManagedModelIdError::Invalid(ManagedModelIdRefusal::Executor)),
+        Backend::Native | Backend::Invalid(_) => Err(ManagedModelIdError::Invalid(
+            ManagedModelIdRefusal::Executor,
+        )),
     }
 }
 
-fn parse_executor(value: &str, original: &str) -> Result<String, ManagedModelIdError> {
+fn parse_executor(value: &str) -> Result<String, ManagedModelIdError> {
     if value == "native" {
         return Ok("genai".into());
     }
@@ -127,7 +175,9 @@ fn parse_executor(value: &str, original: &str) -> Result<String, ManagedModelIdE
     {
         return Ok(value.into());
     }
-    Err(ManagedModelIdError::Invalid(original.into()))
+    Err(ManagedModelIdError::Invalid(
+        ManagedModelIdRefusal::Executor,
+    ))
 }
 
 /// Render authored or resolved selection back to the one canonical Managed
@@ -156,6 +206,74 @@ pub fn render_managed_model_id(selection: &ModelSelection) -> Result<String, Man
             Err(ManagedModelIdError::UnsupportedSelection)
         }
     }
+}
+
+/// Project one already-published candidate to an ID the public authoring codec
+/// accepts. Provider/account identity is not the vendor coordinate, and the
+/// exact frozen route must not collapse into its bare model name.
+pub(crate) fn render_published_model_id(
+    candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+) -> Result<Option<String>, ManagedModelIdError> {
+    use awaken_runtime_contract::resolved::ModelProvisioning;
+    let binding = candidate.binding();
+    if binding.identity().1.is_empty() {
+        return Ok(None);
+    }
+    let selection = match candidate.provisioning() {
+        ModelProvisioning::Provider {
+            provider_ref,
+            route_ref,
+            endpoint,
+            ..
+        } => {
+            if endpoint.api_dialect.is_empty() {
+                return Err(ManagedModelIdError::UnsupportedSelection);
+            }
+            ModelSelection::Target {
+                target: ModelTarget {
+                    model_id: binding.identity().1.into(),
+                    provider_id: Some(published_reference_id(provider_ref)?.into()),
+                    api_dialect: Some(endpoint.api_dialect.clone()),
+                    protocol_endpoint_id: None,
+                    // The existing Offering selector admits an exact endpoint
+                    // ID here as well as its human name. No mutable lookup or
+                    // inferred account/source precedence is involved.
+                    endpoint_name: Some(published_reference_id(route_ref)?.into()),
+                },
+                backend_ref: binding.identity().2.into(),
+                configuration: AcpSessionConfiguration::default(),
+            }
+        }
+        ModelProvisioning::BackendOwned { .. } => ModelSelection::try_backend_exact(
+            binding.identity().2,
+            binding.identity().1,
+            AcpSessionConfiguration::default(),
+        )
+        .map_err(|_| ManagedModelIdError::UnsupportedSelection)?,
+        ModelProvisioning::HostExecutor => ModelSelection::Pinned(binding.clone()),
+        ModelProvisioning::Remote { .. } => return Ok(None),
+    };
+    let rendered = render_managed_model_id(&selection)?;
+    // Frozen publication metadata may predate this projection. A rendered ID
+    // must pass the same public admission before discovery advertises it.
+    parse_managed_model_id(&rendered)?;
+    Ok(Some(rendered))
+}
+
+fn published_reference_id(reference: &str) -> Result<&str, ManagedModelIdError> {
+    let (id, revision) = reference
+        .rsplit_once('@')
+        .ok_or(ManagedModelIdError::UnsupportedSelection)?;
+    if id.is_empty()
+        || id.trim() != id
+        || revision
+            .parse::<u64>()
+            .ok()
+            .is_none_or(|revision| revision == 0)
+    {
+        return Err(ManagedModelIdError::UnsupportedSelection);
+    }
+    Ok(id)
 }
 
 fn render_target(target: &ModelTarget, backend_ref: &str) -> Result<String, ManagedModelIdError> {
@@ -205,6 +323,7 @@ fn render_model_and_executor(
     match Backend::from_ref(backend_ref) {
         Backend::Acp(backend) => {
             push_qualifier(&mut rendered, "executor", &format!("acp:{backend}"));
+            push_qualifier(&mut rendered, "source", "backend");
             Ok(rendered)
         }
         _ => Err(ManagedModelIdError::UnsupportedSelection),
@@ -266,7 +385,7 @@ fn encode_component(value: &str) -> String {
     encoded
 }
 
-fn decode_component(value: &str, original: &str) -> Result<String, ManagedModelIdError> {
+fn decode_component(value: &str) -> Result<String, ManagedModelIdError> {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -277,20 +396,26 @@ fn decode_component(value: &str, original: &str) -> Result<String, ManagedModelI
             continue;
         }
         if index + 2 >= bytes.len() {
-            return Err(ManagedModelIdError::Invalid(original.into()));
+            return Err(ManagedModelIdError::Invalid(
+                ManagedModelIdRefusal::Encoding,
+            ));
         }
         let high = hex(bytes[index + 1]);
         let low = hex(bytes[index + 2]);
         let (Some(high), Some(low)) = (high, low) else {
-            return Err(ManagedModelIdError::Invalid(original.into()));
+            return Err(ManagedModelIdError::Invalid(
+                ManagedModelIdRefusal::Encoding,
+            ));
         };
         decoded.push(high << 4 | low);
         index += 3;
     }
-    let decoded =
-        String::from_utf8(decoded).map_err(|_| ManagedModelIdError::Invalid(original.into()))?;
+    let decoded = String::from_utf8(decoded)
+        .map_err(|_| ManagedModelIdError::Invalid(ManagedModelIdRefusal::Encoding))?;
     if decoded.chars().any(char::is_whitespace) {
-        return Err(ManagedModelIdError::Invalid(original.into()));
+        return Err(ManagedModelIdError::Invalid(
+            ManagedModelIdRefusal::Encoding,
+        ));
     }
     Ok(decoded)
 }
@@ -308,6 +433,35 @@ fn hex(value: u8) -> Option<u8> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn invalid_selectors_preserve_a_typed_refusal_cause() {
+        // C1 malformed grammar; C2 incomplete provider axes; C3 unsupported
+        // executor; C4 bad percent/UTF-8 encoding; C5 conflicting source.
+        // R1-R5 each returns its finite cause, allowing callers to classify
+        // without matching a free-form diagnostic or exposing rejected input.
+        for (input, cause) in [
+            ("model;unknown=value", ManagedModelIdRefusal::Syntax),
+            (
+                "model;endpoint=one",
+                ManagedModelIdRefusal::IncompleteTarget,
+            ),
+            (
+                "model;executor=unsupported",
+                ManagedModelIdRefusal::Executor,
+            ),
+            ("model%ZZ", ManagedModelIdRefusal::Encoding),
+            (
+                "model;source=backend",
+                ManagedModelIdRefusal::ConflictingSource,
+            ),
+        ] {
+            assert_eq!(
+                parse_managed_model_id(input),
+                Err(ManagedModelIdError::Invalid(cause))
+            );
+        }
+    }
 
     #[test]
     fn parses_the_complete_composable_model_reference_decision_table() {
@@ -381,6 +535,56 @@ mod tests {
             "gpt-5%ZZ",
         ] {
             assert!(parse_managed_model_id(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn backend_owned_exact_model_round_trips_without_a_provider_catalog_route() {
+        // B1 explicit backend source + ACP + no provider -> BackendExact;
+        // B2 ordinary complete/partial selectors keep their Target meaning;
+        // B3 provider/native/unknown source conflicts -> reject. This avoids a
+        // transient catalog miss, credential state or a default source priority.
+        for cli in [
+            "claude",
+            "codex",
+            "gemini",
+            "opencode",
+            "hermes",
+            "third-party",
+        ] {
+            let exact = ModelSelection::try_backend_exact(
+                format!("acp:{cli}"),
+                "vendor/model;v=1",
+                Default::default(),
+            )
+            .unwrap();
+            let wire = render_managed_model_id(&exact).unwrap();
+            assert_eq!(parse_managed_model_id(&wire).unwrap(), exact, "B1 {cli}");
+            let targeted = format!("model;provider=vendor;api=open_ai_chat;executor=acp:{cli}");
+            assert!(
+                parse_managed_model_id(&targeted)
+                    .unwrap()
+                    .target()
+                    .is_some(),
+                "B2 {cli}"
+            );
+            let partial = format!("model;executor=acp:{cli}");
+            let selection = parse_managed_model_id(&partial).unwrap();
+            assert!(
+                selection.target().is_some(),
+                "B2 original partial Target {cli}"
+            );
+            assert_eq!(
+                parse_managed_model_id(&render_managed_model_id(&selection).unwrap()).unwrap(),
+                selection
+            );
+        }
+        for invalid in [
+            "model;source=backend",
+            "model;executor=acp:codex;provider=vendor;source=backend",
+            "model;executor=acp:codex;source=unknown",
+        ] {
+            assert!(parse_managed_model_id(invalid).is_err(), "B3 {invalid}");
         }
     }
 

@@ -127,8 +127,8 @@ pub(crate) use runtime::{
     CONTAINER_REALIZATION_RECONCILER, MANAGED_SANDBOX_LABEL, runtime_owner_id,
 };
 pub use runtime::{
-    ContainerRuntime, ContainerState, MemoryMount, MissingHandleTerminalEvidence,
-    RuntimeRestoreTarget, SandboxControlBindingRequest,
+    ContainerRuntime, ContainerState, ContainerTerminalHistory, MemoryMount,
+    MissingHandleTerminalEvidence, RuntimeRestoreTarget, SandboxControlBindingRequest,
 };
 #[cfg(any(feature = "docker", feature = "podman"))]
 pub(crate) use runtime::{
@@ -1233,6 +1233,7 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// legacy V1 handle is adopted and must never be promoted implicitly.
     adoption_fingerprint: Option<pc::SandboxRealizationFingerprint>,
     realization_fingerprint: Option<pc::SandboxRealizationFingerprint>,
+    creation_rootfs: Option<RootfsPlan>,
     /// Original CAS bases for copy-backed Memory mounts. Creation captures this
     /// once from the canonical MemoryMount; adoption reuses only the validated
     /// durable handle projection and never reconstructs heads from current bytes.
@@ -1630,6 +1631,7 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
                         adoption_fingerprint: adoption_fingerprint.clone(),
                         realization_fingerprint: realization_fingerprint.clone(),
                         owned_paths: self.owned_paths.lock().clone(),
+                        creation_rootfs: self.creation_rootfs.clone(),
                     },
                 )
                 .with_memory_materializations(self.memory_materializations.clone())

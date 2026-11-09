@@ -2338,6 +2338,7 @@ pub(super) fn terminal_fixture_container_handle(
     pc::SandboxHandle::container_v2(
         thread,
         awaken_sandbox_container::ContainerSandboxHandleV2 {
+            creation_rootfs: None,
             previous: awaken_sandbox_container::ContainerSandboxHandleV1 {
                 container_id: "awaken-terminal-fixture".into(),
                 outputs_path: spec.outputs_path.clone(),

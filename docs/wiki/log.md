@@ -1036,3 +1036,11 @@
 - [ADR-0054](../adr/0054-safe-loop-boundary-shared-seam-and-pause-as-durable-await.md#amendment-2026-11-09-acp-commits-run-entry-before-opening-its-channel)
   owns shared Run entry and resume receipt consumption; source conformance and
   deployed provider execution retain separate evidence boundaries.
+
+## 2026-11-09 — Preserve selectable Models and original terminal rootfs
+
+- [ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md#amendment-2026-11-09-model-discovery-preserves-selectable-publication-identity)
+  retains exact publication choices through the existing Config selector codec.
+- [ADR-0078](../adr/0078-terminal-recovery-retains-the-existing-session-authority.md)
+  retains original rootfs evidence through the existing fenced terminal cleanup.
+  Source tables, HTTP fixtures and actual deployed effects remain distinct proof.

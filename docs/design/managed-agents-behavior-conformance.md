@@ -72,6 +72,15 @@ retirement schedule. The adapter publishes `line`, `deprecated_at`, `retires_at`
 and the capability object as `null` when the inventory supplies no such facts.
 It never derives a line from a model id or a provider date from the request clock.
 
+The listed `id` is an ordinary authoring selector rendered by the single Config
+codec, including the frozen provider, protocol endpoint and executor when
+applicable. Distinct routes or Native/ACP executors do not collapse into one
+bare model name. The [registration decision](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md#amendment-2026-11-09-model-discovery-preserves-selectable-publication-identity)
+owns this identity rule and malformed-history refusal; Models adds no catalog
+or source precedence. SDK first-use checks include this Models page, and a
+discovered ID must be accepted by ordinary Agent creation without a Workspace
+request selector. Publication-time provenance remains per exact choice.
+
 The lifecycle list predicate is admitted before inventory I/O, using the same
 SDK repeated-array query decoder as Files. It accepts at most three of `active`,
 `deprecated` and `retired`, then filters before the existing id-page kernel.

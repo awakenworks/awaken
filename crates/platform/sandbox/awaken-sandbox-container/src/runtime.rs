@@ -1403,6 +1403,21 @@ pub enum MissingHandleTerminalEvidence {
     },
 }
 
+/// Read-only original realization evidence offered by the existing history
+/// seam. A candidate must reproduce both stored fingerprints before use;
+/// absence must already be proved by the runtime's complete exact observer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerTerminalHistory {
+    Candidate {
+        configuration: std::collections::BTreeMap<String, String>,
+        rootfs: Option<RootfsPlan>,
+        resolved_image: Option<String>,
+    },
+    Absent {
+        physical_incarnation: String,
+    },
+}
+
 /// Runtime seam driven by the provider and implemented by Docker, Podman, K8s,
 /// or the test fake. It owns no Session or application policy.
 #[async_trait]
@@ -1426,10 +1441,10 @@ pub trait ContainerRuntime: Send + Sync {
     /// Recover only configuration facts unambiguously encoded by a historical
     /// physical handle. This is a candidate for exact fingerprint comparison,
     /// never a stop receipt or deletion grant. Unsupported histories stay closed.
-    fn historical_terminal_configuration(
+    async fn historical_terminal_projection(
         &self,
-        _handle: Option<&crate::ContainerContinuationHandle>,
-    ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
+        _expectation: crate::ContainerObservationExpectation<'_>,
+    ) -> Result<Option<ContainerTerminalHistory>, RuntimeError> {
         Ok(None)
     }
 

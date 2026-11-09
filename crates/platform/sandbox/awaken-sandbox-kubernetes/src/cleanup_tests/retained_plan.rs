@@ -42,6 +42,12 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
     // | P1d | exact | bad | original Backend codec error | same |
     // P1c preserves the established known-negative precedence; P1d prevents
     // masking genuine evidence errors. Existing 403/503 rows own API failures.
+    // Image-history table H: H1 captured original rootfs + changed deployment
+    // image -> original prepare/dispose/replay; H2 historical complete V3
+    // namespace/UID/participants + double-matching image candidate -> H1.
+    // H3 UID, namespace, immutable spec or actual image drift -> zero writes.
+    // H4 exact total absence -> no owner/no repeated delete; H5 absent Pod +
+    // live claim remains refused. H6 403/503 remains an error, never absence.
     for row in [
         "empty",
         "control",
@@ -51,6 +57,19 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
         "foreign-pod",
         "foreign-claim",
         "configuration",
+        "captured-image-upgrade",
+        "historical-image",
+        "historical-running-image",
+        "historical-provisioning-image",
+        "historical-foreign-pod",
+        "historical-foreign-claim",
+        "historical-namespace",
+        "historical-spec-drift",
+        "historical-image-tamper",
+        "historical-absent",
+        "historical-pod-absent-live-claim",
+        "historical-api-403",
+        "historical-api-503",
         "legacy-v1",
         "revoked",
         "already-absent",
@@ -161,7 +180,7 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             awaken_container_contract::ORIGINAL_GUARD_FINALIZER.into(),
         ]);
         pod.status = Some(serde_json::from_value(json!({"phase":"Failed"})).unwrap());
-        let original = awaken_sandbox_container::ContainerSandboxHandleV1 {
+        let mut original = awaken_sandbox_container::ContainerSandboxHandleV1 {
             container_id: pod.metadata.name.clone().unwrap(),
             outputs_path: spec.outputs_path.clone(),
             base_env: spec.env.clone(),
@@ -179,12 +198,35 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             }),
             control_services: spec.control_services.clone(),
         };
+        if row.starts_with("historical-") {
+            original.runtime_handle = Some(
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
+                    pod_uid: "pod-uid".into(),
+                    claim_uid: Some("claim-uid".into()),
+                    participants: Box::new(
+                        awaken_sandbox_container::KubernetesProjectedParticipants::new(
+                            if row == "historical-namespace" {
+                                "foreign".into()
+                            } else {
+                                runtime.namespace.clone()
+                            },
+                            "pod-uid".into(),
+                            vec![],
+                            Some(attempt.as_str().to_owned()),
+                            None,
+                        )
+                        .unwrap(),
+                    ),
+                },
+            );
+        }
         let handle = if row == "legacy-v1" {
             pc::SandboxHandle::container(&spec.scope, original.clone())
         } else {
             pc::SandboxHandle::container_v2(
                 &spec.scope,
                 awaken_sandbox_container::ContainerSandboxHandleV2 {
+                    creation_rootfs: (row == "captured-image-upgrade").then(|| plan.rootfs.clone()),
                     previous: original.clone(),
                     adoption_fingerprint: adoption.clone(),
                     realization_fingerprint: realization.clone(),
@@ -198,6 +240,46 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                 Some(continuation_claim_for_pod(&original.container_id).unwrap());
             state.pod = Some(pod);
             state.projected.clear();
+            match row {
+                "historical-foreign-pod" => {
+                    state.pod.as_mut().unwrap().metadata.uid = Some("foreign-pod".into())
+                }
+                "historical-foreign-claim" => {
+                    state.claim.as_mut().unwrap().metadata.uid = Some("foreign-claim".into())
+                }
+                "historical-image-tamper" => {
+                    state
+                        .pod
+                        .as_mut()
+                        .unwrap()
+                        .spec
+                        .as_mut()
+                        .unwrap()
+                        .containers[0]
+                        .image = Some("foreign-image".into())
+                }
+                "historical-absent" => {
+                    state.pod = None;
+                    state.claim = None;
+                }
+                "historical-pod-absent-live-claim" => state.pod = None,
+                "historical-api-403" => state.read_failure = Some(403),
+                "historical-api-503" => state.read_failure = Some(503),
+                "historical-running-image" => {
+                    let pod = state.pod.as_mut().unwrap();
+                    pod.status = Some(serde_json::from_value(json!({
+                        "phase":"Running", "containerStatuses":pod.spec.as_ref().unwrap().containers.iter().map(|container| json!({
+                            "name":container.name,"ready":true,"image":"image@test","imageID":"image@test",
+                            "restartCount":0,"started":true,"state":{"running":{}}
+                        })).collect::<Vec<_>>()
+                    })).unwrap());
+                }
+                "historical-provisioning-image" => {
+                    state.pod.as_mut().unwrap().status =
+                        Some(serde_json::from_value(json!({"phase":"Pending"})).unwrap())
+                }
+                _ => {}
+            }
             // R5-L negative controls each remove one live-source premise;
             // the same real HTTP observer must refuse without any writes.
             if row.starts_with("retirement-running")
@@ -332,8 +414,15 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             let state = state.lock().unwrap();
             (json!(state.pod), json!(state.claim))
         };
-        let provider = awaken_sandbox_container::ContainerProvider::new(Arc::new(runtime), image)
-            .with_clock(clock);
+        let replacement_image = if row == "captured-image-upgrade" || row.starts_with("historical-")
+        {
+            "replacement-deployment-image"
+        } else {
+            image
+        };
+        let provider =
+            awaken_sandbox_container::ContainerProvider::new(Arc::new(runtime), replacement_image)
+                .with_clock(clock);
         let authority = EffectAuthority::new(&terminal);
         if row == "revoked" {
             *authority
@@ -341,7 +430,7 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                 .lock()
                 .unwrap_or_else(|poisoned| panic!("{poisoned}")) = None;
         }
-        if row == "configuration" {
+        if matches!(row, "configuration" | "historical-spec-drift") {
             spec.outputs_path = "/different-outputs".into();
         }
         if row.starts_with("retirement-") {
@@ -465,15 +554,25 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             state.lock().unwrap().writes.is_empty(),
             "{row}: preparation cannot mutate Kubernetes"
         );
-        if row == "already-absent" {
+        if matches!(row, "already-absent" | "historical-absent") {
             assert!(prepared.unwrap().is_none(), "R3");
-        } else if matches!(row, "empty" | "control" | "deleting-pod") {
+        } else if matches!(
+            row,
+            "empty"
+                | "control"
+                | "deleting-pod"
+                | "captured-image-upgrade"
+                | "historical-image"
+                | "historical-running-image"
+        ) {
             let environment = prepared
                 .unwrap_or_else(|e| panic!("R1 {row}: {e}"))
                 .unwrap();
             let normalized = environment.handle();
             let mut actual = normalized.container_payload().unwrap();
-            assert!(actual.runtime_handle.as_ref().unwrap().terminal_only());
+            if !row.starts_with("historical-") {
+                assert!(actual.runtime_handle.as_ref().unwrap().terminal_only());
+            }
             actual.runtime_handle = original.runtime_handle.clone();
             assert_eq!(actual, original, "R1 preserve complete original metadata");
             assert_eq!(
@@ -491,6 +590,20 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                     .is_err()
             );
             assert!(environment.spawn(pc::Command::new(["true"])).await.is_err());
+            if matches!(row, "historical-image" | "historical-running-image") {
+                // H2 proves exact original source reconstruction without live
+                // Control or writes. Unlike FrozenPlanEmpty's physical-only
+                // target, this source needs real process quiescence before
+                // preparation can be durable. This HTTP fixture has no exec
+                // transport; controlled process and ACK tests own that effect.
+                let snapshot = state.lock().unwrap();
+                assert_eq!((json!(snapshot.pod), json!(snapshot.claim)), before);
+                assert!(snapshot.writes.is_empty());
+                drop(snapshot);
+                server.abort();
+                assert!(server.await.unwrap_err().is_cancelled());
+                continue;
+            }
             let source = environment
                 .prepare_disposal_for_effect(&terminal, &authority)
                 .await
@@ -510,7 +623,7 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             environment
                 .dispose_for_effect(&authorization, &authority)
                 .await
-                .unwrap();
+                .unwrap_or_else(|error| panic!("H1/H2 {row} physical disposal: {error}"));
             {
                 let state = state.lock().unwrap();
                 assert!(
@@ -546,6 +659,24 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
             );
         } else {
             assert!(prepared.is_err(), "R2/R4 {row}");
+            match row {
+                "historical-api-403" => assert!(
+                    matches!(&prepared, Err(pc::SandboxError::Unauthorized(_))),
+                    "H6 permission remains an error: {:?}",
+                    prepared.as_ref().err()
+                ),
+                "historical-api-503" => assert!(
+                    matches!(&prepared, Err(pc::SandboxError::Backend { .. })),
+                    "H6 backend failure is not absence: {:?}",
+                    prepared.as_ref().err()
+                ),
+                "historical-provisioning-image" => assert!(
+                    matches!(&prepared, Err(pc::SandboxError::NotReady(_))),
+                    "H2 pending original is not a terminal absence: {:?}",
+                    prepared.as_ref().err()
+                ),
+                _ => {}
+            }
             let state = state.lock().unwrap();
             assert_eq!(json!(state.pod), before.0, "{row}");
             assert_eq!(json!(state.claim), before.1, "{row}");
@@ -580,6 +711,7 @@ async fn derived_empty_terminal_handle_revalidates_its_effective_plan() {
     let fp: pc::SandboxRealizationFingerprint =
         serde_json::from_value(serde_json::json!("original-fingerprint")).unwrap();
     let legacy = awaken_sandbox_container::DecodedContainerHandle {
+        creation_rootfs: None,
         payload: awaken_sandbox_container::ContainerSandboxHandleV1 {
             container_id: "original-pod-name".into(),
             outputs_path: "/outputs".into(),

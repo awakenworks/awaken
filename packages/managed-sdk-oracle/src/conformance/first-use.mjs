@@ -10,8 +10,8 @@ import { managedSdkReceipt, assertResponseContract } from '../../../../e2e/confo
 import { assertManagedResponseContext } from './deployed-sweep.mjs';
 
 const scope = JSON.parse(fs.readFileSync(new URL('../../config/scope.json', import.meta.url)));
-const operations = ['beta.agents.list', 'beta.environments.list', 'beta.sessions.list'];
-const families = ['agents', 'environments', 'sessions'];
+const families = ['agents', 'environments', 'models', 'sessions'];
+const operations = families.map(family => `beta.${family}.list`);
 
 export async function exerciseWorkspaceKeyFirstUse({
   baseURL, apiKey, workspaceID, clients, fetchImpl = globalThis.fetch,
@@ -63,7 +63,7 @@ export async function exerciseWorkspaceKeyFirstUse({
         if (requireNonEmpty.includes(family)) assert.ok(page.data.length > 0, `${family}: known fixture cannot disappear into an empty page`);
         counts[family] = page.data.length;
       }
-      assert.deepEqual([...observed].sort(), [...families].sort(), 'all three families traversed the real SDK transport');
+      assert.deepEqual([...observed].sort(), [...families].sort(), 'all first-use families traversed the real SDK transport');
       receipts.push({ sdk_version: version, authentication: style, typed_pages: true, workspace_context: true, counts });
     }
   }

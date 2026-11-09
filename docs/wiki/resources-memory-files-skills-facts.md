@@ -98,6 +98,14 @@ Owner: [resources-memory-files-skills.md](../design/resources-memory-files-skill
 - Links: guardrails G21 and G38
 - Verification: in-memory/SQLite/Postgres store conformance, cross-Workspace shared-blob fencing, crash/retry reclamation tests, and dependency-boundary checks.
 
+## FACT-RES-014: Terminal recovery retains original rootfs evidence
+
+- Status: active
+- Owner: [Terminal recovery](../adr/0078-terminal-recovery-retains-the-existing-session-authority.md)
+- Fact: rolling a deployment's default image cannot replace the original Sandbox identity used by canonical terminal cleanup; ordinary recovery keeps current execution admission.
+- Links: guardrails G38 and G55
+- Verification: original-rootfs, historical image/UID, refusal, and physical-disposal replay tables; live cleanup remains separately qualified.
+
 ## FACT-RES-012: Session resource mutations share one root fence
 
 - Status: active

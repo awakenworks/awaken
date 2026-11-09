@@ -1162,6 +1162,38 @@ handles with live Control sources remain refused. Ordinary recovery continues
 to require its exact live control binding. No new role, state, protocol or
 recovery authority is introduced.
 
+## Amendment 2026-11-09: retain the original rootfs for terminal recovery
+
+A deployment's default image is not the image of an already-created Sandbox.
+The Container provider currently includes the effective rootfs in its adoption
+fingerprint, but retains only that fingerprint in its handle. Recomputing it
+with a replacement Worker's default image prevents terminal preparation of the
+original Pod even after the Session's delete fence and cleanup claim are durable.
+
+Session terminal cleanup, its preparation/disposal authorization, Worker claims,
+and physical UID checks remain unchanged. The Container codec retains the
+original rootfs alongside its existing fingerprints; the same canonical
+projection must reproduce the original fingerprint before terminal recovery may
+use it. Ordinary execution recovery continues to require the current effective
+configuration. No new lifecycle, store, queue, image selector or cleanup service
+is introduced.
+
+Historical handles without the rootfs use the existing runtime history seam.
+Kubernetes may offer an image candidate only from the exact recorded physical
+incarnation. Both the adoption and realization fingerprints must reproduce the
+stored values; unknown package/base relationships and unrelated configuration
+drift remain refused. A complete namespace-bound original participant set may
+instead prove exact total absence through the existing observer. A missing Pod
+with a live claim, mismatched UID, unknown participants, backend error, or missing
+terminal fence never proves that absence.
+
+The dynamic order is current terminal authority, original projection validation,
+exact physical observation, source preparation, durable Session preparation,
+authorized physical disposal, and the original completion receipt. Response-loss
+recovery must preserve this order without recreating a Sandbox or reopening live
+Control. Cause/effect tables beside the Container codec/provider and Kubernetes
+tests own the positive, drift, incomplete-history and absence cases.
+
 ## Amendment 2026-10-31: an externally deleted guarded original stays a retained source
 
 Eviction and Pod GC can set `deletionTimestamp` on an original Sandbox Pod that

@@ -17,7 +17,6 @@ mod config_plane;
 mod config_preview;
 mod config_service;
 mod credential_reference;
-mod managed_model_id;
 mod management_audit;
 mod plugin_validation;
 mod publication;
@@ -29,6 +28,9 @@ mod session_model_resolution;
 mod tool_catalog;
 mod tool_compilation;
 
+pub use awaken_executable_agent_contract::{
+    ManagedModelIdError, ManagedModelIdRefusal, parse_managed_model_id, render_managed_model_id,
+};
 pub use binding_resolver::{
     ConfigServiceReconciler, ModelPublicationResolver, PublicationBindingReconciler,
     PublicationResolutionError, ResolvedPublicationModels,
@@ -36,7 +38,6 @@ pub use binding_resolver::{
 pub use config_plane::ConfigPlane;
 pub use config_service::ConfigService;
 pub use credential_reference::CredentialReferenceValidator;
-pub use managed_model_id::{ManagedModelIdError, parse_managed_model_id, render_managed_model_id};
 pub use management_audit::{ManagementAuditPlane, ManagementAuditRepository};
 pub use plugin_validation::PluginPublicationResolver;
 pub use publication::{PublishError, ValidationIssue};
