@@ -17,7 +17,9 @@ pub(crate) async fn transfer_runtime_owner(
     pod: Pod,
     expected_uid: &str,
     next_owner: &str,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<Pod, RuntimeError> {
+    admit()?;
     if pod.metadata.uid.as_deref() != Some(expected_uid) {
         return Err(backend(
             "Kubernetes Sandbox Pod changed before runtime-owner transfer",
@@ -89,14 +91,12 @@ pub(crate) async fn transfer_runtime_owner(
         }
         Ok(())
     };
-    // This original four-argument API has no effect fence. Preserve that
-    // boundary for prepare/restore/control; do not invent expiry authority.
     awaken_worker_fleet_kubernetes::pod_metadata::update_pod_metadata(
         api,
         &name,
         Some(pod.clone()),
         true,
-        &awaken_worker_fleet_kubernetes::pod_metadata::unfenced_checkpoint,
+        admit,
         &replacement,
         &verify,
     )

@@ -19,11 +19,14 @@ struct Reply {
     body: Value,
     force: Option<bool>,
 }
+type ResponseHook = Arc<dyn Fn(&Reply) + Send + Sync>;
+
 struct Engine {
     replies: Mutex<VecDeque<Reply>>,
     repeat: Option<Reply>,
     calls: Mutex<Vec<(Method, String)>>,
     removing: Semaphore,
+    response_hook: Mutex<Option<ResponseHook>>,
 }
 
 async fn respond(
@@ -60,6 +63,10 @@ async fn respond(
     if reply.body["State"]["Status"] == "removing" {
         engine.removing.add_permits(1);
     }
+    let hook = engine.response_hook.lock().unwrap().clone();
+    if let Some(hook) = hook {
+        hook(&reply);
+    }
     (reply.status, Json(reply.body)).into_response()
 }
 
@@ -81,14 +88,21 @@ async fn fixture(replies: Vec<Reply>, repeat: Option<Reply>) -> Fixture {
         repeat,
         calls: Mutex::new(Vec::new()),
         removing: Semaphore::new(0),
+        response_hook: Mutex::new(None),
     });
     let app = Router::new().fallback(respond).with_state(engine.clone());
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    let docker =
-        Docker::connect_with_http(&format!("http://{addr}"), 5, bollard::API_DEFAULT_VERSION)
-            .unwrap();
+    // The paused clock must expire the production removal deadline before the
+    // fixture transport deadline, including when an HTTP reply is still in flight.
+    let request_timeout = (REMOVAL_TIMEOUT + Duration::from_secs(5)).as_secs();
+    let docker = Docker::connect_with_http(
+        &format!("http://{addr}"),
+        request_timeout,
+        bollard::API_DEFAULT_VERSION,
+    )
+    .unwrap();
     Fixture {
         runtime: Arc::new(DockerRuntime::with_client(docker, 8080)),
         engine,
@@ -221,9 +235,10 @@ async fn pending_removal_keeps_ownership_until_its_bounded_unknown_outcome() {
     );
     tokio::time::pause();
     tokio::time::advance(REMOVAL_TIMEOUT + Duration::from_secs(1)).await;
+    let outcome = task.await.unwrap();
     assert!(
-        matches!(task.await.unwrap(), Err(RuntimeError::MayHaveCommitted(_))),
-        "R8 exact unknown outcome"
+        matches!(&outcome, Err(RuntimeError::MayHaveCommitted(_))),
+        "R8 exact unknown outcome: {outcome:?}"
     );
     assert_eq!(
         fixture
@@ -335,4 +350,148 @@ async fn terminal_replacement_keeps_its_non_forced_deletion_policy() {
         .await
         .unwrap();
     assert_eq!(fixture.engine.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn recovery_http_rechecks_authority_before_start_and_after_each_response() {
+    use pc::test_support::{EffectAuthority, FenceTamper as _};
+    // C1 absent/running/created/exited target; C2 exact frozen labels; C3 an
+    // inspect/start response revokes/replaces/expires/renews delivery; C4 start
+    // succeeds/fails. R1 absent => None; R2 running or created+successful start
+    // under live authority => exact target; R3 stale inspect => zero starts;
+    // R4 stale start/failing start/wrong metadata/exited => no success. No row
+    // may send DELETE. This exercises the actual Bollard HTTP adapter.
+    let rows = [
+        ("missing", "none", "renew", false, false),
+        ("running", "none", "renew", false, false),
+        ("created", "none", "renew", false, false),
+        ("created", "none", "renew", true, false),
+        ("created", "none", "renew", false, true),
+        ("exited", "none", "renew", false, false),
+    ]
+    .into_iter()
+    .chain(["inspect", "start"].into_iter().flat_map(|boundary| {
+        ["revoke", "replace", "expire", "renew"]
+            .map(move |change| ("created", boundary, change, false, false))
+    }));
+    for (state, boundary, change, start_fails, wrong_metadata) in rows {
+        let plan = crate::test_support::container_plan();
+        let fingerprint = restoration_plan_fingerprint(&plan);
+        let evidence = pc::SandboxRestorationEvidence::from_exact_parts(
+            "effect",
+            "generation",
+            "checkpoint",
+            "digest",
+            "spec",
+            "exclusions",
+        )
+        .unwrap();
+        let (fence, _) = pc::test_support::fixture_effect("effect");
+        // A renewal requires headroom below the fixture max-expiry sentinel.
+        let fence = fence.with_persisted(|w| w.expires_at_unix_ms -= 1).unwrap();
+        let authority = Arc::new(EffectAuthority::new(&fence));
+        let mut labels = serde_json::Map::new();
+        for (key, value) in restoration_metadata(&evidence) {
+            labels.insert(key.into(), value.into());
+        }
+        labels.insert(
+            crate::RESTORE_PLAN_LABEL.into(),
+            if wrong_metadata {
+                "foreign-plan".into()
+            } else {
+                fingerprint.clone().into()
+            },
+        );
+        let info = json!({"Id":"exact-id","Config":{"Labels":labels},"State":{"Status":state,"Running":state=="running"}});
+        let replies = vec![
+            Reply {
+                method: Method::GET,
+                suffix: format!(
+                    "/containers/{}/json",
+                    restore_container_name("stable-target")
+                ),
+                status: if state == "missing" {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::OK
+                },
+                body: if state == "missing" {
+                    json!({"message":"no such target"})
+                } else {
+                    info
+                },
+                force: None,
+            },
+            Reply {
+                method: Method::POST,
+                suffix: "/containers/exact-id/start".into(),
+                status: if start_fails {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                } else {
+                    StatusCode::NO_CONTENT
+                },
+                body: json!({"message":"start response"}),
+                force: None,
+            },
+        ];
+        let fixture = fixture(replies, None).await;
+        let changing = authority.clone();
+        *fixture.engine.response_hook.lock().unwrap() = Some(Arc::new(move |reply| {
+            let selected = if reply.method == Method::GET {
+                "inspect"
+            } else {
+                "start"
+            };
+            if selected == boundary {
+                let mut current = changing
+                    .current
+                    .lock()
+                    .unwrap_or_else(|error| panic!("{error}"));
+                match change {
+                    "revoke" => *current = None,
+                    "replace" => current.as_mut().unwrap().0.reassign(),
+                    "expire" => current.as_mut().unwrap().1 = std::time::Duration::ZERO,
+                    "renew" => current.as_mut().unwrap().0.renew(),
+                    _ => unreachable!(),
+                }
+            }
+        }));
+        let result = fixture
+            .runtime
+            .recover_restore_target(
+                "stable-target",
+                &plan,
+                &fingerprint,
+                &evidence,
+                pc::SandboxEffect::Fenced {
+                    fence: &fence,
+                    authority: authority.as_ref(),
+                },
+            )
+            .await;
+        let current = boundary == "none" || change == "renew";
+        let accepted = current && !start_fails && !wrong_metadata && state != "exited";
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "{state}/{boundary}/{change}/{start_fails}/{wrong_metadata}"
+        );
+        if let Ok(target) = result {
+            assert_eq!(target.is_some(), state != "missing");
+        }
+        let calls = fixture.engine.calls.lock().unwrap();
+        let starts = calls
+            .iter()
+            .filter(|(method, _)| *method == Method::POST)
+            .count();
+        assert_eq!(
+            starts,
+            usize::from(state == "created" && !wrong_metadata && (current || boundary == "start")),
+            "R3/R4"
+        );
+        assert!(
+            !calls.iter().any(|(method, _)| *method == Method::DELETE),
+            "target retained"
+        );
+    }
 }

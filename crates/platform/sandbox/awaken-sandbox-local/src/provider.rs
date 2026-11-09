@@ -1273,9 +1273,10 @@ impl pc::RestoreTargetProvider<std::sync::Arc<dyn pc::Sandbox>> for LocalProvide
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxRestoreTarget<std::sync::Arc<dyn pc::Sandbox>>, pc::SandboxError> {
         Ok(self
-            .acquire_restore_sandbox(spec, request)
+            .acquire_restore_sandbox(spec, request, effect)
             .await?
             .map_target(|sandbox| std::sync::Arc::new(sandbox) as std::sync::Arc<dyn pc::Sandbox>))
     }
@@ -1299,9 +1300,10 @@ impl pc::RestorableProvider<std::sync::Arc<dyn pc::Sandbox>> for LocalProvider {
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         store: &dyn pc::SandboxCheckpointStore,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxRestoreResult<std::sync::Arc<dyn pc::Sandbox>>, pc::SandboxError> {
         Ok(self
-            .restore_exact_sandbox(spec, request, store)
+            .restore_exact_sandbox(spec, request, store, effect)
             .await?
             .map_target(|sandbox| std::sync::Arc::new(sandbox) as std::sync::Arc<dyn pc::Sandbox>))
     }

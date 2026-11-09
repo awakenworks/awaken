@@ -202,6 +202,7 @@ impl K8sRuntime {
             pod,
             expected_uid,
             &self.owner_id,
+            &awaken_worker_fleet_kubernetes::pod_metadata::unfenced_checkpoint,
         )
         .await?;
         let transferred =

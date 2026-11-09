@@ -1114,8 +1114,9 @@ pub(super) struct CheckpointStore {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum CheckpointPause {
-    AfterPut,
-    AfterDelete,
+    Get,
+    Put,
+    Delete,
 }
 
 impl CheckpointStore {
@@ -1185,25 +1186,28 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
                 }
             }
         };
-        self.pause_at(CheckpointPause::AfterPut).await;
+        self.pause_at(CheckpointPause::Put).await;
         result
     }
 
     async fn get(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
         self.gets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.objects
+        let result = self
+            .objects
             .lock()
             .unwrap()
             .get(id)
             .map(|stored| stored.bytes.clone())
-            .ok_or_else(|| pc::SandboxError::not_found("checkpoint object not found"))
+            .ok_or_else(|| pc::SandboxError::not_found("checkpoint object not found"));
+        self.pause_at(CheckpointPause::Get).await;
+        result
     }
 
     async fn delete(&self, id: &str) -> Result<(), pc::SandboxError> {
         self.deletes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.objects.lock().unwrap().remove(id);
-        self.pause_at(CheckpointPause::AfterDelete).await;
+        self.pause_at(CheckpointPause::Delete).await;
         Ok(())
     }
 }
@@ -1633,7 +1637,7 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
     // Removing guard (or Ready WAL); exact retry reuses the original journal,
     // removes the object and allows ordinary authorized physical disposal.
     for prepared in [false, true] {
-        for at in [CheckpointPause::AfterPut, CheckpointPause::AfterDelete] {
+        for at in [CheckpointPause::Put, CheckpointPause::Delete] {
             let tmp = tempfile::tempdir().unwrap();
             let provider = LocalProvider::new(tmp.path());
             let spec = workdir_spec("cancelled-terminal-checkpoint", false);

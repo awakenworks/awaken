@@ -45,7 +45,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        request.admit_effect(effect)?;
         request.validate_for_spec(spec)?;
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
             .map_err(pc::SandboxError::from)?;
@@ -60,9 +62,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // can therefore recover a completed target without reopening sources.
         let recovered = self
             .runtime
-            .recover_restore_target(&runtime_scope, &plan, &plan_fingerprint, &evidence)
+            .recover_restore_target(&runtime_scope, &plan, &plan_fingerprint, &evidence, effect)
             .await
             .map_err(pc::SandboxError::from)?;
+        request.admit_effect(effect)?;
         if recovered.as_ref().is_some_and(|target| {
             target.disposition != pc::SandboxRestoreTargetDisposition::Recovered
         }) {
@@ -88,6 +91,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .prepare_package_image(&base_image, &plan.packages, &spec.network)
                     .await
                     .map_err(pc::SandboxError::from)?;
+                request.admit_effect(effect)?;
                 plan.rootfs = RootfsPlan::Image(plan.image.clone());
             }
             if self.runtime.uses_host_live_input_bind() {
@@ -99,11 +103,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             }
         }
 
+        request.admit_effect(effect)?;
         let target = match recovered {
             Some(target) => target,
             None => match self
                 .runtime
-                .restore_or_adopt(&runtime_scope, &plan, &plan_fingerprint, &evidence)
+                .restore_or_adopt(&runtime_scope, &plan, &plan_fingerprint, &evidence, effect)
                 .await
             {
                 Ok(target) => target,
@@ -127,6 +132,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         {
             staging.retain_for_restoration();
         }
+        // Physical creation may have completed while its response was pending.
+        // Retain backend-exposed staging BEFORE refusing a revoked delivery.
+        request.admit_effect(effect)?;
 
         let runtime_handle = match self.runtime.handle_extra(&container_id).await {
             Ok(handle) => handle,
@@ -138,6 +146,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             }
         };
 
+        request.admit_effect(effect)?;
         if self.runtime.uses_host_live_input_bind() {
             let physical_staging =
                 retained_host_staging(runtime_handle.as_ref()).map_err(pc::SandboxError::from)?;
@@ -175,6 +184,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .restoration_evidence(&container_id)
             .await
             .map_err(pc::SandboxError::from)?;
+        request.admit_effect(effect)?;
         if observed.as_ref() != Some(&evidence) {
             return Err(pc::SandboxError::conflict(
                 "container restore target omitted or changed its exact physical evidence",
@@ -193,6 +203,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             ));
         }
 
+        request.admit_effect(effect)?;
         let continuation_excluded_paths = request.checkpoint.excluded_mounts.clone();
         let handle = request.bind_handle(
             spec,
@@ -363,8 +374,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxRestoreTarget<ContainerSandbox<R>>, pc::SandboxError> {
-        let sandbox = self.realize_restore_container(spec, request).await?;
+        let sandbox = self
+            .realize_restore_container(spec, request, effect)
+            .await?;
         let disposition = if sandbox.recovered {
             pc::SandboxRestoreTargetDisposition::Recovered
         } else {

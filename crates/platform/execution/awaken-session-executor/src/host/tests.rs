@@ -1922,6 +1922,7 @@ impl pc::RestoreTargetProvider<Arc<dyn awaken_provisioning_contract::SessionSand
         &self,
         _spec: &pc::SandboxSpec,
         _request: &pc::SandboxRestoreRequest,
+        _effect: awaken_provisioning_contract::SandboxEffect<'_>,
     ) -> Result<
         pc::SandboxRestoreTarget<Arc<dyn awaken_provisioning_contract::SessionSandbox>>,
         pc::SandboxError,

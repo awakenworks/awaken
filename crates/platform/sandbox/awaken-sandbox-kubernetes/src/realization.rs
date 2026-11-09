@@ -303,6 +303,8 @@ pub(super) async fn await_pod_ready(
     name: &str,
     unschedulable_wait: Duration,
     clock: Option<&std::sync::Arc<dyn awaken_time::WallClock>>,
+    expected_uid: &str,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
     use awaken_container_contract::K8sPodWait;
     let (waited, mut startup) = (
@@ -310,7 +312,15 @@ pub(super) async fn await_pod_ready(
         awaken_time::mono::Stopwatch::start(),
     );
     loop {
-        let pod = api.get(name).await.map_err(backend)?;
+        admit()?;
+        let observed = api.get(name).await;
+        admit()?;
+        let pod = observed.map_err(backend)?;
+        if pod.metadata.uid.as_deref() != Some(expected_uid) {
+            return Err(backend(
+                "Kubernetes readiness changed the exact Pod incarnation",
+            ));
+        }
         let unschedulable = pod_unschedulable(&pod);
         if unschedulable.is_some() {
             startup = awaken_time::mono::Stopwatch::start();

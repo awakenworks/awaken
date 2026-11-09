@@ -277,7 +277,7 @@ async fn container_restore_is_refused_at_selection_when_the_provider_has_no_rest
     };
     let error = container
         .terminal()
-        .restore(&spec(), &request, &store)
+        .restore(&spec(), &request, &store, pc::SandboxEffect::Unattached)
         .await
         .expect_err("R1 refused");
     assert!(

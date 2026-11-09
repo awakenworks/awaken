@@ -896,6 +896,7 @@ pub trait RestoreTargetProvider<Env: Send + 'static>: Send + Sync {
         &self,
         spec: &SandboxSpec,
         request: &SandboxRestoreRequest,
+        effect: crate::SandboxEffect<'_>,
     ) -> Result<SandboxRestoreTarget<Env>, SandboxError>;
 
     /// Remove only the unpublished physical target named by one durable
@@ -924,6 +925,7 @@ pub trait RestorableProvider<Env: Send + 'static>: RestoreTargetProvider<Env> {
         spec: &SandboxSpec,
         request: &SandboxRestoreRequest,
         store: &dyn SandboxCheckpointStore,
+        effect: crate::SandboxEffect<'_>,
     ) -> Result<SandboxRestoreResult<Env>, SandboxError>;
 }
 

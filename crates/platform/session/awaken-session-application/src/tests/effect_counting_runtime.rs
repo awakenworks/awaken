@@ -411,9 +411,10 @@ impl awaken_session_execution_contract::RealizationEffects for EffectCountingRun
     async fn restore_checkpointed_session_environment(
         &self,
         request: awaken_provisioning_contract::SandboxRestoreRequest,
+        _realization: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
         awaken_session_execution_contract::NeutralRuntime
-            .restore_checkpointed_session_environment(request)
+            .restore_checkpointed_session_environment(request, _realization)
             .await
     }
 

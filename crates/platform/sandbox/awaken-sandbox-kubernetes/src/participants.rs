@@ -360,11 +360,20 @@ pub(super) async fn realize(
         &ContainerRealizationContext<'_>,
         &pc::SandboxRealizationFingerprint,
     )>,
-    restoration: Option<(&pc::SandboxRestorationEvidence, &str)>,
+    restoration: Option<(&pc::SandboxRestorationEvidence, &str, pc::SandboxEffect<'_>)>,
 ) -> Result<KubernetesProjectedParticipants, RuntimeError> {
-    if let Some((context, _)) = context {
-        context.admit_current_effect().map_err(backend)?;
-    }
+    let admit = || {
+        if let Some((context, _)) = context {
+            context.admit_current_effect().map_err(backend)?;
+        }
+        if let Some((_, _, effect)) = restoration {
+            effect
+                .admit()
+                .map_err(|_| RuntimeError::EffectFenceExpired)?;
+        }
+        Ok(())
+    };
+    admit()?;
     let expected = names(id, plan);
     if declaration(&pod)? != expected {
         return Err(backend(
@@ -375,6 +384,7 @@ pub(super) async fn realize(
         if participants.namespace() != runtime.namespace {
             return Err(backend("original projected-object namespace changed"));
         }
+        admit()?;
         return Ok(participants);
     }
     let pod_uid = pod
@@ -388,22 +398,28 @@ pub(super) async fn realize(
     } else {
         runtime.owner.clone()
     };
-    let admit = || {
-        if let Some((context, _)) = context {
-            context.admit_current_effect().map_err(backend)?;
-        }
-        Ok(())
-    };
-    let objects = create_objects(runtime, id, plan, &owner, context, restoration, &admit).await?;
+    let restoration_metadata = restoration.map(|(evidence, plan, _)| (evidence, plan));
+    let objects = create_objects(
+        runtime,
+        id,
+        plan,
+        &owner,
+        context,
+        restoration_metadata,
+        &admit,
+    )
+    .await?;
+    admit()?;
     let participants = KubernetesProjectedParticipants::new(
         runtime.namespace.clone(),
         pod_uid.clone(),
         objects,
         context.map(|(context, _)| context.attempt.as_str().to_owned()),
-        restoration.map(|(evidence, plan)| (evidence.clone(), plan.to_owned())),
+        restoration_metadata.map(|(evidence, plan)| (evidence.clone(), plan.to_owned())),
     )
     .map_err(backend)?;
     publish(runtime, pod, &pod_uid, &participants, &admit).await?;
+    admit()?;
     Ok(participants)
 }
 

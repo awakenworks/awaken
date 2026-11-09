@@ -596,10 +596,11 @@ async fn published_legacy_empty_plan_preserves_metadata_and_exact_disposal_repla
                 // target, this source needs real process quiescence before
                 // preparation can be durable. This HTTP fixture has no exec
                 // transport; controlled process and ACK tests own that effect.
-                let snapshot = state.lock().unwrap();
-                assert_eq!((json!(snapshot.pod), json!(snapshot.claim)), before);
-                assert!(snapshot.writes.is_empty());
-                drop(snapshot);
+                {
+                    let snapshot = state.lock().unwrap();
+                    assert_eq!((json!(snapshot.pod), json!(snapshot.claim)), before);
+                    assert!(snapshot.writes.is_empty());
+                }
                 server.abort();
                 assert!(server.await.unwrap_err().is_cancelled());
                 continue;

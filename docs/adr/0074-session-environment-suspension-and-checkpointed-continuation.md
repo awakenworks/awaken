@@ -903,3 +903,71 @@ shared rather than owned by each provider. Evidence: it is defined at
 that file's tests. What stays true: lease decisions return only `Keep/Fence`, the
 age reaper is gone, and disposal still requires the durable live reference to be
 absent (the aggregate's preparation and cleanup gate).
+
+## Amendment 2026-11-09: continue through the existing Worker phase protocol
+
+The hosted continuation work extends the existing Session realization protocol.
+The Session root, its Environment state, realization lease, checkpoint reference
+and CAS remain authoritative. `FrozenSessionProjection` already carries the
+complete Environment state and its projection receipt fingerprints that state;
+no second continuation snapshot, work table, scheduler or lifecycle is needed.
+
+Reuse the checkpoint byte store, portable archive admission, Resource/MCP
+durability and provider restore-target identity unchanged. Modify the existing
+preparation candidate/claim, realization directive/acknowledgement and stateless
+driver so an assigned Worker can carry the aggregate's decided continuation
+effects. The genuinely new wire vocabulary is a continuation action and typed
+observations; it does not grant authority independently of the current lease
+and full frozen projection. Feature admission uses the existing Worker
+capability set and placement requirements, so older Workers do not receive a
+phase they cannot execute. Local delivery must reuse the same effect sequencer
+instead of retaining a parallel local continuation implementation.
+
+The first implementation boundary is physical restore fencing. The existing
+`SandboxEffect` travels through the existing Environment restore, restorable
+provider and restore-target ports. A Managed restore always carries its current
+realization grant; no error may degrade it into an unattached call. The exact
+restore request continues to name the target, while current authority decides
+whether this caller may acquire or write it. Providers revalidate after waits
+and before each next effect or successful receipt. Failed or stale restoration
+retains its exact target for the existing terminal cleanup owner; restore never
+invents inline deletion authority.
+
+Delivery proceeds through committed suspend intent, Worker claim and projection,
+quiescence, verified upload, committed checkpoint, source preparation, committed
+preparation and separately authorized disposal. A driving ingress joins that
+same operation before restoring the exact checkpoint and rebuilding ordinary
+execution. Source capture retains its original-generation admission. Restore
+recovery must distinguish immutable target identity from a successor's current
+delivery authority and prove both before admission; replacing a lease alone
+cannot make an old caller current.
+
+The external-Worker admission guard remains until the complete protocol and
+physical fences pass their tests. Cause/effect comments own the phase/receipt,
+response-loss, superseded/revoked authority, interrupted I/O, terminal takeover
+and exact-target recovery matrix. Actual ACK Native/OpenCode suspend, physical
+release and file restoration are separate acceptance from source tests. B1
+continues to preserve writable files rather than TCP or browser heap state.
+
+## Amendment 2026-11-10: recovery is an effect-bearing convergence
+
+`ContainerRuntime::recover_restore_target` reads the exact existing target before
+package or host staging, but may also start that container, finish projected
+objects, transfer its runtime label or wait for readiness. It is therefore an
+effect-bearing part of the same restoration, not a read-only exception. Pass the
+same current `SandboxEffect` through recovery as through first acquisition;
+revalidate after backend waits, before each next mutation and before success.
+An absent, superseded or expired grant cannot start or converge a retained
+target. A start failure remains a failure. Both cases preserve the exact target
+and its original staging for the existing terminal cleanup authority.
+
+Reuse the target verifiers, participant publisher, metadata CAS and the existing
+Kubernetes Create transport. All control-client POSTs already cross that broker;
+unsupported restoration coordinates fail there rather than bypassing it. This
+amendment does not add a broker or qualify external-Worker continuation. First
+Kubernetes restoration and recovery share the participant-verification,
+runtime-label and readiness completion edge behind the verified Pod UID. Initial
+live-input installation retains its acquisition scope. Response-loss recovery
+cannot change the target while admitting a subsequent effect. Failure tests cross
+target absence/presence, response positions, authority revocation/replacement/
+expiry/renewal, failed start, unchanged bytes and zero inline disposal.

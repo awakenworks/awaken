@@ -639,9 +639,16 @@ impl ContainerRuntime for K8sRuntime {
         plan: &ContainerPlan,
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<Option<awaken_sandbox_container::RuntimeRestoreTarget>, RuntimeError> {
+        effect
+            .admit()
+            .map_err(|_| RuntimeError::EffectFenceExpired)?;
         super::existing_realization::admit_plan(self, plan).await?;
-        restore::recover(self, id, plan, plan_fingerprint, evidence).await
+        effect
+            .admit()
+            .map_err(|_| RuntimeError::EffectFenceExpired)?;
+        restore::recover(self, id, plan, plan_fingerprint, evidence, effect).await
     }
 
     async fn restore_or_adopt(
@@ -650,9 +657,16 @@ impl ContainerRuntime for K8sRuntime {
         plan: &ContainerPlan,
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<awaken_sandbox_container::RuntimeRestoreTarget, RuntimeError> {
+        effect
+            .admit()
+            .map_err(|_| RuntimeError::EffectFenceExpired)?;
         super::existing_realization::admit_plan(self, plan).await?;
-        creation::restore_or_adopt(self, id, plan, plan_fingerprint, evidence).await
+        effect
+            .admit()
+            .map_err(|_| RuntimeError::EffectFenceExpired)?;
+        creation::restore_or_adopt(self, id, plan, plan_fingerprint, evidence, effect).await
     }
 
     async fn restoration_evidence(

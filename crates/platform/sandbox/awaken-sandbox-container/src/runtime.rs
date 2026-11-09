@@ -1685,12 +1685,16 @@ pub trait ContainerRuntime: Send + Sync {
         }
     }
 
+    /// Read the exact target before package/staging work, then converge only
+    /// that target under the same current restoration effect. Recovery may
+    /// start a container or finish projections and therefore carries authority.
     async fn recover_restore_target(
         &self,
         _id: &str,
         _plan: &ContainerPlan,
         _plan_fingerprint: &str,
         _evidence: &pc::SandboxRestorationEvidence,
+        _effect: pc::SandboxEffect<'_>,
     ) -> Result<Option<RuntimeRestoreTarget>, RuntimeError> {
         Err(RuntimeError::Backend(
             "container runtime does not implement exact restore target observation".into(),
@@ -1716,6 +1720,7 @@ pub trait ContainerRuntime: Send + Sync {
         _plan: &ContainerPlan,
         _plan_fingerprint: &str,
         _evidence: &pc::SandboxRestorationEvidence,
+        _effect: pc::SandboxEffect<'_>,
     ) -> Result<RuntimeRestoreTarget, RuntimeError> {
         Err(RuntimeError::Backend(
             "container runtime does not implement exact restore target acquisition".into(),

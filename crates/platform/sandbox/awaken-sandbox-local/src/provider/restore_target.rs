@@ -163,7 +163,9 @@ impl LocalProvider {
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxRestoreTarget<LocalSandbox>, pc::SandboxError> {
+        request.admit_effect(effect)?;
         request.validate_for_spec(spec)?;
         self.prepare(spec)?;
         let evidence = request.evidence(spec);
@@ -173,9 +175,11 @@ impl LocalProvider {
         // both first-acquisition and exact-disposal races without consulting any
         // checkpoint bytes or process-local slot.
         let lock = lock_target(&root).await?;
+        request.admit_effect(effect)?;
         let disposition = match read_binding(&root)? {
             Some(binding) if binding.evidence == evidence => {
                 if !physical_directory_exists(&root)? {
+                    request.admit_effect(effect)?;
                     std::fs::create_dir(&root).map_err(|error| {
                         pc::SandboxError::backend("acquire_restore_sandbox", error)
                     })?;
@@ -195,12 +199,15 @@ impl LocalProvider {
             None => {
                 // Evidence is durable before the directory becomes observable;
                 // a crash in this gap is repaired by the exact request only.
+                request.admit_effect(effect)?;
                 write_binding(&root, &evidence, &lock)?;
+                request.admit_effect(effect)?;
                 std::fs::create_dir(&root)
                     .map_err(|error| pc::SandboxError::backend("acquire_restore_sandbox", error))?;
                 pc::SandboxRestoreTargetDisposition::Created
             }
         };
+        request.admit_effect(effect)?;
         self.restore_target_with_disposition(spec, request, root, disposition)
     }
 

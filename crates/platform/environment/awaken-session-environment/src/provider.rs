@@ -767,14 +767,17 @@ impl SandboxEnvironmentProvider {
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         store: &dyn pc::SandboxCheckpointStore,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxHandle, pc::SandboxError> {
+        request.admit_effect(effect)?;
         match self {
             Self::Workdir { provider, .. } => {
                 let restored =
                     pc::RestorableProvider::<std::sync::Arc<dyn pc::Sandbox>>::restore_environment(
-                        provider, spec, request, store,
+                        provider, spec, request, store, effect,
                     )
                     .await?;
+                request.admit_effect(effect)?;
                 let handle = restored.target().handle();
                 request.verify_handle(spec, &handle)?;
                 Ok(handle)
@@ -794,8 +797,9 @@ impl SandboxEnvironmentProvider {
                     )
                 })?;
                 let restored = restorable
-                    .restore_environment(&spec, request, store)
+                    .restore_environment(&spec, request, store, effect)
                     .await?;
+                request.admit_effect(effect)?;
                 let handle = restored.target().handle();
                 request.verify_handle(&spec, &handle)?;
                 Ok(handle)
@@ -1097,8 +1101,9 @@ impl awaken_session_environment_contract::EnvironmentTerminalRealization
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         store: &dyn pc::SandboxCheckpointStore,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxHandle, pc::SandboxError> {
-        SandboxEnvironmentProvider::restore(self, spec, request, store).await
+        SandboxEnvironmentProvider::restore(self, spec, request, store, effect).await
     }
 
     async fn dispose_restored(

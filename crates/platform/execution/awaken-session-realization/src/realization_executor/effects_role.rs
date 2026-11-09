@@ -58,8 +58,10 @@ impl awaken_session_execution_contract::RealizationEffects for RealizationExecut
     async fn restore_checkpointed_session_environment(
         &self,
         request: awaken_provisioning_contract::SandboxRestoreRequest,
+        realization: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
-        self.restore_environment_continuation(request).await
+        self.restore_environment_continuation(request, realization)
+            .await
     }
 
     async fn delete_session_checkpoint(

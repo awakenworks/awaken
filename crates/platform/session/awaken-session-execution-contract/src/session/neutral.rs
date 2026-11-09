@@ -165,6 +165,7 @@ macro_rules! neutral_role {
             async fn restore_checkpointed_session_environment(
                 &self,
                 _request: ::awaken_provisioning_contract::SandboxRestoreRequest,
+                _realization: &::awaken_session_configuration_contract::resource::SessionRealizationLease,
             ) -> Result<::awaken_session_contract::RestoreReceipt, ::awaken_runtime_contract::runs::RunError> {
                 Err(::awaken_runtime_contract::runs::RunError::unavailable_classified(
                     "session_environment_checkpoint_unsupported",

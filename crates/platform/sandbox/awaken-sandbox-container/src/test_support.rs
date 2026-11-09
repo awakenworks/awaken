@@ -6,7 +6,8 @@
 // @formal reason: cfg(any(test, feature = test-support)); it mints no production authority.
 //! Fixtures shared by this crate's tests and by the container engine crates
 //! that build on it (`test-support` feature): one canonical Session spec and
-//! the aggregate-authorized disposal edge a provider test needs.
+//! the aggregate-authorized disposal edge a provider test needs. Engine adapters
+//! share the original plan fixture here as well.
 
 use awaken_provisioning_contract as pc;
 
@@ -94,5 +95,31 @@ pub fn spec(scope: &str) -> pc::SandboxSpec {
         filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: Some(60),
         control_services: Default::default(),
+    }
+}
+
+/// The original engine-adapter plan fixture, shared by Podman and Docker.
+pub fn container_plan() -> crate::ContainerPlan {
+    crate::ContainerPlan {
+        image: "img:latest".into(),
+        command: vec!["/agent".into()],
+        env: vec![],
+        control_services: Default::default(),
+        packages: Default::default(),
+        binds: vec![],
+        outputs_volume: "/out".into(),
+        network: crate::NetworkMode::None,
+        egress_identity: crate::EgressRealizationIdentity {
+            network: crate::NetworkMode::None,
+            proxy_endpoint: None,
+            capability_ttl_secs: None,
+            issuer_revision: None,
+            ephemeral_capability: false,
+        },
+        requests: pc::ResourceRequests::default(),
+        limits: pc::ResourceLimits::default(),
+        filesystem_continuity: pc::FilesystemContinuity::Retained,
+        memory_mounts: vec![],
+        rootfs: crate::RootfsPlan::Image("img:latest".into()),
     }
 }

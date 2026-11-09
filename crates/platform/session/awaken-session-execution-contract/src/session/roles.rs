@@ -112,6 +112,7 @@ pub trait RealizationEffects: Send + Sync {
     async fn restore_checkpointed_session_environment(
         &self,
         request: crate::SandboxRestoreRequest,
+        realization: &crate::SessionRealizationLease,
     ) -> Result<crate::RestoreReceipt, RunError>;
 
     /// Idempotently delete checkpoint bytes at a terminal edge. It never

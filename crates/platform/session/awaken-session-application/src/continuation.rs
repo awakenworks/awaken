@@ -402,8 +402,14 @@ async fn carry_out_effect(
                 .environment
                 .restoring_request(owner_scope, &session_id)
                 .ok_or_else(SessionContinuationError::step_moved)?;
+            let realization = session.realization.clone().ok_or_else(|| {
+                unavailable(
+                    "session_environment_restore_unfenced",
+                    "Restore requires its current realization grant",
+                )
+            })?;
             let receipt = effects
-                .restore_checkpointed_session_environment(request)
+                .restore_checkpointed_session_environment(request, &realization)
                 .await?;
             session.environment().complete_restore(&receipt, now)?;
             Ok("environment-restored")

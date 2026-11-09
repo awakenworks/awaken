@@ -84,8 +84,14 @@ pub(super) async fn prepare(
         .uid
         .clone()
         .ok_or_else(|| backend("created pod has no UID"))?;
-    participants::metadata::transfer_runtime_owner(&pods, created, &pod_uid, &runtime.owner_id)
-        .await?;
+    participants::metadata::transfer_runtime_owner(
+        &pods,
+        created,
+        &pod_uid,
+        &runtime.owner_id,
+        &|| context.admit_current_effect().map_err(backend),
+    )
+    .await?;
     Ok(name)
 }
 
@@ -182,7 +188,15 @@ pub(super) async fn converge(
     .await?;
     let wait = runtime.unschedulable_wait;
     let pods = runtime.pods();
-    let ready = realization::await_pod_ready(&pods, pod_name, wait, runtime.clock.as_ref());
+    let admit = || context.admit_current_effect().map_err(backend);
+    let ready = realization::await_pod_ready(
+        &pods,
+        pod_name,
+        wait,
+        runtime.clock.as_ref(),
+        expected_pod_uid,
+        &admit,
+    );
     match ready.await {
         Err(error @ RuntimeError::CapacityUnavailable(_)) => {
             // Hand the claim back only once this exact Pending Pod is gone; a
@@ -190,7 +204,6 @@ pub(super) async fn converge(
             if let Some(effect_fence) = context.effect_fence {
                 runtime.validate_effect_fence(effect_fence)?;
             }
-            let admit = || context.admit_current_effect().map_err(backend);
             dispose_unscheduled_pod(
                 runtime,
                 pod_name,
@@ -297,7 +310,10 @@ pub(super) async fn restore_or_adopt(
     plan: &ContainerPlan,
     plan_fingerprint: &str,
     evidence: &pc::SandboxRestorationEvidence,
+    effect: pc::SandboxEffect<'_>,
 ) -> Result<awaken_sandbox_container::RuntimeRestoreTarget, RuntimeError> {
+    let admit = || effect.admit().map_err(|_| RuntimeError::EffectFenceExpired);
+    admit()?;
     if awaken_sandbox_container::engine::restoration_plan_fingerprint(plan) != plan_fingerprint {
         return Err(backend("Kubernetes restore plan fingerprint mismatch"));
     }
@@ -323,6 +339,7 @@ pub(super) async fn restore_or_adopt(
                 &runtime.persistent_volume_claims(),
                 &claim,
                 |expected, observed| {
+                    admit()?;
                     projection_verification::verify_claim_projection(expected, observed, None)
                 },
             )
@@ -331,6 +348,7 @@ pub(super) async fn restore_or_adopt(
     } else {
         None
     };
+    admit()?;
     let claim_uid = claim_outcome
         .as_ref()
         .map(|outcome| continuation::claim_uid(&outcome.object))
@@ -343,10 +361,11 @@ pub(super) async fn restore_or_adopt(
         &runtime.owner,
         None,
         Some((evidence, plan_fingerprint)),
-        &|| Ok(()),
+        &admit,
     )
     .await?;
 
+    admit()?;
     let mut pod = runtime.pod(&runtime_id, plan);
     stamp_sandbox_release_annotations(&mut pod, id, &plan.image);
     if let Some(uid) = claim_uid.as_deref() {
@@ -360,10 +379,12 @@ pub(super) async fn restore_or_adopt(
         &runtime.pods(),
         &pod,
         |expected, observed| {
+            admit()?;
             projection_verification::verify_pod_projection(expected, observed, None)
         },
     )
     .await?;
+    admit()?;
     let name = outcome
         .object
         .metadata
@@ -389,26 +410,31 @@ pub(super) async fn restore_or_adopt(
         outcome.object.clone(),
         &pod_uid,
         &projected,
-        &|| Ok(()),
+        &admit,
     )
     .await?;
+    admit()?;
     let published = runtime.pods().get(&name).await.map_err(backend)?;
+    admit()?;
     realization::verify_restoration(&published, evidence)?;
     if realization::restoration_plan_fingerprint(&published) != Some(plan_fingerprint) {
         return Err(backend(
             "restore projected-object CAS changed its original operation",
         ));
     }
-    participants::metadata::transfer_runtime_owner(
-        &runtime.pods(),
+    let name = super::restore::converge(
+        runtime,
+        id,
         published,
-        &pod_uid,
-        &runtime.owner_id,
+        plan,
+        plan_fingerprint,
+        evidence,
+        effect,
     )
     .await?;
-    let wait = runtime.unschedulable_wait;
-    realization::await_pod_ready(&runtime.pods(), &name, wait, runtime.clock.as_ref()).await?;
+    admit()?;
     live_inputs::project_manifest(runtime, &name, plan).await?;
+    admit()?;
     Ok(awaken_sandbox_container::RuntimeRestoreTarget {
         container_id: name,
         disposition: if outcome.created {
@@ -530,6 +556,9 @@ mod tests {
             let fence =
                 SandboxEffectFence::new("create-effect", "worker", "worker-boot", 1, u64::MAX)
                     .unwrap();
+            // U1-U3 are authorized mutations: a static correlation stamp alone
+            // cannot satisfy the owner-transfer callback's current-grant check.
+            let authority = pc::test_support::EffectAuthority::new(&fence);
             let attempt = awaken_sandbox_container::engine::fresh_create_attempt();
             let intent = ContainerRealizationIntent::Create;
             let context = ContainerRealizationContext::new(
@@ -538,7 +567,11 @@ mod tests {
                 Some(&fence),
                 &intent,
                 &attempt,
-            );
+            )
+            .with_effect(pc::SandboxEffect::Fenced {
+                fence: &fence,
+                authority: &authority,
+            });
             let result = prepare(&runtime, &context, &plan, &fingerprint).await;
             if changed_uid {
                 let message = result

@@ -209,6 +209,7 @@ pub trait EnvironmentTerminalRealization: Send + Sync {
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         store: &dyn pc::SandboxCheckpointStore,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxHandle, pc::SandboxError>;
 
     /// Dispose the exact restore target a durable request names without

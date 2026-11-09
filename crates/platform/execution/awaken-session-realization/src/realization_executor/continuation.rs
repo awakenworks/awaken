@@ -377,6 +377,7 @@ impl RealizationExecutor {
     pub async fn restore_environment_continuation(
         &self,
         request: awaken_provisioning_contract::SandboxRestoreRequest,
+        realization: &session_resource::SessionRealizationLease,
     ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
         let realizations = self.sessions.clone();
         let exec = self;
@@ -384,11 +385,36 @@ impl RealizationExecutor {
             .validate()
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         let thread = request.session_id.clone();
+        let current = self.continuation_current_lease(
+            &thread,
+            realization,
+            "session_environment_restore_generation_stale",
+        )?;
+        let fence = current
+            .sandbox_effect_fence(&request.effect_id)
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        let authority = self
+            .authority
+            .provider_effect_authority(&thread, &fence)
+            .map_err(RunError::from)?;
+        let effect = awaken_provisioning_contract::SandboxEffect::Fenced {
+            fence: &fence,
+            authority: &authority,
+        };
+        request
+            .admit_effect(effect)
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
         let _lifecycle = realizations.lock_lifecycle(&thread).await?;
+        request
+            .admit_effect(effect)
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
         exec.environments
             .retry_unpublished_session_environment_cleanup(&thread)
             .await
             .map_err(awaken_runtime_contract::runs::RunError::from)?;
+        request
+            .admit_effect(effect)
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
         exec.environments
             .begin_session_environment_restore(&thread, &request)
             .map_err(awaken_runtime_contract::runs::RunError::from)?;
@@ -424,8 +450,11 @@ impl RealizationExecutor {
         let spec = self.staging.sandbox_spec_for_provider(&thread, provider)?;
         let handle = provider
             .terminal()
-            .restore(&spec, &request, store.as_ref())
+            .restore(&spec, &request, store.as_ref(), effect)
             .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        request
+            .admit_effect(effect)
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         let binding = serde_json::to_string(&handle)
             .map_err(crate::realization_error::RealizationError::from)?;

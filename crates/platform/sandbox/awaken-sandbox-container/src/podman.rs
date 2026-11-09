@@ -758,23 +758,30 @@ impl ContainerRuntime for PodmanRuntime {
         plan: &ContainerPlan,
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<Option<RuntimeRestoreTarget>, RuntimeError> {
+        let admit = || effect.admit().map_err(|_| RuntimeError::EffectFenceExpired);
+        admit()?;
         if restoration_plan_fingerprint(plan) != plan_fingerprint {
             return Err(backend("Podman restore plan fingerprint mismatch"));
         }
         let name = restore_container_name(id);
-        if !self.container_exists(&name).await? {
+        let exists = self.container_exists(&name).await;
+        admit()?;
+        if !exists? {
             return Ok(None);
         }
-        let (container_id, running) = self
+        let observed = self
             .exact_restoration_id_with_state(&name, plan_fingerprint, evidence)
-            .await?;
+            .await;
+        admit()?;
+        let (container_id, running) = observed?;
         if !running {
-            // Preserve the exact named container even if the start retry is
-            // temporarily unavailable. The provider retains its physical bind
-            // before the later running-state completion observation fails.
-            let _ = self.run(&["start".into(), container_id.clone()]).await;
+            let started = self.run(&["start".into(), container_id.clone()]).await;
+            admit()?;
+            started?;
         }
+        admit()?;
         Ok(Some(RuntimeRestoreTarget {
             container_id,
             disposition: pc::SandboxRestoreTargetDisposition::Recovered,
@@ -787,7 +794,10 @@ impl ContainerRuntime for PodmanRuntime {
         plan: &ContainerPlan,
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<RuntimeRestoreTarget, RuntimeError> {
+        let admit = || effect.admit().map_err(|_| RuntimeError::EffectFenceExpired);
+        admit()?;
         if restoration_plan_fingerprint(plan) != plan_fingerprint {
             return Err(backend("Podman restore plan fingerprint mismatch"));
         }
@@ -800,15 +810,20 @@ impl ContainerRuntime for PodmanRuntime {
                 plan_fingerprint.to_string(),
             )));
         let args = self.container_run_args(&name, plan, labels);
-        match self.run(&args).await {
+        let outcome = self.run(&args).await;
+        admit()?;
+        match outcome {
             Ok(_) => Ok(RuntimeRestoreTarget {
                 container_id: name,
                 disposition: pc::SandboxRestoreTargetDisposition::Created,
             }),
-            Err(error) => self
-                .recover_restore_target(id, plan, plan_fingerprint, evidence)
-                .await?
-                .ok_or(error),
+            Err(error) => {
+                let recovered = self
+                    .recover_restore_target(id, plan, plan_fingerprint, evidence, effect)
+                    .await?;
+                admit()?;
+                recovered.ok_or(error)
+            }
         }
     }
 
