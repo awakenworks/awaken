@@ -31,6 +31,7 @@ pub(super) async fn in_memory_process_stores() -> ProcessStores {
             .expect("open config store"),
     );
     ProcessStores {
+        agent_governance: None,
         workspace_root: None,
         platform_workspace: awaken_deployment_config::mint_local_workspace(),
         clock: clock.clone(),

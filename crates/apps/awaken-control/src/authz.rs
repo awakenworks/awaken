@@ -148,6 +148,8 @@ use roles::{
 mod bootstrap;
 mod clock;
 mod credentials;
+mod definition_admission;
+pub(crate) use definition_admission::{AdmittedDefinition, CurrentManagedDefinitionRequest};
 mod directory;
 mod entitlement;
 mod hosted_route_profile;
@@ -1220,6 +1222,9 @@ pub async fn cloud_management_guard(
     mut req: Request,
     next: Next,
 ) -> Response {
+    if req.extensions().get::<AdmittedDefinition>().is_some() {
+        return next.run(req).await;
+    }
     if is_public_protocol_discovery(req.method(), req.uri().path()) {
         return next.run(req).await;
     }
@@ -1275,6 +1280,10 @@ pub async fn cloud_management_guard(
     if legacy_tunnel_route && authenticated.access_token.is_some() {
         return forbidden("legacy Tunnel API requires an Admin API key");
     }
+    let current_definition = req
+        .extensions()
+        .get::<CurrentManagedDefinitionRequest>()
+        .cloned();
     let principal = authenticated.principal;
     let workspace = match awaken_authz_enforce::request_workspace_scope(
         &req,
@@ -1288,6 +1297,12 @@ pub async fn cloud_management_guard(
         Err(error) => return workspace_selection_rejection(error),
     };
 
+    if current_definition
+        .as_ref()
+        .is_some_and(|admission| !admission.belongs_to(&principal, &workspace))
+    {
+        return forbidden("native definition request identity changed");
+    }
     if let Some(authority) = req
         .extensions()
         .get::<Arc<dyn awaken_tenancy::workspace_purpose::OrdinaryWorkspaceAdmission>>()
@@ -1313,7 +1328,29 @@ pub async fn cloud_management_guard(
     let authz_for_pdp = authz.clone();
     let principal_for_pdp = principal.clone();
     let decision = match tokio::task::spawn_blocking(move || {
-        authz_for_pdp.authorize_action(principal_for_pdp, action, target_scope, action_namespace)
+        if let Some(admission) = current_definition {
+            let evaluation = authz_for_pdp.agent_governance_observation(
+                awaken_iam_contract::ResourceAuthorizationRequest {
+                    request: AuthorizationRequest::direct(
+                        principal_for_pdp,
+                        qualified_action(action_namespace, action),
+                        target_scope,
+                    ),
+                    context: awaken_iam_contract::AuthorizationContext::default(),
+                },
+            )?;
+            if evaluation.freshness.as_deref() != Some(admission.fence()) {
+                return Err(IamDecisionError::Unavailable);
+            }
+            Ok(evaluation.outcome.decision)
+        } else {
+            authz_for_pdp.authorize_action(
+                principal_for_pdp,
+                action,
+                target_scope,
+                action_namespace,
+            )
+        }
     })
     .await
     {
@@ -1361,6 +1398,8 @@ pub async fn cloud_management_guard(
                 };
                 req.extensions_mut().insert(projection);
             }
+            req.extensions_mut()
+                .insert(awaken_protocol_managed::HideSessionEventDefinitions);
             req.extensions_mut().insert(memory_actor(&principal));
             req.extensions_mut().insert(principal);
             req.extensions_mut()
@@ -1959,7 +1998,7 @@ mod migration_tests;
 #[path = "authz/model_supply_tests.rs"]
 mod model_supply_tests;
 mod work_session;
-use work_session::has_work_session_access;
+pub(crate) use work_session::has_work_session_access;
 #[cfg(test)]
 #[path = "authz_tests.rs"]
 mod tests;

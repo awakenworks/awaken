@@ -1638,7 +1638,6 @@ async fn sqlite_catalog_snapshot_binds_exact_publication_owner_and_native_bound(
     let path = directory.path().join("catalog-frame.sqlite");
     let path = path.to_str().unwrap();
     let store = SqliteConfigStore::open(path).await.unwrap();
-    let pool = EmbeddedSqlite::file(path).open().await.unwrap();
     catalog_snapshot::read_frame(&store).await;
 }
 

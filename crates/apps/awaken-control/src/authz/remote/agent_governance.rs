@@ -43,6 +43,51 @@ impl RemoteManagementAuthz {
             .to_owned();
         Ok((issuer, account))
     }
+    /// Canonical runtime readers may be a direct verified Service. This is
+    /// identity only: exact current definition and runtime PDP remain required.
+    /// Human-owned directory/preferences and definition writes never use it.
+    pub(crate) fn current_agent_definition_identity(
+        &self,
+        token: &str,
+    ) -> Result<(String, awaken_iam_contract::PrincipalRef), AuthReject> {
+        let gate = self
+            .current_governance_gate()
+            .map_err(|_| AuthReject::Unavailable)?;
+        let now = unix_seconds_at(self.clock.as_ref());
+        let verified = gate.authenticate_verified(
+            token,
+            &awaken_iam_contract::Timestamp(super::rfc3339_at(self.clock.as_ref())),
+            now,
+        )?;
+        if verified.actor.is_some() {
+            return Err(AuthReject::Invalid);
+        }
+        let issuer = gate
+            .expected_issuer()
+            .filter(|s| !s.is_empty())
+            .ok_or(AuthReject::Unavailable)?
+            .to_owned();
+        match verified.principal {
+            awaken_iam_contract::PrincipalRef::Account { .. } => self
+                .current_agent_governance_identity(token)
+                .map(|(issuer, account_id)| {
+                    (
+                        issuer,
+                        awaken_iam_contract::PrincipalRef::Account { account_id },
+                    )
+                }),
+            principal @ awaken_iam_contract::PrincipalRef::Service { .. } => {
+                // Service JWTs retain the native signed issuer/audience contract.
+                // No API key, delegated Account or future-issued JWT can become
+                // this execution reader. Current native PDP decides its rights.
+                if verified.access_token.is_none_or(|claims| claims.iat > now) {
+                    return Err(AuthReject::Invalid);
+                }
+                Ok((issuer, principal))
+            }
+            awaken_iam_contract::PrincipalRef::ApiToken { .. } => Err(AuthReject::Invalid),
+        }
+    }
     pub(crate) fn agent_governance_observation(
         &self,
         request: ResourceAuthorizationRequest,

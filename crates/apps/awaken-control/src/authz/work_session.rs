@@ -12,7 +12,7 @@
 use axum::extract::Request;
 
 /// True only for the complete proof the outer WorkQueue capability edge stamps.
-pub(super) fn has_work_session_access(req: &Request) -> bool {
+pub(crate) fn has_work_session_access(req: &Request) -> bool {
     req.extensions()
         .get::<awaken_executable_environment_contract::WorkSessionAccess>()
         .is_some()

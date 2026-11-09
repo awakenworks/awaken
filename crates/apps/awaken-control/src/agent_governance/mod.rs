@@ -9,6 +9,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 mod authority;
+pub(crate) mod legacy;
+pub(crate) mod managed_definition_reads;
 mod routes;
 
 /// Explicit product registration selected by deployment. Omission grants no
@@ -211,3 +213,13 @@ mod tests {
 
 #[cfg(test)]
 mod native_http_tests;
+
+/// Preserve official full Managed Session DTOs behind independent fine definition
+/// admission; the original router continues to enforce its run/owner authority.
+pub fn protect_managed_agent_definitions(
+    router: axum::Router,
+    iam: Option<Arc<crate::RemoteManagementAuthz>>,
+    config: Option<AgentGovernanceConfig>,
+) -> axum::Router {
+    managed_definition_reads::protect(router, iam, config)
+}

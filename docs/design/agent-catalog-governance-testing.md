@@ -11,6 +11,11 @@ claim that Studio review provenance or the Desk interface is implemented.
 - Only a current native direct Account can manage personal preferences or shared
   definitions. A Service, delegated actor, API key, channel message proof, UI role
   label or model tool context cannot stand in for a person.
+- Canonical runtime full-DTO readers may separately be a native verified direct
+  Service with the exact current definition-read and independent runtime action.
+  A Service's run permission or Workspace wildcard alone grants no definition
+  content, personal preference or human definition-management action. Delegated
+  actors and unverified credentials cannot enter this runtime read lane.
 - Directory manifests require current `agent.use`; complete definitions require
   `agent.definition.read`. Personal selection read/write are separate actions.
   Choosing an Agent grants none of these permissions.
@@ -61,7 +66,10 @@ prior unknown attempt did not occur, and cannot authorize a replacement key.
 Trusted routing may supply `RequestTenancy` or the original native
 `WorkspaceScope`; neither a missing context nor a request body selects a fallback
 installation/company. Both routes require the actual current owner and their independent native action;
-only new selection also requires current use and an executable publication.
+only new selection also requires current use and an executable publication. The shared native tenancy kernel reconciles explicit selectors; an installed
+default does not override an addressed Workspace. This surface still requires
+trusted routing context, and a Header alone is not a fallback company. Invalid,
+conflicting or mismatched execution selectors are refused before fine PDP.
 
 The deployment file may explicitly declare `agent_governance.product_id`. The
 native product's exact Agent vocabulary and the Workspace PAP candidate are
@@ -119,10 +127,90 @@ dependency failure is 503, never a denied item skipped from a successful page.
 
 Enumerate directory, Managed collection/detail/version, Config collection/detail/
 version, publication/export, preview, hosted tools and known Session/Thread Agent
-fields in GET/history/events/SSE. Known structural projections preserve message
+fields in GET/history/events/SSE. API-date and history-time selectors use the original native typed presentation
+owner. Private manifests and optional event omission compose with that owner,
+not a second DTO serializer or stream parser. Known structural projections preserve message
 content, tool outputs and citations; arbitrary nested keys are not recursively
 scrubbed. Definition audit permission grants no personal conversation read.
 
 Pure tests, real adapters, native IAM/HTTP, full repository hooks and deployed
 browser journeys remain distinct claims. A skipped fixture or unsupported old
 server is not native or deployed acceptance.
+
+## Existing definition and conversation ingress
+
+The enterprise edge protects the original Managed and Config owners rather than
+copying definitions into a directory store. Local open mode and explicitly
+provisioned fixed-operator tools retain their separate contracts. An execution
+Workspace or a hosted model tool call does not prove a current human management
+request.
+
+| Case | Entry or cause | Required effect |
+| --- | --- | --- |
+| D1 | Workspace read, use, or personal selection without definition read | Managed and Config detail/version and publication/export deny; collections filter by current fine permission before their original pagination |
+| D2 | Native product/proof/freshness missing, fault, policy drift or Config ABA | Abort the entire definition page; no partial data, cached Allow or hidden-item skip |
+| D3 | Exact current definition read | Original full DTO and immutable versions remain readable for that Agent; other Agent definitions and hidden page boundaries remain unavailable |
+| D4 | Config draft PUT | Current direct Account and exact definition write; explicit caller generation required before audit; preserve original Config CAS and minimal native receipt |
+| D5 | Managed create/update/archive, direct publish, unbound preview, assistant ensure or execution-evidence collection | Enterprise legacy ingress refuses before audit or Config effects until the missing reviewed lifecycle contract exists |
+| D6 | Config resources read or write | Read requires exact definition read; the legacy resources write remains closed without a reviewed native baseline contract |
+| D7 | Hosted CurrentAttempt draft/validate/catalog tools or MCP export | No verified human management admission means explicit tool refusal before inventory, definition, audit or resource effects; a fixed local operator remains independently usable |
+| D8 | Private Session/Thread DTO, list, history and SSE | Original ordinary-Agent identity manifest (including declared execution identity for the selected current API date) only in known Agent slots; preserve the Advisor variant’s original type/model identity; no system, model, tools, MCP, skills or child definitions; preserve original id, revision/ETag, cursor, timestamps, content, metadata and citations |
+| D9 | Canonical complete Session/Thread DTO and mutation response | Preserve official required fields behind independent current definition read for the root and frozen child Agent definitions; direct Account and separately native verified Service retain independent run/owner admission; use does not imply definition read and audit does not imply conversation read |
+| D10 | Canonical history and SSE in enterprise Cloud admission | Omit the optional session.updated Agent snapshot consistently in the native serializer; preserve original committed events, pending replies and processing enrichment |
+
+Existing service reconciliation may finish the effects of an already admitted
+durable management command. It does not authenticate a fresh model tool call or
+create a new confirmation, definition or audit intent.
+
+The legacy definition matrix uses actual IAM HTTP with native SQLite and required
+PostgreSQL Config/IAM owners. It exercises the actual Config and Managed Agent
+routers, including original audit and CAS ports. The pre-fix negative control is
+a hidden stored definition returned by the old Workspace-only read guard.
+Only the newly governed canonical DTO requests select single-attempt fenced
+runtime evaluation in the original Cloud guard. Its verified principal, trusted
+Workspace and opaque fence must match the original fine admission; this marker
+is private in-process state, not an HTTP input or a grant. Existing legacy
+transport defaults remain separate. A failed current run decision aborts before
+the Session reader, even when a later attempt would succeed.
+
+The Session admission edge additionally uses an explicit downstream DTO/commit
+counter fixture with actual native IAM to distinguish run permission, root/child
+definition permission and post-attempt identity loss. Its direct Service matrix
+requires explicit exact grants, rejects a missing/withdrawn child grant, aborts
+on a single failed runtime decision, fences a foreign Workspace and retains the
+same original complete runtime snapshot only when both permissions qualify.
+The current strict read lane accepts the native verified direct Service JWT
+family. Native API-key introspection currently supplies no verified issuer in
+its identity receipt, so that family cannot be asserted as qualified for the
+new issuer-bound read contract. It fails closed until its native owner supplies
+that coordinate; the host must not guess a deployed token family from a filename.
+The Service is still refused by human definition writes, owner collections and
+private assistant entry. Exact Config/Managed detail, version and immutable
+publication/export reads may independently qualify the same explicit Service
+read permission; no read authorizes shared-definition management. Existing backend profiles without these new fine grants remain a real
+adoption gap; this boundary never repairs them by granting authority. Its counter is not a
+claim of a native Session SQL commit or exactly-once execution.
+Private wire tests use the original Managed application fixture, its repository,
+warm/cold request views and original native event history/SSE. Tool-update cases
+explicitly enable the existing runtime fixture's disposable replacement recorder
+and check the exact client-tool projection; its default unsupported behavior is
+retained for other fixtures. These qualify the
+protocol projection and ownership boundary, not a browser journey. Pure
+presentation tests additionally require byte-identical legacy full serialization
+and identical private history/SSE payloads for each committed id.
+
+Canonical full Session DTO inspection has a finite 2 MiB response/body admission
+capacity and at most 4096 distinct frozen Agent coordinates. Exceeding it fails
+closed rather than returning a partial definition. This capacity does not change
+the native private Session or event/stream content limits: their known Agent
+slots are projected before serialization without another stream parser. A failed
+ending guard after a canonical persistent attempt is unknown 503; retain its
+native original intent/key instead of treating it as an uncommitted retry.
+
+This boundary is not Studio review provenance. It creates no reviewer identity,
+author record, synthetic published state, default role or automatic product
+registration. Complete draft creation, responsible review by someone other than
+the author, preview qualification and governed publication require their native
+lifecycle contract before those UI actions can be enabled. This test design also
+does not claim that directory selection alone qualifies engine execution or any
+Desk Market/MyAgents journey.

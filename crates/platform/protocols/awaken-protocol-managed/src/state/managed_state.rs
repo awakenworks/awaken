@@ -70,6 +70,8 @@ pub struct ManagedState {
     pub(crate) roles: SessionApplicationRoles,
     /// Selected only by trusted composition for one currently admitted request.
     pub(crate) private_binding: Option<awaken_session_contract::SessionPrivateBinding>,
+    pub(crate) agent_definition_presentation:
+        crate::event_presentation::AgentDefinitionPresentation,
     /// The fixture composition's own application, kept so tests can drive it
     /// directly and builders can finish configuring it before it is shared.
     #[cfg(any(test, feature = "test-support"))]

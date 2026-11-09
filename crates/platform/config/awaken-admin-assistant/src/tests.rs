@@ -2467,3 +2467,26 @@ async fn step_limit_patch_distinguishes_omission_clear_and_invalid() {
         assert_eq!(h.store.stored("limit").unwrap().max_steps, expected);
     }
 }
+
+#[tokio::test]
+async fn denied_management_capability_tool_refuses_before_inventory_io_instead_of_empty_success() {
+    struct Denied;
+    #[async_trait]
+    impl CapabilityReader for Denied {
+        fn available(&self) -> Result<(), String> {
+            Err("current human management admission is required".into())
+        }
+        async fn capabilities(&self) -> PlatformCapabilities {
+            panic!("a denied tool must not read inventory")
+        }
+    }
+    let tool = GetPlatformCapabilities {
+        reader: Arc::new(Denied),
+    };
+    let output = tool
+        .invoke(call(CAPABILITIES_TOOL, serde_json::json!({})))
+        .await
+        .unwrap();
+    assert!(output.is_error);
+    assert!(output.text().contains("current human management admission"));
+}

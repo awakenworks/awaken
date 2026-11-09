@@ -204,14 +204,27 @@ async fn fault(State(faults): State<Arc<Faults>>, request: Request, next: Next) 
     {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
+    let request = if mode == 7 && observation {
+        let (parts, body) = request.into_parts();
+        let bytes = to_bytes(body, 65536).await.unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        if value["request"]["action"] == "awaken.runtime::run.read"
+            && faults.mode.swap(0, Ordering::SeqCst) == 7
+        {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        Request::from_parts(parts, Body::from(bytes))
+    } else {
+        request
+    };
     let response = next.run(request).await;
     if !strict || !response.status().is_success() {
         return response;
     }
-    if mode == 5 {
-        if let Some(mutate) = faults.mutate.lock().unwrap().take() {
-            mutate();
-        }
+    if mode == 5
+        && let Some(mutate) = faults.mutate.lock().unwrap().take()
+    {
+        mutate();
     }
     if mode == 6 {
         let store = { faults.catalog_mutation.lock().unwrap().take() };
@@ -250,6 +263,7 @@ struct Native<B: SqlConn + Clone + 'static> {
     store: SqlStore<B>,
     iam: Arc<crate::RemoteManagementAuthz>,
     tokens: [String; 2],
+    service_token: String,
     rejected_credentials: Vec<String>,
     faults: Arc<Faults>,
     server: tokio::task::JoinHandle<()>,
@@ -298,6 +312,10 @@ async fn native<B: SqlConn + Clone + 'static>(store: SqlStore<B>) -> Native<B> {
     }
     let claims = awaken_iam_server::verify_access_token(&tokens[0], &auth.jwks()).unwrap();
     let authority = auth.token_authority();
+    let mut service_claims = claims.clone();
+    service_claims.sub = "flow-service".into();
+    service_claims.subject_kind = awaken_iam_server::AccessTokenSubjectKind::Service;
+    let service_token = authority.sign_claims(&service_claims).await.unwrap();
     let mut rejected_credentials = Vec::new();
     for kind in 0..5 {
         let mut invalid = claims.clone();
@@ -364,6 +382,7 @@ async fn native<B: SqlConn + Clone + 'static>(store: SqlStore<B>) -> Native<B> {
         store,
         iam,
         tokens: tokens.try_into().unwrap(),
+        service_token,
         rejected_credentials,
         faults,
         server,
@@ -1157,3 +1176,6 @@ async fn postgres_native_directory_and_owner_selection_current_authority_matrix(
     exercise(native(iam_store).await, config).await;
     pool.close().await;
 }
+
+#[path = "definition_http_tests.rs"]
+mod definition_http_tests;

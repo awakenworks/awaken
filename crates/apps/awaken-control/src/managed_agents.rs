@@ -40,7 +40,7 @@ mod publications;
 #[cfg(test)]
 mod read_tests;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 use lifecycle_identity::{lifecycle_timestamp_at, new_agent_id};
 use projection::{
     acp_configuration_to_preserve, client_tools, config_from_create, project, register_roster_name,
@@ -756,6 +756,32 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
     ) -> Result<Vec<Agent>, ManagedAgentError> {
         self.versions_for_read(workspace_id, id, None).await
     }
+}
+
+/// Project a bounded, already-admitted native catalog entry with the existing
+/// Managed mapper, including its exact immutable published model resolution.
+pub(crate) fn project_catalog_entry(
+    entry: awaken_agent_config::catalog_snapshot::AgentCatalogEntry,
+    clock: &dyn WallClock,
+) -> Result<Agent, ManagedAgentError> {
+    let mut revision = entry.head;
+    if let Some(publication) = entry.publication
+        && publication.source_revision == revision.revision
+        && matches!(
+            &revision.config.model_binding,
+            ModelSelection::Auto | ModelSelection::Profile { .. }
+        )
+    {
+        revision.config.model_binding = ModelSelection::Pinned(
+            publication
+                .snapshot
+                .resolved_spec
+                .model_binding
+                .binding()
+                .clone(),
+        );
+    }
+    project(revision, clock)
 }
 
 #[cfg(test)]

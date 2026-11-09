@@ -98,10 +98,17 @@ pub(super) fn observe(
     person: &Person,
     workspace: &str,
 ) -> Result<String, Failure> {
+    observe_principal(iam, &person.principal, workspace)
+}
+pub(super) fn observe_principal(
+    iam: &RemoteManagementAuthz,
+    principal: &PrincipalRef,
+    workspace: &str,
+) -> Result<String, Failure> {
     let result = iam
         .agent_governance_observation(ResourceAuthorizationRequest {
             request: AuthorizationRequest::direct(
-                person.principal.clone(),
+                principal.clone(),
                 action("workspace.read"),
                 ScopeRef::Workspace {
                     workspace_id: WorkspaceId(workspace.into()),
@@ -122,13 +129,40 @@ pub(super) fn allows(
     demand: &str,
     expected_fence: &str,
 ) -> Result<bool, Failure> {
-    let id = resource_id(person.owner.issuer(), workspace, agent)?;
+    allows_principal(
+        iam,
+        product,
+        DefinitionSubject {
+            issuer: person.owner.issuer(),
+            principal: &person.principal,
+        },
+        workspace,
+        agent,
+        demand,
+        expected_fence,
+    )
+}
+pub(super) struct DefinitionSubject<'a> {
+    pub(super) issuer: &'a str,
+    pub(super) principal: &'a PrincipalRef,
+}
+pub(super) fn allows_principal(
+    iam: &RemoteManagementAuthz,
+    product: &ProductId,
+    subject: DefinitionSubject<'_>,
+    workspace: &str,
+    agent: &str,
+    demand: &str,
+    expected_fence: &str,
+) -> Result<bool, Failure> {
+    let id = resource_id(subject.issuer, workspace, agent)?;
+    let principal = subject.principal;
     let selection = matches!(demand, SELECTION_READ | SELECTION_WRITE);
     let result = iam
         .agent_governance_authorization(RegisteredResourceAuthorizationRequest {
             authorization: ResourceAuthorizationRequest {
                 request: AuthorizationRequest::direct(
-                    person.principal.clone(),
+                    principal.clone(),
                     action(demand),
                     ScopeRef::Resource {
                         resource_type: ResourceType(RESOURCE_TYPE.into()),
@@ -138,8 +172,14 @@ pub(super) fn allows(
                 context: AuthorizationContext {
                     resource_id: Some(id.0),
                     resource_type: Some(RESOURCE_TYPE.into()),
-                    owner: selection.then(|| person.principal.clone()),
-                    access: if demand == SELECTION_WRITE {
+                    owner: selection.then(|| principal.clone()),
+                    access: if matches!(
+                        demand,
+                        SELECTION_WRITE
+                            | "agent.definition.write"
+                            | "agent.definition.publish"
+                            | "agent.definition.archive"
+                    ) {
                         AuthorizationAccess::Write
                     } else {
                         AuthorizationAccess::Read

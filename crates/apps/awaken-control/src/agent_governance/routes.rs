@@ -24,9 +24,9 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone)]
-struct Ingress {
-    stores: AgentGovernanceStores,
-    iam: Option<Arc<RemoteManagementAuthz>>,
+pub(super) struct Ingress {
+    pub(super) stores: AgentGovernanceStores,
+    pub(super) iam: Option<Arc<RemoteManagementAuthz>>,
 }
 
 pub(crate) fn router(
@@ -68,25 +68,79 @@ impl IntoResponse for Failure {
     }
 }
 
-struct RequestContext {
-    workspace: String,
-    token: awaken_agent_contract::RedactedString,
-    purpose: Option<Arc<dyn awaken_tenancy::workspace_purpose::OrdinaryWorkspaceAdmission>>,
+/// Legacy Managed paths retain their published structured error envelope. The
+/// new directory wire keeps its own finite error codes above.
+pub(super) fn managed_failure(failure: Failure) -> Response {
+    let (status, kind, message) = match failure {
+        Failure::Unauthorized => (
+            StatusCode::UNAUTHORIZED,
+            "authentication_error",
+            "a current native Account is required",
+        ),
+        Failure::Denied => (
+            StatusCode::FORBIDDEN,
+            "permission_error",
+            "the native Agent operation is not authorized",
+        ),
+        Failure::Unavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "api_error",
+            "current native Agent qualification is unavailable",
+        ),
+        Failure::NotConfigured => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "api_error",
+            "native Agent governance is not configured",
+        ),
+        Failure::Invalid => (
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "invalid Agent request or Workspace selector",
+        ),
+    };
+    (
+        status,
+        Json(awaken_protocol_managed::types::ErrorResponse::new(
+            kind, message,
+        )),
+    )
+        .into_response()
+}
+pub(super) struct RequestContext {
+    pub(super) workspace: String,
+    pub(super) token: awaken_agent_contract::RedactedString,
+    pub(super) purpose:
+        Option<Arc<dyn awaken_tenancy::workspace_purpose::OrdinaryWorkspaceAdmission>>,
 }
 impl RequestContext {
-    fn from_request(request: &Request) -> Result<Self, Failure> {
-        let workspace = request
+    pub(super) fn from_request(request: &Request) -> Result<Self, Failure> {
+        let trusted = request
             .extensions()
             .get::<RequestTenancy>()
-            .map(|context| context.workspace_id.clone())
+            .map(|s| s.workspace_id.as_str())
             .or_else(|| {
                 request
                     .extensions()
                     .get::<awaken_runtime_contract::runs::scope::WorkspaceScope>()
-                    .map(|scope| scope.0.clone())
+                    .map(|s| s.0.as_str())
             })
-            .filter(|value| authority::exact(value, 300))
             .ok_or(Failure::Denied)?;
+        let workspace = awaken_authz_enforce::request_workspace_scope(request, None)
+            .map_err(|error| match error {
+                awaken_authz_enforce::WorkspaceSelectionError::InvalidSelector => Failure::Invalid,
+                awaken_authz_enforce::WorkspaceSelectionError::ConflictingSelector => {
+                    Failure::Denied
+                }
+            })?
+            .filter(|s| s == trusted && authority::exact(s, 300))
+            .ok_or(Failure::Denied)?;
+        if request
+            .extensions()
+            .get::<awaken_tenancy::ExecutionWorkspace>()
+            .is_some_and(|s| s.0 != workspace)
+        {
+            return Err(Failure::Denied);
+        }
         let token = awaken_agent_contract::RedactedString::new(
             authorization_bearer_token(request.headers()).ok_or(Failure::Unauthorized)?,
         );
@@ -101,19 +155,32 @@ impl RequestContext {
         })
     }
 }
-struct Admission {
+pub(super) struct Admission {
     iam: Arc<RemoteManagementAuthz>,
-    person: Person,
+    pub(super) person: Person,
     token: awaken_agent_contract::RedactedString,
     workspace: String,
     fence: String,
+    product: awaken_iam_contract::ProductId,
 }
 impl Admission {
-    async fn begin(ingress: &Ingress, context: &RequestContext) -> Result<Self, Failure> {
-        if ingress.stores.config.is_none() {
-            return Err(Failure::NotConfigured);
-        }
-        let iam = ingress.iam.clone().ok_or(Failure::NotConfigured)?;
+    pub(super) async fn begin(
+        ingress: &Ingress,
+        context: &RequestContext,
+    ) -> Result<Self, Failure> {
+        Self::begin_with(
+            ingress.iam.clone().ok_or(Failure::NotConfigured)?,
+            ingress.stores.config.as_ref(),
+            context,
+        )
+        .await
+    }
+    pub(super) async fn begin_with(
+        iam: Arc<RemoteManagementAuthz>,
+        config: Option<&super::AgentGovernanceConfig>,
+        context: &RequestContext,
+    ) -> Result<Self, Failure> {
+        let product = config.ok_or(Failure::NotConfigured)?.product_id.clone();
         let workspace = context.workspace.clone();
         let token = context.token.clone();
         let current = iam.clone();
@@ -135,21 +202,11 @@ impl Admission {
             token,
             workspace,
             fence,
+            product,
         })
     }
-    async fn allows(
-        &self,
-        ingress: &Ingress,
-        id: &str,
-        demand: &'static str,
-    ) -> Result<bool, Failure> {
-        let product = ingress
-            .stores
-            .config
-            .as_ref()
-            .ok_or(Failure::NotConfigured)?
-            .product_id
-            .clone();
+    pub(super) async fn allows(&self, id: &str, demand: &'static str) -> Result<bool, Failure> {
+        let product = self.product.clone();
         let (iam, person, workspace, id, fence) = (
             self.iam.clone(),
             self.person.clone(),
@@ -163,7 +220,7 @@ impl Admission {
         .await
         .map_err(|_| Failure::Unavailable)?
     }
-    async fn end(&self, context: &RequestContext) -> Result<(), Failure> {
+    pub(super) async fn end(&self, context: &RequestContext) -> Result<(), Failure> {
         ordinary(context, &self.workspace).await?;
         let (iam, token, expected) = (self.iam.clone(), self.token.clone(), self.person.clone());
         let current = off_event_loop::run(move || authority::person(&iam, token.expose_secret()))
@@ -183,7 +240,7 @@ impl Admission {
         Ok(())
     }
 }
-async fn ordinary(context: &RequestContext, workspace: &str) -> Result<(), Failure> {
+pub(super) async fn ordinary(context: &RequestContext, workspace: &str) -> Result<(), Failure> {
     if context.workspace != workspace {
         return Err(Failure::Denied);
     }
@@ -246,13 +303,7 @@ async fn directory(
         .agent_catalog_snapshot(&scope, &admission.person.owner, 4096)
         .await
         .map_err(|_| Failure::Unavailable)?;
-    let visible = visible(
-        &ingress,
-        &admission,
-        &snapshot,
-        query.selected == Some(true),
-    )
-    .await?;
+    let visible = visible(&admission, &snapshot, query.selected == Some(true)).await?;
     // Pagination sees only authorized published manifests. Hidden candidates
     // contribute no ids, names, totals, empty pages, cursor or termination.
     let start = match after {
@@ -310,7 +361,6 @@ fn decode_cursor(value: &str) -> Result<String, Failure> {
 }
 
 async fn visible(
-    ingress: &Ingress,
     admission: &Admission,
     snapshot: &AgentCatalogSnapshot,
     selected_only: bool,
@@ -332,13 +382,10 @@ async fn visible(
             continue;
         }
         let id = &published.config.id;
-        if !admission.allows(ingress, id, authority::USE).await? {
+        if !admission.allows(id, authority::USE).await? {
             continue;
         }
-        let selection = if admission
-            .allows(ingress, id, authority::SELECTION_READ)
-            .await?
-        {
+        let selection = if admission.allows(id, authority::SELECTION_READ).await? {
             match preferences.get(id.as_str()) {
                 Some(state) if state.selected => Selection::Selected {
                     generation: state.generation,
@@ -383,10 +430,7 @@ async fn select_inner(ingress: &Ingress, id: &str, request: Request) -> Result<R
     }
     let context = RequestContext::from_request(&request)?;
     let admission = Admission::begin(ingress, &context).await?;
-    if !admission
-        .allows(ingress, id, authority::SELECTION_WRITE)
-        .await?
-    {
+    if !admission.allows(id, authority::SELECTION_WRITE).await? {
         return Err(Failure::Denied);
     }
     // Capture request metadata before consuming its bounded body. This same
@@ -399,7 +443,7 @@ async fn select_inner(ingress: &Ingress, id: &str, request: Request) -> Result<R
         serde_json::from_slice(&bytes).map_err(|_| Failure::Invalid)?;
     intent.validate().map_err(|_| Failure::Invalid)?;
     if intent.selected {
-        if !admission.allows(ingress, id, authority::USE).await? {
+        if !admission.allows(id, authority::USE).await? {
             return Err(Failure::Denied);
         }
         let scope = ScopeId::from(admission.workspace.clone());
@@ -472,10 +516,7 @@ async fn outcome(
     }
     let context = RequestContext::from_request(&request)?;
     let admission = Admission::begin(&ingress, &context).await?;
-    if !admission
-        .allows(&ingress, &id, authority::SELECTION_READ)
-        .await?
-    {
+    if !admission.allows(&id, authority::SELECTION_READ).await? {
         return Err(Failure::Denied);
     }
     let receipt = ingress

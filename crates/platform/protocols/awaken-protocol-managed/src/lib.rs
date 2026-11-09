@@ -99,3 +99,8 @@ pub use work_session_access::{ManagedWorkSessionAccess, work_session_guard};
 pub(crate) use awaken_session_configuration_contract::mcp as session_mcp;
 
 pub(crate) use awaken_session_configuration_contract::resource as session_resource;
+
+mod event_presentation;
+pub use event_presentation::HideSessionEventDefinitions;
+
+pub use common::api_version::managed_agent_page_response;

@@ -78,7 +78,7 @@ async fn restore_revalidates_current_grant_after_target_lock_and_checkpoint_read
                 };
                 let gate = Arc::new(tokio::sync::Notify::new());
                 if wait == "get" {
-                    *store.pause.lock().unwrap() = Some((CheckpointPause::AfterGet, gate.clone()));
+                    *store.pause.lock().unwrap() = Some((CheckpointPause::Get, gate.clone()));
                 }
                 let pending = async {
                     if wait == "lock" {

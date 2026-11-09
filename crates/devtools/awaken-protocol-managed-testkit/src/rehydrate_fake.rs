@@ -66,6 +66,15 @@ pub type ChildCommitAfterHistorySnapshot = (
     Vec<awaken_agent_contract::RunLifecycleEvent>,
 );
 
+type ToolReplacementLog = Arc<
+    awaken_sync::LeafLock<
+        Vec<(
+            String,
+            awaken_session_configuration_contract::SessionToolConfiguration,
+        )>,
+    >,
+>;
+
 /// A runtime that reports committed Thread facts after the durable Session root
 /// has authorized rehydration. The transcript is projection input only and can
 /// never establish Session existence by itself.
@@ -168,9 +177,20 @@ pub struct RehydrateFake {
     pub ended: Arc<awaken_sync::LeafLock<Vec<String>>>,
     pub reject_mcp_publication: Arc<std::sync::atomic::AtomicBool>,
     pub reject_environment_adoption: Arc<std::sync::atomic::AtomicBool>,
+    /// Explicitly opted-in disposable tool projection recorder. `None` keeps
+    /// the original unsupported Environment port for existing fixtures.
+    pub tool_replacements: Option<ToolReplacementLog>,
 }
 
 impl RehydrateFake {
+    /// Enable only the disposable tool-replacement port for HTTP update tests;
+    /// the canonical Session application and repository still own every fact.
+    #[must_use]
+    pub fn with_tool_replacement_recording(mut self) -> Self {
+        self.tool_replacements = Some(Arc::new(awaken_sync::LeafLock::new(Vec::new())));
+        self
+    }
+
     /// Install the one Runtime-owned accepted `send_message` prefix that
     /// authorizes an ordinary coordinated link. Tests must not fabricate a
     /// Managed-only link anchor: the root ToolUse/ToolResult messages, their

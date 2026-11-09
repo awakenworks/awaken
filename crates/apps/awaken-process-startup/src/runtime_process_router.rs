@@ -1020,6 +1020,7 @@ async fn finish_process_routers(
         control.audit_plane,
         base.managed_rate_limiter.clone(),
         base.process.managed_services.private_workspace_context,
+        base.stores.agent_governance.clone(),
     );
     let (flat, mcp_export) = match base.role {
         config::Role::AllInOne => (data.merge(control.router), control.mcp_export),

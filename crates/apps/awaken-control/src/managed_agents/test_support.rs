@@ -154,7 +154,7 @@ pub(super) async fn plane_with_catalog(path: &str) -> (ConfigPlane, Arc<Executab
     ))
 }
 
-pub(super) fn plane_with_store(
+pub(crate) fn plane_with_store(
     store: Arc<dyn awaken_agent_config::ScopedConfigRegistry>,
 ) -> (ConfigPlane, Arc<ExecutableAgentCatalog>) {
     let catalog = Arc::new(ExecutableAgentCatalog::new());

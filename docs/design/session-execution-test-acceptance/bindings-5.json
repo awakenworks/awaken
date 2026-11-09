@@ -4,7 +4,7 @@
     "source_locations": [
       {
         "path": "crates/platform/execution/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 526,
+        "line": 529,
         "file_sha256": "fa7384e5c69aba9a9ea0436f442313eb3a235cfe629278ac83bfc588b716bbca",
         "relocated_from": "crates/server/awaken-session-executor/src/host/tests/environment_installation_order.rs:525"
       }
@@ -12,15 +12,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/execution/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 542
+        "line": 545
       },
       {
         "path": "crates/platform/execution/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 558
+        "line": 561
       },
       {
         "path": "crates/platform/execution/awaken-session-executor/src/host/tests/environment_installation_order.rs",
-        "line": 577
+        "line": 580
       }
     ],
     "execution_witnesses": [

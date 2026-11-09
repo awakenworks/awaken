@@ -712,7 +712,7 @@ mod tests {
                 let store = CheckpointStore::default();
                 let authority = EffectAuthority::new(&suspend);
                 let gate = Arc::new(tokio::sync::Notify::new());
-                *store.pause.lock().unwrap() = Some((CheckpointPause::AfterPut, gate.clone()));
+                *store.pause.lock().unwrap() = Some((CheckpointPause::Put, gate.clone()));
                 let mut pending = Box::pin(pc::CheckpointingSandbox::checkpoint_for_effect(
                     &sandbox, &request, &store, &suspend, &authority,
                 ));
@@ -888,9 +888,9 @@ mod tests {
                     if wait != "slot" {
                         *store.pause.lock().unwrap() = Some((
                             if wait == "put" {
-                                CheckpointPause::AfterPut
+                                CheckpointPause::Put
                             } else {
-                                CheckpointPause::AfterDelete
+                                CheckpointPause::Delete
                             },
                             gate.clone(),
                         ));

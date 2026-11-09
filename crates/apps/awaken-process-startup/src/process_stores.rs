@@ -25,6 +25,9 @@ pub(super) struct ProcessResources {
 }
 
 pub(super) struct ProcessStores {
+    /// Explicit deployment metadata shared with split Coordinator admission;
+    /// the native IAM owner still decides every operation.
+    pub(super) agent_governance: Option<awaken_control::AgentGovernanceConfig>,
     /// Durable installation root used to persist the platform Workspace id.
     pub(super) workspace_root: Option<std::path::PathBuf>,
     /// The one installation Workspace coordinate resolved by store startup and
@@ -735,6 +738,7 @@ pub(super) async fn open_process_stores(
         ),
     };
     Ok(ProcessStores {
+        agent_governance,
         workspace_root: Some(workspace_root),
         platform_workspace,
         clock,

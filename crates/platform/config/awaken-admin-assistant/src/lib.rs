@@ -195,6 +195,11 @@ const MAX_PLUGIN_CONFIG_BYTES: usize = 64 * 1024;
 /// LIVE snapshot is read from durable stores (the catalog repo, the config plane).
 #[async_trait]
 pub trait CapabilityReader: Send + Sync {
+    /// Fail before inventory IO when the caller lacks the host's required admission.
+    /// The compatibility default preserves explicitly provisioned local operators.
+    fn available(&self) -> Result<(), String> {
+        Ok(())
+    }
     async fn capabilities(&self) -> PlatformCapabilities;
 }
 
@@ -1024,6 +1029,9 @@ impl RawTool for GetPlatformCapabilities {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        if let Err(message) = self.reader.available() {
+            return Ok(ToolOutput::error(call.call_id, message));
+        }
         let caps = self.reader.capabilities().await;
         let content = serde_json::to_string(&caps)
             .map_err(|e| ToolError::DefinitiveFailure(format!("serialize capabilities: {e}")))?;

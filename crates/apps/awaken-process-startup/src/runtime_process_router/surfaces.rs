@@ -18,6 +18,7 @@ pub(super) fn protect(
     audit_plane: ManagementAuditPlane,
     managed_rate_limiter: Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>,
     private_context: Option<Arc<HttpPrivateWorkspaceContext>>,
+    agent_governance: Option<awaken_control::AgentGovernanceConfig>,
 ) -> ProtectedSurfaces {
     let private_reads = private_context.map(|context| {
         // The private ingress performs its own current human authentication and
@@ -40,19 +41,27 @@ pub(super) fn protect(
             context,
         )
     });
-    let coordinator_data = awaken_control::protect_runtime_protocol_routers(
-        coordinator.router,
-        coordinator.application_router,
-        iam.clone(),
-        remote_iam.clone(),
-    );
-    let coordinator_management = awaken_protocol_managed::with_managed_response_context(
-        awaken_control::protect_management_router(
-            coordinator.management_router,
-            audit_plane.clone(),
+    let coordinator_data = awaken_control::protect_managed_agent_definitions(
+        awaken_control::protect_runtime_protocol_routers(
+            coordinator.router,
+            coordinator.application_router,
             iam.clone(),
             remote_iam.clone(),
-            Some(managed_rate_limiter.clone()),
+        ),
+        remote_iam.clone(),
+        agent_governance.clone(),
+    );
+    let coordinator_management = awaken_protocol_managed::with_managed_response_context(
+        awaken_control::protect_managed_agent_definitions(
+            awaken_control::protect_management_router(
+                coordinator.management_router,
+                audit_plane.clone(),
+                iam.clone(),
+                remote_iam.clone(),
+                Some(managed_rate_limiter.clone()),
+            ),
+            remote_iam.clone(),
+            agent_governance.clone(),
         )
         .layer(axum::middleware::from_fn_with_state(
             coordinator.work_session_access.clone(),
@@ -60,12 +69,16 @@ pub(super) fn protect(
         )),
     );
     let coordinator_managed = awaken_protocol_managed::with_managed_response_context(
-        awaken_control::protect_management_router(
-            coordinator.managed_router,
-            audit_plane,
-            iam,
-            remote_iam,
-            Some(managed_rate_limiter.clone()),
+        awaken_control::protect_managed_agent_definitions(
+            awaken_control::protect_management_router(
+                coordinator.managed_router,
+                audit_plane,
+                iam,
+                remote_iam.clone(),
+                Some(managed_rate_limiter.clone()),
+            ),
+            remote_iam.clone(),
+            agent_governance.clone(),
         )
         .layer(axum::middleware::from_fn_with_state(
             coordinator.work_session_access,
