@@ -73,6 +73,9 @@ pub(crate) fn protect(
     iam: Option<Arc<RemoteManagementAuthz>>,
     config: Option<AgentGovernanceConfig>,
 ) -> Router {
+    if config.is_none() {
+        return router;
+    }
     let Some(iam) = iam else { return router };
     router.clone().layer(axum::middleware::from_fn_with_state(
         Ingress {

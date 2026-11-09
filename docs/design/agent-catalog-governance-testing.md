@@ -78,6 +78,18 @@ vocabulary. The declaration helpers perform no registration, activation,
 projection or grant writes. Missing configuration is unavailable. Native IAM
 remains responsible for validating the product namespace and immutable profile
 owner before activation; a supplied product id is never evidence of permission.
+
+The declaration also owns adoption of the additional fine-definition middleware.
+Without it, the new directory and personal-selection endpoints remain closed;
+the existing Config and Managed Agents endpoints retain their original current
+IAM Workspace/runtime authorization. An unadopted optional surface must not
+make those existing endpoints require a new product or a human identity.
+This reuses the original guards and stores and grants no new personal authority.
+With an explicit declaration, the registered-resource definition guards apply:
+missing rights, an invalid product, stale proof or an unavailable dependency
+remain refusals. No request, failed decision or unknown resource can fall back
+from an adopted definition contract to Workspace authority. Deployment adoption
+is distinct from either authentication or permission.
 Resource identity uses length-prefixed verified issuer, trusted Workspace and
 Config Agent id with a versioned digest. Labels and path separators cannot alias
 another owner coordinate.

@@ -367,3 +367,9 @@ the directory rather than becoming an empty result or a guessed priority. The
 public ID is then parsed by the existing Managed codec and resolved by the
 existing authoring/publication owner when a new Agent is created. Existing
 snapshots and execution route/credential pins are never rewritten by discovery.
+
+The existing refresh decorator must forward the selected catalog's complete
+`current_model_publications` read under its refresh admission. Rebuilding it from
+`current_registrations` would discard both source projection and historical
+publication time. The contract's ephemeral-fixture default is not an alternative
+production read path; Models and Dream consume the same delegated owner result.

@@ -34,7 +34,7 @@ pub(crate) fn protect(
     plane: ConfigPlane,
     clock: Arc<dyn awaken_time::WallClock>,
 ) -> Router {
-    if iam.is_none() {
+    if iam.is_none() || stores.config.is_none() {
         return router;
     }
     router.layer(axum::middleware::from_fn_with_state(

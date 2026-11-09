@@ -3,6 +3,185 @@
 // @formal reason: no browser role or stored preference is accepted as authority.
 use super::*;
 use axum::Json;
+
+#[tokio::test]
+async fn unadopted_governance_preserves_managed_crud_and_the_original_iam_guard() {
+    // C1 product adoption is absent; C2 original native IAM permits Workspace
+    // read/write; C3 credential invalid or another subject lacks that grant;
+    // C4 caller uses standard Managed list/create/update/archive. R1 C1+C2+C4
+    // => existing Config publication owner serves the normal wire; R2 C3 =>
+    // original 401/403, with no mutation. Optional personal governance confers
+    // no new authority and must not require its product in the existing lane.
+    let native = native(sqlite_in_memory_store("unadopted_managed").unwrap()).await;
+    register(&native.store, &[]);
+    workspace_read(&native.store);
+    awaken_iam_server::PolicyAdminApi::new(native.store.clone())
+        .issue_grant(
+            Grant {
+                id: GrantId("existing-workspace-write".into()),
+                subject: GrantSubject::Principal(principal("person-a")),
+                action_pattern: ActionPattern("awaken.workspace::workspace.write".into()),
+                scope: ScopeRef::Workspace {
+                    workspace_id: WorkspaceId("workspace".into()),
+                },
+                effect: Effect::Allow,
+            },
+            at(),
+        )
+        .unwrap();
+    let configs = Arc::new(
+        awaken_config_store::SqliteConfigStore::open(":memory:")
+            .await
+            .unwrap(),
+    );
+    let (plane, _) = crate::managed_agents::test_support::plane_with_store(configs.clone());
+    let repository = Arc::new(crate::ConfigPlaneManagedAgentRepository::request_scoped(
+        plane.clone(),
+        awaken_time::system_clock(),
+    ));
+    let raw = crate::config_routes::agent_registry_routers(repository, None, None);
+    let guarded = crate::protect_management_router(
+        raw,
+        plane.management_audit_plane(),
+        None,
+        Some(native.iam.clone()),
+        None,
+    );
+    let app = super::super::legacy::protect(
+        guarded,
+        AgentGovernanceStores::new(configs, None),
+        Some(native.iam.clone()),
+        plane,
+        awaken_time::system_clock(),
+    );
+    let body = json!({"name":"managed-default-adoption","model":"model-a","system":"be helpful","tools":[]});
+    assert_eq!(
+        invoke(
+            &app,
+            "sk-invalid-for-account-management",
+            "POST",
+            "/v1/agents",
+            body.clone(),
+            "bad-key"
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED,
+        "R2"
+    );
+    assert_eq!(
+        invoke(
+            &app,
+            &native.tokens[1],
+            "POST",
+            "/v1/agents",
+            body.clone(),
+            "no-write"
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN,
+        "R2"
+    );
+    let (status, created) = invoke(
+        &app,
+        &native.tokens[0],
+        "POST",
+        "/v1/agents",
+        body,
+        "create",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R1 create: {created}");
+    let id = created["id"].as_str().unwrap();
+    let (status, listed) = raw_call(&app, &native.tokens[0], "/v1/agents?limit=1").await;
+    assert_eq!(status, StatusCode::OK, "R1 list");
+    assert_eq!(listed["data"][0]["id"], id);
+    let route = format!("/v1/agents/{id}");
+    assert_eq!(
+        raw_call(&app, &native.tokens[0], &route).await.0,
+        StatusCode::OK,
+        "R1 retrieve"
+    );
+    let (status, updated) = invoke(
+        &app,
+        &native.tokens[0],
+        "POST",
+        &route,
+        json!({"version":created["version"],"system":"updated through Managed API"}),
+        "update",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R1 update: {updated}");
+    let (status, archived) = invoke(
+        &app,
+        &native.tokens[0],
+        "POST",
+        &format!("{route}/archive"),
+        Value::Null,
+        "archive",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R1 archive: {archived}");
+}
+
+#[tokio::test]
+async fn unadopted_session_definition_overlay_leaves_runtime_and_personal_boundaries_distinct() {
+    // C1 adoption absent/present; C2 original Session runtime router; C3 valid
+    // native identity+Workspace read but no fine definition right. R1 absent
+    // => retain the original response; R2 present => fine read refusal; R3 the
+    // new personal directory still refuses missing adoption. This probes the
+    // changed composition boundary; the original runtime/IAM guards retain
+    // their separate conformance coverage and are not simulated here.
+    let native = native(sqlite_in_memory_store("unadopted_session").unwrap()).await;
+    register(&native.store, &["a-visible"]);
+    workspace_read(&native.store);
+    let raw = Router::new().route("/v1/sessions/s",axum::routing::get(||async {Json(json!({
+        "id":"s","type":"session","agent":{"id":"a-visible","version":1},"agent_id":"a-visible","agent_version":1
+    }))}));
+    let unadopted = super::super::managed_definition_reads::protect(
+        raw.clone(),
+        Some(native.iam.clone()),
+        None,
+    );
+    assert_eq!(
+        raw_call(&unadopted, &native.tokens[0], "/v1/sessions/s")
+            .await
+            .0,
+        StatusCode::OK,
+        "R1"
+    );
+    let adopted = super::super::managed_definition_reads::protect(
+        raw,
+        Some(native.iam.clone()),
+        Some(AgentGovernanceConfig {
+            product_id: product(),
+        }),
+    );
+    assert_eq!(
+        raw_call(&adopted, &native.tokens[0], "/v1/sessions/s")
+            .await
+            .0,
+        StatusCode::FORBIDDEN,
+        "R2"
+    );
+    let configs = Arc::new(
+        awaken_config_store::SqliteConfigStore::open(":memory:")
+            .await
+            .unwrap(),
+    );
+    let personal = super::super::routes::router(
+        AgentGovernanceStores::new(configs, None),
+        Some(native.iam.clone()),
+    );
+    assert_eq!(
+        raw_call(&personal, &native.tokens[0], "/v1/agent-directory")
+            .await
+            .0,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "R3"
+    );
+}
 fn workspace_read<B: SqlConn + Clone + 'static>(store: &SqlStore<B>) {
     awaken_iam_server::PolicyAdminApi::new(store.clone())
         .issue_grant(

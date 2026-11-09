@@ -445,6 +445,21 @@ struct RefreshingExecutableAgentInventory {
 impl awaken_executable_agent_contract::ExecutableAgentInventorySource
     for RefreshingExecutableAgentInventory
 {
+    async fn current_model_publications(
+        &self,
+        workspace_id: &str,
+    ) -> Result<
+        Vec<awaken_executable_agent_contract::PublishedModelReference>,
+        awaken_executable_agent_contract::ExecutableAgentRegistrationError,
+    > {
+        let admission = self.refresh.refresh().await.map_err(|error| {
+            awaken_executable_agent_contract::ExecutableAgentRegistrationError::Unavailable(error)
+        })?;
+        admission
+            .enter(|| self.source.current_model_publications(workspace_id))
+            .await
+    }
+
     async fn current_registrations(
         &self,
         workspace_id: &str,
@@ -517,6 +532,103 @@ mod executable_projection_refresh_tests {
 
     #[derive(Default)]
     struct Inventory(AtomicUsize);
+
+    #[tokio::test]
+    async fn refreshed_models_and_readiness_keep_the_selected_source_projection_and_history() {
+        // C1 selected source overrides publication projection/time; C2 refresh
+        // succeeds/fails; C3 that source fails after a successful refresh.
+        // R1 C1+C2 => Models and Dream receive the exact owner result;
+        // R2 !C2 => no source read; R3 C3 => preserve error, without rebuilding
+        // from current rows or inventing an empty result. A registrations read
+        // panics, making the former fixture-default production path observable.
+        struct Published {
+            reads: AtomicUsize,
+            fail: AtomicBool,
+        }
+        #[async_trait::async_trait]
+        impl awaken_executable_agent_contract::ExecutableAgentInventorySource for Published {
+            async fn current_registrations(
+                &self,
+                _: &str,
+            ) -> Result<
+                Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>,
+                awaken_executable_agent_contract::ExecutableAgentRegistrationError,
+            > {
+                panic!("publication owner must not be replaced by current-row reconstruction")
+            }
+            async fn current_model_publications(
+                &self,
+                workspace: &str,
+            ) -> Result<
+                Vec<awaken_executable_agent_contract::PublishedModelReference>,
+                awaken_executable_agent_contract::ExecutableAgentRegistrationError,
+            > {
+                assert_eq!(workspace, "workspace");
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                if self.fail.load(Ordering::SeqCst) {
+                    return Err(awaken_executable_agent_contract::ExecutableAgentRegistrationError::Unavailable("selected publication unavailable".into()));
+                }
+                Ok(vec![
+                    awaken_executable_agent_contract::PublishedModelReference {
+                        model_reference:
+                            "source-model;provider=vendor;api=open_ai_chat;endpoint=logical-source"
+                                .into(),
+                        first_published_at_unix_ms: Some(101),
+                    },
+                ])
+            }
+        }
+        let source = Arc::new(Published {
+            reads: AtomicUsize::new(0),
+            fail: AtomicBool::new(false),
+        });
+        let refresh = Arc::new(ToggleRefresh::default());
+        let pair = Arc::new(
+            awaken_session_application_contract::ExecutableProjectionRefresh::new(
+                refresh.clone(),
+                refresh.clone(),
+            ),
+        );
+        let inventory = executable_agent_inventory_reads(Some(source.clone()), Some(pair)).unwrap();
+        let rows = inventory
+            .current_model_publications("workspace")
+            .await
+            .unwrap();
+        assert_eq!(rows[0].first_published_at_unix_ms, Some(101), "R1 history");
+        assert_eq!(
+            awaken_executable_agent_contract::current_model_references(
+                inventory.as_ref(),
+                "workspace"
+            )
+            .await
+            .unwrap(),
+            vec![rows[0].model_reference.clone()],
+            "R1 shared projection"
+        );
+        assert_eq!(source.reads.load(Ordering::SeqCst), 2);
+        refresh.fail.store(true, Ordering::SeqCst);
+        assert!(
+            inventory
+                .current_model_publications("workspace")
+                .await
+                .is_err(),
+            "R2"
+        );
+        assert_eq!(source.reads.load(Ordering::SeqCst), 2, "R2 no read");
+        refresh.fail.store(false, Ordering::SeqCst);
+        source.fail.store(true, Ordering::SeqCst);
+        let error = inventory
+            .current_model_publications("workspace")
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("selected publication unavailable"),
+            "R3"
+        );
+        assert_eq!(source.reads.load(Ordering::SeqCst), 3, "R3 one owner read");
+    }
 
     #[async_trait::async_trait]
     impl awaken_executable_agent_contract::ExecutableAgentInventorySource for Inventory {
