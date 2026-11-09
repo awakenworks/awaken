@@ -139,10 +139,10 @@ formal and downstream results retain their own subjects.
 
 | Document | Status | Notes |
 |---|---|---|
-| `README.md` | Ready | Defines bounded contexts and development-ready design rule |
+| `README.md` | Ready | Routes application developers, SDK consumers, operators and contributors to their owners; defines the development-ready design rule |
 | `INVARIANTS.md` | Ready | Guardrails are mechanical and reviewable |
 | `requirements-coverage.md` | Ready | Maps all required areas to bounded contexts and packaging rules |
-| `design/architecture-overview.md` | Ready | Maps the implemented Control/Coordinator/Resources/Worker boundaries, aggregate ownership, lifecycle processors, and runtime/server seams |
+| `design/architecture-overview.md` | Ready | Maps process composition, aggregate ownership, lifecycle processors and runtime/server seams; domain context membership is delegated to ADR-0088 and crate metadata |
 | `design/acp-harness-capability-and-tool-bridge.md` | Runtime-owned | Defines ACP capability selection and projection, the governed Session MCP tool bridge, approval replay safety, verification, and portable working-directory constraints |
 | `design/config-to-run-execution-flow.md` | Ready | Owns static Agent/Environment publication, role-scoped database/migration ownership, Deployment/Session creation, and request execution through per-kind materialization, commit, and HTTP/SSE response |
 | `design/config-publication-lifecycle.md` | Ready | Owns Control publication and Coordinator executable-registration semantics, idempotency, recovery, and failure rules without a parallel whole-catalog install model |

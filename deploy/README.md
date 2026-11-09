@@ -30,6 +30,28 @@ standard `~/.awaken/config.toml`, followed by typed defaults. `AWAKEN_*`
 environment variables are not deployment, model, business, or credential
 configuration sources.
 
+## Local execution tiers
+
+The default execution adapter follows the host's implemented capability: Linux
+uses bubblewrap Namespace isolation, macOS uses Seatbelt Namespace isolation,
+and Windows uses host-backed Local execution because Awaken has no Windows
+Namespace adapter. Linux Namespace execution needs usable `bwrap`.
+`awaken doctor` reports readiness without creating product state;
+`awaken doctor acp` diagnoses supported local ACP runtimes.
+
+To deliberately use host programs, set `sandbox_tier = "local"` in the selected
+configuration file. Local execution launches ACP CLIs and shell commands as
+host child processes. It has no OS isolation and is for trusted single-user
+workstations. Files, repositories, MemoryStores, Skills and outputs still use
+Agent resource bindings, but a child can access what the host user can access.
+TrustedHost is not a cloud or multi-tenant security boundary.
+
+A Worker whose primary tier is Namespace/Container may opt into exact host
+execution with `sandbox_trusted_host_enabled = true`. The Environment must bind
+the `trusted_host` + `workdir` execution policy; advertising Worker capability
+never silently converts an isolated Environment. See the existing split Worker
+instructions below for local ACP credential bindings.
+
 ## Release evidence
 
 The release-built Management image carries its original archive verification

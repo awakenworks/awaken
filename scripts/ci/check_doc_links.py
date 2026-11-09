@@ -1,37 +1,27 @@
 #!/usr/bin/env python3
-"""Validate that relative Markdown links resolve to real files and anchors.
+"""Check local Markdown links and anchors; URLs and code fences are excluded.
 
-Usage: check_doc_links.py [FILE ...]
-
-Two things are checked for local relative links:
-
-1. The file part resolves to a real file on disk.
-2. If the link carries a ``#fragment``, that fragment resolves to a heading in
-   the target file -- either the GitHub auto-slug of the heading text or an
-   explicit ``{#custom-id}`` attribute. Same-file ``#fragment`` links are checked
-   against the file that contains them.
-
-URLs, mailto, and template placeholders (links containing ``XXXX``) are skipped.
-Fragments are only validated against local Markdown files we can read.
+No arguments scans the README/documentation inputs declared in INPUT_GLOBS.
+Explicit files use the same resolver. --self-test exercises default-scope refusals.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _doc_anchors import FENCE, resolve_link  # noqa: E402
 
-# Input set: the Markdown corpus under docs/ and the root contributor guide,
-# plus the shared anchor resolver that decides whether a `#fragment` exists.
-# Link *targets* may live anywhere, but a target is only read after a Markdown
-# file of the corpus cites it.
-INPUT_GLOBS: tuple[str, ...] = ("docs/**/*.md", "CONTRIBUTING.md", "scripts/ci/_doc_anchors.py")
-CONTRIBUTOR_GUIDE = Path("CONTRIBUTING.md")
+# One input declaration owns both hook admission and the default corpus scan.
+INPUT_GLOBS: tuple[str, ...] = ("docs/**/*.md", "README.md", "CONTRIBUTING.md", "deploy/**/README.md",
+    "examples/**/README.md", "crates/sdk/**/README.md", "scripts/ci/_doc_anchors.py")
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
@@ -41,11 +31,8 @@ def is_external(target: str) -> bool:
 
 
 def main(argv: list[str]) -> int:
-    # The trigger also covers this checker and the shared anchor resolver, so an
-    # argument list may legitimately carry no Markdown. Re-scan the docs corpus
-    # then: a trigger that fires and checks nothing is the bug, not a feature.
     paths = [Path(arg) for arg in argv if Path(arg).suffix == ".md"]
-    paths = paths or [*sorted(Path("docs").rglob("*.md")), CONTRIBUTOR_GUIDE]
+    paths = paths or sorted({p for pattern in INPUT_GLOBS for p in Path(".").glob(pattern) if p.suffix == ".md"})
     errors: list[str] = []
     for path in paths:
         if not path.is_file():
@@ -78,20 +65,41 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-# One canonical spelling per flag, and nothing else admitted. A checker that
-# accepted an unknown argument and fell through to its normal scan exited zero
-# having run something other than what the caller asked for: that is how
-# `check-all.sh` invoked `--selftest` for years while the flag was `--self-test`
-# and the self-test never once executed. ``allow_abbrev=False`` closes the
-# second half: without it ``--self-tes`` is also accepted, so the flag has no
-# single spelling.
+def self_test() -> int:
+    # Causes: owner is root/docs/deploy/SDK/example; link file or anchor is
+    # missing, or both resolve. Effects: reject either missing target, accept
+    # valid links; no original files mutate. Rules L1 missing file -> reject;
+    # L2 existing file + wrong anchor -> reject; L3 matching file/anchor -> pass.
+    # Cross owner x L1..L3 proves the default scan, not just explicit-file calls.
+    original = Path.cwd()
+    try:
+        with tempfile.TemporaryDirectory() as temporary:
+            os.chdir(temporary)
+            for name in ("README.md", "docs/README.md", "deploy/README.md", "examples/app/README.md", "crates/sdk/runtime/app/README.md"):
+                path = Path(name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.with_name("target.md").write_text("# Ready", encoding="utf-8")
+                for link, expected in (("missing.md", 1), ("target.md#absent", 1), ("target.md#ready", 0)):
+                    path.write_text(f"[Target]({link})", encoding="utf-8")
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        actual = main([])
+                    assert actual == expected, (name, link, actual)
+        return 0
+    finally:
+        os.chdir(original)
+
+
 def parse(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="check_doc_links.py", description=__doc__, allow_abbrev=False
     )
-    parser.add_argument("paths", nargs="*", help="Markdown files to check; empty rescans docs/")
+    parser.add_argument("--self-test", action="store_true", help="test default scan coverage and refusals")
+    parser.add_argument("paths", nargs="*", help="Markdown files to check; empty scans all declared Markdown inputs")
+    if "--self-test" in argv and len(argv) != 1:
+        parser.error("--self-test takes no paths or other arguments")
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(parse(sys.argv[1:]).paths))
+    args = parse(sys.argv[1:])
+    raise SystemExit(self_test() if args.self_test else main(args.paths))

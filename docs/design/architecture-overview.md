@@ -1,35 +1,38 @@
 # Architecture Overview
 
-This document is the map for `awaken-runtime` implementation. It replaces the
-earlier product-first stack with bounded contexts that keep the Apache-licensed
-runtime protocol and public contract independent of server, config, admin, and
-product code.
+This document explains how Awaken Agents applications compose into processes.
+Start with the repository [quickstart](../../README.md#try-awaken) to use the
+product. The domain context map is owned by
+[ADR-0088](../adr/0088-bounded-context-map-and-sdk-platform-contract.md#decision)
+and each crate's `package.metadata.awaken.bounded_context`; its guards read that
+metadata. A process name is not a domain context.
 
-The context map below is the implemented ADR-0071 boundary. Static definitions
-and immutable relationships belong to Control; runtime coordination belongs to
-Coordinator; resource data and reclamation belong to Resources; execution belongs
-to Worker. Local and distributed adapters reach the same authorities. Worker
-retains only ephemeral execution state and receives no authority database handle.
+The composition below follows ADR-0071. Control publishes definitions;
+Coordinator coordinates Sessions; Resources owns resource content; Worker runs
+claimed execution. These applications compose several domain contexts. In
+particular, ADR-0088 retired the worker domain context: Execution and Dispatch
+are domain responsibilities, while Worker remains a deployment role. A Worker
+retains ephemeral execution state and receives no authority database handle.
 
 ---
 
 ## 1. Context Map
 
 ```text
-  Control Context
+  Control application/process
   Agent and Environment authoring, immutable revisions/publications,
   model-candidate resolution, Resource references, IAM, credential metadata,
   vaults, directory APIs
         |
         | exact executable Agent/Environment registrations
         v
-  Coordinator Context
+  Coordinator application/process
   rebuildable executable projections, Deployment/DeploymentRun,
   Session/Run, WorkQueue, durable dispatch, committed truth, protocol replay
         |
         | dispatch/claim, exact manifests, commit/settle
         v
-  Worker Context  -- claim-fenced exact reads / CAS write-back --> Resources Context
+  Worker process -- claim-fenced exact reads / CAS write-back --> Resources application
   sandbox/process/mount lifecycle, exact credential             Resource Catalog,
   materialization, Runtime execution, ephemeral state            File/Memory/Skill,
         |                                                        references/purge
@@ -46,7 +49,7 @@ Resources application constructors; an optional local Worker uses the same
 
 ### 1.1 Physical deployment and authority map
 
-| Deployment unit or context | Canonical applications | Durable authority acquired | Cross-context contracts |
+| Deployment role | Canonical applications | Durable authority acquired | Cross-context contracts |
 |---|---|---|---|
 | Control | `awaken_control::build_control_component`, `CatalogModelPublicationResolver`, `GenaiModelDiscovery` | Agent/config publication, Environment definitions/revisions and sandbox-policy versions, Catalog, Credential/secret, Admin, IAM, Data Subject consent/accountability | resolves complete secret-free model candidates once; registers exact executable Agent and Environment facts; exposes authenticated audit, credential, webhook, and consent-read contracts |
 | Coordinator | `awaken_coordinator::build_coordinator_component`; currently co-deploys the canonical Resources application | executable-Agent and executable-Environment projections, Deployment/DeploymentRun, Session, WorkQueue, captured content, dispatch/commit | reads only rebuildable Control projections and published candidates; calls narrow Control contracts; dispatches to and settles Workers; mounts Resources services without owning their stores |
@@ -401,15 +404,17 @@ Capabilities are split into segments:
 | Session data | runtime facts | replayed from committed state |
 
 This keeps replayability simple: the runtime validates what the model saw and the
-content hash of execution material, and runs the tool in-process. Out-of-process
-or remote agent execution is added only when a future ADR introduces it.
+content hash of execution material, and runs native tools in-process. Supported
+ACP and outbound A2A execution use the existing Execution adapters and Session
+authority; see [ADR-0075](../adr/0075-unified-managed-session-worker-execution.md).
 
 ---
 
 ## 7. Operational Convergence And Deployment Topology
 
-The four bounded contexts and their persistence authorities are complete in the
-current deployment. Distributed deployment uses role-named Control,
+The application composition and its persistence ownership follow the map above;
+domain context membership remains owned by ADR-0088 and crate metadata.
+Distributed deployment uses role-named Control,
 Coordinator, and Worker executables; Resources is a canonical sibling application
 currently hosted by the Coordinator process. This is process co-location, not
 shared ownership: its stores, migrations, application services, and contracts

@@ -1,0 +1,18 @@
+{
+  "description": "Self-hostable execution for AI agent applications: persistent sessions, tool permissions and application APIs. Built in Rust.",
+  "homepage": "https://awakenworks.com/agents",
+  "topics": [
+    "ai-agents",
+    "agent-runtime",
+    "self-hosted",
+    "developer-tools",
+    "rust",
+    "managed-agents",
+    "vercel-ai-sdk",
+    "ag-ui",
+    "mcp",
+    "a2a",
+    "acp",
+    "human-in-the-loop"
+  ]
+}

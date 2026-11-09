@@ -617,7 +617,7 @@ commit-checks:
                 # 6. Every relative Markdown link resolves to a real file and anchor.
                 - name: check-doc-links
                   # >>> generated glob from check_doc_links.py INPUT_GLOBS — do not edit
-                  glob: "{CONTRIBUTING.md,docs/**/*.md,scripts/ci/_doc_anchors.py,scripts/ci/check_doc_links.py}"
+                  glob: "{CONTRIBUTING.md,README.md,crates/sdk/**/README.md,deploy/**/README.md,docs/**/*.md,examples/**/README.md,scripts/ci/_doc_anchors.py,scripts/ci/check_doc_links.py}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label check-doc-links --timeout 600 --read-only --shell 'python3 scripts/ci/check_doc_links.py "$@"' -- {staged_files}
