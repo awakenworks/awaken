@@ -16,7 +16,25 @@ const sdkTypes = new Map([
   ['BetaManagedAgentsStreamSessionEvents', 'events'],
 ]);
 
+const canonicalText = text => text.replaceAll('\r\n', '\n');
+/** RFC 1952 permits the unknown OS marker; flags and timestamp stay closed. */
+export function canonicalPackageBytes(bytes) {
+  if (bytes.length < 18 || bytes.subarray(0, 8).toString('hex') !== '1f8b080000000000') throw Error('Unexpected package gzip header');
+  const result = Buffer.from(bytes);
+  result[9] = 255;
+  return result;
+}
+export function sourceInputsSha256(files) {
+  const digest = createHash('sha256');
+  for (const file of files) {
+    const bytes = Buffer.from(canonicalText(file.toString('utf8')), 'utf8');
+    digest.update(String(bytes.length) + ':'); digest.update(bytes);
+  }
+  return digest.digest('hex');
+}
+
 export function portableArtifacts(manifest, selectedSdk, files, sourceDigest) {
+  files = Object.fromEntries(Object.entries(files).map(([name, value]) => [name, canonicalText(value)]));
   const version = /^npm:@anthropic-ai\/sdk@(\d+\.\d+\.\d+)$/.exec(selectedSdk)?.[1];
   if (!version || !/^[a-f0-9]{64}$/.test(sourceDigest)) throw Error('Exact selected SDK and source digest are required');
   const declarations = ts.createSourceFile('index.d.ts', files.declarations, ts.ScriptTarget.Latest, true);
@@ -89,23 +107,26 @@ export function packPortable(output, { build = true } = {}) {
     packageManager(['--filter', '@awaken/managed-session-projection', 'build'], repositoryRoot);
   }
   const sourcePaths = [join(packageRoot, 'src/index.ts'), join(packageRoot, 'package.json'), fileURLToPath(import.meta.url),
-    join(oracleRoot, 'src/current-wire.generated.ts'), join(oracleRoot, 'src/current-types.ts'), join(oracleRoot, 'package.json')];
-  const digest = createHash('sha256');
-  for (const file of sourcePaths) { const bytes = readFileSync(file); digest.update(String(bytes.length) + ':'); digest.update(bytes); }
+    ...['tsconfig.json', 'tsconfig.build.json', 'README.md', 'TESTING.md'].map(file => join(packageRoot, file)),
+    join(oracleRoot, 'src/current-wire.generated.ts'), join(oracleRoot, 'src/current-types.ts'), join(oracleRoot, 'package.json'),
+    ...['tsconfig.json', 'tsconfig.build.json'].map(file => join(oracleRoot, file)),
+    ...['LICENSE', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].map(file => join(repositoryRoot, file))];
   const artifacts = portableArtifacts(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')),
     JSON.parse(readFileSync(join(oracleRoot, 'package.json'), 'utf8')).dependencies['@anthropic-ai/sdk-current'], {
       runtime: readFileSync(join(packageRoot, 'dist/index.js'), 'utf8'),
       declarations: readFileSync(join(packageRoot, 'dist/index.d.ts'), 'utf8'),
       wireRuntime: readFileSync(join(oracleRoot, 'dist/current-wire.generated.js'), 'utf8'),
       wireDeclarations: readFileSync(join(oracleRoot, 'dist/current-wire.generated.d.ts'), 'utf8'),
-    }, digest.digest('hex'));
+    }, sourceInputsSha256(sourcePaths.map(file => readFileSync(file))));
   const stage = mkdtempSync(join(tmpdir(), 'awaken-projection-pack-'));
   try {
     for (const [file, text] of Object.entries(artifacts)) { mkdirSync(dirname(join(stage, file)), { recursive: true }); writeFileSync(join(stage, file), text); }
-    for (const file of ['README.md', 'TESTING.md', 'LICENSE']) writeFileSync(join(stage, file), readFileSync(file === 'LICENSE' ? join(repositoryRoot, file) : join(packageRoot, file)));
+    for (const file of ['README.md', 'TESTING.md', 'LICENSE']) writeFileSync(join(stage, file), canonicalText(readFileSync(file === 'LICENSE' ? join(repositoryRoot, file) : join(packageRoot, file), 'utf8')));
     mkdirSync(destination, { recursive: true });
     packageManager(['pack', '--pack-destination', destination], stage);
-    return join(destination, `awaken-managed-session-projection-${JSON.parse(artifacts['package.json']).version}.tgz`);
+    const archive = join(destination, `awaken-managed-session-projection-${JSON.parse(artifacts['package.json']).version}.tgz`);
+    writeFileSync(archive, canonicalPackageBytes(readFileSync(archive)));
+    return archive;
   } finally { removeOwnedTemporary(stage, 'awaken-projection-pack-'); }
 }
 
