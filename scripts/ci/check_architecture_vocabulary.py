@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""Keep active architecture documents on one service-boundary vocabulary.
-
-Historical ADR text is append-only and intentionally excluded. ADR-0072 and the
-current design documents own the replacement vocabulary; navigation and wiki
-documents may link to those owners but may not revive a retired implementation
-path.
-
-This checker reads documents only. Code names are covered by
-`_naming_fitness.py` (ADR-0091 D7: mechanism words outside composition roots,
-bare `Runtime`/`Provider`/`Coordinator`/`Host`, the noun `Turn` outside protocol
-adapters, crate names with `runtime` outside the SDK or a mechanism word, and
-public type names with the word `Runtime` outside the SDK), which
-`check_crate_boundaries.py` runs.
-"""
+"""Check current doc vocabulary; crate guards own code and historical ADR prose is excluded."""
 
 from __future__ import annotations
 
@@ -32,6 +19,7 @@ CURRENT_ADR = DOCS / "adr" / (
 )
 
 FORBIDDEN = {
+    "deployment roles called domain contexts": re.compile(r"\b(?:Worker Context|four bounded contexts)\b"),
     "retired bundled run input": re.compile(r"\bRunnableConfig\b"),
     "retired publication value": re.compile(r"\bRegistryPublication\b"),
     "nonexistent registry compiler role": re.compile(r"\bRegistryCompiler\b"),
@@ -143,6 +131,9 @@ def self_test() -> int:
         ("RuntimeCatalogInstall is durable.", 1, "R1"),
         ("AgentPublicationProjector.project(snapshot)", 1, "R1"),
         ("ExecutableAgentRegistrar.register(snapshot)", 0, "R2"),
+        # R4 retired process/domain conflation -> reject; process view -> accept.
+        ("Worker Context; four bounded contexts", 2, "R4"),
+        ("Worker process composes Execution and Dispatch", 0, "R2"),
     )
     failures: list[str] = []
     for text, expected, rule in cases:

@@ -22,10 +22,11 @@ persistence is an optional backend in this example's dev dependencies.
 
 `tests/tasks.rs` covers single-turn output, multi-turn history, a typed custom
 tool, Unicode streaming, cancellation before inference, asynchronous approval,
-and persistence/restart. Runtime integration tests add denial, timeout, callback
+and persistence/restart, plus public web-policy configuration. Runtime integration tests add denial, timeout, callback
 failure, cold approval recovery and concurrent-reply histories.
 
 The same consumer tests run in quick/push/full Rust gates. They require no model
 credentials or live services. Backend crash, fencing and platform-specific cases
-remain in their integration tiers. CI accepts this consumer only if all seven
-named task cases exist and execute without ignoring or filtering them.
+remain in their integration tiers. The required task identities are owned by
+`EXPECTED` in [the consumer gate](../../scripts/ci/check_sdk_consumer.py); every
+required case must exist and execute without ignoring or filtering it.

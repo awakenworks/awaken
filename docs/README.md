@@ -1,50 +1,28 @@
-# Awaken Agents Execution Design Corpus
+# Awaken Agents documentation
 
-This corpus configures the current repository as the design and guardrail home
-for the `awaken-runtime` execution core inside Awaken Agents. It names the runtime-owned domain model, the ports around
-that model, every runtime-related requirement inherited from the reference
-corpus, and the checks a change must satisfy before code is written.
+Choose the path for what you want to build. You can run Agents and connect an
+application without first learning the Runtime's internal architecture.
 
-The runtime target is deliberately narrow:
+| Your task | Start here | First result |
+|---|---|---|
+| Build an assistant or Agent-backed application | [Run Awaken locally](../README.md#try-awaken), then [connect your application](../README.md#build-with-awaken) | One published Agent, its Session and a result you can inspect |
+| Embed execution inside a Rust application | [Runtime SDK](../crates/sdk/runtime/awaken-runtime/README.md) and [independent consumer](../examples/sdk-consumer/README.md) | A runnable application using public SDK imports |
+| Operate a deployment | [Deployment guide](../deploy/README.md) | An explicit configuration, data location and execution boundary |
+| Change Awaken itself | [Contributing](../CONTRIBUTING.md), then the design reading path below | The owning component, invariant and relevant checks |
 
-- **Open runtime core**: agent execution, run lifecycle, tool abstractions,
-  typed state/effects, events, commit coordination, extension hooks, and
-  local/direct runtime use. Runtime protocol/specification and conformance
-  material use Apache-2.0.
-- **Runtime boundary contracts**: the neutral ports consumed by server,
-  distributed ingress, config, resource, credential, and product
-  adapters, including the internal snapshot execution and runtime capability
-  surface ports.
-- **Out-of-runtime concerns**: distributed run ingress, config publication,
-  hosted product
-  semantics, public protocols, vaults, resource data planes, and execution
-  placement are documented only as boundaries so they do not leak into the core.
+## Architecture maps
 
-The design must cover all runtime behavior directly and enough adjacent
-server/product/environment behavior to make the runtime boundary enforceable.
+[Architecture overview](design/architecture-overview.md#1-context-map) explains
+process composition and application ownership. [ADR-0088](adr/0088-bounded-context-map-and-sdk-platform-contract.md#decision)
+and crate metadata own domain context membership. These are different views:
+Control, Coordinator and Worker are deployment roles, not an alternative domain
+context catalog. Runtime is the execution core embedded by Worker or an SDK
+consumer, not another service authority.
 
-## Bounded Contexts
-
-The deployable architecture has four bounded contexts:
-
-- **Control** — static Agent and Environment definitions, immutable
-  revisions/publications and relationships, catalog/config, IAM, credentials,
-  and administrative directory APIs.
-- **Coordinator** — executable projections, Deployment/DeploymentRun,
-  Session/Run, WorkQueue, durable dispatch, commit, and public replay.
-- **Resources** — Resource Catalog and lifecycle plus logical File, Memory, Skill,
-  and Repository configuration/content ports.
-- **Worker** — claim-fenced execution, sandbox/process/mount lifecycle, exact
-  materialization, and ephemeral state.
-
-Runtime Core and Runtime Extensions form the neutral execution kernel embedded
-by Worker; they are not another service authority. Neutral connection and
-protocol packages are shared mechanisms, not data-owning bounded contexts. The
-Runtime Core names neither product nor server internals. The full context map
-— what each context owns and must not own — is owned by
-[design/architecture-overview.md](design/architecture-overview.md#1-context-map),
-and the one-way package dependency direction it implies is enforced by
-[design/packaging-enforcement-matrix.md](design/packaging-enforcement-matrix.md#import-rules).
+The remaining pages are the engineering design and guardrail corpus. Public
+protocols, resource content, credentials and deployment stay outside the neutral
+Runtime core; follow their owning theme documents rather than putting those
+concerns into an embedded application.
 
 ## License Boundary
 
@@ -55,6 +33,14 @@ config, admin, or hosted-product packages must not redefine the runtime protocol
 or require non-Apache terms for implementing it.
 
 ## How To Use These Docs
+
+This reading path is for contributors changing implementation or architecture.
+Application developers should use the task paths above first.
+
+Documentation ownership and code/website synchronization follow the
+[developer-entry amendment](adr/0001-documentation-model-and-vocabulary-alignment.md#amendment-2026-11-09-developer-entry-and-downstream-publication).
+Run `scripts/ci/check-docs.sh` for the existing prose/link checks; that result is
+separate from executable-example, product-runtime and customer acceptance.
 
 1. Read [design/architecture-overview.md](design/architecture-overview.md) for the
    context map and DDD vocabulary.

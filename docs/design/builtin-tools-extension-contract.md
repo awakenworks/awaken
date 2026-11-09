@@ -58,6 +58,26 @@ Rules:
 6. filesystem, shell, and network operations run in-process in the extension; the
    runtime owns execution and commits the result through the normal tool path.
 
+### Reading images
+
+The existing `read` tool reads both text and images; it does not require another
+image-reading tool. [ReadTool](../../crates/sdk/extensions/awaken-ext-builtin-tools/src/hand.rs)
+keeps the same path, permission and confined-root checks for both.
+
+PNG, JPEG, WebP and GIF are identified from file bytes. A valid image produces a
+description followed by an image block. Oversized images may be downscaled, with
+the ratio reported. Corrupt images, unsupported binary formats and decode/file
+limits return explicit errors. The numeric bounds remain owned by
+[image preparation](../../crates/sdk/extensions/awaken-ext-builtin-tools/src/hand/image_read.rs).
+
+Whether a tool image reaches the model depends on the selected model route and
+request budget. [Provider request shaping](../../crates/sdk/providers/awaken-provider-genai/src/tool_images.rs)
+replaces an unsupported or over-budget image with an explanation in the outbound
+request; it does not rewrite committed history or imply the model saw the image.
+The [file-type decision table](../../crates/sdk/extensions/awaken-ext-builtin-tools/tests/read_image.rs)
+and provider tests own the executable cases. Reading an image is not evidence
+that a visual task was understood or accepted.
+
 Bash state belongs to one live Hand toolset: working directory, exports and
 shell options persist until restart, cancellation, timeout or process exit.
 `set -e` therefore also affects later invocations. The one Bash reader drains

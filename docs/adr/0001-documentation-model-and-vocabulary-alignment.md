@@ -6,6 +6,7 @@
   role-catalog-coverage tables, standalone coverage matrix) in `README.md` and
   `STATUS.md`; refines the `docs/wiki/` retrieval layer to link-only (see D5)
 - Amended: 2026-10-09 (names and references: the pre-ADR log is D1..D22)
+- Amended: 2026-11-09 (developer entry and downstream publication)
 
 ## Context
 
@@ -173,3 +174,54 @@ checks structure only.
 - D6 says `key-design-decisions.md` holds `D1..D20`. It holds `D1..D22`
   ([key-design-decisions.md](../design/key-design-decisions.md) has `## D21` and
   `## D22`; ADR-0004 D7 cites D21). The rule in D6 is unchanged.
+
+## Amendment 2026-11-09: developer entry and downstream publication
+
+The project entry must let an application developer understand the product,
+complete a first task and choose an integration before reading internal design.
+This refines D1 and D5; it does not create another product or design authority.
+
+Repository entry points lead with user tasks, working examples, APIs and
+self-hosting. Commercial offers, pricing and engagement terms belong on the
+company website. The README may end with one optional support link. License,
+source access and availability boundaries remain explicit wherever they affect
+independent use.
+
+| Responsibility | Canonical owner | Downstream use |
+|---|---|---|
+| Product purpose and local first task | Root `README.md` | GitHub landing; docs index links to it |
+| GitHub About, homepage and topics | `.github/repository.json` | A reviewed settings draft; GitHub does not apply this file automatically |
+| Embedded Rust usage | Runtime crate README, included by Rustdoc; `examples/sdk-consumer` | Link to compiled public imports and executable cases |
+| Managed client example | `web/src/lib/sdk-examples.ts` | Console integration step and protocol directory use one template |
+| Technical behavior and wire shapes | Code, crate metadata, Rust DTOs and their generated contracts | Explanations link to the owning implementation and tests |
+| Engineering decisions and navigation | ADRs/theme owners and `docs/README.md` | Wiki stays a retrieval layer |
+| Public package availability | Published release and its verification evidence | Never infer availability from the manifest version |
+
+For a behavior change, update its owning explanation in the same change as the
+code and tests. A new public capability needs prerequisites, a way to use it, a
+recognizable result and the relevant failure boundary. Source moves must update
+links. Do not copy schemas, numeric limits or required-test counts when the
+code, generated reference or existing test gate already owns them.
+
+Run the existing documentation gate for links and vocabulary. Use the existing
+Rustdoc/SDK consumer gates for Rust examples, Managed SDK oracle and integration
+tests for client behavior, and `generate-contracts.sh --check` for wire artifacts.
+These checks prove their named boundaries; a green prose/link gate alone cannot
+prove that a new user can complete the task or that all prose matches behavior.
+Native startup, real-model runs, external effects and customer acceptance keep
+their existing qualification requirements.
+
+The website currently owns version-pinned technical Markdown separately. Its
+historical source lock must remain explicit until each page is reviewed against
+the selected source. For consolidation, migrate a technical page's authoring
+owner into this repository before projecting it downstream, and retire the
+corresponding handwritten website owner in the same migration. Exported website
+snapshots must record the exact source and be reproducible; normal site builds
+must continue to use repository-local content. Extend the existing website
+provenance refresh and checks for that projection rather than introducing a
+second registry or publication system. This amendment specifies that migration;
+it does not claim that the exporter or the full website migration exists yet.
+
+A publication follows source review, relevant checks, downstream snapshot/diff
+review and explicit publication scope. Failed checks keep the prior published
+version. Updating a date or pin without reconciling content is not synchronization.

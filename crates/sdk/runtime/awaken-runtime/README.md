@@ -121,7 +121,7 @@ resume rejection retain their typed source. Legacy string variants provide a
 conservative fallback classification; converting an arbitrary legacy message to
 a precise retry category would require facts its original port did not retain.
 
-For copyable dependency declarations and seven executable application tasks, see
+For copyable dependency declarations and executable application tasks, see
 [`examples/sdk-consumer`](../../../../examples/sdk-consumer/README.md) in the repository.
 
 ## Validation layers
@@ -129,7 +129,7 @@ For copyable dependency declarations and seven executable application tasks, see
 | Layer | Design and acceptance | Execution |
 | --- | --- | --- |
 | Local SDK regression | Constructor equivalence, explicit retry limits, missing/duplicate configuration, schema rejection and typed commit failure; no model/tool effect on rejected admission | `cargo test -p awaken-runtime --test sdk_defaults --test sdk_api` |
-| Public consumer | Single/multiple turns, typed tool, Unicode streaming, cancellation, async approval, filesystem restart; all seven named tasks must execute | `python3 scripts/ci/check_sdk_consumer.py` in quick/push/full Rust gates |
+| Public consumer | Single/multiple turns, typed tool, Unicode streaming, cancellation, async approval, filesystem restart and web policy; every required case in the consumer gate must execute | `python3 scripts/ci/check_sdk_consumer.py` in quick/push/full Rust gates |
 | Approval lifecycle | Allow/deny, timeout, callback failure, cancellation, concurrent reply, cold recovery, identity mismatch, expiry at `deadline-1`, `deadline`, `deadline+1`; assert committed state/ticket and exact effect count | SDK regressions plus existing `awaiting`, `run_identity`, `terminal_observer` integration suites |
 | Protocol projection | A2A versions and HTTP/RPC bindings project the same kind/code; localized or misleading prose cannot change classification | A2A unit matrix and `v1_sdk_compat` real-route tests |
 | Workspace/platform | Production/default and maximal feature graphs, warning-free clippy, workspace nextest and doctests; required live backend/crash suites use owned services | Canonical full Rust gate and Windows/MSVC qualification |
