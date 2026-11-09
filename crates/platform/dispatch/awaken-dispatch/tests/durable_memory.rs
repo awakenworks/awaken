@@ -2642,7 +2642,7 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
     // validation while the one guard is held.
     use awaken_agent_contract::thread::commit::coordinator::Coordinator;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
-    use awaken_dispatch::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, RunClaim};
+    use awaken_dispatch::{ClaimedCommitCoordinator, GuardedRunCommit, RunClaim};
 
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = Arc::new(MemoryDispatchStore::new(clock.clock()));
@@ -2680,9 +2680,8 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
     let run = RunId("run-1".to_string());
 
     // A (stale epoch 1) is fenced — nothing reaches the durable boundary.
-    let service: Arc<dyn ClaimedRunCommit> =
-        Arc::new(GuardedRunCommit::new(inner.clone(), store.clone()));
-    let fenced_a = ClaimedCommitCoordinator::new(service.clone(), RunClaim::from(&a.lease));
+    let service = Arc::new(GuardedRunCommit::from_plain(inner.clone(), store.clone()));
+    let fenced_a = ClaimedCommitCoordinator::embedded(service.clone(), RunClaim::from(&a.lease));
     assert!(
         fenced_a.commit(plan(&run, THREAD)).await.is_err(),
         "R1/E2 a superseded owner's commit must be fenced"
@@ -2695,7 +2694,7 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
 
     // B has the current epoch, but its authority is still limited to the exact
     // Run and logical Thread recorded by the guarded dispatch.
-    let fenced_b = ClaimedCommitCoordinator::new(service.clone(), RunClaim::from(&b.lease));
+    let fenced_b = ClaimedCommitCoordinator::embedded(service.clone(), RunClaim::from(&b.lease));
     assert!(
         fenced_b
             .commit(plan(&RunId("other-run".into()), THREAD))
@@ -2717,7 +2716,7 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
 
     // Fail-closed: a run with no live dispatch has no execution capability.
     let ghost = RunId("ghost".to_string());
-    let fenced_ghost = ClaimedCommitCoordinator::new(
+    let fenced_ghost = ClaimedCommitCoordinator::embedded(
         service,
         RunClaim {
             run_id: ghost.clone(),

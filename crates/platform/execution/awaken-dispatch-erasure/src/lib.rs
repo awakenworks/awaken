@@ -27,7 +27,9 @@ pub use reference_authority::ReferenceAuthority;
 mod runtime_authority;
 pub use binding::{DispatchBinding, DispatchTopology};
 pub use bundle::{Dispatch, DurableDispatch, RemoteDispatch};
-pub use local_commit::{LocalCommit, LocalCommitAdapter, LocalCommitQueries, ProjectedQueries};
+pub use local_commit::{
+    LocalCommit, LocalCommitAdapter, LocalCommitQueries, ProjectedQueries, transcript_read_error,
+};
 pub use runtime_authority::{
     RuntimeAuthority, RuntimeAuthorityError, commit_claimed_operation, guarded_runtime_commits,
     validate_claimed_operation, validate_commit_dispatch_binding,

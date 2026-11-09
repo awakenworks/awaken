@@ -25,7 +25,19 @@ use awaken_agent_contract::thread::read::lifecycle::{
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
-use awaken_agent_contract::thread::read::transcript::{TranscriptPage, TranscriptPageRequest};
+use awaken_agent_contract::thread::read::transcript::{
+    TranscriptError, TranscriptPage, TranscriptPageRequest,
+};
+use awaken_runtime_contract::runs::RunError;
+
+pub fn transcript_read_error(error: TranscriptError) -> RunError {
+    match error {
+        TranscriptError::SnapshotUnavailable { .. } => {
+            RunError::conflict_classified("transcript_snapshot_unavailable", error.to_string())
+        }
+        _ => RunError::bad_request_classified("invalid_transcript_page", error.to_string()),
+    }
+}
 
 /// One local authoritative commit boundary selected by the Coordinator.
 ///
@@ -61,7 +73,7 @@ pub trait LocalCommit:
     async fn authoritative_transcript_page(
         &self,
         request: &TranscriptPageRequest,
-    ) -> Result<TranscriptPage, String>;
+    ) -> Result<TranscriptPage, RunError>;
 
     /// Read the complete committed state from the selected authority. Shared
     /// stores must bypass a process-local projection because peer commits can
@@ -104,13 +116,14 @@ pub trait LocalCommitQueries<S: Sync>: Send + Sync {
         &self,
         store: &S,
         request: &TranscriptPageRequest,
-    ) -> Result<TranscriptPage, String> {
+    ) -> Result<TranscriptPage, RunError> {
         let messages = self
             .authoritative_committed_messages(store, &request.thread_id)
-            .await?;
+            .await
+            .map_err(RunError::unavailable)?;
         request
             .page_from_append_only(messages)
-            .map_err(|error| error.to_string())
+            .map_err(transcript_read_error)
     }
 
     async fn authoritative_committed_state(
@@ -254,7 +267,7 @@ where
     async fn authoritative_transcript_page(
         &self,
         request: &TranscriptPageRequest,
-    ) -> Result<TranscriptPage, String> {
+    ) -> Result<TranscriptPage, RunError> {
         self.queries
             .authoritative_transcript_page(self.store.as_ref(), request)
             .await

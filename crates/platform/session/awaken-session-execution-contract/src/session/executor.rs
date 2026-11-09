@@ -227,6 +227,19 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ThreadReads for NamedThreadReads {
+        async fn transcript_page(
+            &self,
+            _session: &crate::SessionId,
+            _request: &::awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+        ) -> Result<
+            ::awaken_agent_contract::thread::read::transcript::TranscriptPage,
+            ::awaken_runtime_contract::runs::RunError,
+        > {
+            Err(::awaken_runtime_contract::runs::RunError::unavailable(
+                "transcript pagination is unsupported",
+            ))
+        }
+
         async fn owns_thread(&self, _thread: &str) -> Result<bool, crate::RunError> {
             Ok(false)
         }

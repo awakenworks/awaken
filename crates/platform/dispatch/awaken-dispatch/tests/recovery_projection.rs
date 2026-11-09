@@ -11,7 +11,7 @@ use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as C
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, CommitPayloadHash, CommitReceipt,
 };
-use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunResumeTicket};
 use awaken_dispatch::{
@@ -330,16 +330,6 @@ struct ReceiptService {
 
 #[async_trait::async_trait]
 impl ClaimedRunCommit for ReceiptService {
-    async fn commit(
-        &self,
-        _claim: &RunClaim,
-        _commit: ThreadCommit,
-    ) -> Result<CommitRecord, CommitError> {
-        Err(CommitError::Rejected(
-            "versioned Worker must use commit_operation".to_string(),
-        ))
-    }
-
     async fn commit_operation(
         &self,
         command: ClaimedCommitCommand,
@@ -376,8 +366,8 @@ async fn claimed_coordinator_builds_stable_operation_from_recovery_prefix() {
             owner: "worker".to_string(),
             epoch: 7,
         },
-    )
-    .with_recovery_projection(projection.clone());
+        projection.clone(),
+    );
     coordinator
         .commit(ThreadCommit {
             thread_id: ThreadId("thread".to_string()),

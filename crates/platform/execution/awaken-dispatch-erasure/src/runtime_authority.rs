@@ -42,16 +42,17 @@ pub trait RuntimeAuthority: Send + Sync {
 
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError>;
 
-    /// Page a primary Thread after the caller has authorized the Session.
+    /// Page an authorized logical Thread in its parent Session partition.
     async fn read_transcript_page(
         &self,
+        session: &str,
         request: &TranscriptPageRequest,
-    ) -> Result<TranscriptPage, RuntimeAuthorityError> {
-        self.open_commit(&request.thread_id.0)
-            .await?
+    ) -> Result<TranscriptPage, RunError> {
+        self.open_commit(session)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?
             .authoritative_transcript_page(request)
             .await
-            .map_err(RuntimeAuthorityError::unavailable)
     }
 
     /// Select the versioned writer for authenticated Worker commits.
@@ -160,8 +161,12 @@ pub fn validate_claimed_operation(
             dispatch.run_id().0,
         )));
     }
-    require_commit_operation_payload_hash(operation)
-        .map_err(|error| RunError::bad_request(error.to_string()))
+    require_commit_operation_payload_hash(operation).map_err(|error| {
+        RunError::bad_request_classified(
+            awaken_dispatch_contract::COMMIT_IDENTITY_MISMATCH,
+            error.to_string(),
+        )
+    })
 }
 
 /// Compatibility path for backends that hold an epoch guard across a separate
@@ -178,7 +183,12 @@ where
         .lock_commit_epoch(&command.claim)
         .await
         .map_err(|error| RunError::internal(error.to_string()))?
-        .ok_or_else(|| RunError::bad_request("run claim is stale"))?;
+        .ok_or_else(|| {
+            RunError::bad_request_classified(
+                awaken_dispatch_contract::COMMIT_FENCED,
+                "run claim is stale",
+            )
+        })?;
     let session = validate_claimed_operation(guard.request(), &command)
         .map(|()| guard.request().session_thread_id().clone());
     let committed = async move {

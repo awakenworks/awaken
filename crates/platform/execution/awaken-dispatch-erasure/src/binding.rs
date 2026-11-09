@@ -10,6 +10,10 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub enum DispatchTopology {
     Local(Arc<AnyCoordinatorDispatch>),
+    Coordinator {
+        owner: Arc<AnyCoordinatorDispatch>,
+        commit: Arc<dyn ClaimedRunCommit<RunError>>,
+    },
     Remote {
         checkpoints: Arc<dyn ClaimedCheckpointTransport>,
         credentials: Arc<dyn ClaimedCredentialDeliveryTransport>,
@@ -43,23 +47,26 @@ pub enum DispatchTopology {
 pub struct DispatchBinding {
     queue: Arc<AnyDispatchStore>,
     placement: DispatchTopology,
-    local_run_commits: Option<Arc<dyn ClaimedRunCommit<RunError>>>,
 }
 impl DispatchBinding {
     pub fn local(owner: Arc<AnyCoordinatorDispatch>) -> Self {
         Self {
             queue: owner.worker_view(),
             placement: DispatchTopology::Local(owner),
-            local_run_commits: None,
         }
     }
 
     /// Bind the deployed local Worker to the same versioned writer as the
     /// registered Worker HTTP ingress.
     pub fn coordinator(authority: Arc<dyn crate::RuntimeAuthority>) -> Self {
-        let mut binding = Self::local(authority.dispatch_store());
-        binding.local_run_commits = Some(authority.run_commits());
-        binding
+        let owner = authority.dispatch_store();
+        Self {
+            queue: owner.worker_view(),
+            placement: DispatchTopology::Coordinator {
+                owner,
+                commit: authority.run_commits(),
+            },
+        }
     }
     pub fn remote(owner: Arc<dyn RemoteDispatch>, commit: Arc<dyn ClaimedRunCommit>) -> Self {
         Self {
@@ -69,7 +76,6 @@ impl DispatchBinding {
                 credentials: owner,
                 commit,
             },
-            local_run_commits: None,
         }
     }
     pub fn queue(&self) -> Arc<AnyDispatchStore> {
@@ -79,7 +85,19 @@ impl DispatchBinding {
         &self.placement
     }
 
+    pub fn local_owner(&self) -> Option<&Arc<AnyCoordinatorDispatch>> {
+        match &self.placement {
+            DispatchTopology::Local(owner) | DispatchTopology::Coordinator { owner, .. } => {
+                Some(owner)
+            }
+            DispatchTopology::Remote { .. } => None,
+        }
+    }
+
     pub fn local_run_commits(&self) -> Option<&Arc<dyn ClaimedRunCommit<RunError>>> {
-        self.local_run_commits.as_ref()
+        match &self.placement {
+            DispatchTopology::Coordinator { commit, .. } => Some(commit),
+            _ => None,
+        }
     }
 }

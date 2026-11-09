@@ -225,14 +225,9 @@ impl DispatchReconciler {
         completion: Option<Arc<dyn CompletionSink>>,
     ) -> Option<Self> {
         match binding.placement() {
-            DispatchTopology::Local(owner) => Some(Self::spawn(
-                owner.clone(),
-                clock,
-                wake,
-                config,
-                resolver,
-                completion,
-            )),
+            DispatchTopology::Local(owner) | DispatchTopology::Coordinator { owner, .. } => Some(
+                Self::spawn(owner.clone(), clock, wake, config, resolver, completion),
+            ),
             DispatchTopology::Remote { .. } => None,
         }
     }
@@ -1608,7 +1603,9 @@ impl DispatchPool<AnyDispatchStore> {
         admission: Arc<PoolAdmission>,
     ) -> Result<Self, Error> {
         let scheduling = match binding.placement() {
-            DispatchTopology::Local(local) => SchedulingAuthority::Local(local.clone()),
+            DispatchTopology::Local(local) | DispatchTopology::Coordinator { owner: local, .. } => {
+                SchedulingAuthority::Local(local.clone())
+            }
             DispatchTopology::Remote { .. } => SchedulingAuthority::Remote,
         };
         Self::spawn_inner(

@@ -68,7 +68,7 @@ impl CommittedAuthority<Arc<dyn awaken_dispatch_erasure::LocalCommit>> {
     pub async fn transcript_page(
         &self,
         request: &TranscriptPageRequest,
-    ) -> Result<TranscriptPage, String> {
+    ) -> Result<TranscriptPage, awaken_runtime_contract::runs::RunError> {
         self.authority()
             .authoritative_transcript_page(request)
             .await

@@ -13,6 +13,7 @@ mod profiled_run_events;
 mod profiled_sessions;
 mod repositories;
 mod resource_manifests;
+mod transcript_history;
 
 pub use content_capture::session_content_capture_router;
 pub use event_admissions::{
@@ -36,3 +37,6 @@ pub use profiled_sessions::{
 };
 pub use repositories::{CreateRepository, RepositoryObject, repositories_router};
 pub use resource_manifests::session_resource_manifest_router;
+pub use transcript_history::{
+    ThreadHistoryMessage, ThreadMessagePageQuery, session_thread_history_router,
+};

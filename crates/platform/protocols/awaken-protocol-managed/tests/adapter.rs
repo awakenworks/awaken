@@ -727,6 +727,8 @@ struct EchoFake {
 static ECHO_MESSAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Default)]
 struct EchoState {
+    paged_history_only: bool,
+    history_children: Vec<awaken_session_execution_contract::CoordinatedThreadLink>,
     reservations: HashMap<String, AdmitSessionRun>,
     settlements: Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>,
     runs: HashMap<String, RunState>,
@@ -1427,6 +1429,17 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EchoFake {
         Vec<awaken_session_execution_contract::CoordinatedThreadLink>,
         awaken_runtime_contract::runs::RunError,
     > {
+        if self.state.lock().unwrap().paged_history_only {
+            return Ok(self
+                .state
+                .lock()
+                .unwrap()
+                .history_children
+                .iter()
+                .filter(|link| link.session_id == *session_id)
+                .cloned()
+                .collect());
+        }
         awaken_session_execution_contract::NeutralRuntime
             .coordinated_threads(session_id, observed_root)
             .await
@@ -1545,15 +1558,31 @@ impl awaken_session_execution_contract::ThreadReads for EchoFake {
             .await
     }
 
+    async fn transcript_page(
+        &self,
+        _session: &SessionId,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptPage, RunError> {
+        request
+            .page_from_append_only(
+                self.state
+                    .lock()
+                    .unwrap()
+                    .messages
+                    .get(&request.thread_id.0)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+            .map_err(|error| RunError::bad_request(error.to_string()))
+    }
+
     async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
-            .messages
-            .get(thread)
-            .cloned()
-            .unwrap_or_default())
+        let state = self.state.lock().unwrap();
+        assert!(
+            !state.paged_history_only,
+            "paged history must not call the full transcript reader"
+        );
+        Ok(state.messages.get(thread).cloned().unwrap_or_default())
     }
 
     async fn session_thread_recovery_snapshot(
@@ -2280,6 +2309,19 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for CapableF
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::ThreadReads for CapableFake {
+    async fn transcript_page(
+        &self,
+        _session: &::awaken_session_types::SessionId,
+        _request: &::awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<
+        ::awaken_agent_contract::thread::read::transcript::TranscriptPage,
+        ::awaken_runtime_contract::runs::RunError,
+    > {
+        Err(::awaken_runtime_contract::runs::RunError::unavailable(
+            "transcript pagination is unsupported",
+        ))
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -3556,6 +3598,19 @@ impl awaken_session_execution_contract::StreamingRuns for ToolAwaitingFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::ThreadReads for ToolAwaitingFake {
+    async fn transcript_page(
+        &self,
+        _session: &::awaken_session_types::SessionId,
+        _request: &::awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<
+        ::awaken_agent_contract::thread::read::transcript::TranscriptPage,
+        ::awaken_runtime_contract::runs::RunError,
+    > {
+        Err(::awaken_runtime_contract::runs::RunError::unavailable(
+            "transcript pagination is unsupported",
+        ))
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -3856,6 +3911,19 @@ awaken_session_execution_contract::neutral_role!(RealizationEffects for OutcomeF
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::ThreadReads for OutcomeFake {
+    async fn transcript_page(
+        &self,
+        _session: &::awaken_session_types::SessionId,
+        _request: &::awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<
+        ::awaken_agent_contract::thread::read::transcript::TranscriptPage,
+        ::awaken_runtime_contract::runs::RunError,
+    > {
+        Err(::awaken_runtime_contract::runs::RunError::unavailable(
+            "transcript pagination is unsupported",
+        ))
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -5430,6 +5498,19 @@ impl awaken_session_execution_contract::StreamingRuns for RecordingFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::ThreadReads for RecordingFake {
+    async fn transcript_page(
+        &self,
+        _session: &::awaken_session_types::SessionId,
+        _request: &::awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<
+        ::awaken_agent_contract::thread::read::transcript::TranscriptPage,
+        ::awaken_runtime_contract::runs::RunError,
+    > {
+        Err(::awaken_runtime_contract::runs::RunError::unavailable(
+            "transcript pagination is unsupported",
+        ))
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -6452,6 +6533,19 @@ impl awaken_session_execution_contract::StreamingRuns for InterruptRedirectFake 
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::ThreadReads for InterruptRedirectFake {
+    async fn transcript_page(
+        &self,
+        _session: &::awaken_session_types::SessionId,
+        _request: &::awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<
+        ::awaken_agent_contract::thread::read::transcript::TranscriptPage,
+        ::awaken_runtime_contract::runs::RunError,
+    > {
+        Err(::awaken_runtime_contract::runs::RunError::unavailable(
+            "transcript pagination is unsupported",
+        ))
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -6866,6 +6960,97 @@ async fn call_owned(app: &Router, method: &str, uri: &str, scope: Option<&str>) 
             .insert(WorkspaceScope(scope.to_string()));
     }
     app.clone().oneshot(req).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn transcript_history_pages_freeze_and_stay_with_the_authorized_thread() {
+    let runtime = EchoFake::default();
+    let state = support::shared_state(runtime.clone()).await;
+    let app = router(state.clone()).merge(
+        awaken_protocol_managed::awaken_extensions::session_thread_history_router(
+            awaken_protocol_managed::list_thread_messages,
+        )
+        .with_state(state),
+    );
+    let id = create_owned(&app, Some("ws_a")).await;
+    let other = create_owned(&app, Some("ws_a")).await;
+    let uri = format!("/v1/awaken/sessions/{id}/threads/{id}/messages");
+    let make_message = |value: &str| {
+        Message::text(
+            awaken_agent_contract::agent::message::Id(value.into()),
+            Role::User,
+            value,
+        )
+    };
+    {
+        let mut state = runtime.state.lock().unwrap();
+        state.paged_history_only = true;
+        state
+            .history_children
+            .push(awaken_session_execution_contract::CoordinatedThreadLink {
+                session_id: SessionId::from(id.as_str()),
+                thread_id: ThreadId("child".into()),
+                target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
+                    agent_id: "coder".into(),
+                },
+                created_by_operation_id: "child-admission".into(),
+                latest_run_id: None,
+            });
+        state
+            .messages
+            .insert("child".into(), vec![make_message("child message")]);
+        state.messages.insert(
+            id.clone(),
+            vec![make_message("first"), make_message("second")],
+        );
+    }
+
+    async fn page(app: &Router, path: &str) -> serde_json::Value {
+        let mut request = Request::builder().uri(path).body(Body::empty()).unwrap();
+        request
+            .extensions_mut()
+            .insert(WorkspaceScope("ws_a".into()));
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+    }
+
+    let first = page(&app, &format!("{uri}?limit=1")).await;
+    assert_eq!(first["data"][0]["text"], "first");
+    let cursor = first["next_page"].as_str().unwrap();
+    runtime
+        .state
+        .lock()
+        .unwrap()
+        .messages
+        .get_mut(&id)
+        .unwrap()
+        .push(make_message("late"));
+    let second = page(&app, &format!("{uri}?page={cursor}&limit=1")).await;
+    assert_eq!(second["data"].as_array().unwrap().len(), 1);
+    assert_eq!(second["data"][0]["text"], "second");
+    assert!(second["next_page"].is_null());
+    assert_eq!(page(&app, &uri).await["data"][2]["text"], "late");
+
+    assert_eq!(
+        call_owned(&app, "GET", &format!("{uri}?page={cursor}"), Some("ws_b")).await,
+        StatusCode::NOT_FOUND
+    );
+    let child_uri = format!("/v1/awaken/sessions/{id}/threads/child/messages");
+    assert_eq!(
+        page(&app, &child_uri).await["data"][0]["text"],
+        "child message"
+    );
+    let wrong_parent = format!("/v1/awaken/sessions/{other}/threads/child/messages");
+    assert_eq!(
+        call_owned(&app, "GET", &wrong_parent, Some("ws_a")).await,
+        StatusCode::NOT_FOUND
+    );
+    let other_uri = format!("/v1/awaken/sessions/{other}/threads/{other}/messages?page={cursor}");
+    assert_eq!(
+        call_owned(&app, "GET", &other_uri, Some("ws_a")).await,
+        StatusCode::BAD_REQUEST
+    );
 }
 
 #[tokio::test]

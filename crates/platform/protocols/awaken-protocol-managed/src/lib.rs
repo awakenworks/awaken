@@ -86,8 +86,9 @@ pub use routes::vaults::{McpCredentialChoice, McpInspectionView, VaultState, vau
 pub use routes::{
     close_event_admission, create_profiled_session, enforce_managed_beta,
     get_profiled_session_run_events, get_resource_manifest, get_session_content_capture,
-    get_session_execution_evidence, release_profiled_session, replace_resource_manifest,
-    resume_profiled_session_run, router, submit_profiled_session_run, tunnels_router,
+    get_session_execution_evidence, list_thread_messages, release_profiled_session,
+    replace_resource_manifest, resume_profiled_session_run, router, submit_profiled_session_run,
+    tunnels_router,
 };
 pub use state::{
     AdmittedPrivateSessionRequest, COMMITTED_PREFIX_READ_CONFLICT, ManagedRequestState,

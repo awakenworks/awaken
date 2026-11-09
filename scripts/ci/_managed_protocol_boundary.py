@@ -20,6 +20,7 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
         ("GET", "/v1/awaken/sessions/{}/live-inbox"),
         ("GET", "/v1/awaken/sessions/{}/execution-evidence"),
         ("GET", "/v1/awaken/sessions/{}/content-capture"),
+        ("GET", "/v1/awaken/sessions/{}/threads/{}/messages"),
         ("POST", "/v1/awaken/sessions"),
         ("POST", "/v1/awaken/sessions/{}/release"),
         ("POST", "/v1/awaken/sessions/{}/runs"),

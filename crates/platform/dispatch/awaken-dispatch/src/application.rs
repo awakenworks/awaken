@@ -7,13 +7,8 @@
 use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
 
-use awaken_agent_contract::thread::commit::coordinator::{
-    Error as CommitError, OperationCoordinator,
-};
-use awaken_agent_contract::thread::commit::{
-    operation::CommitReceipt,
-    staged::{CommitRecord, ThreadCommit},
-};
+use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
+use awaken_agent_contract::thread::commit::operation::CommitReceipt;
 
 use crate::ClaimedCommitRequest;
 use awaken_dispatch_contract::{ClaimedCommitCommand, ClaimedRunCommit};
@@ -1177,16 +1172,6 @@ impl ClaimedCommitService {
 
 #[async_trait::async_trait]
 impl ClaimedRunCommit<RunError> for ClaimedCommitService {
-    async fn commit(
-        &self,
-        _: &crate::RunClaim,
-        _: ThreadCommit,
-    ) -> Result<CommitRecord, CommitError> {
-        Err(CommitError::Rejected(
-            "Coordinator Worker commits require a versioned CommitOperation".to_owned(),
-        ))
-    }
-
     async fn commit_operation(
         &self,
         command: ClaimedCommitCommand,

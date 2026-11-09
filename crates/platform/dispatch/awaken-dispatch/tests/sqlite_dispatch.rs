@@ -610,9 +610,9 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
-    ClaimedCommitCoordinator, ClaimedRunCommit, DispatchCursor, DispatchOperation,
-    DispatchOperationalFeed, DispatchTestHarness, GuardedRunCommit, Inbox, PendingInput, RunClaim,
-    RunDispatch, SqliteDispatchStore,
+    ClaimedCommitCoordinator, DispatchCursor, DispatchOperation, DispatchOperationalFeed,
+    DispatchTestHarness, GuardedRunCommit, Inbox, PendingInput, RunClaim, RunDispatch,
+    SqliteDispatchStore,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -722,9 +722,8 @@ async fn sqlite_epoch_guard_blocks_reclaim_until_commit_returns() {
         entered: tokio::sync::Notify::new(),
         release: tokio::sync::Notify::new(),
     });
-    let service: Arc<dyn ClaimedRunCommit> =
-        Arc::new(GuardedRunCommit::from_plain(inner.clone(), store.clone()));
-    let fenced = ClaimedCommitCoordinator::new(service, RunClaim::from(&lease));
+    let service = Arc::new(GuardedRunCommit::from_plain(inner.clone(), store.clone()));
+    let fenced = ClaimedCommitCoordinator::embedded(service, RunClaim::from(&lease));
 
     let committing = tokio::spawn(async move { fenced.commit(running_commit("guarded")).await });
     inner.entered.notified().await;

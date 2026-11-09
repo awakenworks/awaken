@@ -753,6 +753,14 @@ impl $crate::SessionCoordinationReads for $ty {
     (ThreadReads for $ty:ty) => {
         #[::async_trait::async_trait]
         impl $crate::ThreadReads for $ty {
+            async fn transcript_page(
+                &self,
+                _session: &::awaken_session_types::SessionId,
+                _request: &::awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+            ) -> Result<::awaken_agent_contract::thread::read::transcript::TranscriptPage, ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable("transcript pagination is unsupported"))
+            }
+
             /// True when durable truth already exists for `thread`. Session-id minting
             /// consults this to skip ids a previous process persisted; implementations
             /// MUST answer without materializing any per-thread state (no context

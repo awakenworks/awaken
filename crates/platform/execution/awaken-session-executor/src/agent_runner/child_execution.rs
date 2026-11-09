@@ -149,11 +149,10 @@ impl RunScheduler {
     /// projection here. That projection cannot contain a child Thread, so remote
     /// children must continue through their own claim-installed projection.
     pub(crate) fn local_child_reader(&self) -> Option<Arc<dyn CommittedThreadView>> {
-        matches!(
-            self.binding.placement(),
-            awaken_dispatch_erasure::DispatchTopology::Local(_)
-        )
-        .then(|| self.reader.clone())
+        self.binding
+            .local_owner()
+            .is_some()
+            .then(|| self.reader.clone())
     }
 }
 
@@ -1438,6 +1437,16 @@ mod tests {
             publication_source: None,
             claimed_model_request_gate: None,
         };
+        assert!(matches!(
+            awaken_dispatch_execution::DispatchWorker::from_binding(
+                Arc::new(awaken_runtime::Runtime::new()),
+                scheduler.binding.clone(),
+                scheduler.commit.clone(),
+                scheduler.reader.clone(),
+                "invalid-deployed-worker",
+            ),
+            Err(error) if error.to_string().contains("requires a committed recovery source")
+        ));
         let parent_reader: Arc<dyn CommittedThreadView> =
             Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let context = || {

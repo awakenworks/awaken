@@ -3,25 +3,17 @@
 
 use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::CommitReceipt;
-use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 
 use crate::ClaimedCommitCommand;
-use awaken_worker_contract::RunClaim;
 
-/// Atomically apply a [`ThreadCommit`] under one durable [`RunClaim`].
+pub const COMMIT_FENCED: &str = "commit_fenced";
+pub const COMMIT_CONFLICT: &str = "commit_conflict";
+pub const COMMIT_IDENTITY_MISMATCH: &str = "commit_identity_mismatch";
+pub const COMMIT_OUTCOME_UNKNOWN: &str = "commit_outcome_unknown";
+
+/// Atomically publish a versioned Thread commit under a durable Run claim.
 #[async_trait::async_trait]
 pub trait ClaimedRunCommit<OperationError = CommitError>: Send + Sync {
-    /// Compatibility for an explicitly embedded Worker with a plain SDK store.
-    async fn commit(
-        &self,
-        _claim: &RunClaim,
-        _commit: ThreadCommit,
-    ) -> Result<CommitRecord, CommitError> {
-        Err(CommitError::Rejected(
-            "Worker commits require a versioned CommitOperation".to_owned(),
-        ))
-    }
-
     /// Return the original atomically persisted operation receipt. Every
     /// implementation validates the exact current claim and its Dispatch
     /// binding in the same consistency boundary as publishing the result.

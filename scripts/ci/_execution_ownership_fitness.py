@@ -95,6 +95,7 @@ ROUTE_OWNER_FILES = (
     "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/profiled_run_events.rs",
     "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/repositories.rs",
     "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/resource_manifests.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/transcript_history.rs",
     "crates/platform/protocols/awaken-protocol-awaken/src/sandbox_policies.rs",
     "crates/platform/protocols/awaken-protocol-managed/src/rate_limit.rs",
     "crates/platform/protocols/awaken-protocol-managed/src/routes/agents_registry.rs",
@@ -110,8 +111,7 @@ ROUTE_OWNER_FILES = (
     "crates/apps/awaken-coordinator/src/worker_fleet.rs",
 )
 
-# Public ingress code is discovered as well as explicitly registered. This
-# prevents a new router source from silently escaping the ownership inventory.
+# Discover public ingress so new routers cannot escape the ownership inventory.
 PUBLIC_ROUTE_ROOTS = (
     "crates/sdk/protocols/awaken-protocol-a2a/src",
     "crates/sdk/protocols/awaken-protocol-ag-ui/src",

@@ -179,6 +179,7 @@ impl ChildWorkerFactory {
             DispatchWorker::new_bound(runtime, binding, commit, owner)
         } else {
             DispatchWorker::from_binding(runtime, binding, commit, reader, owner)
+                .expect("compatibility binding supplies its commit authority")
         }
     }
 

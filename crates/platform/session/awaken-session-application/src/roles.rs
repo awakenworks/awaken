@@ -475,6 +475,12 @@ pub trait SessionResourceCommands: Send + Sync {
 /// usage read.
 #[async_trait]
 pub trait SessionObservation: Send + Sync {
+    async fn transcript_page(
+        &self,
+        access: &crate::SessionAccess,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptPage, RunError>;
+
     /// Adapt the selected [`awaken_session_execution_contract::ChildRunCoordination::subscribe_session_thread_live`] result unchanged.
     async fn subscribe_session_thread_live(
         &self,

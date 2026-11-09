@@ -20,7 +20,9 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
-use awaken_agent_contract::thread::commit::operation::CommitReceipt;
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperationAdmissionError, CommitReceipt,
+};
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
@@ -33,7 +35,7 @@ use awaken_dispatch_erasure::{
 };
 use awaken_runtime_contract::runs::RunError;
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
-use awaken_store_postgres::PostgresCommitCoordinator;
+use awaken_store_postgres::{PostgresCommitCoordinator, PostgresCommitFailure};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_sync::{InvariantLock, TryLockFailure};
 use tokio::runtime::{Handle, RuntimeFlavor};
@@ -79,12 +81,35 @@ impl ClaimedRunCommit<RunError> for PostgresClaimedRunCommit {
         let dispatch = awaken_dispatch::lock_running_claim_for_commit(&mut tx, &command.claim)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?
-            .ok_or_else(|| RunError::bad_request("run claim is stale"))?;
+            .ok_or_else(|| {
+                RunError::bad_request_classified(
+                    awaken_dispatch_contract::COMMIT_FENCED,
+                    "run claim is stale",
+                )
+            })?;
         awaken_dispatch_erasure::validate_claimed_operation(&dispatch, &command)?;
         self.commit
             .commit_operation_in_transaction(tx, command.operation)
             .await
-            .map_err(|error| RunError::internal(error.to_string()))
+            .map_err(|error| {
+                use awaken_dispatch_contract::{
+                    COMMIT_CONFLICT, COMMIT_IDENTITY_MISMATCH, COMMIT_OUTCOME_UNKNOWN,
+                };
+                match error {
+                    PostgresCommitFailure::Admission(
+                        CommitOperationAdmissionError::ThreadVersionConflict { .. }
+                        | CommitOperationAdmissionError::OrdinalConflict { .. },
+                    ) => RunError::conflict_classified(COMMIT_CONFLICT, error.to_string()),
+                    PostgresCommitFailure::Admission(_) => RunError::bad_request_classified(
+                        COMMIT_IDENTITY_MISMATCH,
+                        error.to_string(),
+                    ),
+                    PostgresCommitFailure::OutcomeUnknown(_) => {
+                        RunError::unavailable_classified(COMMIT_OUTCOME_UNKNOWN, error.to_string())
+                    }
+                    PostgresCommitFailure::Rejected(_) => RunError::internal(error.to_string()),
+                }
+            })
     }
 }
 
@@ -548,19 +573,20 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
 
     async fn read_transcript_page(
         &self,
+        session: &str,
         request: &TranscriptPageRequest,
-    ) -> Result<TranscriptPage, RuntimeAuthorityError> {
+    ) -> Result<TranscriptPage, RunError> {
         if let Some(store) = &self.postgres_commit {
             return store
                 .authoritative_transcript_page(request)
                 .await
-                .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()));
+                .map_err(postgres_transcript_read_error);
         }
-        self.open_commit(&request.thread_id.0)
-            .await?
+        self.open_commit(session)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?
             .authoritative_transcript_page(request)
             .await
-            .map_err(RuntimeAuthorityError::unavailable)
     }
 
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError> {
@@ -675,6 +701,15 @@ fn thread_path_stem(thread: &str) -> String {
     stem
 }
 
+fn postgres_transcript_read_error(error: awaken_store_postgres::StoreError) -> RunError {
+    match error {
+        awaken_store_postgres::StoreError::Transcript(error) => {
+            awaken_dispatch_erasure::transcript_read_error(error)
+        }
+        error => RunError::unavailable(error.to_string()),
+    }
+}
+
 struct PostgresQueries;
 
 /// Open one PostgreSQL Thread execution view behind the canonical
@@ -750,11 +785,11 @@ impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
         &self,
         store: &PostgresCommitCoordinator,
         request: &TranscriptPageRequest,
-    ) -> Result<TranscriptPage, String> {
+    ) -> Result<TranscriptPage, RunError> {
         store
             .authoritative_transcript_page(request)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(postgres_transcript_read_error)
     }
 
     async fn authoritative_open_wait_for_thread(

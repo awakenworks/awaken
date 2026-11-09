@@ -34,8 +34,8 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
-    ClaimedCommitCoordinator, ClaimedRunCommit, DEFAULT_LEASE_MS, DispatchControlReads,
-    DispatchTestHarness, DispatchWorker, GuardedRunCommit, Inbox, LeastLoadedPolicy, PendingInput,
+    ClaimedCommitCoordinator, DEFAULT_LEASE_MS, DispatchControlReads, DispatchTestHarness,
+    DispatchWorker, GuardedRunCommit, Inbox, LeastLoadedPolicy, PendingInput,
     PlacementRequirements, PostgresDispatchStore, PostgresStreamCheckpointStore, RunClaim,
     RunDispatch, SubmitOptions,
 };
@@ -894,9 +894,8 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
         entered: tokio::sync::Notify::new(),
         release: tokio::sync::Notify::new(),
     });
-    let service: Arc<dyn ClaimedRunCommit> =
-        Arc::new(GuardedRunCommit::from_plain(inner.clone(), store.clone()));
-    let fenced = ClaimedCommitCoordinator::new(service, RunClaim::from(&lease));
+    let service = Arc::new(GuardedRunCommit::from_plain(inner.clone(), store.clone()));
+    let fenced = ClaimedCommitCoordinator::embedded(service, RunClaim::from(&lease));
     let committing = tokio::spawn(async move { fenced.commit(running_commit("guarded")).await });
     inner.entered.notified().await;
     harness::postgres_clock(&pool)
@@ -2268,9 +2267,11 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
     // A delayed stale write carrying epoch 1 is fenced before it reaches
     // committed Thread truth. This independently preserves the slow/stale
     // message partition after B has advanced the exact mutation claim.
-    let stale_service: Arc<dyn ClaimedRunCommit> =
-        Arc::new(GuardedRunCommit::new(commit_a.clone(), store.clone()));
-    let stale_commit = ClaimedCommitCoordinator::new(stale_service, RunClaim::from(&lease_a));
+    let stale_service = Arc::new(GuardedRunCommit::from_plain(
+        commit_a.clone(),
+        store.clone(),
+    ));
+    let stale_commit = ClaimedCommitCoordinator::embedded(stale_service, RunClaim::from(&lease_a));
     assert!(
         stale_commit.commit(running_commit("run-1")).await.is_err(),
         "the stale owner's delayed commit is fenced"
