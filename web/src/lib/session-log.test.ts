@@ -1,5 +1,6 @@
 // @formal evidence session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
 import { describe, expect, it } from "vitest";
+import type { ManagedEvent } from "@awaken/managed-session-projection";
 import type { ContentBlock, SessionEvent } from "./api/types";
 import {
   sessionErrorText,
@@ -99,4 +100,11 @@ it("MCP calls share the ordinary approval and result projection family", () => {
   expect(traceSpans([call, result]).map((s) => s.kind)).toEqual(["tool", "tool_result"]);
   expect(toolDiagnostics([call, result])).toEqual([{ name: "read_source", calls: 1, completed: 1, failures: 0, medianDurationMs: 1000 }]);
   expect(toolDiagnostics([call, ev({ ...result, mcp_tool_use_id: "other" })])[0]?.completed).toBe(0);
+});
+
+it("renders a native nullable-stamp error without pretending it was processed", () => {
+  const event: ManagedEvent = { id: "native-error", type: "session.error", processed_at: null,
+    error: { type: "unknown_error", message: "worker disconnected", retry_status: { type: "exhausted" } } };
+  expect(sessionErrorText(event)).toBe("worker disconnected");
+  expect(event.processed_at).toBeNull();
 });
