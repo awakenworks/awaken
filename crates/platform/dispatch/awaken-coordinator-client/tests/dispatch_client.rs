@@ -1266,16 +1266,6 @@ async fn any_dispatch_store_exposes_the_control_rung_only_when_its_inner_handle_
 struct SelectionOnlyCommit;
 #[async_trait::async_trait]
 impl awaken_dispatch_contract::ClaimedRunCommit for SelectionOnlyCommit {
-    async fn commit(
-        &self,
-        _: &RunClaim,
-        _: awaken_agent_contract::ThreadCommit,
-    ) -> Result<
-        awaken_agent_contract::thread::commit::staged::CommitRecord,
-        awaken_agent_contract::thread::commit::coordinator::Error,
-    > {
-        panic!("construction has zero commit effects")
-    }
     async fn commit_operation(
         &self,
         _: awaken_dispatch_contract::ClaimedCommitCommand,

@@ -9,7 +9,6 @@ use awaken_dispatch_contract::{
     ClaimedCommitCommand, ClaimedRunCommit, MAX_CLAIMED_COMMIT_BODY_BYTES,
 };
 use awaken_runtime_contract::runs::{RunError, RunErrorKind};
-use awaken_session_execution_contract::ApplicationError;
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
     verify_current_worker_identity,
@@ -102,13 +101,16 @@ async fn commit_claimed(
             Json(serde_json::to_value(receipt).expect("CommitReceipt serializes")),
         ),
         Err(error) => {
-            let error = match error.kind {
-                RunErrorKind::BadRequest => ApplicationError::invalid(error.message),
-                RunErrorKind::Conflict => ApplicationError::conflict(error.message),
-                RunErrorKind::Internal => ApplicationError::internal(error.message),
-                RunErrorKind::Unavailable => ApplicationError::unavailable(error.message),
+            let status = match error.kind {
+                RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+                RunErrorKind::Conflict => StatusCode::CONFLICT,
+                RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+                RunErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             };
-            crate::worker_dispatch::respond(Err(error))
+            (
+                status,
+                Json(json!({ "error": error.message, "code": error.code })),
+            )
         }
     }
 }

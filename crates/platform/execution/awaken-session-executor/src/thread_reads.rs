@@ -111,6 +111,17 @@ impl InstalledCommitSource {
 
 #[async_trait::async_trait]
 impl awaken_session_run_delivery::SessionCommitSource for InstalledCommitSource {
+    async fn read_transcript_page(
+        &self,
+        session: &str,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<
+        awaken_agent_contract::thread::read::transcript::TranscriptPage,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        self.authority.read_transcript_page(session, request).await
+    }
+
     async fn open_for_read(&self, session: &str) -> Result<Arc<SessionCommit>, RunError> {
         let sessions = self.installed_sessions.upgrade();
         let _lifecycle = match sessions.as_ref() {

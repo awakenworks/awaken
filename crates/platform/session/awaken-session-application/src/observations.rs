@@ -366,6 +366,29 @@ fn merge_session_usage(total: &mut SessionUsage, child: SessionUsage) {
 
 #[async_trait::async_trait]
 impl crate::SessionObservation for SessionObservations {
+    /// Read a committed page only after admitting the logical Thread under this Session.
+    async fn transcript_page(
+        &self,
+        access: &crate::SessionAccess,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptPage, RunError> {
+        let session = access.session_id();
+        if request.thread_id.0 != session.as_str()
+            && !self
+                .coordination_reads
+                .coordinated_threads(session, None)
+                .await?
+                .iter()
+                .any(|link| link.session_id == *session && link.thread_id == request.thread_id)
+        {
+            return Err(RunError::bad_request_classified(
+                "not_found",
+                "Thread was not found",
+            ));
+        }
+        self.thread_reads.transcript_page(session, request).await
+    }
+
     async fn subscribe_session_thread_live(
         &self,
         session_id: &awaken_session_types::SessionId,

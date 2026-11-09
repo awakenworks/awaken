@@ -725,7 +725,8 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
         commit.clone(),
         commit,
         "worker",
-    );
+    )
+    .unwrap();
     assert!(
         worker.recovery_source.is_none(),
         "remote load authority is required RPC"
@@ -1184,6 +1185,7 @@ fn remote_constructors_install_one_required_snapshot_target() {
                 commit,
                 "worker",
             )
+            .unwrap()
         };
         let projection: Arc<dyn CommittedThreadView> = worker
             .recovery_projection

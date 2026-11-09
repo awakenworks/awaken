@@ -632,6 +632,19 @@ impl awaken_session_execution_contract::SessionCoordinationReads for QueueFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::ThreadReads for QueueFake {
+    async fn transcript_page(
+        &self,
+        _session: &::awaken_session_types::SessionId,
+        _request: &::awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<
+        ::awaken_agent_contract::thread::read::transcript::TranscriptPage,
+        ::awaken_runtime_contract::runs::RunError,
+    > {
+        Err(::awaken_runtime_contract::runs::RunError::unavailable(
+            "transcript pagination is unsupported",
+        ))
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -1433,6 +1446,19 @@ async fn app_with_session_application(
 
     #[async_trait::async_trait]
     impl awaken_session_execution_contract::ThreadReads for Shared {
+        async fn transcript_page(
+            &self,
+            _session: &::awaken_session_types::SessionId,
+            _request: &::awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+        ) -> Result<
+            ::awaken_agent_contract::thread::read::transcript::TranscriptPage,
+            ::awaken_runtime_contract::runs::RunError,
+        > {
+            Err(::awaken_runtime_contract::runs::RunError::unavailable(
+                "transcript pagination is unsupported",
+            ))
+        }
+
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// True when durable truth already exists for `thread`. Session-id minting

@@ -285,6 +285,7 @@ async fn selected_postgres_writer_serializes_commit_and_takeover() {
     let error = writer.commit_operation(command.clone()).await.unwrap_err();
     assert_eq!(error.kind, RunErrorKind::BadRequest);
     assert_eq!(error.message, "run claim is stale");
+    assert_eq!(error.code, awaken_dispatch_contract::COMMIT_FENCED);
     let replay = writer
         .commit_operation(ClaimedCommitCommand {
             claim: successor,
@@ -314,6 +315,30 @@ async fn selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_ta
     let writer = authority.clone().run_commits();
     let first = writer.commit_operation(command.clone()).await.unwrap();
 
+    let mut stale_version = command.clone();
+    stale_version.operation.operation_id.ordinal += 1;
+    let failure = writer.commit_operation(stale_version).await.unwrap_err();
+    assert_eq!(failure.kind, RunErrorKind::Conflict);
+    assert_eq!(failure.code, awaken_dispatch_contract::COMMIT_CONFLICT);
+
+    let mut reused_identity = command.clone();
+    reused_identity
+        .operation
+        .commit
+        .messages
+        .push(Message::text(
+            MessageId("changed".into()),
+            Role::Assistant,
+            "different payload",
+        ));
+    reused_identity.operation.payload_hash =
+        commit_payload_hash(&reused_identity.operation.commit).unwrap();
+    let failure = writer.commit_operation(reused_identity).await.unwrap_err();
+    assert_eq!(
+        failure.code,
+        awaken_dispatch_contract::COMMIT_IDENTITY_MISMATCH
+    );
+
     let mut request = TranscriptPageRequest {
         thread_id: thread.clone(),
         view: TranscriptView::RawCommitted,
@@ -321,7 +346,10 @@ async fn selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_ta
         start: 0,
         limit: std::num::NonZeroUsize::MIN,
     };
-    let page = authority.read_transcript_page(&request).await.unwrap();
+    let page = authority
+        .read_transcript_page(&thread.0, &request)
+        .await
+        .unwrap();
     assert_eq!(page.messages, command.operation.commit.messages[..1]);
     assert_eq!(page.snapshot.end_seq, 2);
     request.start = page.next_start().unwrap();
@@ -449,6 +477,7 @@ async fn selected_postgres_writer_fences_after_waiting_for_a_new_epoch() {
     let error = applying.await.unwrap().unwrap_err();
     assert_eq!(error.kind, RunErrorKind::BadRequest);
     assert_eq!(error.message, "run claim is stale");
+    assert_eq!(error.code, awaken_dispatch_contract::COMMIT_FENCED);
     assert_commit_rows(&reader, 0).await;
 }
 

@@ -9,11 +9,10 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
-use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, CommitReceipt, commit_payload_hash,
 };
-use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_coordinator_client::RemoteClaimedRunCommit;
@@ -41,14 +40,6 @@ struct ObservedCommitWriter {
 
 #[async_trait::async_trait]
 impl ClaimedRunCommit<RunError> for ObservedCommitWriter {
-    async fn commit(
-        &self,
-        claim: &RunClaim,
-        commit: ThreadCommit,
-    ) -> Result<CommitRecord, CommitError> {
-        self.writer.commit(claim, commit).await
-    }
-
     async fn commit_operation(
         &self,
         command: ClaimedCommitCommand,
@@ -466,7 +457,7 @@ async fn t2_retries_ambiguous_server_failure_with_the_same_operation() {
                     if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
                         (
                             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                            axum::Json(serde_json::json!({"error": "receipt lost"})),
+                            axum::Json(serde_json::json!({"error": "receipt lost", "code": awaken_dispatch_contract::COMMIT_OUTCOME_UNKNOWN})),
                         )
                     } else {
                         (
@@ -500,43 +491,65 @@ async fn t2_retries_ambiguous_server_failure_with_the_same_operation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn non_retryable_claimed_commit_preserves_the_server_cause() {
-    let identity = WorkerIdentity::new("diagnostic-worker", "diagnostic-boot", 1);
-    let app = axum::Router::new().route(
-        "/v1/worker/commit-claimed",
-        axum::routing::post(|| async {
-            (
-                axum::http::StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({"error": "run claim is stale"})),
-            )
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    for (status, code, message) in [
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            awaken_dispatch_contract::COMMIT_FENCED,
+            "run claim is stale",
+        ),
+        (
+            axum::http::StatusCode::CONFLICT,
+            awaken_dispatch_contract::COMMIT_CONFLICT,
+            "stale Thread version",
+        ),
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "commit failed before publication",
+        ),
+    ] {
+        let identity = WorkerIdentity::new("diagnostic-worker", "diagnostic-boot", 1);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = attempts.clone();
+        let app = axum::Router::new().route(
+            "/v1/worker/commit-claimed",
+            axum::routing::post(move || {
+                let observed = observed.clone();
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    (
+                        status,
+                        axum::Json(serde_json::json!({"error": message, "code": code})),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-    let commit = terminal_commit();
-    let operation = CommitOperation {
-        operation_id: CommitOperationId::new(RunId("diagnostic-run".into()), 0),
-        expected_thread_version: 0,
-        payload_hash: commit_payload_hash(&commit).unwrap(),
-        commit,
-    };
-    let error = RemoteClaimedRunCommit::new(format!("http://{address}"), identity.clone())
-        .commit_operation(ClaimedCommitCommand {
-            claim: RunClaim {
-                run_id: RunId("diagnostic-run".into()),
-                owner: identity.lease_owner(),
-                epoch: 1,
-            },
-            operation,
-        })
-        .await
-        .expect_err("400 remains fail-closed");
-    assert!(
-        error
-            .to_string()
-            .contains("400 Bad Request: run claim is stale")
-    );
+        let commit = terminal_commit();
+        let operation = CommitOperation {
+            operation_id: CommitOperationId::new(RunId("diagnostic-run".into()), 0),
+            expected_thread_version: 0,
+            payload_hash: commit_payload_hash(&commit).unwrap(),
+            commit,
+        };
+        let error = RemoteClaimedRunCommit::new(format!("http://{address}"), identity.clone())
+            .commit_operation(ClaimedCommitCommand {
+                claim: RunClaim {
+                    run_id: RunId("diagnostic-run".into()),
+                    owner: identity.lease_owner(),
+                    epoch: 1,
+                },
+                operation,
+            })
+            .await
+            .expect_err("a definite failure remains fail-closed");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(error.to_string().contains(message));
+        server.abort();
+    }
 }
 
 use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};

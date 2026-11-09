@@ -632,8 +632,7 @@ impl CancellableRunDelegationService for HostRunDelegationService {
         let worker = Arc::new(crate::agent_runner::ChildWorkerFactory::cancellation(
             runtime, scheduler,
         ));
-        let awaken_dispatch_erasure::DispatchTopology::Local(local) = scheduler.binding.placement()
-        else {
+        let Some(local) = scheduler.binding.local_owner() else {
             return Err(DelegationExecutionError::retryable(
                 "durable child cancellation requires Coordinator administration authority",
             ));

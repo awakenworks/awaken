@@ -100,6 +100,11 @@ pub(super) type ClaimFuture<'a, T> =
 /// Default lease: how long a claimed dispatch is owned before it is reclaimable.
 pub const DEFAULT_LEASE_MS: u64 = 30_000;
 
+enum WorkerCommit {
+    Versioned(Arc<dyn ClaimedRunCommit>),
+    Embedded(Arc<GuardedRunCommit<dyn CommitCoordinator>>),
+}
+
 /// Runs durable dispatches against a runtime. Generic over the store so the same
 /// engine drives the in-memory reference and the Postgres backend unchanged.
 pub struct DispatchWorker<S> {
@@ -109,7 +114,7 @@ pub struct DispatchWorker<S> {
     ports: ExecutionAuthority,
     exec: WorkerContext,
     reader: Arc<dyn CommittedThreadView>,
-    claimed_commit: Arc<dyn ClaimedRunCommit>,
+    claimed_commit: WorkerCommit,
     recovery_projection: Option<Arc<crate::RecoveryProjection>>,
     recovery_source: Option<Arc<dyn RunRecoverySource>>,
     terminal_scan: crate::TerminalReconciliationScan,
@@ -411,7 +416,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             reader,
             owner,
             ports,
-            claimed_commit,
+            WorkerCommit::Versioned(claimed_commit),
         );
         worker.recovery_projection = Some(projection);
         worker.recovery_source = Some(recovery_source);
@@ -435,7 +440,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let guard: Arc<dyn DispatchCommitAuthority> = store.clone();
         let claimed_commit = Arc::new(GuardedRunCommit::from_plain(commit.clone(), guard));
         let ports = ExecutionAuthority::Local(store.clone());
-        construct_dispatch_worker(runtime, store, commit, reader, owner, ports, claimed_commit)
+        construct_dispatch_worker(
+            runtime,
+            store,
+            commit,
+            reader,
+            owner,
+            ports,
+            WorkerCommit::Embedded(claimed_commit),
+        )
     }
 
     /// Inherit the same attempt capabilities as direct execution. The worker
@@ -642,11 +655,20 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // The base commit boundary, wrapped per drive because the fence epoch is per
         // claim. `self.store` (the dispatch queue) reports the run's current epoch, so
         // a superseded owner's per-step commits are rejected.
-        let mut coordinator =
-            ClaimedCommitCoordinator::new(self.claimed_commit.clone(), claim.clone());
-        if let Some(projection) = &self.recovery_projection {
-            coordinator = coordinator.with_recovery_projection(projection.clone());
-        }
+        let coordinator = match &self.claimed_commit {
+            WorkerCommit::Versioned(writer) => ClaimedCommitCoordinator::new(
+                writer.clone(),
+                claim.clone(),
+                self.recovery_projection.clone().ok_or_else(|| {
+                    Error::Dispatch(crate::DispatchError::Rejected(
+                        "versioned Worker requires a recovery projection".into(),
+                    ))
+                })?,
+            ),
+            WorkerCommit::Embedded(writer) => {
+                ClaimedCommitCoordinator::embedded(writer.clone(), claim.clone())
+            }
+        };
         let fenced: Arc<dyn CommitCoordinator> = Arc::new(coordinator);
         let dispatch: Arc<dyn DispatchExecution> = self.store.clone();
         let ownership = claim_bound_ownership_verifier(self.store.clone(), claim.clone());
@@ -1607,14 +1629,26 @@ impl DispatchWorker<AnyDispatchStore> {
         commit: Arc<dyn CommitCoordinator>,
         reader: Arc<dyn CommittedThreadView>,
         owner: impl Into<String>,
-    ) -> Self {
-        let claimed_commit: Arc<dyn ClaimedRunCommit> = match binding.placement() {
-            DispatchTopology::Local(local) => {
-                Arc::new(GuardedRunCommit::from_plain(commit.clone(), local.clone()))
+    ) -> Result<Self, Error> {
+        let claimed_commit = match binding.placement() {
+            DispatchTopology::Local(local) => WorkerCommit::Embedded(Arc::new(
+                GuardedRunCommit::from_plain(commit.clone(), local.clone()),
+            )),
+            DispatchTopology::Coordinator { .. } => {
+                return Err(Error::Dispatch(crate::DispatchError::Rejected(
+                    "Coordinator Worker requires a committed recovery source".into(),
+                )));
             }
-            DispatchTopology::Remote { commit, .. } => commit.clone(),
+            DispatchTopology::Remote { commit, .. } => WorkerCommit::Versioned(commit.clone()),
         };
-        construct_bound_dispatch_worker(runtime, binding, commit, reader, owner, claimed_commit)
+        Ok(construct_bound_dispatch_worker(
+            runtime,
+            binding,
+            commit,
+            reader,
+            owner,
+            claimed_commit,
+        ))
     }
 
     pub fn new_bound<C>(
@@ -1627,12 +1661,14 @@ impl DispatchWorker<AnyDispatchStore> {
         C: OperationCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
         let projection = Arc::new(crate::RecoveryProjection::new());
-        let local = matches!(binding.placement(), DispatchTopology::Local(_));
+        let local = binding.local_owner().is_some();
         let claimed_commit: Arc<dyn ClaimedRunCommit> = match binding.placement() {
-            DispatchTopology::Local(local) => match binding.local_run_commits() {
-                Some(writer) => Arc::new(CoordinatorRunCommits(writer.clone())),
-                None => Arc::new(GuardedRunCommit::new(commit.clone(), local.clone())),
-            },
+            DispatchTopology::Local(local) => {
+                Arc::new(GuardedRunCommit::new(commit.clone(), local.clone()))
+            }
+            DispatchTopology::Coordinator { commit, .. } => {
+                Arc::new(CoordinatorRunCommits(commit.clone()))
+            }
             DispatchTopology::Remote { commit, .. } => commit.clone(),
         };
         let mut worker = construct_bound_dispatch_worker(
@@ -1641,7 +1677,7 @@ impl DispatchWorker<AnyDispatchStore> {
             commit.clone(),
             projection.clone(),
             owner,
-            claimed_commit,
+            WorkerCommit::Versioned(claimed_commit),
         );
         if local {
             worker.recovery_projection = Some(projection);
@@ -1659,10 +1695,12 @@ fn construct_bound_dispatch_worker(
     commit: Arc<dyn CommitCoordinator>,
     reader: Arc<dyn CommittedThreadView>,
     owner: impl Into<String>,
-    claimed_commit: Arc<dyn ClaimedRunCommit>,
+    claimed_commit: WorkerCommit,
 ) -> DispatchWorker<AnyDispatchStore> {
     let ports = match binding.placement() {
-        DispatchTopology::Local(local) => ExecutionAuthority::Local(local.clone()),
+        DispatchTopology::Local(local) | DispatchTopology::Coordinator { owner: local, .. } => {
+            ExecutionAuthority::Local(local.clone())
+        }
         DispatchTopology::Remote {
             checkpoints,
             credentials,
@@ -1699,7 +1737,7 @@ fn construct_dispatch_worker<S: Dispatch + 'static>(
     reader: Arc<dyn CommittedThreadView>,
     owner: impl Into<String>,
     ports: ExecutionAuthority,
-    claimed_commit: Arc<dyn ClaimedRunCommit>,
+    claimed_commit: WorkerCommit,
 ) -> DispatchWorker<S> {
     let attempt_executor: Arc<dyn RunAttemptExecutor> = runtime.clone();
     DispatchWorker {

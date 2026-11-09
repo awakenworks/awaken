@@ -165,33 +165,80 @@ async fn guarded_operations_return_original_replay_receipts_and_reject_hash_or_c
     assert!(!authority.held.load(Ordering::SeqCst));
 }
 
+#[tokio::test(start_paused = true)]
+async fn coordinator_writer_retries_only_ambiguous_commits_with_the_same_identity() {
+    struct Writer {
+        store: MemoryCommitCoordinator,
+        calls: std::sync::Mutex<Vec<ClaimedCommitCommand>>,
+        lose_receipt: bool,
+    }
+
+    #[async_trait]
+    impl ClaimedRunCommit<RunError> for Writer {
+        async fn commit_operation(
+            &self,
+            command: ClaimedCommitCommand,
+        ) -> Result<CommitReceipt, RunError> {
+            let first = {
+                let mut calls = self.calls.lock().unwrap();
+                let first = calls.is_empty();
+                calls.push(command.clone());
+                first
+            };
+            if !self.lose_receipt {
+                return Err(RunError::conflict_classified(
+                    awaken_dispatch_contract::COMMIT_CONFLICT,
+                    "stale version",
+                ));
+            }
+            let receipt = self
+                .store
+                .commit_operation(command.operation)
+                .await
+                .unwrap();
+            if first {
+                return Err(RunError::unavailable_classified(
+                    awaken_dispatch_contract::COMMIT_OUTCOME_UNKNOWN,
+                    "receipt lost",
+                ));
+            }
+            Ok(receipt)
+        }
+    }
+
+    for lose_receipt in [false, true] {
+        let writer = Arc::new(Writer {
+            store: MemoryCommitCoordinator::new(awaken_time::system_clock()),
+            calls: std::sync::Mutex::new(Vec::new()),
+            lose_receipt,
+        });
+        let request = command(0, 0);
+        let result = CoordinatorRunCommits(writer.clone())
+            .commit_operation(request.clone())
+            .await;
+        let calls = writer.calls.lock().unwrap();
+        assert_eq!(calls.len(), if lose_receipt { 2 } else { 1 });
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.claim == request.claim && call.operation == request.operation)
+        );
+        if lose_receipt {
+            assert!(result.unwrap().duplicate);
+            assert_eq!(writer.store.commit_count(), 1);
+        } else {
+            assert!(result.unwrap_err().to_string().contains("stale version"));
+            assert_eq!(writer.store.commit_count(), 0);
+        }
+    }
+}
+
 #[tokio::test]
-async fn plain_guard_rejects_operations_before_lock_or_append_and_keeps_plain_commit() {
-    // Causes: C1 construction retains only ordinary Coordinator; C2 request is
-    // versioned/ordinary. Rules: P1=C1+versioned=>E1 reject, zero lock or append;
-    // P2=C1+ordinary=>E2 append under exact guard and release before returning.
-    // The existing direct-reader meaning is retained without manufacturing a CAS.
-    // This absorbs the old contract default test: both an ordinary expected
-    // version and overflow must have zero effects; plain commit returns its
-    // exact real-store record. The removed RecordingCommit's arbitrary sequence
-    // was no domain promise and must not replace the actual receipt owner.
+async fn embedded_commit_publishes_under_the_guard_and_releases_before_returning() {
     let store = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let authority = Arc::new(Authority::new(false));
     let service = GuardedRunCommit::from_plain(store.clone(), authority.clone());
-    for version in [4, u64::MAX] {
-        let request = command(0, version);
-        assert!(
-            service.commit_operation(request).await.is_err(),
-            "P1/E1 version={version}"
-        );
-    }
     let command = command(0, 0);
-    assert_eq!(store.commit_count(), 0, "P1/E1");
-    assert_eq!(authority.releases.load(Ordering::SeqCst), 0, "P1 no lock");
-    assert!(
-        !authority.held.load(Ordering::SeqCst),
-        "P1 no hidden claim lock"
-    );
     let record = service
         .commit(&command.claim, command.operation.commit)
         .await

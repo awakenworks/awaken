@@ -1063,6 +1063,9 @@ fn session_read_extensions() -> Router<Arc<ManagedState>> {
     .merge(awaken_extensions::session_content_capture_router(
         awaken_protocol_managed::get_session_content_capture,
     ))
+    .merge(awaken_extensions::session_thread_history_router(
+        awaken_protocol_managed::list_thread_messages,
+    ))
 }
 
 async fn mount_with_managed_over_and_models(

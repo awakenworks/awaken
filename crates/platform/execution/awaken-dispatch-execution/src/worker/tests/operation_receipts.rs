@@ -1,6 +1,7 @@
 //! Both combined constructors preserve the real operation owner before erasure.
 
 use super::*;
+use crate::worker::WorkerCommit;
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, commit_payload_hash,
 };
@@ -40,8 +41,10 @@ async fn prove_original_operation<S: awaken_dispatch_erasure::Dispatch + 'static
         .commit(commit.clone())
         .await
         .unwrap();
-    let receipt = worker
-        .claimed_commit
+    let WorkerCommit::Versioned(writer) = &worker.claimed_commit else {
+        panic!("combined Worker must use a versioned writer");
+    };
+    let receipt = writer
         .commit_operation(ClaimedCommitCommand {
             claim: claim.clone(),
             operation: CommitOperation {

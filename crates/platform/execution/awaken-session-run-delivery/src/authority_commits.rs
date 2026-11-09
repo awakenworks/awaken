@@ -55,12 +55,10 @@ impl SessionCommitSource for AuthorityCommits {
 
     async fn read_transcript_page(
         &self,
+        session: &str,
         request: &TranscriptPageRequest,
     ) -> Result<TranscriptPage, RunError> {
-        self.0
-            .read_transcript_page(request)
-            .await
-            .map_err(runtime_authority_error)
+        self.0.read_transcript_page(session, request).await
     }
 }
 

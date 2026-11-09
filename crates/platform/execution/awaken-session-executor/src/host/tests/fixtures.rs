@@ -928,16 +928,6 @@ pub(crate) struct SelectedOnly;
 
 #[async_trait::async_trait]
 impl awaken_dispatch_contract::ClaimedRunCommit for SelectedOnly {
-    async fn commit(
-        &self,
-        _claim: &awaken_worker_contract::RunClaim,
-        _commit: awaken_agent_contract::thread::commit::staged::ThreadCommit,
-    ) -> Result<
-        awaken_agent_contract::thread::commit::staged::CommitRecord,
-        awaken_agent_contract::thread::commit::coordinator::Error,
-    > {
-        unreachable!("port selection never commits")
-    }
     async fn commit_operation(
         &self,
         _: awaken_dispatch_contract::ClaimedCommitCommand,

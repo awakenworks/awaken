@@ -10,6 +10,14 @@ use super::CommittedReads;
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::ThreadReads for CommittedReads {
+    async fn transcript_page(
+        &self,
+        session: &awaken_session_types::SessionId,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptPage, RunError> {
+        self.transcript_page(session.as_str(), request).await
+    }
+
     async fn owns_thread(&self, thread: &str) -> Result<bool, RunError> {
         self.has_durable_thread(thread).await
     }

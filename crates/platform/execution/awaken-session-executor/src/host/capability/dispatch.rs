@@ -10,7 +10,10 @@ pub(crate) fn local_dispatch_owner(
     authority: &dyn crate::SessionAuthority,
 ) -> Option<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>> {
     match authority.dispatch_binding()?.placement() {
-        awaken_dispatch_erasure::DispatchTopology::Local(owner) => Some(owner.clone()),
+        awaken_dispatch_erasure::DispatchTopology::Local(owner)
+        | awaken_dispatch_erasure::DispatchTopology::Coordinator { owner, .. } => {
+            Some(owner.clone())
+        }
         awaken_dispatch_erasure::DispatchTopology::Remote { .. } => None,
     }
 }

@@ -84,9 +84,6 @@ impl ClaimedCredentialDeliveryTransport for FlakyDispatchStore {
 }
 #[async_trait::async_trait]
 impl ClaimedRunCommit for FlakyDispatchStore {
-    async fn commit(&self, _: &RunClaim, _: ThreadCommit) -> Result<CommitRecord, CommitError> {
-        unreachable!("empty scheduler fixture must not commit")
-    }
     async fn commit_operation(
         &self,
         _: awaken_dispatch_contract::ClaimedCommitCommand,

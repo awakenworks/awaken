@@ -95,6 +95,7 @@ ROUTE_OWNER_FILES = (
     "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/profiled_run_events.rs",
     "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/repositories.rs",
     "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/resource_manifests.rs",
+    "crates/platform/protocols/awaken-protocol-managed/src/awaken_extensions/transcript_history.rs",
     "crates/platform/protocols/awaken-protocol-awaken/src/sandbox_policies.rs",
     "crates/platform/protocols/awaken-protocol-managed/src/rate_limit.rs",
     "crates/platform/protocols/awaken-protocol-managed/src/routes/agents_registry.rs",
@@ -110,8 +111,7 @@ ROUTE_OWNER_FILES = (
     "crates/apps/awaken-coordinator/src/worker_fleet.rs",
 )
 
-# Public ingress code is discovered as well as explicitly registered. This
-# prevents a new router source from silently escaping the ownership inventory.
+# Discover public ingress so new routers cannot escape the ownership inventory.
 PUBLIC_ROUTE_ROOTS = (
     "crates/sdk/protocols/awaken-protocol-a2a/src",
     "crates/sdk/protocols/awaken-protocol-ag-ui/src",
@@ -166,8 +166,7 @@ def _owned_routes(path: Path) -> list[tuple[str, str]]:
             continue
         end = _crate_boundary_workspace._balanced_end(syntax, opening, "(", ")")
         expression = syntax[match.end() : len(text) if end is None else end]
-        methods = set(METHOD.findall(expression))
-        for method in methods:
+        for method in set(METHOD.findall(expression)):
             owned.append((method.upper(), _normalized_path(match.group("path"))))
     return owned
 

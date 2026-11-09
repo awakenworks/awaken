@@ -41,6 +41,19 @@ impl ClaimedRunCommit for CoordinatorRunCommits {
         &self,
         command: ClaimedCommitCommand,
     ) -> Result<CommitReceipt, CommitError> {
+        for _ in 0..2 {
+            match self.0.commit_operation(command.clone()).await {
+                Err(error)
+                    if matches!(
+                        error.code.as_str(),
+                        awaken_dispatch_contract::COMMIT_OUTCOME_UNKNOWN | "unavailable"
+                    ) =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                result => return result.map_err(|error| CommitError::Rejected(error.to_string())),
+            }
+        }
         self.0
             .commit_operation(command)
             .await
@@ -51,14 +64,9 @@ impl ClaimedRunCommit for CoordinatorRunCommits {
 /// Local claim fence around the authority selected at construction.
 /// Versioned callers retain the actual operation port; a plain split reader
 /// cannot acquire that capability by enabling a projection after erasure.
-pub struct GuardedRunCommit {
-    inner: CommitAuthority,
+pub struct GuardedRunCommit<C: ?Sized = dyn OperationCoordinator> {
+    inner: Arc<C>,
     store: Arc<dyn DispatchCommitAuthority>,
-}
-
-enum CommitAuthority {
-    Plain(Arc<dyn CommitCoordinator>),
-    Versioned(Arc<dyn OperationCoordinator>),
 }
 
 impl GuardedRunCommit {
@@ -66,23 +74,28 @@ impl GuardedRunCommit {
         inner: Arc<dyn OperationCoordinator>,
         store: Arc<dyn DispatchCommitAuthority>,
     ) -> Self {
-        Self {
-            inner: CommitAuthority::Versioned(inner),
-            store,
-        }
+        Self { inner, store }
     }
+}
 
-    /// Existing direct-reader composition supports only ordinary commits.
+impl GuardedRunCommit<dyn CommitCoordinator> {
+    /// Explicitly embedded compatibility has ordinary commit authority only.
+    ///
+    /// ```compile_fail
+    /// use awaken_dispatch_execution::{ClaimedRunCommit, GuardedRunCommit};
+    /// use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+    /// fn requires_writer(_: &dyn ClaimedRunCommit) {}
+    /// fn embedded(commit: &GuardedRunCommit<dyn Coordinator>) { requires_writer(commit); }
+    /// ```
     pub fn from_plain(
         inner: Arc<dyn CommitCoordinator>,
         store: Arc<dyn DispatchCommitAuthority>,
     ) -> Self {
-        Self {
-            inner: CommitAuthority::Plain(inner),
-            store,
-        }
+        Self { inner, store }
     }
+}
 
+impl<C: CommitCoordinator + ?Sized> GuardedRunCommit<C> {
     async fn guard(
         &self,
         claim: &RunClaim,
@@ -101,36 +114,27 @@ impl GuardedRunCommit {
         }
         Ok(guard)
     }
-}
 
-#[async_trait]
-impl ClaimedRunCommit for GuardedRunCommit {
-    async fn commit(
+    pub async fn commit(
         &self,
         claim: &RunClaim,
         commit: ThreadCommit,
     ) -> Result<CommitRecord, CommitError> {
-        let coordinator: &dyn CommitCoordinator = match &self.inner {
-            CommitAuthority::Plain(inner) => inner.as_ref(),
-            CommitAuthority::Versioned(inner) => inner.as_ref(),
-        };
         let guard = self.guard(claim, &commit).await?;
-        release_commit_guard(guard, coordinator.commit(commit).await).await
+        release_commit_guard(guard, self.inner.commit(commit).await).await
     }
+}
 
+#[async_trait]
+impl ClaimedRunCommit for GuardedRunCommit {
     async fn commit_operation(
         &self,
         command: ClaimedCommitCommand,
     ) -> Result<CommitReceipt, CommitError> {
-        let CommitAuthority::Versioned(inner) = &self.inner else {
-            return Err(CommitError::Rejected(
-                "plain claimed commit authority does not support versioned CommitOperation".into(),
-            ));
-        };
         let guard = self
             .guard(&command.claim, &command.operation.commit)
             .await?;
-        release_commit_guard(guard, inner.commit_operation(command.operation).await).await
+        release_commit_guard(guard, self.inner.commit_operation(command.operation).await).await
     }
 }
 
@@ -149,39 +153,60 @@ async fn release_commit_guard<T>(
 /// Per-attempt coordinator installed in [`RuntimeRunContext`](awaken_runtime_contract::runtime_context::RuntimeRunContext).
 /// It binds every step commit to the exact claim which admitted this attempt.
 pub struct ClaimedCommitCoordinator {
-    service: Arc<dyn ClaimedRunCommit>,
+    mode: AttemptCommit,
     claim: RunClaim,
-    projection: Option<Arc<RecoveryProjection>>,
+}
+
+enum AttemptCommit {
+    Versioned {
+        service: Arc<dyn ClaimedRunCommit>,
+        projection: Arc<RecoveryProjection>,
+    },
+    Embedded(Arc<GuardedRunCommit<dyn CommitCoordinator>>),
 }
 
 impl ClaimedCommitCoordinator {
-    pub fn new(service: Arc<dyn ClaimedRunCommit>, claim: RunClaim) -> Self {
+    pub fn new(
+        service: Arc<dyn ClaimedRunCommit>,
+        claim: RunClaim,
+        projection: Arc<RecoveryProjection>,
+    ) -> Self {
         Self {
-            service,
+            mode: AttemptCommit::Versioned {
+                service,
+                projection,
+            },
             claim,
-            projection: None,
         }
     }
 
-    #[must_use]
-    pub fn with_recovery_projection(mut self, projection: Arc<RecoveryProjection>) -> Self {
-        self.projection = Some(projection);
-        self
+    pub fn embedded(
+        service: Arc<GuardedRunCommit<dyn CommitCoordinator>>,
+        claim: RunClaim,
+    ) -> Self {
+        Self {
+            mode: AttemptCommit::Embedded(service),
+            claim,
+        }
     }
 }
 
 #[async_trait]
 impl CommitCoordinator for ClaimedCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
-        let Some(projection) = &self.projection else {
-            return self.service.commit(&self.claim, commit).await;
+        let (service, projection) = match &self.mode {
+            AttemptCommit::Versioned {
+                service,
+                projection,
+            } => (service, projection),
+            AttemptCommit::Embedded(service) => return service.commit(&self.claim, commit).await,
         };
         let snapshot = projection.current().ok_or_else(|| {
-            CommitError::Rejected("remote commit has no installed recovery snapshot".to_string())
+            CommitError::Rejected("claimed commit has no installed recovery snapshot".to_string())
         })?;
         if snapshot.thread_id != commit.thread_id || snapshot.claimed_run_id != *commit.run_id() {
             return Err(CommitError::Rejected(
-                "remote commit does not match the installed recovery projection".to_string(),
+                "claimed commit does not match the installed recovery projection".to_string(),
             ));
         }
         let payload_hash = commit_payload_hash(&commit)
@@ -195,8 +220,7 @@ impl CommitCoordinator for ClaimedCommitCoordinator {
             payload_hash,
             commit,
         };
-        let receipt = self
-            .service
+        let receipt = service
             .commit_operation(ClaimedCommitCommand {
                 claim: self.claim.clone(),
                 operation: operation.clone(),

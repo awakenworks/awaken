@@ -608,6 +608,13 @@ pub trait EnvironmentRuntime: Send + Sync {
 /// use awaken_session_execution_contract::ThreadReadRuntime;
 /// ```
 pub trait ThreadReads: Send + Sync {
+    /// Page one authorized logical Thread through its parent Session partition.
+    async fn transcript_page(
+        &self,
+        session: &crate::SessionId,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptPage, RunError>;
+
     /// True when durable truth already exists for `thread`. Session-id minting
     /// consults this to skip ids a previous process persisted; implementations
     /// MUST answer without materializing any per-thread state (no context

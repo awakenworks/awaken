@@ -30,7 +30,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::{CommitReceipt, commit_payload_hash};
-use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_coordinator_client::RemoteClaimedRunCommit;
@@ -178,23 +177,23 @@ impl LlmExecutor for FaultyUpstream {
     }
 }
 
-/// Negative-control Worker transport: a lossy adapter that rewrites the
-/// terminal to success on the wire and forges the receipt hash so the Worker's
-/// own projection does not notice the rewrite.
+/// Negative-control Worker transport for the versioned commit boundary.
+///
+/// The running prefix passes through unchanged so the Worker projection and
+/// the Control store start the terminal step with the same version and ordinal.
+///
+/// The adapter rewrites the terminal to success and rehashes the wire payload.
+/// This lets the real Control ingress admit the altered versioned command.
+/// On the way back the adapter restores the original hash in the receipt.
+/// The Worker can then advance its projection as if the original step landed.
+/// The acceptance oracle compares the returned outcome with committed Control
+/// truth to detect that discrepancy.
 struct DowngradingTransport {
     inner: RemoteClaimedRunCommit,
 }
 
 #[async_trait::async_trait]
 impl ClaimedRunCommit for DowngradingTransport {
-    async fn commit(
-        &self,
-        claim: &RunClaim,
-        commit: ThreadCommit,
-    ) -> Result<CommitRecord, CommitError> {
-        self.inner.commit(claim, commit).await
-    }
-
     async fn commit_operation(
         &self,
         mut command: ClaimedCommitCommand,
@@ -440,10 +439,11 @@ async fn run_on_http_worker(fault: InjectedFault, downgrade: bool) -> WorkerRun 
     } else {
         Arc::new(remote)
     };
-    let worker_commit = Arc::new(
-        ClaimedCommitCoordinator::new(transport, RunClaim::from(&claimed.lease))
-            .with_recovery_projection(projection),
-    );
+    let worker_commit = Arc::new(ClaimedCommitCoordinator::new(
+        transport,
+        RunClaim::from(&claimed.lease),
+        projection,
+    ));
     let calls = Arc::new(AtomicUsize::new(0));
     let returned = Runtime::new()
         .with_llm(Arc::new(FaultyUpstream {

@@ -45,9 +45,9 @@ use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error, OperationCoordinator,
 };
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitPayloadHash, CommitReceipt, admit_commit_operation_append,
-    applied_commit_receipt, replay_commit_operation_receipt, require_commit_operation_identity,
-    require_commit_operation_payload_hash,
+    CommitOperation, CommitOperationAdmissionError, CommitPayloadHash, CommitReceipt,
+    admit_commit_operation_append, applied_commit_receipt, replay_commit_operation_receipt,
+    require_commit_operation_identity, require_commit_operation_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -61,7 +61,9 @@ use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
     decode_resume_ticket_value_for_owner, project_committed_run_records,
 };
-use awaken_agent_contract::thread::read::transcript::{TranscriptPage, TranscriptPageRequest};
+use awaken_agent_contract::thread::read::transcript::{
+    TranscriptError, TranscriptPage, TranscriptPageRequest,
+};
 use awaken_store_schema::StoredU64;
 use awaken_sync::InvariantLock;
 use sqlx::Row;
@@ -173,6 +175,8 @@ pub enum StoreError {
     Read(String),
     #[error("hydrate: {0}")]
     Hydrate(String),
+    #[error(transparent)]
+    Transcript(#[from] TranscriptError),
 }
 
 /// Process-local execution view. A Coordinator creates one for an active Thread
@@ -543,9 +547,8 @@ impl PostgresCommitCoordinator {
         .fetch_one(&mut *tx)
         .await
         .map_err(read_error)?;
-        let (snapshot, range) = request
-            .resolve_append_only(u64::try_from(available).map_err(read_error)?)
-            .map_err(read_error)?;
+        let (snapshot, range) =
+            request.resolve_append_only(u64::try_from(available).map_err(read_error)?)?;
         let offset = i64::try_from(range.start).map_err(read_error)?;
         let limit = i64::try_from(range.end - range.start).map_err(read_error)?;
         let rows: Vec<Json<Message>> = sqlx::query_scalar(&format!(
@@ -638,7 +641,13 @@ impl OperationCoordinator for PostgresCommitCoordinator {
     async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
         self.require_projection_thread(&operation.commit.thread_id)?;
         let tx = self.pool.begin().await.map_err(reject)?;
-        let (receipt, events) = persist_commit_operation(tx, &operation).await?;
+        let (receipt, events) =
+            persist_commit_operation(tx, &operation)
+                .await
+                .map_err(|error| match error {
+                    PostgresCommitFailure::Rejected(error) => error,
+                    other => Error::Rejected(other.to_string()),
+                })?;
         if let Some(events) = events {
             let mut projection = lock(&self.projection)?;
             advance_projection(
@@ -652,6 +661,17 @@ impl OperationCoordinator for PostgresCommitCoordinator {
     }
 }
 
+/// A shared commit reports admission, pre-publication, and uncertain completion separately.
+#[derive(Debug, thiserror::Error)]
+pub enum PostgresCommitFailure {
+    #[error(transparent)]
+    Admission(#[from] CommitOperationAdmissionError),
+    #[error(transparent)]
+    Rejected(#[from] Error),
+    #[error("commit outcome unknown: {0}")]
+    OutcomeUnknown(sqlx::Error),
+}
+
 impl PostgresCommitCoordinator {
     /// Publish to the authoritative store in the caller's transaction. The
     /// caller can lock the Dispatch claim first and must use this store's
@@ -661,7 +681,7 @@ impl PostgresCommitCoordinator {
         &self,
         tx: Transaction<'_, Postgres>,
         operation: CommitOperation,
-    ) -> Result<CommitReceipt, Error> {
+    ) -> Result<CommitReceipt, PostgresCommitFailure> {
         self.require_projection_thread(&operation.commit.thread_id)?;
         persist_commit_operation(tx, &operation)
             .await
@@ -672,13 +692,12 @@ impl PostgresCommitCoordinator {
 async fn persist_commit_operation(
     mut tx: Transaction<'_, Postgres>,
     operation: &CommitOperation,
-) -> Result<(CommitReceipt, Option<Vec<EventRecord>>), Error> {
+) -> Result<(CommitReceipt, Option<Vec<EventRecord>>), PostgresCommitFailure> {
     operation
         .commit
         .validate()
         .map_err(|error| Error::Rejected(error.to_string()))?;
-    require_commit_operation_identity(operation)
-        .map_err(|error| Error::Rejected(error.to_string()))?;
+    require_commit_operation_identity(operation)?;
     let operation_ordinal = i64::try_from(operation.operation_id.ordinal).map_err(|_| {
         Error::Rejected("commit operation ordinal exceeds backend range".to_string())
     })?;
@@ -689,9 +708,7 @@ async fn persist_commit_operation(
         existing
             .as_ref()
             .map(|(thread_id, receipt)| (thread_id, receipt)),
-    )
-    .map_err(|error| Error::Rejected(error.to_string()))?
-    {
+    )? {
         tx.rollback().await.map_err(reject)?;
         return Ok((receipt, None));
     }
@@ -705,8 +722,8 @@ async fn persist_commit_operation(
     .await
     .map_err(reject)?;
     let current_ordinal = decode_authority(current_ordinal)?;
-    let thread_version = admit_commit_operation_append(operation, current_version, current_ordinal)
-        .map_err(|error| Error::Rejected(error.to_string()))?;
+    let thread_version =
+        admit_commit_operation_append(operation, current_version, current_ordinal)?;
     let (next, committed_events) = append_commit(&mut tx, &operation.commit).await?;
     set_thread_version(&mut tx, &operation.commit.thread_id, thread_version).await?;
     sqlx::query(&format!(
@@ -723,7 +740,10 @@ async fn persist_commit_operation(
     .execute(&mut *tx)
     .await
     .map_err(reject)?;
-    tx.commit().await.map_err(reject)?;
+    tx.commit().await.map_err(|error| match error {
+        sqlx::Error::Database(_) => PostgresCommitFailure::Rejected(reject(error)),
+        _ => PostgresCommitFailure::OutcomeUnknown(error),
+    })?;
     let receipt = applied_commit_receipt(
         operation.operation_id.clone(),
         operation.payload_hash.clone(),

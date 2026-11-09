@@ -48,6 +48,7 @@ pub(crate) mod pagination;
 mod profiled_release;
 mod profiled_run;
 mod stream;
+mod transcript_history;
 #[cfg(test)]
 use stream::replay_is_terminal_after;
 use stream::{LiveSseSource, SseTerminalScope, live_sse_stream, private_stream_deadline};
@@ -56,6 +57,7 @@ pub use content_capture::get_session_content_capture;
 pub use event_admission::close_event_admission;
 pub use execution_evidence::get_session_execution_evidence;
 use pagination::{parse_session_list, session_list_page};
+pub use transcript_history::list_thread_messages;
 
 const SESSION_TIME_VERSION: &str = "x-awaken-session-time-version";
 

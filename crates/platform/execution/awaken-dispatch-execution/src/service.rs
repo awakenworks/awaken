@@ -429,7 +429,9 @@ impl DispatchService<AnyDispatchStore> {
             )));
         }
         let local = match binding.placement() {
-            DispatchTopology::Local(local) => Some(local.clone() as Arc<dyn ControlDispatch>),
+            DispatchTopology::Local(local) | DispatchTopology::Coordinator { owner: local, .. } => {
+                Some(local.clone() as Arc<dyn ControlDispatch>)
+            }
             DispatchTopology::Remote { .. } => None,
         };
         Ok(Self::spawn_required(worker, clock, config, wake, local))

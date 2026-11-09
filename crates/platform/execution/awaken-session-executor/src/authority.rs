@@ -265,6 +265,17 @@ impl LocalAuthority {
 
 #[async_trait::async_trait]
 impl SessionCommitSource for LocalAuthority {
+    async fn read_transcript_page(
+        &self,
+        session: &str,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+    ) -> Result<
+        awaken_agent_contract::thread::read::transcript::TranscriptPage,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        self.runtime.read_transcript_page(session, request).await
+    }
+
     async fn open_for_read(
         &self,
         session: &str,
@@ -491,7 +502,8 @@ impl SessionAuthority for UpstreamAuthority {
                 awaken_dispatch_erasure::DispatchTopology::Remote { commit, .. } => {
                     Some(commit.clone())
                 }
-                awaken_dispatch_erasure::DispatchTopology::Local(_) => None,
+                awaken_dispatch_erasure::DispatchTopology::Local(_)
+                | awaken_dispatch_erasure::DispatchTopology::Coordinator { .. } => None,
             })
             .map(Some)
             .ok_or_else(|| {

@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::CommitReceipt;
-use awaken_dispatch_contract::{ClaimedCommitCommand, ClaimedCommitRequest, ClaimedRunCommit};
+use awaken_dispatch_contract::{
+    COMMIT_OUTCOME_UNKNOWN, ClaimedCommitCommand, ClaimedCommitRequest, ClaimedRunCommit,
+};
 use awaken_worker_contract::WorkerIdentity;
 use awaken_worker_transport_security::{WORKER_ID_HEADER, WorkerRequestAuthorizer, WorkerUpstream};
 
@@ -113,12 +115,25 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
             };
             let status = response.status();
             if !status.is_success() {
-                let detail = match response.text().await {
+                let body = response.text().await;
+                let code = body
+                    .as_ref()
+                    .ok()
+                    .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+                    .and_then(|value| value.get("code")?.as_str().map(str::to_owned));
+                let detail = match body {
                     Ok(body) => server_error_detail(&body),
                     Err(error) => format!("response body could not be read: {error}"),
                 };
                 let message = format!("claimed commit server returned {status}: {detail}");
-                if !status.is_server_error() {
+                // Older Coordinators send only the diagnostic. Keep their bounded
+                // retry behavior while using the explicit result on new peers.
+                let retry = status.is_server_error()
+                    && matches!(
+                        code.as_deref(),
+                        None | Some(COMMIT_OUTCOME_UNKNOWN | "unavailable")
+                    );
+                if !retry {
                     return Err(CommitError::Rejected(message));
                 }
                 last_transport_error = Some(message);

@@ -11,6 +11,19 @@ macro_rules! no_committed_threads {
     ($ty:ty) => {
         #[async_trait::async_trait]
         impl awaken_session_execution_contract::ThreadReads for $ty {
+            async fn transcript_page(
+                &self,
+                _session: &::awaken_session_types::SessionId,
+                _request: &::awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
+            ) -> Result<
+                ::awaken_agent_contract::thread::read::transcript::TranscriptPage,
+                ::awaken_runtime_contract::runs::RunError,
+            > {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
+                    "transcript pagination is unsupported",
+                ))
+            }
+
             async fn owns_thread(&self, _thread: &str) -> Result<bool, RunError> {
                 Ok(false)
             }

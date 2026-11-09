@@ -74,16 +74,14 @@ pub trait SessionCommitSource: Send + Sync {
 
     async fn read_transcript_page(
         &self,
+        session: &str,
         request: &TranscriptPageRequest,
     ) -> Result<TranscriptPage, RunError> {
-        let commit = self.open_for_read(&request.thread_id.0).await?;
+        let commit = self.open_for_read(session).await?;
         let authority = commit
             .committed_authority()
             .ok_or_else(|| RunError::unavailable("authoritative transcript is unavailable"))?;
-        authority
-            .transcript_page(request)
-            .await
-            .map_err(RunError::internal)
+        authority.transcript_page(request).await
     }
 }
 
@@ -156,12 +154,13 @@ impl CommittedReads {
             .map_err(RunError::internal)
     }
 
-    /// A page of an authorized primary Thread's frozen committed transcript.
+    /// A page of an authorized Thread's frozen committed transcript.
     pub async fn transcript_page(
         &self,
+        session: &str,
         request: &TranscriptPageRequest,
     ) -> Result<TranscriptPage, RunError> {
-        self.source.read_transcript_page(request).await
+        self.source.read_transcript_page(session, request).await
     }
 
     /// Rebuild the neutral child-Run projection from the one durable owner:

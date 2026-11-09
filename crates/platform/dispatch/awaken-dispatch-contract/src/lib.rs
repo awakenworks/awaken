@@ -55,7 +55,10 @@ pub use wake::WakeSignal;
 
 pub use session_run_events::SessionRunEventPage;
 
-pub use claimed_commit::ClaimedRunCommit;
+pub use claimed_commit::{
+    COMMIT_CONFLICT, COMMIT_FENCED, COMMIT_IDENTITY_MISMATCH, COMMIT_OUTCOME_UNKNOWN,
+    ClaimedRunCommit,
+};
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosureKind,
