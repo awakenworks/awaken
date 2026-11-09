@@ -6,7 +6,9 @@
 //! End-to-end tests with in-memory fakes: a scripted duplex channel stands in for
 //! the launched CLI — no daemon, no network.
 
+mod channel_entry;
 mod permission_narrowing;
+mod prompt;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -537,13 +539,13 @@ enum OwnershipDecision {
 }
 
 struct ScriptedOwnership {
-    decisions: Mutex<std::collections::VecDeque<OwnershipDecision>>,
+    decisions: awaken_sync::LeafLock<std::collections::VecDeque<OwnershipDecision>>,
 }
 
 impl ScriptedOwnership {
     fn new(decisions: impl IntoIterator<Item = OwnershipDecision>) -> Self {
         Self {
-            decisions: Mutex::new(decisions.into_iter().collect()),
+            decisions: awaken_sync::LeafLock::new(decisions.into_iter().collect()),
         }
     }
 }
@@ -551,13 +553,18 @@ impl ScriptedOwnership {
 #[async_trait]
 impl AttemptOwnershipVerifier for ScriptedOwnership {
     async fn verify_current(&self) -> std::result::Result<(), AttemptOwnershipError> {
-        match self
-            .decisions
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or(OwnershipDecision::Current)
-        {
+        let decision = {
+            let mut decisions = self.decisions.lock();
+            let decision = decisions
+                .front()
+                .cloned()
+                .unwrap_or(OwnershipDecision::Current);
+            if decisions.len() > 1 {
+                decisions.pop_front();
+            }
+            decision
+        };
+        match decision {
             OwnershipDecision::Current => Ok(()),
             OwnershipDecision::Lost => Err(AttemptOwnershipError::Lost),
             OwnershipDecision::Unavailable => {
@@ -631,6 +638,7 @@ async fn acp_external_steps_recheck_live_attempt_ownership() {
     let context = RuntimeRunContext::new()
         .with_commit(Arc::new(RecordingCoordinator::default()))
         .with_ownership(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current, // before the new entry commit
             OwnershipDecision::Current,
             OwnershipDecision::Lost,
         ])));
@@ -656,6 +664,7 @@ async fn acp_external_steps_recheck_live_attempt_ownership() {
         .with_commit(Arc::new(RecordingCoordinator::default()))
         .with_live_inbox(inbox)
         .with_ownership(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current, // before the new entry commit
             OwnershipDecision::Current,
             OwnershipDecision::Current,
             OwnershipDecision::Current,
@@ -674,30 +683,33 @@ async fn acp_external_steps_recheck_live_attempt_ownership() {
 
 #[derive(Default)]
 struct RecordingCoordinator {
-    commits: Mutex<Vec<ThreadCommit>>,
+    commits: awaken_sync::LeafLock<Vec<ThreadCommit>>,
 }
 
 impl RecordingCoordinator {
+    /// Computed wait/terminal view; entry is verified by channel_entry.
+    fn settled_commits(&self) -> Vec<ThreadCommit> {
+        self.commits
+            .lock()
+            .iter()
+            .filter(|c| c.run_state() != RunState::Running)
+            .cloned()
+            .collect()
+    }
     fn resume_ticket_for(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.commits
             .lock()
-            .ok()?
             .iter()
             .rev()
-            .find(|commit| commit.run_id() == run_id)
-            .and_then(|commit| commit.resume_ticket().cloned())
+            .find(|c| c.run_id() == run_id)
+            .and_then(|c| c.resume_ticket().cloned())
     }
-
     fn messages(&self) -> Vec<Message> {
         self.commits
             .lock()
-            .map(|commits| {
-                commits
-                    .iter()
-                    .flat_map(|commit| commit.messages.iter().cloned())
-                    .collect()
-            })
-            .unwrap_or_default()
+            .iter()
+            .flat_map(|c| c.messages.iter().cloned())
+            .collect()
     }
 }
 
@@ -724,7 +736,7 @@ impl RunTerminalObserver for TerminalRecordingObserver {
 #[async_trait]
 impl Coordinator for RecordingCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> std::result::Result<CommitRecord, CommitError> {
-        self.commits.lock().unwrap().push(commit);
+        self.commits.lock().push(commit);
         Ok(CommitRecord { sequence: 1 })
     }
 }
@@ -733,82 +745,62 @@ impl CommittedThreadView for RecordingCoordinator {
     fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
         self.commits
             .lock()
-            .map(|commits| {
-                commits
-                    .iter()
-                    .filter(|commit| &commit.thread_id == thread_id)
-                    .flat_map(|commit| commit.messages.iter().cloned())
-                    .collect()
-            })
-            .unwrap_or_default()
+            .iter()
+            .filter(|c| &c.thread_id == thread_id)
+            .flat_map(|c| c.messages.iter().cloned())
+            .collect()
     }
-
     fn resume_ticket(&self, run_id: &RunId) -> Option<ResumeTicket> {
         self.resume_ticket_for(run_id)
     }
-
     fn open_wait_for_thread(&self, thread_id: &ThreadId) -> Option<(RunId, ResumeTicket)> {
-        let commits = self.commits.lock().ok()?;
-        let latest = commits
-            .iter()
-            .rev()
-            .find(|commit| &commit.thread_id == thread_id)?;
+        let commits = self.commits.lock();
+        let latest = commits.iter().rev().find(|c| &c.thread_id == thread_id)?;
         let ticket = latest.resume_ticket()?.clone();
         (ticket.thread_id == *thread_id).then(|| (latest.run_id().clone(), ticket))
     }
-
     fn run(&self, run_id: &RunId) -> Option<RunRecord> {
         self.commits
             .lock()
-            .ok()?
             .iter()
             .rev()
-            .find(|commit| commit.run_id() == run_id)
-            .map(|commit| RunRecord {
+            .find(|c| c.run_id() == run_id)
+            .map(|c| RunRecord {
                 id: run_id.clone(),
-                thread_id: commit.thread_id.clone(),
-                state: commit.run_state(),
+                thread_id: c.thread_id.clone(),
+                state: c.run_state(),
             })
     }
-
     fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
         self.commits
             .lock()
-            .ok()?
             .iter()
             .rev()
-            .find(|commit| &commit.thread_id == thread_id)
-            .map(|commit| RunRecord {
-                id: commit.run_id().clone(),
+            .find(|c| &c.thread_id == thread_id)
+            .map(|c| RunRecord {
+                id: c.run_id().clone(),
                 thread_id: thread_id.clone(),
-                state: commit.run_state(),
+                state: c.run_state(),
             })
     }
-
     fn run_state(&self, run_id: &RunId) -> Option<RunState> {
         self.commits
             .lock()
-            .ok()?
             .iter()
             .rev()
-            .find(|commit| commit.run_id() == run_id)
+            .find(|c| c.run_id() == run_id)
             .map(ThreadCommit::run_state)
     }
-
     fn committed_state(
         &self,
         thread_id: &ThreadId,
     ) -> Vec<awaken_agent_contract::agent::state::Command> {
         self.commits
             .lock()
-            .map(|commits| {
-                commits
-                    .iter()
-                    .filter(|commit| &commit.thread_id == thread_id)
-                    .flat_map(|commit| commit.state.iter().cloned())
-                    .collect()
-            })
-            .unwrap_or_default()
+            .iter()
+            .filter(|c| &c.thread_id == thread_id)
+            .flat_map(|c| c.state.iter().cloned())
+            .collect()
     }
 }
 
@@ -850,55 +842,6 @@ fn activation_without_session_home() -> RunActivation {
             "acp:ownership-probe",
         ));
     activation
-}
-
-#[test]
-fn acp_prompt_orders_frozen_policy_context_and_authoritative_input() {
-    // Cause/effect graph: frozen instructions (C1), transient backend context
-    // (C2), and durable current input (C3) produce ordered prompt sections (E1);
-    // C2 does not mutate durable input (E2); without C1/C2, C3 passes through
-    // byte-identically (E3). FMECA FM1: labelling C3 as untrusted made real ACP
-    // agents refuse the current task in favor of quoted Plan context; explicitly
-    // marking C3 authoritative under C1 mitigates that precedence inversion.
-    //
-    // | Rule | C1 | C2 | C3 | Effect |
-    // | PR1  | T  | T  | T  | E1+E2 |
-    // | PR2  | F  | F  | T  | E3    |
-    let mut activation = activation();
-    activation.snapshot.resolved_spec.instructions = "follow policy".into();
-    let original = activation.input.clone();
-    let context = vec![
-        Message::text(
-            MessageId("session-baseline:historical".into()),
-            Role::System,
-            "obsolete resource revision",
-        ),
-        Message::text(
-            MessageId("request-memory".into()),
-            Role::System,
-            "remember the user's preference",
-        ),
-    ];
-
-    let prompt = super::initial_prompt(&activation, &context, &crate::AcpInstructions::default());
-
-    let instructions = prompt.find("follow policy").expect("C1");
-    let recalled = prompt.find("remember the user's preference").expect("C2");
-    let input = prompt.find("do it").expect("C3");
-    assert!(instructions < recalled && recalled < input, "R1: {prompt}");
-    assert!(prompt.contains("authoritative task"), "R1: {prompt}");
-    assert!(
-        !prompt.contains("obsolete resource revision"),
-        "R1: legacy derived context must not reach ACP"
-    );
-    assert_eq!(activation.input, original, "E2");
-
-    activation.snapshot.resolved_spec.instructions.clear();
-    assert_eq!(
-        super::initial_prompt(&activation, &[], &crate::AcpInstructions::default()),
-        "do it",
-        "E3"
-    );
 }
 
 fn exec(frames: Vec<String>) -> AcpRunExecutor {
@@ -1036,7 +979,7 @@ async fn unreissued_permission_is_settled_with_the_continuation_commit() {
                     "{mode}/{allow}: settlement cannot mask the execution error"
                 ),
             }
-            let commits = recorded.commits.lock().unwrap();
+            let commits = recorded.settled_commits();
             assert_eq!(
                 commits.len(),
                 2,
@@ -1212,7 +1155,7 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
         acp_session_cell().remove(),
     ];
     for command in commands {
-        coordinator.commits.lock().unwrap().push(ThreadCommit {
+        coordinator.commits.lock().push(ThreadCommit {
             thread_id: activation.thread_id.clone(),
             run: awaken_agent_contract::thread::commit::RunDisposition::running(
                 activation.run_id.clone(),
@@ -1230,7 +1173,7 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
             .expect("C1/C3 are valid non-resume states"),
             None
         );
-        coordinator.commits.lock().unwrap().clear();
+        coordinator.commits.lock().clear();
     }
 
     let exact = run_state(
@@ -1242,7 +1185,7 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
         Some("session-7"),
     )
     .expect("C2 fixture serializes");
-    coordinator.commits.lock().unwrap().push(ThreadCommit {
+    coordinator.commits.lock().push(ThreadCommit {
         thread_id: activation.thread_id.clone(),
         run: awaken_agent_contract::thread::commit::RunDisposition::running(
             activation.run_id.clone(),
@@ -1269,8 +1212,8 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
             "unexpected": true
         }),
     ] {
-        coordinator.commits.lock().unwrap().clear();
-        coordinator.commits.lock().unwrap().push(ThreadCommit {
+        coordinator.commits.lock().clear();
+        coordinator.commits.lock().push(ThreadCommit {
             thread_id: activation.thread_id.clone(),
             run: awaken_agent_contract::thread::commit::RunDisposition::running(
                 activation.run_id.clone(),
@@ -1533,77 +1476,7 @@ fn acp_fact_ids_follow_the_role_specific_identity_authority() {
     assert_eq!(tool.assistant_step_of(&run_one), None, "ID3/E3");
 }
 
-#[tokio::test]
-async fn acp_result_ids_survive_repeated_empty_input_activations() {
-    // Cause/effect graph: committed prefix + activation input + restarted wire
-    // sequence -> private Tool Message identity -> Managed deduplication.
-    // R1 same prefix/input/frame replay is stable; R2 after a committed result,
-    // another empty-input activation must mint a distinct result even when the
-    // wire sequence and provider call id restart. R3 input-bearing activations
-    // obey the same rule. R4 assistant ids remain the canonical Run/Step family.
-    // R5 tool-only committed progress also distinguishes the next activation;
-    // counting only assistant messages would miss this reachable prefix shape.
-    // The old test varied a caller-invented namespace; it never exercised the
-    // executor that actually generated "empty-input:0" for every continuation.
-    // These are executor-boundary invocations, not proof of dispatch admission.
-    for (has_input, has_call) in [(false, false), (false, true), (true, false), (true, true)] {
-        let recorded = Arc::new(RecordingCoordinator::default());
-        let mut active = activation();
-        if !has_input {
-            active.input.clear();
-        }
-        let mut frames = vec![
-            r#"{"type":"tool_call","id":"same-wire-id","name":"read","input":{"path":"report.md"}}"#.into(),
-            r#"{"type":"tool_result","id":"same-wire-id","content":"read contents","is_error":false}"#.into(),
-            r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
-        ];
-        if !has_call {
-            frames.remove(0);
-        }
-        let mut result_ids = std::collections::HashSet::new();
-        for _ in 0..3 {
-            // Two newly constructed executors see the same immutable prefix;
-            // replay commits into a separate recorder and cannot advance it.
-            let replay = Arc::new(RecordingCoordinator::default());
-            exec(frames.clone())
-                .execute(
-                    active.clone(),
-                    RuntimeRunContext::new()
-                        .with_reader(recorded.clone())
-                        .with_commit(replay.clone()),
-                )
-                .await
-                .unwrap();
-            let result = exec(frames.clone())
-                .execute(
-                    active.clone(),
-                    RuntimeRunContext::new()
-                        .with_reader(recorded.clone())
-                        .with_commit(recorded.clone()),
-                )
-                .await
-                .unwrap();
-            assert_eq!(result, RunState::Ended(EndCause::NaturalEnd));
-            let messages = recorded
-                .commits
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .messages
-                .clone();
-            assert_eq!(messages, replay.messages(), "R1 same-prefix replay");
-            let tool = messages.iter().find(|m| m.role == Role::Tool).unwrap();
-            assert!(
-                result_ids.insert(tool.id.clone()),
-                "R2/R3 duplicate result id: {}",
-                tool.id.0
-            );
-            assert_eq!(tool.id.assistant_step_of(&active.run_id), None, "R4");
-        }
-        assert_eq!(result_ids.len(), 3);
-    }
-}
+mod empty_input_identity;
 
 #[tokio::test]
 async fn regenerated_approved_tool_projects_as_one_logical_call() {
@@ -1902,7 +1775,7 @@ async fn drives_a_step_commits_messages_and_returns_natural_end() {
         .unwrap();
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     assert_eq!(commits.len(), 1);
     assert_eq!(commits[0].messages.len(), 2);
     assert_eq!(commits[0].messages[0].text_content(), "do it");
@@ -1934,7 +1807,7 @@ async fn an_empty_natural_end_is_a_provider_failure() {
         .unwrap();
 
     assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     assert_eq!(commits.len(), 1);
     assert_eq!(
         commits[0].messages.len(),
@@ -2039,7 +1912,7 @@ async fn contiguous_acp_text_chunks_commit_as_one_message_but_tools_break_the_st
     .await
     .unwrap();
 
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     let messages = &commits[0].messages;
     assert_eq!(messages.len(), 5, "input, text, call, result, then text");
     assert_eq!(messages[0].text_content(), "do it");
@@ -2079,7 +1952,7 @@ async fn acp_message_id_change_preserves_distinct_assistant_messages() {
     .await
     .unwrap();
 
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     let messages = &commits[0].messages;
     assert_eq!(messages.len(), 3, "input, diagnostic, then deliverable");
     assert_eq!(messages[1].text_content(), "diagnostic", "E1");
@@ -2125,7 +1998,7 @@ async fn live_inbox_steer_folds_into_a_relaunched_run() {
         .unwrap();
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     assert_eq!(commits.len(), 1, "one commit at the terminal state");
     let steer = commits[0]
         .messages
@@ -2187,7 +2060,7 @@ async fn terminal_business_outcome_cleanup_gates_relaunch_without_consuming_stee
                             .is_err(),
                             "pending process cannot return"
                         );
-                        assert_eq!(coordinator.commits.lock().unwrap().len(), 1);
+                        assert_eq!(coordinator.settled_commits().len(), 1);
                         assert_eq!(opens.load(Ordering::SeqCst), 1);
                         assert_eq!(prompts.load(Ordering::SeqCst), 1);
                         assert_eq!(inbox.list().len(), usize::from(queued));
@@ -2203,7 +2076,7 @@ async fn terminal_business_outcome_cleanup_gates_relaunch_without_consuming_stee
                         .expect("late exact exit releases original execution")
                         .unwrap();
                     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-                    assert_eq!(coordinator.commits.lock().unwrap().len(), 1);
+                    assert_eq!(coordinator.settled_commits().len(), 1);
                     let relaunch = queued && !pending && !other_unknown;
                     assert_eq!(opens.load(Ordering::SeqCst), 1 + usize::from(relaunch));
                     assert_eq!(prompts.load(Ordering::SeqCst), 1 + usize::from(relaunch));
@@ -2289,9 +2162,11 @@ async fn opening_a_session_retains_the_attempt_observer_until_the_typed_owner_re
 
     let entered = Arc::new(AtomicBool::new(false));
     let executor = AcpRunExecutor::new(Arc::new(PendingOpen(entered.clone())));
-    let context = RuntimeRunContext::new().with_ownership(Arc::new(ScriptedOwnership::new([
-        OwnershipDecision::Current,
-    ])));
+    let context = RuntimeRunContext::new()
+        .with_commit(Arc::new(RecordingCoordinator::default()))
+        .with_ownership(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current,
+        ])));
     let quiescence = context.physical_quiescence.clone();
     let mut execution = Box::pin(executor.execute(activation_without_session_home(), context));
     assert!(
@@ -2375,7 +2250,7 @@ async fn agent_terminal_reason_never_substitutes_for_late_physical_exit() {
                     .is_err(),
                 "{reason}/{mode}: no exit yet"
             );
-            assert_eq!(coordinator.commits.lock().unwrap().len(), 1);
+            assert_eq!(coordinator.settled_commits().len(), 1);
             observation.store(0, Ordering::SeqCst);
             let state = tokio::time::timeout(std::time::Duration::from_secs(2), execution)
                 .await
@@ -2388,7 +2263,7 @@ async fn agent_terminal_reason_never_substitutes_for_late_physical_exit() {
             } else {
                 assert!(matches!(state, RunState::Ended(EndCause::Stopped(_))));
             }
-            assert_eq!(coordinator.commits.lock().unwrap().len(), 1);
+            assert_eq!(coordinator.settled_commits().len(), 1);
             assert!(quiescence.can_acknowledge_return());
         }
     }
@@ -2482,7 +2357,7 @@ async fn a_requested_pause_awaits_the_run_on_a_resume_ticket() {
         RunState::Awaiting,
         "a requested pause awaits, not ends"
     );
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     assert_eq!(commits.len(), 1, "one commit at the await boundary");
     // The in-flight Run commits before the await.
     assert!(
@@ -2548,7 +2423,7 @@ async fn a_pause_commits_in_flight_steer_before_awaiting() {
         .unwrap();
 
     assert_eq!(state, RunState::Awaiting, "pause preempts the queued input");
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     assert_eq!(commits.len(), 1);
     let steer = commits[0]
         .messages
@@ -2589,7 +2464,7 @@ async fn a_usage_event_is_committed_as_thread_state() {
     .await
     .unwrap();
 
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     assert_eq!(commits.len(), 1);
     // A terminal ACP commit also consumes its shared permission batch. Usage
     // remains exactly one independently owned Thread cell, not the whole plan.
@@ -2701,7 +2576,7 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
         .await
         .unwrap();
     assert!(
-        coord_a.commits.lock().unwrap()[0]
+        coord_a.settled_commits()[0]
             .messages
             .iter()
             .any(|m| m.text_content() == "fresh"),
@@ -2720,7 +2595,7 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
         .await
         .unwrap();
     assert!(
-        coord_b.commits.lock().unwrap()[0]
+        coord_b.settled_commits()[0]
             .messages
             .iter()
             .any(|m| m.text_content() == "resumed:s1"),
@@ -2868,6 +2743,7 @@ async fn session_home_writes_require_live_attempt_ownership() {
     let context = RuntimeRunContext::new()
         .with_commit(Arc::new(RecordingCoordinator::default()))
         .with_ownership(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current, // before the new entry commit
             OwnershipDecision::Current,
             OwnershipDecision::Current,
             OwnershipDecision::Current,
@@ -3695,7 +3571,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                 .is_none()
             );
             {
-                let commits = committed.commits.lock().unwrap();
+                let commits = committed.settled_commits();
                 assert_eq!(commits.len(), 2, "AR5 atomic settlement and replacement");
                 let original_results = commits[1]
                     .messages
@@ -3768,7 +3644,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                 [("tool-1", true), ("tool-2", false)],
                 "AR6 exact results, no transfer or duplicate"
             );
-            assert_eq!(committed.commits.lock().unwrap().len(), 3);
+            assert_eq!(committed.settled_commits().len(), 3);
             continue;
         }
         assert_eq!(resumed, RunState::Ended(EndCause::NaturalEnd));
@@ -3884,7 +3760,7 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
         .unwrap();
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     let messages = &commits[0].messages;
     assert_eq!(messages.len(), 3, "the input, call, and result all commit");
 
@@ -3976,7 +3852,7 @@ async fn acp_tool_results_use_the_bound_spiller_and_fail_closed() {
         "A1"
     );
     assert!(
-        committed.commits.lock().unwrap()[0]
+        committed.settled_commits()[0]
             .messages
             .iter()
             .any(|message| message.role == Role::Tool
@@ -3999,7 +3875,7 @@ async fn acp_tool_results_use_the_bound_spiller_and_fail_closed() {
         .expect("A2 is a classified terminal backend failure");
     assert!(matches!(state, RunState::Ended(EndCause::Error(_))), "A2");
     assert!(
-        failed.commits.lock().unwrap()[0]
+        failed.settled_commits()[0]
             .messages
             .iter()
             .all(|message| message.role != Role::Tool),
@@ -4028,10 +3904,7 @@ async fn acp_tool_results_use_the_bound_spiller_and_fail_closed() {
         .expect_err("A3 ownership loss is an attempt error");
     assert!(error.to_string().contains("no longer owns"), "A3: {error}");
     assert!(stale_seen.lock().unwrap().is_empty(), "A3 zero spill");
-    assert!(
-        stale_commits.commits.lock().unwrap().is_empty(),
-        "A3 zero commit"
-    );
+    assert!(stale_commits.settled_commits().is_empty(), "A3 zero commit");
 }
 
 #[tokio::test]
@@ -4052,7 +3925,7 @@ async fn a_tool_call_without_an_id_gets_a_correlating_fallback_id() {
     .await
     .unwrap();
 
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     match &commits[0].messages[1].content[0] {
         ContentBlock::ToolUse { id, .. } => {
             assert!(id.starts_with("acp-tool-"), "fallback id, got {id}");
@@ -4081,7 +3954,7 @@ async fn acp_result_status_is_committed_as_the_same_typed_fact_as_native() {
             )
             .await
             .unwrap();
-            let commits = coord.commits.lock().unwrap();
+            let commits = coord.settled_commits();
             assert_eq!(
                 commits[0].messages[1].content[0],
                 ContentBlock::tool_result_with_error(
@@ -4108,7 +3981,7 @@ async fn a_truncated_stream_is_classified_and_surfaces_an_error_prompt() {
         .unwrap();
 
     assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     // The partial message plus the appended classified error prompt were committed.
     let last = commits[0].messages.last().unwrap().text_content();
     assert!(last.contains("failed") || last.contains("interruption") || last.contains("stopped"));
@@ -4130,7 +4003,7 @@ async fn a_launch_fault_classifies_at_initialize_and_commits_a_prompt() {
         .unwrap();
 
     assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     let prompt = commits[0].messages.last().unwrap().text_content();
     // Credential-rejection prompt (auth error) surfaced to the run.
     assert!(prompt.contains("credential"));
@@ -4245,7 +4118,7 @@ async fn a_clean_error_turn_end_maps_to_error_not_natural_end() {
     );
     // The committed run fact carries the same terminal Error — committed truth is not
     // a success either.
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     assert!(matches!(
         commits[0].run_state(),
         RunState::Ended(EndCause::Error(_))
@@ -4296,7 +4169,7 @@ async fn an_org_subscription_disabled_launch_fault_surfaces_a_credential_prompt(
         .await
         .unwrap();
     assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
-    let prompt = coord.commits.lock().unwrap()[0]
+    let prompt = coord.settled_commits()[0]
         .messages
         .last()
         .unwrap()
@@ -4319,7 +4192,7 @@ async fn a_login_required_launch_fault_surfaces_a_login_prompt() {
         .await
         .unwrap();
     assert!(matches!(state, RunState::Ended(EndCause::Error(_))));
-    let prompt = coord.commits.lock().unwrap()[0]
+    let prompt = coord.settled_commits()[0]
         .messages
         .last()
         .unwrap()
@@ -4530,7 +4403,7 @@ async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_sessio
         .unwrap();
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     let reply = commits[0].messages.last().unwrap().text_content();
     assert_eq!(
         reply, "mcp saw-github noauth",
@@ -4589,7 +4462,7 @@ async fn retained_inline_mcp_credential_is_ignored_before_session_new() {
     e.execute(act, RuntimeRunContext::new().with_commit(coord.clone()))
         .await
         .unwrap();
-    let reply = coord.commits.lock().unwrap()[0]
+    let reply = coord.settled_commits()[0]
         .messages
         .last()
         .unwrap()
@@ -4667,7 +4540,7 @@ async fn acp_session_id_is_carried_across_the_per_run_relaunch() {
         .unwrap();
 
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.settled_commits();
     let texts: Vec<String> = commits[0]
         .messages
         .iter()
@@ -4908,7 +4781,7 @@ async fn usage_accumulates_across_relaunched_runs() {
     .await
     .unwrap();
 
-    let commits = coord.commits.lock().unwrap();
+    let commits = coord.commits.lock();
     let usage_cmd = commits
         .last()
         .expect("a terminal commit")
@@ -5345,7 +5218,7 @@ async fn every_backend_row_drives_a_plain_run_to_a_committed_reply() {
             "{}: a plain Run ends naturally",
             row.id
         );
-        let commits = coord.commits.lock().unwrap();
+        let commits = coord.settled_commits();
         let reply = commits
             .first()
             .and_then(|c| c.messages.last())
@@ -5688,7 +5561,7 @@ async fn owned_recovery_selects_only_the_current_runs_exact_execution_owner() {
         }
         assert_eq!(opens.load(Ordering::SeqCst), 0);
         assert!(probe.resumes.lock().unwrap().is_empty());
-        assert_eq!(committed.commits.lock().unwrap().len(), 1);
+        assert_eq!(committed.commits.lock().len(), 1);
     }
 }
 

@@ -12,7 +12,7 @@ use crate::agent::state::Command as StateCommand;
 use crate::agent::thread::Id as ThreadId;
 use crate::audit::draft::Draft;
 use crate::thread::commit::coordinator::{Coordinator, Error};
-use crate::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
+use crate::thread::commit::staged::{CommitRecord, ResumeCommit, RunDisposition, ThreadCommit};
 
 /// Commit a run's terminal facts — its produced messages, final state, and any
 /// committed state — through the single commit boundary (G1/G13). The one place a
@@ -32,13 +32,23 @@ pub async fn commit_run(
     messages: Vec<Message>,
     state: Vec<StateCommand>,
 ) -> Result<CommitRecord, Error> {
-    commit_run_with_events(coordinator, thread_id, run, messages, state, Vec::new()).await
+    commit_run_with_events(
+        coordinator,
+        thread_id,
+        run,
+        messages,
+        state,
+        Vec::new(),
+        None,
+    )
+    .await
 }
 
 /// [`commit_run`] with the audit facts the executor decided since its last
 /// commit — a permission decision and the policy that made it. They ride the
 /// same commit as the step they govern, so a decision is never durable without
 /// the step it governed, nor the step without it.
+/// An accepted resume uses the aggregate's same exact ticket/receipt owner.
 pub async fn commit_run_with_events(
     coordinator: &dyn Coordinator,
     thread_id: &ThreadId,
@@ -46,17 +56,16 @@ pub async fn commit_run_with_events(
     messages: Vec<Message>,
     state: Vec<StateCommand>,
     events: Vec<Draft>,
+    accepted_resume: Option<&ResumeCommit>,
 ) -> Result<CommitRecord, Error> {
     // A projected Run always transitions state (it ended or is awaiting), so it emits
     // `RunStateChanged` like the native loop — one assembler, one fact trail.
-    coordinator
-        .commit(ThreadCommit::assemble(
-            thread_id.clone(),
-            run,
-            true,
-            messages,
-            state,
-            events,
-        ))
-        .await
+    let commit = ThreadCommit::assemble(thread_id.clone(), run, true, messages, state, events);
+    let commit = match accepted_resume {
+        Some(resume) => commit
+            .with_consumed_resume(resume)
+            .map_err(|error| Error::Rejected(error.to_string()))?,
+        None => commit,
+    };
+    coordinator.commit(commit).await
 }

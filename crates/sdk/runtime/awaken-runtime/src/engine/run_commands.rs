@@ -532,8 +532,7 @@ fn admit_resume(
     // and is not a ToolResult consumption. Every other named resume operation
     // is carried to the first commit that replaces this exact ticket.
     let resume_commit = (ticket.reason() != AwaitReason::Delegation)
-        .then(|| ResumeCommit::for_operation(command.operation_id.clone(), &ticket))
-        .flatten();
+        .then(|| ResumeCommit::new(command.operation_id.clone(), &ticket));
     if continuation == ResumeContinuation::ToolBatch
         && !matches!(
             ticket.reason(),

@@ -4,6 +4,10 @@
 // @formal entrypoint thread_state.atomic_commit_and_replay
 // @formal entrypoint thread_state.exclusive_batch_conflict
 // @formal entrypoint thread_state.run_identity_binding
+#[path = "consumed_resume.rs"]
+mod consumed_resume;
+pub use consumed_resume::ResumeCommit;
+
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};

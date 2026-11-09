@@ -1162,7 +1162,7 @@ pub fn awaken_agent_contract::thread::commit::operation::require_commit_operatio
 pub fn awaken_agent_contract::thread::commit::operation::require_commit_operation_receipt(&awaken_agent_contract::thread::commit::operation::CommitOperation, &awaken_agent_contract::thread::commit::operation::CommitReceipt) -> core::result::Result<(), awaken_agent_contract::thread::commit::operation::CommitOperationAdmissionError>
 pub mod awaken_agent_contract::thread::commit::run
 pub async fn awaken_agent_contract::thread::commit::run::commit_run(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
-pub async fn awaken_agent_contract::thread::commit::run::commit_run_with_events(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
+pub async fn awaken_agent_contract::thread::commit::run::commit_run_with_events(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>, core::option::Option<&awaken_agent_contract::thread::commit::staged::ResumeCommit>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
 pub mod awaken_agent_contract::thread::commit::run_fact
 pub struct awaken_agent_contract::thread::commit::run_fact::RunFact
 pub awaken_agent_contract::thread::commit::run_fact::RunFact::run_id: awaken_agent_contract::agent::run::Id
@@ -1184,6 +1184,10 @@ pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::running(aw
 pub fn awaken_agent_contract::thread::commit::staged::RunDisposition::state(&self) -> awaken_agent_contract::agent::run::RunState
 pub struct awaken_agent_contract::thread::commit::staged::CommitRecord
 pub awaken_agent_contract::thread::commit::staged::CommitRecord::sequence: u64
+pub struct awaken_agent_contract::thread::commit::staged::ResumeCommit
+impl awaken_agent_contract::thread::commit::staged::ResumeCommit
+pub fn awaken_agent_contract::thread::commit::staged::ResumeCommit::answered_ticket(&self) -> &awaken_agent_contract::agent::awaiting::ResumeTicket
+pub fn awaken_agent_contract::thread::commit::staged::ResumeCommit::new(core::option::Option<alloc::string::String>, &awaken_agent_contract::agent::awaiting::ResumeTicket) -> Self
 pub struct awaken_agent_contract::thread::commit::staged::ThreadCommit
 pub awaken_agent_contract::thread::commit::staged::ThreadCommit::events: alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>
 pub awaken_agent_contract::thread::commit::staged::ThreadCommit::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
@@ -1198,6 +1202,8 @@ pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_fact(&se
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_state(&self) -> awaken_agent_contract::agent::run::RunState
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::validate(&self) -> core::result::Result<(), awaken_agent_contract::thread::commit::staged::ValidationError>
+impl awaken_agent_contract::thread::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::with_consumed_resume(self, &awaken_agent_contract::thread::commit::staged::ResumeCommit) -> core::result::Result<Self, awaken_agent_contract::thread::commit::staged::ValidationError>
 impl serde_core::ser::Serialize for awaken_agent_contract::thread::commit::staged::ThreadCommit
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::thread::commit::staged::ThreadCommit
@@ -1223,7 +1229,7 @@ pub struct awaken_agent_contract::thread::commit::RunFact
 pub awaken_agent_contract::thread::commit::RunFact::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::thread::commit::RunFact::state: awaken_agent_contract::agent::run::RunState
 pub async fn awaken_agent_contract::thread::commit::commit_run(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
-pub async fn awaken_agent_contract::thread::commit::commit_run_with_events(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
+pub async fn awaken_agent_contract::thread::commit::commit_run_with_events(&dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::commit::staged::RunDisposition, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>, alloc::vec::Vec<awaken_agent_contract::audit::draft::Draft>, core::option::Option<&awaken_agent_contract::thread::commit::staged::ResumeCommit>) -> core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>
 pub mod awaken_agent_contract::thread::read
 pub mod awaken_agent_contract::thread::read::checkpoint
 pub enum awaken_agent_contract::thread::read::checkpoint::EventScope
@@ -1776,6 +1782,8 @@ pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_fact(&se
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::run_state(&self) -> awaken_agent_contract::agent::run::RunState
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::validate(&self) -> core::result::Result<(), awaken_agent_contract::thread::commit::staged::ValidationError>
+impl awaken_agent_contract::thread::commit::staged::ThreadCommit
+pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::with_consumed_resume(self, &awaken_agent_contract::thread::commit::staged::ResumeCommit) -> core::result::Result<Self, awaken_agent_contract::thread::commit::staged::ValidationError>
 impl serde_core::ser::Serialize for awaken_agent_contract::thread::commit::staged::ThreadCommit
 pub fn awaken_agent_contract::thread::commit::staged::ThreadCommit::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::thread::commit::staged::ThreadCommit
