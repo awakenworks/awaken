@@ -734,3 +734,7 @@ mod migration_history_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "sqlite/guarded_admission_tests.rs"]
+mod guarded_admission_tests;

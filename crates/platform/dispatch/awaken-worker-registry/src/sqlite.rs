@@ -288,9 +288,10 @@ impl WorkerDirectory for SqliteWorkerDirectory {
             return Ok(None);
         };
         Ok(Some(
-            awaken_worker_contract::WorkerIncarnationGuard::new_releasing(
+            awaken_worker_contract::WorkerIncarnationGuard::new_resource(
                 record.snapshot,
-                async move { tx.rollback().await.map_err(|e| e.to_string()) },
+                (tx, self.pool.clone()),
+                |(tx, _pool)| async move { tx.rollback().await.map_err(|e| e.to_string()) },
             ),
         ))
     }

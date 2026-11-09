@@ -162,7 +162,10 @@ impl EmbeddedSqlite {
         if matches!(self.location, Location::File(_)) {
             ensure_wal(&pool).await?;
         }
-        Ok(EmbeddedPool::new(pool, file.map(LiveFile::new)))
+        let database = crate::identity::DatabaseFile::observe(&pool)
+            .await
+            .map_err(SqlitePoolError::Configure)?;
+        Ok(EmbeddedPool::new(pool, file.map(LiveFile::new), database))
     }
 }
 

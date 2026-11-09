@@ -384,6 +384,9 @@ async fn admit_attempt(
     .map_err(|_| ApplicationError::unavailable("physical admission completion unavailable"))??;
     let admission = admission.map_err(|error| match error {
         awaken_dispatch::DispatchError::Conflict(message) => ApplicationError::conflict(message),
+        awaken_dispatch::DispatchError::Unavailable(message) => {
+            ApplicationError::unavailable(message)
+        }
         error => ApplicationError::internal(error.to_string()),
     })?;
     if admission == awaken_dispatch::AttemptAdmission::Blocked {
