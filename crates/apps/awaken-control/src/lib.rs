@@ -21,6 +21,12 @@
 //! asks `awaken-coordinator` for the data-plane router, merges them, and applies the
 //! guard exactly where it applied before.
 
+mod agent_governance;
+pub use agent_governance::{
+    AgentGovernanceConfig, AgentGovernanceStores, agent_governance_authorization_profile,
+    agent_governance_resource_id, agent_governance_resource_model,
+    protect_managed_agent_definitions,
+};
 pub mod admin_assistant;
 mod application_credentials;
 mod application_mcp_credentials;
@@ -379,6 +385,7 @@ pub struct ControlRouterInput {
     pub agent_archive_cascade: Option<Arc<dyn AgentArchiveCascade>>,
     /// The config authoring plane (scope edge over the config service).
     pub plane: ConfigPlane,
+    pub agent_governance: AgentGovernanceStores,
     /// Model selection used to publish or recover the reserved Console Assistant.
     pub assistant_model_selection: Option<awaken_agent_config::ModelSelection>,
     /// The host's global tool descriptors, for `GET /v1/capabilities`.
@@ -487,6 +494,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         agent_repository,
         agent_archive_cascade,
         plane,
+        agent_governance,
         assistant_model_selection,
         global_tools,
         plugins,
@@ -555,8 +563,11 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // sink (fed the same store + secrets) fans committed session facts out-of-band.
     let webhook_crud = webhook_authoring::webhook_config_router(webhook_store, secrets.clone());
     let admin = admin.merge(webhook_crud);
-    let application_credentials =
-        application_credential_routes(vault_state.clone(), credential_execution_authority, clock);
+    let application_credentials = application_credential_routes(
+        vault_state.clone(),
+        credential_execution_authority,
+        clock.clone(),
+    );
     let presentation_org = data_subject_org.clone();
     let user_profiles = user_profiles_router(data_subject_application, data_subject_org);
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
@@ -564,6 +575,8 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     let audit_plane = plane.management_audit_plane();
     let assistant_lifecycle =
         crate::admin_assistant_lifecycle_router(plane.clone(), None, assistant_model_selection);
+    let definition_plane = plane.clone();
+    let definition_clock = clock.clone();
     let config_plane = config_router(plane);
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
@@ -606,6 +619,9 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
     }
+    let definition_stores = agent_governance.clone();
+    let definition_iam = remote_iam.clone();
+    let agent_directory = agent_governance::router(agent_governance, remote_iam.clone());
     let no_login = iam.is_none() && remote_iam.is_none();
     mgmt = awaken_protocol_managed::with_managed_response_context(protect_management_router(
         mgmt,
@@ -614,6 +630,14 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         remote_iam,
         managed_request_limiter,
     ));
+    mgmt = agent_governance::legacy::protect(
+        mgmt,
+        definition_stores,
+        definition_iam,
+        definition_plane,
+        definition_clock,
+    );
+    mgmt = mgmt.merge(agent_directory);
     if no_login {
         mgmt = crate::authz::with_composed_workspace(mgmt, Some(platform_workspace));
     }

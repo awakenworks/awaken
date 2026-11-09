@@ -31,3 +31,5 @@ pub use store::{
     PublicationWrite, ScopedConfig, ScopedConfigRegistry, StoredPublication,
     publication_revision_decision,
 };
+
+pub mod catalog_snapshot;

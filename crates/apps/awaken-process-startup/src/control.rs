@@ -310,6 +310,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
     );
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
+        agent_governance: deployment.cloud_iam.agent_governance.clone(),
         coordinator: deployment.coordinator.clone(),
         // Control receives Resource references through authoring/read ports and
         // opens no File, Memory, Skill-content, or lifecycle authority.

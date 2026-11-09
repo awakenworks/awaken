@@ -21,7 +21,7 @@ pub(super) fn bearer_token(headers: &HeaderMap) -> Option<String> {
         .map(|value| value.trim().to_string())
 }
 
-pub(super) fn authorization_bearer_token(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn authorization_bearer_token(headers: &HeaderMap) -> Option<String> {
     let value = headers
         .get(axum::http::header::AUTHORIZATION)?
         .to_str()

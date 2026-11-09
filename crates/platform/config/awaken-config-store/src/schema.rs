@@ -66,6 +66,12 @@ fn with_current_migrations(history: MigrationBundle) -> Result<MigrationBundle, 
         include_str!("migrations/V0013__personal_agent_selection.postgres.sql").trim(),
         include_str!("migrations/V0013__personal_agent_selection.sqlite.sql").trim(),
     )?);
+    migrations.push(Migration::per_dialect(
+        14,
+        "catalog reads observe a monotonic Config scope epoch",
+        include_str!("migrations/V0014__agent_catalog_epoch.postgres.sql").trim(),
+        include_str!("migrations/V0014__agent_catalog_epoch.sqlite.sql").trim(),
+    )?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
@@ -105,8 +111,8 @@ mod tests {
     #[tokio::test]
     async fn current_baseline_has_one_history_and_captures_exact_revisions() {
         /* Causes: C1 empty ledger; C2 insert generation 1; C3 update to
-         * generation 2; C4 exact V1/V11/V12/V13 receipts on replay. Effects: E1 create only
-         * the seven active Control tables; E2 append revision 1; E3 append
+         * generation 2; C4 exact V1/V11/V12/V13/V14 receipts on replay. Effects: E1 create only
+         * the eight active Control tables; E2 append revision 1; E3 append
          * revision 2; E4 execute no SQL. Decision table: G1=C1=>E1;
          * G2=G1+C2=>E2; G3=G2+C3=>E3; G4=C4=>E4. */
         let bundle = config_bundle().expect("bundle");
@@ -116,10 +122,10 @@ mod tests {
                 .iter()
                 .map(Migration::version)
                 .collect::<Vec<_>>(),
-            [1, 11, 12, 13]
+            [1, 11, 12, 13, 14]
         );
         let (conn, runner) = memory().await;
-        assert_eq!(runner.run_bundle(&bundle).await.expect("G1").len(), 4);
+        assert_eq!(runner.run_bundle(&bundle).await.expect("G1").len(), 5);
         let tables = sqlx::query_scalar::<_, String>(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'config_%' \
              AND name NOT LIKE 'config_schema_migrations%' ORDER BY name",
@@ -133,6 +139,7 @@ mod tests {
             tables,
             BTreeSet::from([
                 "config_agent".to_owned(),
+                "config_agent_catalog_epoch".to_owned(),
                 "config_agent_revision".to_owned(),
                 "config_management_audit".to_owned(),
                 "config_management_effect".to_owned(),
@@ -185,7 +192,7 @@ mod tests {
         .execute(&conn)
         .await
         .unwrap();
-        assert_eq!(runner.run_bundle(&current).await.unwrap().len(), 2, "E1");
+        assert_eq!(runner.run_bundle(&current).await.unwrap().len(), 3, "E1");
         let verified: i64 = sqlx::query_scalar(
             "SELECT order_verified FROM config_publication WHERE fingerprint = 'fp'",
         )
@@ -334,5 +341,55 @@ mod tests {
             ),
             Err(MigrationError::ChecksumMismatch { version: 1, .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod catalog_epoch_upgrade_tests {
+    use super::*;
+    use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
+    use awaken_sqlite_pool::EmbeddedSqlite;
+
+    #[tokio::test]
+    async fn catalog_epoch_upgrade_seeds_authored_and_actual_execution_scopes_once() {
+        // Existing V13 facts are adopted as observations only. Explicit execution
+        // Workspace wins; legacy absence binds the owning scope, never a guess.
+        let current = config_bundle().unwrap();
+        let previous = MigrationBundle::new(BUNDLE_ID, current.migrations()[..4].to_vec()).unwrap();
+        let pool = EmbeddedSqlite::memory().open().await.unwrap();
+        let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), "config").unwrap();
+        runner.run_bundle(&previous).await.unwrap();
+        sqlx::query(
+            "INSERT INTO config_agent(scope_id,id,data,generation) VALUES('author','a','{}',1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(r#"INSERT INTO config_publication(scope_id,fingerprint,agent_id,state,record) VALUES('author','fp','a','published','{"execution_workspace":"executor"}'),('legacy','old','a','published','{}')"#).execute(&pool).await.unwrap();
+        assert_eq!(runner.run_bundle(&current).await.unwrap().len(), 1);
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT scope_id,epoch FROM config_agent_catalog_epoch ORDER BY scope_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("author".into(), 1),
+                ("executor".into(), 1),
+                ("legacy".into(), 1)
+            ]
+        );
+        assert!(runner.run_bundle(&current).await.unwrap().is_empty());
+        assert_eq!(
+            sqlx::query_as::<_, (String, i64)>(
+                "SELECT scope_id,epoch FROM config_agent_catalog_epoch ORDER BY scope_id"
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap(),
+            rows
+        );
     }
 }

@@ -11,7 +11,7 @@
 /// successful verification would create a second revocation authority. This
 /// helper changes only scheduling: every request still consults the canonical
 /// IAM gate and token rows.
-pub(super) async fn run<T, F>(operation: F) -> Result<T, tokio::task::JoinError>
+pub(crate) async fn run<T, F>(operation: F) -> Result<T, tokio::task::JoinError>
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,

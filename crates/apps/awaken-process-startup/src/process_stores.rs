@@ -25,6 +25,9 @@ pub(super) struct ProcessResources {
 }
 
 pub(super) struct ProcessStores {
+    /// Explicit deployment metadata shared with split Coordinator admission;
+    /// the native IAM owner still decides every operation.
+    pub(super) agent_governance: Option<awaken_control::AgentGovernanceConfig>,
     /// Durable installation root used to persist the platform Workspace id.
     pub(super) workspace_root: Option<std::path::PathBuf>,
     /// The one installation Workspace coordinate resolved by store startup and
@@ -52,6 +55,7 @@ pub(super) struct ControlStores {
     pub(super) webhooks: Arc<dyn awaken_config_resolver::WebhookStore>,
     /// Rich Agent drafts and immutable publications, scoped per Workspace.
     pub(super) config: Arc<dyn awaken_agent_config::ScopedConfigRegistry>,
+    pub(super) agent_governance: awaken_control::AgentGovernanceStores,
     /// Control-owned subject aggregate and consent facts.
     pub(super) data_subjects: Arc<dyn awaken_data_subject_application::DataSubjectRepo>,
     /// Durable Control erasure process checkpoints over the same adapter.
@@ -335,6 +339,7 @@ pub(super) async fn open_application_access(
 /// owned by `role`; split Control and Coordinator never share authority stores.
 pub(super) struct ProcessStoreOpenOptions<'a> {
     pub(super) control: awaken_control::ControlStoreConfig,
+    pub(super) agent_governance: Option<awaken_control::AgentGovernanceConfig>,
     pub(super) coordinator: config::CoordinatorStoreConfig,
     pub(super) resources: Option<ProcessResources>,
     pub(super) postgres_pools: &'a mut postgres_pools::ProcessPostgresPools,
@@ -360,6 +365,7 @@ pub(super) async fn open_process_stores(
 
     let ProcessStoreOpenOptions {
         control: cfg,
+        agent_governance,
         coordinator: coordinator_cfg,
         resources,
         postgres_pools,
@@ -559,31 +565,46 @@ pub(super) async fn open_process_stores(
         None
     };
 
-    let config: Option<Arc<dyn awaken_agent_config::ScopedConfigRegistry>> = if opens_control {
+    let config: Option<(
+        Arc<dyn awaken_agent_config::ScopedConfigRegistry>,
+        awaken_control::AgentGovernanceStores,
+    )> = if opens_control {
         ensure_store_parent(&cfg.config)?;
         Some(match &cfg.config {
-            StoreBackend::Sqlite(p) => Arc::new(
-                awaken_config_store::SqliteConfigStore::open(&path(p))
-                    .await
-                    .map_err(|error| format!("open config SQLite {}: {error}", p.display()))?,
-            ),
-            StoreBackend::Postgres(url) => Arc::new(
-                match postgres_schema {
-                    PostgresSchemaMode::Migrate => {
-                        awaken_config_store::PostgresConfigStore::with_pool(
-                            postgres_pools.get(url).await?,
-                        )
+            StoreBackend::Sqlite(p) => {
+                let store = Arc::new(
+                    awaken_config_store::SqliteConfigStore::open(&path(p))
                         .await
+                        .map_err(|error| format!("open config SQLite {}: {error}", p.display()))?,
+                );
+                (
+                    store.clone(),
+                    awaken_control::AgentGovernanceStores::new(store, agent_governance.clone()),
+                )
+            }
+            StoreBackend::Postgres(url) => {
+                let store = Arc::new(
+                    match postgres_schema {
+                        PostgresSchemaMode::Migrate => {
+                            awaken_config_store::PostgresConfigStore::with_pool(
+                                postgres_pools.get(url).await?,
+                            )
+                            .await
+                        }
+                        PostgresSchemaMode::Verify => {
+                            awaken_config_store::PostgresConfigStore::with_existing_pool(
+                                postgres_pools.get(url).await?,
+                            )
+                            .await
+                        }
                     }
-                    PostgresSchemaMode::Verify => {
-                        awaken_config_store::PostgresConfigStore::with_existing_pool(
-                            postgres_pools.get(url).await?,
-                        )
-                        .await
-                    }
-                }
-                .map_err(|error| format!("connect config Postgres: {error}"))?,
-            ),
+                    .map_err(|error| format!("connect config Postgres: {error}"))?,
+                );
+                (
+                    store.clone(),
+                    awaken_control::AgentGovernanceStores::new(store, agent_governance.clone()),
+                )
+            }
         })
     } else {
         None
@@ -717,6 +738,7 @@ pub(super) async fn open_process_stores(
         ),
     };
     Ok(ProcessStores {
+        agent_governance,
         workspace_root: Some(workspace_root),
         platform_workspace,
         clock,
@@ -726,6 +748,7 @@ pub(super) async fn open_process_stores(
             let admin = admin_views.expect("Control role opens admin store");
             let (data_subjects, erasure_jobs) =
                 data_subject.expect("Control role opens Data Subject store");
+            let (config, agent_governance) = config.expect("Control role opens Config store");
             Some(ControlStores {
                 catalog: catalog.expect("Control role opens Catalog"),
                 credentials: credentials.expect("Control role opens CredentialRepo"),
@@ -735,7 +758,8 @@ pub(super) async fn open_process_stores(
                 profiles: admin.profiles,
                 resources: admin.resources,
                 webhooks: admin.webhooks,
-                config: config.expect("Control role opens Config store"),
+                config,
+                agent_governance,
                 data_subjects,
                 erasure_jobs,
                 environments,

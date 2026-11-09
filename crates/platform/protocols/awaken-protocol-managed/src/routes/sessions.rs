@@ -6,6 +6,7 @@
 //! or protocol logic lives here. Errors map to HTTP status; live stream output is
 //! a projection of committed events (SSE replay).
 
+use crate::event_presentation::AgentDefinitionPresentation;
 use awaken_time::WallClockExt as _;
 use std::sync::Arc;
 
@@ -105,9 +106,12 @@ fn thread_time_v2(
     thread: &SessionThread,
     time: crate::state::SessionThreadTimeEvidence,
     api_version: ManagedApiVersion,
+    presentation: AgentDefinitionPresentation,
 ) -> serde_json::Value {
     crate::types::session::history_time_v2(
-        &api_version.wrap(thread),
+        &api_version
+            .wrap(thread)
+            .with_agent_presentation(presentation),
         &[
             ("created_at", time.created_at_unix_ms),
             ("updated_at", time.updated_at_unix_ms),
@@ -120,9 +124,12 @@ fn session_time_v2(
     session: &Session,
     time: crate::state::SessionRootTimeEvidence,
     api_version: ManagedApiVersion,
+    presentation: AgentDefinitionPresentation,
 ) -> serde_json::Value {
     crate::types::session::history_time_v2(
-        &api_version.wrap(session),
+        &api_version
+            .wrap(session)
+            .with_agent_presentation(presentation),
         &[
             ("created_at", time.created_at_unix_ms),
             ("updated_at", time.updated_at_unix_ms),
@@ -543,9 +550,18 @@ async fn retrieve_session(
             let (session, revision, time) = state
                 .get_session_with_revision_and_time(&id)
                 .map_err(error_response)?;
-            let (headers, _) =
-                versioned_session_response_at_revision(session.clone(), revision, api_version);
-            let value = session_time_v2(&session, time, api_version);
+            let (headers, _) = versioned_session_response_at_revision(
+                session.clone(),
+                revision,
+                api_version,
+                state.agent_definition_presentation,
+            );
+            let value = session_time_v2(
+                &session,
+                time,
+                api_version,
+                state.agent_definition_presentation,
+            );
             Ok((headers, Json(value)).into_response())
         }
     }
@@ -563,6 +579,7 @@ fn versioned_session_response(
         session,
         revision,
         api_version,
+        state.agent_definition_presentation,
     ))
 }
 
@@ -570,6 +587,7 @@ fn versioned_session_response_at_revision(
     session: Session,
     revision: awaken_session_types::SessionRevision,
     api_version: ManagedApiVersion,
+    presentation: AgentDefinitionPresentation,
 ) -> (HeaderMap, Json<ApiWire<Session>>) {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -577,7 +595,14 @@ fn versioned_session_response_at_revision(
         HeaderValue::from_str(&format!("\"{}\"", revision.0))
             .expect("numeric Session revision is a valid ETag"),
     );
-    (headers, Json(api_version.wrap(session)))
+    (
+        headers,
+        Json(
+            api_version
+                .wrap(session)
+                .with_agent_presentation(presentation),
+        ),
+    )
 }
 
 type WireErr = (StatusCode, Json<ErrorResponse>);
@@ -613,7 +638,12 @@ async fn list_sessions(
                 .list_sessions_scoped_durable(&scope)
                 .await
                 .map_err(error_response)?;
-            Ok(Json(api_version.wrap(session_list_page(data, &params)?)).into_response())
+            Ok(Json(
+                api_version
+                    .wrap(session_list_page(data, &params)?)
+                    .with_agent_presentation(state.agent_definition_presentation),
+            )
+            .into_response())
         }
         HistoryTimeVersion::V2 => {
             let rows = state
@@ -627,7 +657,14 @@ async fn list_sessions(
                 .collect();
             let data = rows.into_iter().map(|(session, _)| session).collect();
             let page = session_list_page(data, &params)?;
-            Ok(Json(page.history_time_v2(&times, api_version)).into_response())
+            Ok(
+                Json(page.history_time_v2(
+                    &times,
+                    api_version,
+                    state.agent_definition_presentation,
+                ))
+                .into_response(),
+            )
         }
     }
 }
@@ -727,6 +764,7 @@ async fn update_session(
         session,
         response_revision,
         api_version,
+        state.agent_definition_presentation,
     ))
 }
 
@@ -751,7 +789,13 @@ async fn archive_session(
     state
         .archive_session(&id)
         .await
-        .map(|value| Json(api_version.wrap(value)))
+        .map(|value| {
+            Json(
+                api_version
+                    .wrap(value)
+                    .with_agent_presentation(state.agent_definition_presentation),
+            )
+        })
         .map_err(error_response)
 }
 
@@ -780,14 +824,27 @@ async fn list_threads(
         HistoryTimeVersion::V1 => state
             .list_threads(&id)
             .map(PageCursor::single)
-            .map(|value| Json(api_version.wrap(value)))
+            .map(|value| {
+                Json(
+                    api_version
+                        .wrap(value)
+                        .with_agent_presentation(state.agent_definition_presentation),
+                )
+            })
             .map(IntoResponse::into_response)
             .map_err(error_response),
         HistoryTimeVersion::V2 => {
             let rows = state.list_threads_with_time(&id).map_err(error_response)?;
             let data = rows
                 .iter()
-                .map(|(thread, time)| thread_time_v2(thread, *time, api_version))
+                .map(|(thread, time)| {
+                    thread_time_v2(
+                        thread,
+                        *time,
+                        api_version,
+                        state.agent_definition_presentation,
+                    )
+                })
                 .collect();
             Ok(Json(PageCursor::single(data)).into_response())
         }
@@ -808,14 +865,26 @@ async fn get_thread(
     match version {
         HistoryTimeVersion::V1 => state
             .get_thread(&id, &tid)
-            .map(|value| Json(api_version.wrap(value)))
+            .map(|value| {
+                Json(
+                    api_version
+                        .wrap(value)
+                        .with_agent_presentation(state.agent_definition_presentation),
+                )
+            })
             .map(IntoResponse::into_response)
             .map_err(error_response),
         HistoryTimeVersion::V2 => {
             let (thread, time) = state
                 .get_thread_with_time(&id, &tid)
                 .map_err(error_response)?;
-            Ok(Json(thread_time_v2(&thread, time, api_version)).into_response())
+            Ok(Json(thread_time_v2(
+                &thread,
+                time,
+                api_version,
+                state.agent_definition_presentation,
+            ))
+            .into_response())
         }
     }
 }
@@ -829,7 +898,13 @@ async fn archive_thread(
     state
         .archive_thread(&id, &tid)
         .await
-        .map(|value| Json(api_version.wrap(value)))
+        .map(|value| {
+            Json(
+                api_version
+                    .wrap(value)
+                    .with_agent_presentation(state.agent_definition_presentation),
+            )
+        })
         .map_err(error_response)
 }
 
@@ -863,7 +938,13 @@ async fn list_thread_events(
             |event| filter.includes_without_time(event),
         ),
     }
-    .map(|value| Json(api_version.wrap(value)))
+    .map(|value| {
+        Json(
+            api_version
+                .wrap(value)
+                .with_agent_presentation(state.agent_definition_presentation),
+        )
+    })
     .map_err(error_response)
 }
 
@@ -1515,7 +1596,13 @@ async fn send_events(
     state
         .send_events_attributed(&id, req, data_subject_id, idempotency_key)
         .await
-        .map(|value| Json(api_version.wrap(value)))
+        .map(|value| {
+            Json(
+                api_version
+                    .wrap(value)
+                    .with_agent_presentation(state.agent_definition_presentation),
+            )
+        })
         .map_err(error_response)
 }
 
@@ -1545,7 +1632,13 @@ async fn list_events(
             |event| filter.includes(event),
             |event| filter.includes_without_time(event),
         )
-        .map(|value| Json(api_version.wrap(value)))
+        .map(|value| {
+            Json(
+                api_version
+                    .wrap(value)
+                    .with_agent_presentation(state.agent_definition_presentation),
+            )
+        })
         .map_err(error_response)
 }
 

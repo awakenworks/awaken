@@ -972,3 +972,5 @@ impl ConfigRegistry for PostgresConfigStore {
             .await
     }
 }
+
+mod catalog_snapshot;

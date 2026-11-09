@@ -241,6 +241,24 @@ pub(super) struct SessionListPage {
 }
 
 impl crate::common::api_version::ApiProjection for SessionListPage {
+    fn needs_definition_projection(
+        &self,
+        presentation: crate::event_presentation::AgentDefinitionPresentation,
+    ) -> bool {
+        self.data.iter().any(|row| {
+            crate::common::api_version::ApiProjection::needs_definition_projection(
+                row,
+                presentation,
+            )
+        })
+    }
+    fn project_definitions(
+        &self,
+        value: &mut serde_json::Value,
+        presentation: crate::event_presentation::AgentDefinitionPresentation,
+    ) {
+        crate::common::api_version::project_definition_rows(&self.data, value, presentation);
+    }
     fn project_identity(&self, value: &mut serde_json::Value) {
         crate::common::api_version::project_rows(&self.data, value);
     }
@@ -251,12 +269,13 @@ impl SessionListPage {
         &self,
         times: &std::collections::HashMap<String, crate::state::SessionRootTimeEvidence>,
         api_version: crate::common::api_version::ManagedApiVersion,
+        presentation: crate::event_presentation::AgentDefinitionPresentation,
     ) -> serde_json::Value {
         let mut page = serde_json::to_value(self).expect("Session page serializes");
         let rows = page["data"].as_array_mut().expect("Session page has data");
         for (row, session) in rows.iter_mut().zip(&self.data) {
             let time = times.get(&session.id).expect("paged Session has evidence");
-            *row = super::session_time_v2(session, *time, api_version);
+            *row = super::session_time_v2(session, *time, api_version, presentation);
         }
         page
     }

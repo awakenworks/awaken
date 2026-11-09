@@ -15,6 +15,7 @@ use awaken_sync::InvariantRwLock;
 use super::off_event_loop;
 use super::{ActionNamespace, qualified_action, rfc3339_at, unix_seconds_at};
 
+mod agent_governance;
 mod private_account;
 
 pub(super) fn cloud_authorization_denial_detail(
@@ -38,6 +39,7 @@ struct RemoteGateConfig {
 
 struct RemoteGateState {
     gate: IamGate,
+    current_gate: Option<IamGate>,
     /// Set only when the interactive token also carries PDP requests.
     user_carrier_token: Option<RedactedString>,
 }
@@ -150,6 +152,7 @@ impl RemoteManagementAuthz {
         Ok(Arc::new(Self {
             gate: InvariantRwLock::new(RemoteGateState {
                 gate,
+                current_gate: None,
                 user_carrier_token: if user_is_carrier { user_token } else { None },
             }),
             user_token_source,
@@ -260,6 +263,7 @@ impl RemoteManagementAuthz {
             return Ok(state.gate.clone());
         }
         state.gate = build_gate(&self.config, Some(&current))?;
+        state.current_gate = None;
         state.user_carrier_token = Some(current);
         Ok(state.gate.clone())
     }
@@ -277,6 +281,21 @@ fn build_gate(
     config: &RemoteGateConfig,
     user_token: Option<&RedactedString>,
 ) -> Result<IamGate, String> {
+    build_remote_gate(config, user_token, false)
+}
+
+fn build_current_gate(
+    config: &RemoteGateConfig,
+    user_token: Option<&RedactedString>,
+) -> Result<IamGate, String> {
+    build_remote_gate(config, user_token, true)
+}
+
+fn build_remote_gate(
+    config: &RemoteGateConfig,
+    user_token: Option<&RedactedString>,
+    single_attempt: bool,
+) -> Result<IamGate, String> {
     let mut host = HostConfig::remote(config.base_url.clone())
         .with_audience(config.audience.clone())
         .with_issuer(config.issuer.clone());
@@ -288,11 +307,17 @@ fn build_gate(
     // JWKS establishment uses reqwest's blocking client. Keep that private
     // runtime off the async composition thread; request-time PDP calls are
     // already isolated by the management PEP.
-    std::thread::spawn(move || connect_remote(&host))
-        .join()
-        .map_err(|_| "cloud IAM connection worker panicked".to_string())?
-        .map(|handle| handle.gate)
-        .map_err(|error| error.to_string())
+    std::thread::spawn(move || {
+        if single_attempt {
+            awaken_iam_host::connect_remote_single_attempt(&host)
+        } else {
+            connect_remote(&host)
+        }
+    })
+    .join()
+    .map_err(|_| "cloud IAM connection worker panicked".to_string())?
+    .map(|handle| handle.gate)
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

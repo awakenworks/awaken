@@ -351,3 +351,5 @@ mod exhaustive {
         }
     }
 }
+
+mod catalog_snapshot;

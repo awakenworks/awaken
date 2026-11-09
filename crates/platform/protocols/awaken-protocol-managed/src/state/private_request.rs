@@ -44,6 +44,16 @@ impl FromRequestParts<Arc<ManagedState>> for ManagedRequestState {
     ) -> Result<Self, Self::Rejection> {
         let state = match parts.extensions.get::<AdmittedPrivateSessionRequest>() {
             Some(admitted) => Arc::new(admitted_private_session_view(state, admitted.0.clone())),
+            None if parts
+                .extensions
+                .get::<crate::HideSessionEventDefinitions>()
+                .is_some() =>
+            {
+                let mut view = (**state).clone();
+                view.agent_definition_presentation =
+                    crate::event_presentation::AgentDefinitionPresentation::Omit;
+                Arc::new(view)
+            }
             None => state.clone(),
         };
         Ok(Self(state))
@@ -64,6 +74,8 @@ pub fn admitted_private_session_view(
 ) -> ManagedState {
     let mut view = state.clone();
     view.private_binding = Some(binding);
+    view.agent_definition_presentation =
+        crate::event_presentation::AgentDefinitionPresentation::Manifest;
     view
 }
 

@@ -11,6 +11,7 @@
 //! Live Postgres config-store CRUD. An absent optional fixture skips; isolates
 //! each test in a fresh schema (the store takes no prefix; ADR-0029/ADR-0031).
 
+use awaken_agent_config::catalog_snapshot::AgentCatalogSnapshotRepository;
 use awaken_agent_config::personal_selection::PersonalAgentSelectionRepository;
 use awaken_agent_config::{
     AgentConfig, AuditedConfigWrite, ConfigRegistry, ConfigWrite, ManagementAuditRecord,
@@ -1290,4 +1291,203 @@ async fn postgres_personal_agent_selection_receipt_failure_rolls_back_the_prefer
             .unwrap(),
         None
     );
+}
+
+#[path = "support/catalog_snapshot.rs"]
+mod catalog_snapshot;
+
+#[tokio::test]
+async fn postgres_catalog_snapshot_binds_exact_publication_owner_and_native_bound() {
+    let Some(pool) = schema_pool("t_catalog_frame").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool.clone()).await.unwrap();
+    catalog_snapshot::read_frame(&store).await;
+}
+
+#[tokio::test]
+async fn postgres_catalog_epoch_survives_aba_and_rolls_back_with_its_rows() {
+    let Some(pool) = schema_pool("t_catalog_epoch").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool.clone()).await.unwrap();
+    catalog_snapshot::read_frame(&store).await;
+    let scope = ScopeId::from("catalog");
+    let before = store.agent_catalog_epoch(&scope).await.unwrap();
+    // Every input of the snapshot participates, including immutable-history
+    // corruption and the owner preference. No-op SQL updates still count as
+    // database mutations and prevent delete/reinsert or same-value ABA reuse.
+    for statement in [
+        "UPDATE config_agent SET data=data WHERE scope_id='catalog'",
+        "UPDATE config_agent_revision SET data=data WHERE scope_id='catalog'",
+        "UPDATE config_publication SET record=record WHERE scope_id='catalog'",
+        "UPDATE config_personal_agent_selection SET selected=selected WHERE scope_id='catalog'",
+    ] {
+        let prior = store.agent_catalog_epoch(&scope).await.unwrap();
+        sqlx::query(statement).execute(&pool).await.unwrap();
+        assert!(store.agent_catalog_epoch(&scope).await.unwrap() > prior);
+    }
+    let stable = store.agent_catalog_epoch(&scope).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("UPDATE config_agent SET data=data WHERE scope_id='catalog'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        store.agent_catalog_epoch(&scope).await.unwrap(),
+        stable,
+        "rolled-back epoch must not escape"
+    );
+    let original: serde_json::Value =
+        sqlx::query_scalar("SELECT data FROM config_agent WHERE scope_id='catalog' AND id='agent'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("UPDATE config_agent SET data=jsonb_set(data, '{name}', to_jsonb('ABA'::text)) WHERE scope_id='catalog' AND id='agent'").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE config_agent SET data=$1 WHERE scope_id='catalog' AND id='agent'")
+        .bind(&original)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let restored: serde_json::Value =
+        sqlx::query_scalar("SELECT data FROM config_agent WHERE scope_id='catalog' AND id='agent'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        restored, original,
+        "byte/value restoration does not restore the epoch"
+    );
+    assert!(store.agent_catalog_epoch(&scope).await.unwrap() > stable);
+    // Removing/reinserting the same head cannot recycle its original token.
+    sqlx::query("DELETE FROM config_agent_revision WHERE scope_id='catalog' AND id='agent'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM config_agent WHERE scope_id='catalog' AND id='agent'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    store
+        .put_config_scoped(
+            &scope,
+            &catalog_snapshot::config("agent", "Other target name"),
+        )
+        .await
+        .unwrap();
+    assert!(store.agent_catalog_epoch(&scope).await.unwrap() > before);
+}
+
+#[tokio::test]
+async fn postgres_catalog_missing_epoch_is_corruption_not_an_empty_scope() {
+    let Some(pool) = schema_pool("t_catalog_missing").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool.clone()).await.unwrap();
+    let scope = ScopeId::from("catalog");
+    store
+        .put_config_scoped(&scope, &catalog_snapshot::config("agent", "Published"))
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM config_agent_catalog_epoch WHERE scope_id='catalog'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(store.agent_catalog_epoch(&scope).await.is_err());
+    assert!(
+        store
+            .agent_catalog_snapshot(&scope, &catalog_snapshot::owner(), 10)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn postgres_catalog_epoch_overflow_rejects_the_whole_config_write() {
+    let Some(pool) = schema_pool("t_catalog_overflow").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool.clone()).await.unwrap();
+    let scope = ScopeId::from("catalog");
+    let original = catalog_snapshot::config("agent", "Published");
+    store.put_config_scoped(&scope, &original).await.unwrap();
+    sqlx::query(
+        "UPDATE config_agent_catalog_epoch SET epoch=9223372036854775807 WHERE scope_id='catalog'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        store
+            .put_config_scoped(&scope, &catalog_snapshot::config("agent", "Not committed"))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .get_config_scoped(&scope, "agent")
+            .await
+            .unwrap()
+            .unwrap(),
+        original
+    );
+    assert_eq!(
+        store
+            .list_config_revisions_scoped(&scope, "agent")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store.agent_catalog_epoch(&scope).await.unwrap(),
+        Some(i64::MAX as u64)
+    );
+}
+
+#[tokio::test]
+async fn postgres_catalog_corrupt_publication_is_not_a_usable_manifest() {
+    let Some(pool) = schema_pool("t_catalog_corrupt_publication").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool.clone()).await.unwrap();
+    catalog_snapshot::read_frame(&store).await;
+    let scope = ScopeId::from("catalog");
+    let owner = catalog_snapshot::owner();
+    let original:serde_json::Value=sqlx::query_scalar("SELECT record FROM config_publication WHERE scope_id='catalog' AND COALESCE(record->>'execution_workspace', scope_id)='catalog'").fetch_one(&pool).await.unwrap();
+    for (field, value) in [
+        ("state", "compiled"),
+        ("agent_id", "second"),
+        ("fingerprint", "wrong-fingerprint"),
+        ("publication_id", "wrong-publication"),
+    ] {
+        let mut corrupt: serde_json::Value = original.clone();
+        corrupt[field] = serde_json::json!(value);
+        sqlx::query("UPDATE config_publication SET record=$1 WHERE scope_id='catalog' AND COALESCE(record->>'execution_workspace', scope_id)='catalog'").bind(&corrupt).execute(&pool).await.unwrap();
+        assert!(
+            store
+                .agent_catalog_snapshot(&scope, &owner, 2)
+                .await
+                .is_err(),
+            "corrupt {field} must not be projected as a real publication"
+        );
+        sqlx::query("UPDATE config_publication SET record=$1 WHERE scope_id='catalog' AND COALESCE(record->>'execution_workspace', scope_id)='catalog'").bind(&original).execute(&pool).await.unwrap();
+        assert!(
+            store
+                .agent_catalog_snapshot(&scope, &owner, 2)
+                .await
+                .is_ok(),
+            "exact restore of {field} preserves valid native rows"
+        );
+    }
+}
+
+#[tokio::test]
+async fn postgres_owner_selection_snapshot_retains_bounded_orphans_and_original_receipt() {
+    let Some(pool) = schema_pool("t_owner_orphans").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool).await.unwrap();
+    catalog_snapshot::owner_preferences_without_definition(&store).await;
 }

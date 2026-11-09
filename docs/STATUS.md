@@ -59,6 +59,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/builtin-tools-extension-contract.md` | Delegated boundary narrative | Delegated | [tool-and-capability.md](design/tool-and-capability.md#tool-and-capability-role-catalog) |
 | `design/tool-result-image-tests.md` | Test design | Not required | n/a |
 | `design/personal-agent-selection-testing.md` | Test design | Not required | n/a |
+| `design/agent-catalog-governance-testing.md` | Test design | Not required | n/a |
 | `design/acp-harness-capability-and-tool-bridge.md` | Delegated boundary narrative | Delegated | [tool-and-capability.md](design/tool-and-capability.md#tool-and-capability-role-catalog) |
 | `design/key-design-decisions.md` | Decision record | Not required | n/a |
 | `design/runtime-behavior.md` | Role owner | Required | self |

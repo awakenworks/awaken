@@ -241,6 +241,14 @@ async fn private_collections_filter_before_pagination_and_never_widen_shared_cac
                 .expect_for(StatusCode::OK, "private and ordinary list");
             assert_eq!(page["data"].as_array().unwrap().len(), 1);
             assert_eq!(page["data"][0]["id"], *expected);
+            if expected == &ordinary_id {
+                assert!(
+                    page["data"][0]["agent"].get("model").is_some(),
+                    "a private view cannot poison the shared ordinary DTO projection"
+                );
+            } else {
+                assert!(page["data"][0]["agent"].get("model").is_none());
+            }
             assert_eq!(
                 page.get("next_page"),
                 Some(&Value::Null),
@@ -248,4 +256,326 @@ async fn private_collections_filter_before_pagination_and_never_widen_shared_cac
             );
         }
     }
+}
+
+#[tokio::test]
+async fn private_native_dtos_history_and_streams_expose_manifests_without_changing_committed_truth()
+{
+    let repository = support::session_repository("private definition presentation").await;
+    let runtime = RehydrateFake::default().with_tool_replacement_recording();
+    let replacements = runtime.tool_replacements.clone().unwrap();
+    let base = support::shared_state_over(runtime, repository.clone()).await;
+    let alice = admitted(&base, binding("alice"));
+    let id = create(&alice, Some("private-projection-create")).await;
+    let address = format!("/v1/sessions/{id}");
+    let response = alice
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&address)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response.headers()["etag"].to_str().unwrap().to_owned();
+    let original: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        original["agent"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["id", "name", "type", "version"])
+    );
+    let tools = json!([{"type":"custom","name":"private-client-tool","description":"PRIVATE TOOL DEFINITION","input_schema":{"type":"object","properties":{}}}]);
+    let response = alice
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&address)
+                .header("content-type", "application/json")
+                .header("if-match", etag)
+                .header("idempotency-key", "private-projection-update")
+                .body(Body::from(json!({"agent":{"tools":tools}}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let updated: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(updated["agent"], original["agent"]);
+    {
+        let recorded = replacements.lock();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "one native disposable runtime projection"
+        );
+        assert!(
+            recorded[0]
+                .1
+                .client_tools
+                .iter()
+                .any(|tool| tool.name == "private-client-tool"
+                    && tool.description == "PRIVATE TOOL DEFINITION")
+        );
+    }
+    for state in [
+        base,
+        support::shared_state_over(RehydrateFake::default(), repository).await,
+    ] {
+        let private = admitted(&state, binding("alice"));
+        let detail = call(&private, "GET", &address, Value::Null, None)
+            .await
+            .expect_for(StatusCode::OK, "private manifest detail");
+        assert_eq!(detail["agent"], original["agent"]);
+        for api_date in ["2023-06-01", "2026-10-21"] {
+            for time in [None, Some("2")] {
+                for path in [address.as_str(), "/v1/sessions"] {
+                    let mut request = Request::builder()
+                        .uri(path)
+                        .header("anthropic-version", api_date);
+                    if let Some(time) = time {
+                        request = request.header("x-awaken-session-time-version", time);
+                    }
+                    let response = private
+                        .clone()
+                        .oneshot(request.body(Body::empty()).unwrap())
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), StatusCode::OK);
+                    let value: Value = serde_json::from_slice(
+                        &response.into_body().collect().await.unwrap().to_bytes(),
+                    )
+                    .unwrap();
+                    let agent = if path == address.as_str() {
+                        &value["agent"]
+                    } else {
+                        &value["data"][0]["agent"]
+                    };
+                    let mut expected = original["agent"].clone();
+                    if api_date == "2026-10-21" {
+                        expected["execution_identity"] = json!({"type":"service_account"});
+                    }
+                    assert_eq!(
+                        agent, &expected,
+                        "API-date and native history time selection both preserve the private manifest"
+                    );
+                }
+            }
+        }
+
+        let view = awaken_protocol_managed::admitted_private_session_view(&state, binding("alice"));
+        let native = view.get_session(&id).unwrap();
+        assert!(
+            serde_json::to_value(native.agent)
+                .unwrap()
+                .to_string()
+                .contains("PRIVATE TOOL DEFINITION"),
+            "native frozen definition is unchanged by wire presentation"
+        );
+
+        let page = call(&private, "GET", "/v1/sessions", Value::Null, None)
+            .await
+            .expect_for(StatusCode::OK, "private manifest page");
+        assert_eq!(page["data"][0]["agent"], original["agent"]);
+        let threads = call(
+            &private,
+            "GET",
+            &format!("{address}/threads"),
+            Value::Null,
+            None,
+        )
+        .await
+        .expect_for(StatusCode::OK, "private manifest Threads");
+        for thread in threads["data"].as_array().unwrap() {
+            assert!(
+                thread["agent"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .all(|key| matches!(
+                        key.as_str(),
+                        "id" | "name" | "type" | "version" | "execution_identity"
+                    ))
+            );
+            let item = call(
+                &private,
+                "GET",
+                &format!("{address}/threads/{}", thread["id"].as_str().unwrap()),
+                Value::Null,
+                None,
+            )
+            .await
+            .expect_for(StatusCode::OK, "private manifest Thread");
+            assert_eq!(item["agent"], thread["agent"]);
+        }
+        let history = call(
+            &private,
+            "GET",
+            &format!("{address}/events"),
+            Value::Null,
+            None,
+        )
+        .await
+        .expect_for(StatusCode::OK, "private manifest history");
+        let event = history["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["type"] == "session.updated" && e.get("agent").is_some())
+            .unwrap()
+            .clone();
+        assert_eq!(event["agent"], original["agent"]);
+        assert!(!history.to_string().contains("PRIVATE TOOL DEFINITION"));
+        let (observed, text) = stream_event(
+            &private,
+            &format!("{address}/events/stream"),
+            event["id"].as_str().unwrap(),
+        )
+        .await;
+        assert_eq!(
+            observed, event,
+            "the original committed id has exactly the same private history/SSE payload"
+        );
+        assert!(!text.contains("PRIVATE TOOL DEFINITION"));
+    }
+}
+
+async fn stream_event(app: &Router, path: &str, id: &str) -> (Value, String) {
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream")
+    );
+    let mut stream = response.into_body();
+    let mut text = String::new();
+    for _ in 0..64 {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(2), stream.frame())
+            .await
+            .expect("native committed SSE frame is available");
+        let Some(frame) = frame else {
+            break;
+        };
+        let frame = frame.unwrap();
+        if let Some(data) = frame.data_ref() {
+            text.push_str(std::str::from_utf8(data).unwrap());
+        }
+        if let Some(event) = text
+            .split("\n\n")
+            .flat_map(|frame| frame.lines().filter_map(|line| line.strip_prefix("data: ")))
+            .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+            .find(|e| e["id"] == id)
+        {
+            return (event, text);
+        }
+    }
+    panic!("native SSE did not expose the committed event id {id}");
+}
+#[tokio::test]
+async fn canonical_event_definition_omission_preserves_full_official_dtos_and_exact_history_sse_events()
+ {
+    let repository = support::session_repository("canonical event definition omission").await;
+    let runtime = RehydrateFake::default().with_tool_replacement_recording();
+    let replacements = runtime.tool_replacements.clone().unwrap();
+    let base = support::shared_state_over(runtime, repository).await;
+    let app = router(base)
+        .layer(Extension(WorkspaceScope("ws-a".into())))
+        .layer(Extension(
+            awaken_protocol_managed::HideSessionEventDefinitions,
+        ));
+    let id = create(&app, Some("canonical-omission-create")).await;
+    let path = format!("/v1/sessions/{id}");
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let etag = response.headers()["etag"].to_str().unwrap().to_owned();
+    let full: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(
+        full["agent"].get("model").is_some(),
+        "official full DTO required fields are not fabricated or removed"
+    );
+    let body = json!({"agent":{"tools":[{"type":"custom","name":"canonical-private-tool","description":"CANONICAL PRIVATE DEFINITION","input_schema":{"type":"object","properties":{}}}]}});
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&path)
+                .header("content-type", "application/json")
+                .header("if-match", etag)
+                .header("idempotency-key", "canonical-omission-update")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let full: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        full["agent"]
+            .to_string()
+            .contains("CANONICAL PRIVATE DEFINITION")
+    );
+    {
+        let recorded = replacements.lock();
+        assert_eq!(recorded.len(), 1);
+        assert!(
+            recorded[0]
+                .1
+                .client_tools
+                .iter()
+                .any(|tool| tool.name == "canonical-private-tool"
+                    && tool.description == "CANONICAL PRIVATE DEFINITION")
+        );
+    }
+    let history = call(&app, "GET", &format!("{path}/events"), Value::Null, None)
+        .await
+        .expect_for(StatusCode::OK, "canonical event omission");
+    let event = history["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "session.updated")
+        .unwrap()
+        .clone();
+    assert!(event.get("agent").is_none());
+    assert!(!history.to_string().contains("CANONICAL PRIVATE DEFINITION"));
+    let (streamed, text) = stream_event(
+        &app,
+        &format!("{path}/events/stream"),
+        event["id"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(streamed, event);
+    assert!(!text.contains("CANONICAL PRIVATE DEFINITION"));
 }

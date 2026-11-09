@@ -180,8 +180,8 @@ impl awaken_session_execution_contract::StreamingRuns for RehydrateFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
+    // Tool-update tests explicitly opt into recording this disposable projection;
+    // all existing fixtures keep the original unsupported port by default.
     /// Replace the complete Session-local tool configuration after an
     /// idle-session update.
     /// Implementations rebuild the disposable runtime context; durable desired
@@ -191,6 +191,10 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         thread: &str,
         tools: awaken_session_configuration_contract::SessionToolConfiguration,
     ) -> Result<(), awaken_runtime_contract::runs::RunError> {
+        if let Some(recorded) = &self.tool_replacements {
+            recorded.lock().push((thread.to_owned(), tools));
+            return Ok(());
+        }
         awaken_session_execution_contract::NeutralRuntime
             .replace_session_tools(thread, tools)
             .await

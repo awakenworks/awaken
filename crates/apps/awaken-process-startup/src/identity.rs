@@ -369,6 +369,7 @@ mod tests {
 
     fn cloud_config() -> config::CloudIamConfig {
         config::CloudIamConfig {
+            agent_governance: None,
             base_url: "https://accounts.example".into(),
             inference_base_url: "https://api.example".into(),
             audience: "awaken-runtime".into(),

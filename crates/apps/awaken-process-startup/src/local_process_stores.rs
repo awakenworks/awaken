@@ -25,7 +25,13 @@ pub(super) async fn in_memory_process_stores() -> ProcessStores {
     let data_subjects = Arc::new(awaken_data_subject_store::InMemoryDataSubjectRepo::new());
     let captured_content =
         Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new(clock.clone()));
+    let config = Arc::new(
+        awaken_config_store::SqliteConfigStore::open_in_memory()
+            .await
+            .expect("open config store"),
+    );
     ProcessStores {
+        agent_governance: None,
         workspace_root: None,
         platform_workspace: awaken_deployment_config::mint_local_workspace(),
         clock: clock.clone(),
@@ -38,10 +44,8 @@ pub(super) async fn in_memory_process_stores() -> ProcessStores {
             telemetry_config: admin.clone(),
             resources: admin.clone(),
             webhooks: admin,
-            config: Arc::new(
-                awaken_config_store::SqliteConfigStore::open_in_memory().await
-                    .expect("open config store"),
-            ),
+            config: config.clone(),
+            agent_governance: awaken_control::AgentGovernanceStores::new(config,None),
             data_subjects: data_subjects.clone(),
             erasure_jobs: data_subjects,
             environments: EnvironmentStore::InMemory(Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone()))),
@@ -192,6 +196,7 @@ pub(super) async fn open_local_process_stores(
     .await?;
     open_process_stores(ProcessStoreOpenOptions {
         control: awaken_control::ControlStoreConfig::local(dir),
+        agent_governance: None,
         coordinator: config::CoordinatorStoreConfig {
             sessions: awaken_control::StoreBackend::Sqlite(dir.join("sessions.db")),
             captured_content: awaken_control::StoreBackend::Sqlite(dir.join("captured_content.db")),

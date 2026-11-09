@@ -93,6 +93,7 @@ axum = { version = "0.8", features = ["multipart"] }
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 awaken-session-application-contract.workspace = true
 awaken-ext-builtin-tools.workspace = true
 # The webhook plane test drives lifecycle delivery through the Session outbox relay.

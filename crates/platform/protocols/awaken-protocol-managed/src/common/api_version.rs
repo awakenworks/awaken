@@ -5,6 +5,7 @@ use axum::http::{HeaderMap, StatusCode, request::Parts};
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 
+use crate::event_presentation::{AgentDefinitionPresentation, manifest};
 use crate::types::agent::{Agent, ServiceAccountExecutionIdentity};
 use crate::types::session::{
     SessionAgent, SessionMultiagentRosterEntry, SessionThreadAgent, SessionThreadAgentValue,
@@ -14,6 +15,18 @@ use crate::types::{
     Session, SessionThread,
 };
 
+/// Encode an already-authorized native Agent page with the exact original API
+/// date contract. This presentation helper authenticates and grants nothing.
+pub fn managed_agent_page_response(
+    headers: &HeaderMap,
+    page: PageCursor<Agent>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    match ManagedApiVersion::from_headers(headers) {
+        Ok(version) => Json(version.wrap(page)).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
 pub(crate) type VersionError = (StatusCode, Json<ErrorResponse>);
 pub(crate) const CURRENT_API_VERSION: &str = "2026-10-21";
 
@@ -50,6 +63,7 @@ impl ManagedApiVersion {
         ApiWire {
             value,
             version: self,
+            presentation: AgentDefinitionPresentation::Full,
         }
     }
 }
@@ -66,25 +80,49 @@ impl<S: Send + Sync> FromRequestParts<S> for ManagedApiVersion {
 pub(crate) struct ApiWire<T> {
     value: T,
     version: ManagedApiVersion,
+    presentation: AgentDefinitionPresentation,
+}
+impl<T: ApiProjection> ApiWire<T> {
+    pub(crate) fn with_agent_presentation(
+        mut self,
+        presentation: AgentDefinitionPresentation,
+    ) -> Self {
+        self.presentation = presentation;
+        self
+    }
 }
 impl<T: ApiProjection> Serialize for ApiWire<T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self.version {
-            ManagedApiVersion::Legacy => self.value.serialize(serializer),
-            ManagedApiVersion::Current => {
-                let mut value =
-                    serde_json::to_value(&self.value).map_err(serde::ser::Error::custom)?;
-                self.value.project_identity(&mut value);
-                value.serialize(serializer)
-            }
+        let project = self.value.needs_definition_projection(self.presentation);
+        if self.version == ManagedApiVersion::Legacy && !project {
+            return self.value.serialize(serializer);
         }
+        let mut value = serde_json::to_value(&self.value).map_err(serde::ser::Error::custom)?;
+        if self.version == ManagedApiVersion::Current {
+            self.value.project_identity(&mut value);
+        }
+        if project {
+            self.value
+                .project_definitions(&mut value, self.presentation);
+        }
+        value.serialize(serializer)
     }
 }
 
 pub(crate) trait ApiProjection: Serialize {
     fn project_identity(&self, value: &mut Value);
+    fn needs_definition_projection(&self, _presentation: AgentDefinitionPresentation) -> bool {
+        false
+    }
+    fn project_definitions(&self, _value: &mut Value, _presentation: AgentDefinitionPresentation) {}
 }
 impl<T: ApiProjection> ApiProjection for &T {
+    fn needs_definition_projection(&self, presentation: AgentDefinitionPresentation) -> bool {
+        T::needs_definition_projection(*self, presentation)
+    }
+    fn project_definitions(&self, value: &mut Value, presentation: AgentDefinitionPresentation) {
+        T::project_definitions(*self, value, presentation)
+    }
     fn project_identity(&self, value: &mut Value) {
         (*self).project_identity(value);
     }
@@ -122,11 +160,26 @@ impl ApiProjection for SessionAgent {
     }
 }
 impl ApiProjection for Session {
+    fn needs_definition_projection(&self, presentation: AgentDefinitionPresentation) -> bool {
+        presentation == AgentDefinitionPresentation::Manifest
+    }
+    fn project_definitions(&self, value: &mut Value, _presentation: AgentDefinitionPresentation) {
+        manifest(&mut value["agent"]);
+    }
     fn project_identity(&self, value: &mut Value) {
         self.agent.project_identity(&mut value["agent"]);
     }
 }
 impl ApiProjection for SessionThread {
+    fn needs_definition_projection(&self, presentation: AgentDefinitionPresentation) -> bool {
+        presentation == AgentDefinitionPresentation::Manifest
+            && matches!(self.agent, SessionThreadAgentValue::Agent(_))
+    }
+    fn project_definitions(&self, value: &mut Value, presentation: AgentDefinitionPresentation) {
+        if self.needs_definition_projection(presentation) {
+            manifest(&mut value["agent"]);
+        }
+    }
     fn project_identity(&self, value: &mut Value) {
         if let SessionThreadAgentValue::Agent(agent) = &self.agent {
             agent.project_identity(&mut value["agent"]);
@@ -134,6 +187,25 @@ impl ApiProjection for SessionThread {
     }
 }
 impl ApiProjection for Event {
+    fn needs_definition_projection(&self, presentation: AgentDefinitionPresentation) -> bool {
+        presentation != AgentDefinitionPresentation::Full
+            && matches!(
+                self.kind,
+                OutboundKind::SessionUpdated { agent: Some(_), .. }
+            )
+    }
+    fn project_definitions(&self, value: &mut Value, presentation: AgentDefinitionPresentation) {
+        if !self.needs_definition_projection(presentation) {
+            return;
+        }
+        match presentation {
+            AgentDefinitionPresentation::Manifest => manifest(&mut value["agent"]),
+            AgentDefinitionPresentation::Omit => {
+                value.as_object_mut().expect("typed Event").remove("agent");
+            }
+            AgentDefinitionPresentation::Full => {}
+        }
+    }
     fn project_identity(&self, value: &mut Value) {
         if let OutboundKind::SessionUpdated {
             agent: Some(agent), ..
@@ -144,6 +216,18 @@ impl ApiProjection for Event {
     }
 }
 
+pub(crate) fn project_definition_rows<T: ApiProjection>(
+    rows: &[T],
+    value: &mut Value,
+    presentation: AgentDefinitionPresentation,
+) {
+    for (row, projected) in rows
+        .iter()
+        .zip(value["data"].as_array_mut().expect("typed page"))
+    {
+        row.project_definitions(projected, presentation);
+    }
+}
 pub(crate) fn project_rows<T: ApiProjection>(rows: &[T], value: &mut Value) {
     for (row, projected) in rows
         .iter()
@@ -153,16 +237,40 @@ pub(crate) fn project_rows<T: ApiProjection>(rows: &[T], value: &mut Value) {
     }
 }
 impl<T: ApiProjection> ApiProjection for PageCursor<T> {
+    fn needs_definition_projection(&self, presentation: AgentDefinitionPresentation) -> bool {
+        self.data
+            .iter()
+            .any(|row| row.needs_definition_projection(presentation))
+    }
+    fn project_definitions(&self, value: &mut Value, presentation: AgentDefinitionPresentation) {
+        project_definition_rows(&self.data, value, presentation);
+    }
     fn project_identity(&self, value: &mut Value) {
         project_rows(&self.data, value);
     }
 }
 impl ApiProjection for ListEventsResponse {
+    fn needs_definition_projection(&self, presentation: AgentDefinitionPresentation) -> bool {
+        self.data
+            .iter()
+            .any(|row| row.needs_definition_projection(presentation))
+    }
+    fn project_definitions(&self, value: &mut Value, presentation: AgentDefinitionPresentation) {
+        project_definition_rows(&self.data, value, presentation);
+    }
     fn project_identity(&self, value: &mut Value) {
         project_rows(&self.data, value);
     }
 }
 impl ApiProjection for SendEventsResponse {
+    fn needs_definition_projection(&self, presentation: AgentDefinitionPresentation) -> bool {
+        self.data
+            .iter()
+            .any(|row| row.needs_definition_projection(presentation))
+    }
+    fn project_definitions(&self, value: &mut Value, presentation: AgentDefinitionPresentation) {
+        project_definition_rows(&self.data, value, presentation);
+    }
     fn project_identity(&self, value: &mut Value) {
         project_rows(&self.data, value);
     }

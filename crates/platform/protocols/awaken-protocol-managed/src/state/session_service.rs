@@ -108,6 +108,7 @@ impl ManagedState {
         Self {
             roles: super::SessionApplicationRoles::of(&application),
             private_binding: None,
+            agent_definition_presentation: Default::default(),
             #[cfg(any(test, feature = "test-support"))]
             application,
             sessions: Arc::new(InvariantLock::new(HashMap::new())),
@@ -160,6 +161,7 @@ impl ManagedState {
         let Self {
             roles,
             private_binding,
+            agent_definition_presentation,
             mut application,
             sessions,
             session_seq,
@@ -179,6 +181,7 @@ impl ManagedState {
         Self {
             roles: super::SessionApplicationRoles::of(&application),
             private_binding,
+            agent_definition_presentation,
             application,
             sessions,
             session_seq,

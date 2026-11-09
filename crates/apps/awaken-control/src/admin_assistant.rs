@@ -29,14 +29,12 @@ use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_executable_agent_contract::capability::PluginCapability;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_tool_contract::tool::current_tool_operation_context;
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde_json::{Value, json};
 
-/// One Workspace selector for every Assistant adapter. Hosted tools consume the
-/// Session admission scope carried by Runtime; self-hosted composition retains
-/// its explicitly provisioned Workspace. There is deliberately no ambient or
-/// process-local fallback for hosted calls.
+/// One explicit local-operator Workspace selector. Hosted execution attempts
+/// cannot authenticate a current human management request, so definition ports
+/// refuse them rather than treating runtime scope as management authority.
 #[derive(Clone)]
 enum AssistantWorkspace {
     Fixed(ScopeId),
@@ -52,16 +50,10 @@ impl AssistantWorkspace {
         Self::CurrentAttempt
     }
 
-    fn resolve(&self) -> Result<ScopeId, String> {
+    fn operator_scope(&self) -> Result<ScopeId, String> {
         match self {
             Self::Fixed(scope) => Ok(scope.clone()),
-            Self::CurrentAttempt => current_tool_operation_context()
-                .and_then(|context| context.execution_scope)
-                .map(|scope| scope.0)
-                .filter(|scope| !scope.as_str().trim().is_empty())
-                .ok_or_else(|| {
-                    "Assistant tool has no trusted execution Workspace context".to_string()
-                }),
+            Self::CurrentAttempt => Err("Hosted Agent tools cannot access or change definitions; a current human management request is required".into()),
         }
     }
 }
@@ -241,7 +233,8 @@ impl CatalogCapabilityReader {
         }
     }
 
-    /// Hosted composition resolves tenant scope from the current Session Run.
+    /// Hosted execution has no current human management admission; definition
+    /// tools stay closed until such a native request contract is supplied.
     pub fn request_scoped(
         catalog: Arc<dyn CatalogRepo>,
         global_tools: &[ToolDescriptor],
@@ -264,7 +257,14 @@ impl CatalogCapabilityReader {
 
 #[async_trait]
 impl CapabilityReader for CatalogCapabilityReader {
+    fn available(&self) -> Result<(), String> {
+        self.workspace.operator_scope().map(|_| ())
+    }
+
     async fn capabilities(&self) -> PlatformCapabilities {
+        let Ok(scope) = self.workspace.operator_scope() else {
+            return PlatformCapabilities::default();
+        };
         // LIVE model catalog: deduped offering model ids (catalog order) + provider keys.
         // A read failure degrades to empty rather than failing the tool call.
         let (models, providers) = match self.catalog.snapshot().await {
@@ -283,10 +283,6 @@ impl CapabilityReader for CatalogCapabilityReader {
         };
         // AgentConfig is the sole MCP authoring truth. Derive the capability
         // inventory from the same typed bindings instead of a parallel MCP catalog.
-        let scope = match self.workspace.resolve() {
-            Ok(scope) => scope,
-            Err(_) => return PlatformCapabilities::default(),
-        };
         let (agents, mcp_servers) = match self.plane.list(&scope).await {
             Ok(configs) => {
                 let mut mcp_servers = Vec::new();
@@ -413,7 +409,7 @@ impl ConfigServiceDraftValidator {
 impl DraftValidator for ConfigServiceDraftValidator {
     async fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
         // This consumer only needs a human message; flatten the field-routed issue.
-        let scope = self.workspace.resolve()?;
+        let scope = self.workspace.operator_scope()?;
         self.plane
             .validate(&scope, draft)
             .await
@@ -424,7 +420,7 @@ impl DraftValidator for ConfigServiceDraftValidator {
         &self,
         draft: &AgentConfig,
     ) -> Result<std::collections::BTreeSet<String>, String> {
-        let scope = self.workspace.resolve()?;
+        let scope = self.workspace.operator_scope()?;
         Ok(self.plane.runtime_agent_override_ids(&scope, draft))
     }
 }
@@ -481,9 +477,11 @@ impl ConfigServiceDraftStore {
                 () = cancellation.cancelled() => break,
                 _ = interval.tick() => {}
             }
-            let scopes = match self.workspace.resolve() {
-                Ok(scope) => vec![scope],
-                Err(_) => self.plane.authoring_scopes().await.unwrap_or_default(),
+            // This service only applies effects of already admitted durable
+            // management commands; it cannot create a new tool confirmation.
+            let scopes = match &self.workspace {
+                AssistantWorkspace::Fixed(scope) => vec![scope.clone()],
+                AssistantWorkspace::CurrentAttempt => self.plane.authoring_scopes().await?,
             };
             for scope in scopes {
                 if let Err(error) =
@@ -602,7 +600,7 @@ impl DraftStore for ConfigServiceDraftStore {
         audit: &awaken_admin_assistant::AdminAuditEvent,
         resources: Option<Vec<InputSpec>>,
     ) -> Result<(), String> {
-        let scope = self.workspace.resolve()?;
+        let scope = self.workspace.operator_scope()?;
         let current = self
             .resources
             .get_agent_inputs(scope.as_str(), &draft.id)
@@ -630,7 +628,7 @@ impl DraftStore for ConfigServiceDraftStore {
         audit: &awaken_admin_assistant::AdminAuditEvent,
     ) -> Result<AuditedConfigWrite, String> {
         self.plane
-            .record_management_audit(&self.workspace.resolve()?, audit)
+            .record_management_audit(&self.workspace.operator_scope()?, audit)
             .await
     }
 
@@ -640,12 +638,12 @@ impl DraftStore for ConfigServiceDraftStore {
         call_id: &str,
     ) -> Result<Option<awaken_agent_config::ManagementAuditEntry>, String> {
         self.plane
-            .get_management_audit(&self.workspace.resolve()?, tool, call_id)
+            .get_management_audit(&self.workspace.operator_scope()?, tool, call_id)
             .await
     }
 
     async fn reconcile_pending_effects(&self) -> Result<(), String> {
-        let scope = self.workspace.resolve()?;
+        let scope = self.workspace.operator_scope()?;
         apply_pending_resource_effects(&self.plane, &scope, self.resources.as_ref())
             .await
             .map(|_| ())
@@ -654,7 +652,7 @@ impl DraftStore for ConfigServiceDraftStore {
 
     async fn get_versioned(&self, id: &str) -> Result<Option<AgentConfigRevision>, String> {
         self.plane
-            .get_versioned(&self.workspace.resolve()?, id)
+            .get_versioned(&self.workspace.operator_scope()?, id)
             .await
     }
 }
@@ -670,6 +668,7 @@ fn accept_audited_config_write(write: AuditedConfigWrite) -> Result<(), String> 
 
 #[cfg(test)]
 mod tests {
+    mod hosted_definition_tests;
     use super::*;
     use awaken_agent_config::{DEFAULT_SCOPE, ModelSelection};
     use awaken_config_resolver::InMemoryAgentInputBindingRepository;
@@ -1274,74 +1273,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hosted_draft_store_uses_only_the_run_execution_workspace() {
-        // Cause/effect decision table:
-        // | rule | trusted Run scope | effect |
-        // | H1   | workspace-tenant  | draft is written only in workspace-tenant |
-        // | H2   | absent            | fail closed; no process-local fallback |
-        // The existing fixed-store test above owns local/self-hosted behavior.
-        // Constraints/invariants: the trusted execution scope is the sole hosted
-        // workspace authority; absence cannot fall back to another tenant/store.
+    async fn hosted_execution_scope_does_not_authorize_definition_effects() {
+        // A trusted execution Workspace is necessary for runtime execution, but
+        // it proves neither a human requester nor current definition authority.
+        // H1 present scope and H2 no scope both refuse before any definition,
+        // management audit, resource binding or pending effect is written.
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
             Arc::new(SqliteConfigStore::open_in_memory().await.unwrap()),
             Arc::new(StaticToolCatalog(Vec::new())),
         );
-        let store = ConfigServiceDraftStore::request_scoped(
-            plane.clone(),
-            Arc::new(InMemoryAgentInputBindingRepository::new()),
-        );
+        let resources = Arc::new(InMemoryAgentInputBindingRepository::new());
+        let store = ConfigServiceDraftStore::request_scoped(plane.clone(), resources.clone());
+        let scope = ScopeId::from("workspace-tenant");
         let mut draft = admin_assistant_config();
         draft.id = "tenant-draft".into();
+        let audit = awaken_agent_config::ManagementAuditRecord {
+            tool: awaken_admin_assistant::CREATE_DRAFT_TOOL.into(),
+            call_id: "hosted-draft".into(),
+            summary: "not a human confirmation".into(),
+        };
         let context = awaken_tool_contract::tool::ToolOperationContext {
             run_id: Some(awaken_agent_contract::agent::run::Id("run-tenant".into())),
             thread_id: None,
             operation_id: "operation-tenant".into(),
             call_id: None,
-            execution_scope: Some(awaken_agent_contract::ExecutionScopeRef(ScopeId::from(
-                "workspace-tenant",
-            ))),
-        };
-        let audit = awaken_agent_config::ManagementAuditRecord {
-            tool: awaken_admin_assistant::CREATE_DRAFT_TOOL.into(),
-            call_id: "hosted-draft".into(),
-            summary: "hosted draft scope".into(),
+            execution_scope: Some(awaken_agent_contract::ExecutionScopeRef(scope.clone())),
         };
         awaken_tool_contract::tool::with_tool_operation_context(context, async {
-            assert_eq!(
-                store.record_audit(&audit).await?,
-                AuditedConfigWrite::Applied,
-                "H1 sole audit begin"
+            assert!(
+                store.record_audit(&audit).await.is_err(),
+                "H1 no audit begin"
             );
+            assert!(
+                store
+                    .put_audited_with_resources(&draft, 0, &audit, None)
+                    .await
+                    .is_err(),
+                "H1 no direct write"
+            );
+        })
+        .await;
+        assert!(store.record_audit(&audit).await.is_err(), "H2 no fallback");
+        assert!(
             store
                 .put_audited_with_resources(&draft, 0, &audit, None)
                 .await
-        })
-        .await
-        .expect("H1 scoped write");
+                .is_err(),
+            "H2 no direct write"
+        );
+        assert!(plane.get(&scope, &draft.id).await.unwrap().is_none());
         assert!(
             plane
-                .get(&ScopeId::from("workspace-tenant"), &draft.id)
+                .get_management_audit(&scope, &audit.tool, &audit.call_id)
                 .await
                 .unwrap()
-                .is_some(),
-            "H1"
+                .is_none()
         );
         assert!(
             plane
-                .get(&ScopeId::from("unused-hosted-workspace"), &draft.id)
+                .pending_management_effects(&scope)
                 .await
                 .unwrap()
-                .is_none(),
-            "H1"
+                .is_empty()
         );
         assert!(
-            store
-                .put_audited_with_resources(&draft, 1, &audit, None)
+            resources
+                .get_agent_inputs(scope.as_str(), &draft.id)
                 .await
-                .unwrap_err()
-                .contains("no trusted"),
-            "H2"
+                .unwrap()
+                .is_none()
         );
     }
 
