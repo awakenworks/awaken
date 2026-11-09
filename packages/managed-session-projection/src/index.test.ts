@@ -22,6 +22,18 @@ const event = (value: Record<string, unknown>): ManagedEvent => value as unknown
 const stream = (value: Record<string, unknown>): ManagedStreamEvent => value as unknown as ManagedStreamEvent;
 
 describe("Managed Session committed projection decision table", () => {
+  it("accepts native nullable processing receipts without weakening official event fields", () => {
+    const call: ManagedEvent = { id: "call-null", type: "agent.custom_tool_use", name: "propose_command", input: {}, processed_at: null };
+    const idle: ManagedEvent = { id: "idle-null", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: [call.id] }, stop_details: null, processed_at: "2026-11-09T00:00:00Z" };
+    const reply: ManagedEvent = { id: "reply-null", type: "user.custom_tool_result", custom_tool_use_id: call.id, content: [{ type: "text", text: "original" }], is_error: false, processed_at: null };
+    const pending = projectManagedSessionRuntime([call, idle, reply]);
+    expect(pending.resolvingToolIds.has(call.id)).toBe(true);
+    expect(managedSessionAdmission(pending, "idle").canResolveTools).toBe(false);
+    // @ts-expect-error native nullability does not permit an unknown official event family
+    const invalid: ManagedEvent = { id: "invalid", type: "made.up.event", processed_at: null };
+    void invalid;
+  });
+
   it("pairs exact calls independently of order, family, status and text", () => {
     // Cause/effect graph: C1 result family is host, MCP, client-custom, or
     // client-self-hosted; C2 exact reference id is present/missing; C3 status is

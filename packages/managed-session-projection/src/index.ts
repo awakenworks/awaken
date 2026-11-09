@@ -13,7 +13,12 @@ export {
   MANAGED_SESSION_PREVIEW_TYPES,
 } from "@awaken/managed-sdk-oracle/current-wire";
 
-export type ManagedEvent = BetaManagedAgentsSessionEvent;
+/** Native admission receipts retain an explicit null processing stamp until their commit is processed.
+ * Keep every official SDK event member and only widen this native observation field. */
+type NativeProcessingStamp<Event> = Event extends { processed_at: unknown }
+  ? Omit<Event, "processed_at"> & { processed_at?: string | null }
+  : Event;
+export type ManagedEvent = NativeProcessingStamp<BetaManagedAgentsSessionEvent>;
 /** Pair every committed execution result by exact call id, shared by every transcript. */
 export function pairToolResults<T extends { readonly type: string }>(log: readonly T[]): Map<string, T> {
   const results = new Map<string, T>();
@@ -27,7 +32,7 @@ export function pairToolResults<T extends { readonly type: string }>(log: readon
   return results;
 }
 
-export type ManagedStreamEvent = BetaManagedAgentsStreamSessionEvents;
+export type ManagedStreamEvent = NativeProcessingStamp<BetaManagedAgentsStreamSessionEvents>;
 export type ManagedSessionStatus = BetaManagedAgentsSession["status"];
 
 type JsonObject = Record<string, unknown>;

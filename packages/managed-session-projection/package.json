@@ -1,6 +1,6 @@
 {
   "name": "@awaken/managed-session-projection",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Product-neutral committed-event and live-preview projection helpers for Awaken Managed Sessions.",
   "license": "Apache-2.0",
   "private": true,
@@ -8,6 +8,7 @@
   "files": [
     "dist",
     "README.md",
+    "TESTING.md",
     "LICENSE"
   ],
   "exports": {
@@ -17,10 +18,11 @@
     }
   },
   "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "test": "pnpm --filter @awaken/managed-sdk-oracle build && pnpm build && vitest run src && node --test test/*.test.mjs",
+    "typecheck": "pnpm --filter @awaken/managed-sdk-oracle build && pnpm build && tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "prepack": "pnpm build"
+    "prepack": "pnpm build",
+    "pack:portable": "node scripts/pack-portable.mjs"
   },
   "dependencies": {
     "@awaken/managed-sdk-oracle": "workspace:*"
