@@ -1391,6 +1391,21 @@ pub awaken_agent_contract::thread::read::transcript::TranscriptError::SnapshotUn
 pub enum awaken_agent_contract::thread::read::transcript::TranscriptView
 pub awaken_agent_contract::thread::read::transcript::TranscriptView::ContextEffective
 pub awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted
+pub struct awaken_agent_contract::thread::read::transcript::TranscriptPage
+pub awaken_agent_contract::thread::read::transcript::TranscriptPage::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_agent_contract::thread::read::transcript::TranscriptPage::range: awaken_agent_contract::thread::read::transcript::TranscriptRange
+pub awaken_agent_contract::thread::read::transcript::TranscriptPage::snapshot: awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef
+impl awaken_agent_contract::thread::read::transcript::TranscriptPage
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptPage::next_start(&self) -> core::option::Option<u64>
+pub struct awaken_agent_contract::thread::read::transcript::TranscriptPageRequest
+pub awaken_agent_contract::thread::read::transcript::TranscriptPageRequest::limit: core::num::nonzero::NonZeroUsize
+pub awaken_agent_contract::thread::read::transcript::TranscriptPageRequest::snapshot: core::option::Option<awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef>
+pub awaken_agent_contract::thread::read::transcript::TranscriptPageRequest::start: u64
+pub awaken_agent_contract::thread::read::transcript::TranscriptPageRequest::thread_id: awaken_agent_contract::agent::thread::Id
+pub awaken_agent_contract::thread::read::transcript::TranscriptPageRequest::view: awaken_agent_contract::thread::read::transcript::TranscriptView
+impl awaken_agent_contract::thread::read::transcript::TranscriptPageRequest
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptPageRequest::page_from_append_only(&self, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::result::Result<awaken_agent_contract::thread::read::transcript::TranscriptPage, awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub fn awaken_agent_contract::thread::read::transcript::TranscriptPageRequest::resolve_append_only(&self, u64) -> core::result::Result<(awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef, awaken_agent_contract::thread::read::transcript::TranscriptRange), awaken_agent_contract::thread::read::transcript::TranscriptError>
 pub struct awaken_agent_contract::thread::read::transcript::TranscriptRange
 pub awaken_agent_contract::thread::read::transcript::TranscriptRange::end: u64
 pub awaken_agent_contract::thread::read::transcript::TranscriptRange::start: u64

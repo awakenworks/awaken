@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::thread::read::transcript::{TranscriptPage, TranscriptPageRequest};
 use awaken_dispatch_erasure::{RuntimeAuthority, RuntimeAuthorityError};
 use awaken_runtime_contract::runs::RunError;
 
@@ -48,6 +49,16 @@ impl SessionCommitSource for AuthorityCommits {
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RunError> {
         self.0
             .durable_thread_exists(thread)
+            .await
+            .map_err(runtime_authority_error)
+    }
+
+    async fn read_transcript_page(
+        &self,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, RunError> {
+        self.0
+            .read_transcript_page(request)
             .await
             .map_err(runtime_authority_error)
     }

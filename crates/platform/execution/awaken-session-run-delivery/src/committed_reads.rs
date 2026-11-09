@@ -37,6 +37,7 @@ use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_agent_contract::thread::read::transcript::{TranscriptPage, TranscriptPageRequest};
 use awaken_ext_goal::controller::{CommittedOutcome, Controller};
 use awaken_ext_goal::outcome::Id;
 use awaken_runtime_contract::runs::{DelegatedRun, Pending, RunError};
@@ -70,6 +71,20 @@ pub trait SessionCommitSource: Send + Sync {
 
     /// Whether the durable store already holds `thread`.
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RunError>;
+
+    async fn read_transcript_page(
+        &self,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, RunError> {
+        let commit = self.open_for_read(&request.thread_id.0).await?;
+        let authority = commit
+            .committed_authority()
+            .ok_or_else(|| RunError::unavailable("authoritative transcript is unavailable"))?;
+        authority
+            .transcript_page(request)
+            .await
+            .map_err(RunError::internal)
+    }
 }
 
 /// The model label of a Session's advisor, from its current publication.
@@ -139,6 +154,14 @@ impl CommittedReads {
             .authoritative_committed_messages(&ThreadId(thread.to_string()))
             .await
             .map_err(RunError::internal)
+    }
+
+    /// A page of an authorized primary Thread's frozen committed transcript.
+    pub async fn transcript_page(
+        &self,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, RunError> {
+        self.source.read_transcript_page(request).await
     }
 
     /// Rebuild the neutral child-Run projection from the one durable owner:

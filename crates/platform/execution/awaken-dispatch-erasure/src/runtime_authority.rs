@@ -14,6 +14,7 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
+use awaken_agent_contract::thread::read::transcript::{TranscriptPage, TranscriptPageRequest};
 use awaken_dispatch_contract::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchCommitAuthority, RunDispatch,
 };
@@ -40,6 +41,18 @@ pub trait RuntimeAuthority: Send + Sync {
     ) -> Result<Arc<dyn LocalCommit>, RuntimeAuthorityError>;
 
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError>;
+
+    /// Page a primary Thread after the caller has authorized the Session.
+    async fn read_transcript_page(
+        &self,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, RuntimeAuthorityError> {
+        self.open_commit(&request.thread_id.0)
+            .await?
+            .authoritative_transcript_page(request)
+            .await
+            .map_err(RuntimeAuthorityError::unavailable)
+    }
 
     /// Select the versioned writer for authenticated Worker commits.
     fn run_commits(self: Arc<Self>) -> Arc<dyn ClaimedRunCommit<RunError>>

@@ -61,6 +61,7 @@ use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
     decode_resume_ticket_value_for_owner, project_committed_run_records,
 };
+use awaken_agent_contract::thread::read::transcript::{TranscriptPage, TranscriptPageRequest};
 use awaken_store_schema::StoredU64;
 use awaken_sync::InvariantLock;
 use sqlx::Row;
@@ -518,6 +519,51 @@ impl PostgresCommitCoordinator {
                 Ok(message)
             })
             .collect()
+    }
+
+    /// Freeze and page one committed transcript without hydrating its message
+    /// bodies. The count and the ordered range observe the same SQL snapshot.
+    pub async fn authoritative_transcript_page(
+        &self,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, StoreError> {
+        fn read_error(error: impl std::fmt::Display) -> StoreError {
+            StoreError::Read(error.to_string())
+        }
+
+        let mut tx = self.pool.begin().await.map_err(read_error)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(read_error)?;
+        let available: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {NS}_message WHERE thread_id = $1"
+        ))
+        .bind(&request.thread_id.0)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(read_error)?;
+        let (snapshot, range) = request
+            .resolve_append_only(u64::try_from(available).map_err(read_error)?)
+            .map_err(read_error)?;
+        let offset = i64::try_from(range.start).map_err(read_error)?;
+        let limit = i64::try_from(range.end - range.start).map_err(read_error)?;
+        let rows: Vec<Json<Message>> = sqlx::query_scalar(&format!(
+            "SELECT data FROM {NS}_message WHERE thread_id = $1 ORDER BY id OFFSET $2 LIMIT $3"
+        ))
+        .bind(&request.thread_id.0)
+        .bind(offset)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(read_error)?;
+        tx.commit().await.map_err(read_error)?;
+        let messages = rows.into_iter().map(|Json(message)| message).collect();
+        Ok(TranscriptPage {
+            snapshot,
+            range,
+            messages,
+        })
     }
 
     /// Read a thread's complete state-command log from committed PostgreSQL

@@ -25,6 +25,7 @@ use awaken_agent_contract::thread::read::lifecycle::{
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_agent_contract::thread::read::transcript::{TranscriptPage, TranscriptPageRequest};
 
 /// One local authoritative commit boundary selected by the Coordinator.
 ///
@@ -57,6 +58,11 @@ pub trait LocalCommit:
         thread_id: &ThreadId,
     ) -> Result<Vec<Message>, String>;
 
+    async fn authoritative_transcript_page(
+        &self,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, String>;
+
     /// Read the complete committed state from the selected authority. Shared
     /// stores must bypass a process-local projection because peer commits can
     /// advance usage, tool, and lifecycle cells after this process starts.
@@ -75,7 +81,7 @@ pub trait LocalCommit:
 /// asynchronous authoritative reads can use the adapter's committed projection
 /// or must query shared durable truth. It never commits or stores data.
 #[async_trait::async_trait]
-pub trait LocalCommitQueries<S>: Send + Sync {
+pub trait LocalCommitQueries<S: Sync>: Send + Sync {
     async fn authoritative_run(
         &self,
         store: &S,
@@ -93,6 +99,19 @@ pub trait LocalCommitQueries<S>: Send + Sync {
         store: &S,
         thread_id: &ThreadId,
     ) -> Result<Vec<Message>, String>;
+
+    async fn authoritative_transcript_page(
+        &self,
+        store: &S,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, String> {
+        let messages = self
+            .authoritative_committed_messages(store, &request.thread_id)
+            .await?;
+        request
+            .page_from_append_only(messages)
+            .map_err(|error| error.to_string())
+    }
 
     async fn authoritative_committed_state(
         &self,
@@ -229,6 +248,15 @@ where
     ) -> Result<Vec<Message>, String> {
         self.queries
             .authoritative_committed_messages(self.store.as_ref(), thread_id)
+            .await
+    }
+
+    async fn authoritative_transcript_page(
+        &self,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, String> {
+        self.queries
+            .authoritative_transcript_page(self.store.as_ref(), request)
             .await
     }
 
