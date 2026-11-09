@@ -23,10 +23,12 @@
 
 use std::sync::Arc;
 
+use awaken_agent_contract::thread::commit::staged::ResumeCommit;
 use cleanup::CleanupScope;
 #[cfg(test)]
 use cleanup::preserve_terminal_outcome;
 pub use cleanup::{ChannelOpenDoor, open_session as open_agent_session};
+use entry::PermissionResume;
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
@@ -571,81 +573,8 @@ impl RunExecutor for AcpRunExecutor {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
-        self.execute_with_permission_resume(activation, context, None)
+        self.execute_with_permission_resume(activation, context, None, None)
             .await
-    }
-}
-
-#[derive(Debug, Clone)]
-struct PermissionResume {
-    call_id: String,
-    tool_id: String,
-    arguments: serde_json::Value,
-    allow: bool,
-}
-
-impl AcpRunExecutor {
-    async fn execute_with_permission_resume(
-        &self,
-        activation: RunActivation,
-        context: RuntimeRunContext,
-        permission_resume: Option<PermissionResume>,
-    ) -> Result<RunState> {
-        let mut context = activation.narrow_context(context);
-        let prepared = self.prepare_owned_tools(&activation, &mut context).await?;
-        if let Some(state) = prepared.terminal {
-            return Ok(state);
-        }
-        // The actual source owns enforcement, not a snapshot's backend label.
-        // Unknown/rejected profiles still stop before home restore or launch.
-        if !prepared.original_capability_known
-            || self
-                .source
-                .check_tool_narrowing(&context.tool_capability_narrowing)
-                .is_err()
-        {
-            let disposition = RunDisposition::ended(
-                activation.run_id.clone(),
-                EndCause::Error(Failure::CapabilityBound),
-            );
-            let state = disposition.state();
-            commit(
-                &context,
-                Vec::new(),
-                permission_resume.as_ref(),
-                &activation.thread_id,
-                disposition,
-                activation.input,
-                Vec::new(),
-            )
-            .await?;
-            return Ok(state);
-        }
-        // Restore the CLI's portable session-home before launch and harvest it after,
-        // so a local-dir CLI's session recovers across directories/machines. A
-        // Gateway (server-side) or stateless adapter has no local session-home → the
-        // resolution returns `None` and this is a no-op (as is the default provider).
-        let home = self.session_home_binding(&activation);
-        if let Some((key, plan)) = &home {
-            verify_attempt_ownership(context.ownership.as_deref()).await?;
-            self.session_home.restore(key, plan).await;
-        }
-        let mut cleanup = CleanupScope::new(context.physical_quiescence.clone());
-        let result = self
-            .drive(activation, &context, permission_resume, &mut cleanup)
-            .await;
-        // A committed business outcome may precede physical exit. Keep the
-        // same structured execution and channel alive until cleanup observes
-        // that exit; the Dispatch owner cannot ACK merely because drive ended.
-        cleanup.finish(self.policy.reap_grace).await;
-        if let Some((key, plan)) = &home {
-            match verify_attempt_ownership(context.ownership.as_deref()).await {
-                Ok(()) => self.session_home.harvest(key, plan).await,
-                Err(error) if result.is_ok() => return Err(error),
-                Err(_) => {}
-            }
-        }
-        result
     }
 }
 
@@ -689,9 +618,10 @@ impl RunAttemptExecutor for AcpRunExecutor {
             // committed receipts below tell its model what actually happened.
             activation.input.clear();
             return self
-                .execute_with_permission_resume(activation, context, None)
+                .execute_with_permission_resume(activation, context, None, None)
                 .await;
         }
+        let accepted_resume = ResumeCommit::new(command.operation_id.clone(), &ticket);
         match command.result {
             ResumeResult::Input(input) if ticket.reason() == AwaitReason::ManualPause => {
                 activation.input = vec![Message::text(
@@ -699,8 +629,13 @@ impl RunAttemptExecutor for AcpRunExecutor {
                     Role::User,
                     input,
                 )];
-                self.execute_with_permission_resume(activation, context, None)
-                    .await
+                self.execute_with_permission_resume(
+                    activation,
+                    context,
+                    None,
+                    Some(accepted_resume),
+                )
+                .await
             }
             ResumeResult::Permission(permission)
                 if ticket.reason() == AwaitReason::ToolPermission =>
@@ -741,6 +676,7 @@ impl RunAttemptExecutor for AcpRunExecutor {
                         arguments: pending.arguments.clone(),
                         allow,
                     }),
+                    Some(accepted_resume),
                 )
                 .await
             }

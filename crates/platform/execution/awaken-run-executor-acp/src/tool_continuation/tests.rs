@@ -161,7 +161,7 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
     let context = RuntimeRunContext::new()
         .with_reader(committed.clone())
         .with_commit(committed.clone());
-    let count = committed.commits.lock().unwrap().len();
+    let count = committed.commits.lock().len();
     let original =
         crate::tool_continuation::owned_tool_result_context(&probe, &activation, &context)
             .unwrap()
@@ -212,7 +212,7 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
         assert_eq!(projected.text_content(), original);
         assert_eq!(projected.role, Role::System);
     }
-    assert_eq!(committed.commits.lock().unwrap().len(), count);
+    assert_eq!(committed.commits.lock().len(), count);
     assert!(probe.resumes.lock().unwrap().is_empty());
     assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
 
@@ -249,11 +249,11 @@ async fn owned_receipt_projection_reuses_committed_facts_across_runs_without_sdk
         ))
         .await
         .unwrap();
-    let count = committed.commits.lock().unwrap().len();
+    let count = committed.commits.lock().len();
     let error = crate::tool_continuation::owned_tool_result_context(&probe, &activation, &context)
         .unwrap_err();
     assert_eq!(error.code(), "acp_receipt_context_exceeded");
-    assert_eq!(committed.commits.lock().unwrap().len(), count);
+    assert_eq!(committed.commits.lock().len(), count);
     assert!(probe.resumes.lock().unwrap().is_empty());
     assert_eq!(probe.recoveries.load(Ordering::SeqCst), 0);
 }

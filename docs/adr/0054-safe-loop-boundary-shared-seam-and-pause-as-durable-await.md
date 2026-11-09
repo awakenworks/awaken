@@ -414,3 +414,37 @@ review or real Provider/audio qualification.
    release; the ACP closed pause-target `ResumeTicket` constructor +
    `RunState::Awaiting`; durable `resume` re-enqueue; fail-closed `NoSubscriber`;
    k3d: pause then resume on another node.
+
+
+## Amendment 2026-11-09: ACP commits Run entry before opening its channel
+
+A hosted model capability is issued only for an exact live claim whose original
+Run is committed Running. ACP previously opened its channel (and resolved that
+capability) before its first ThreadCommit, so a fresh admitted Run was absent
+from committed truth. A permission or manual-pause continuation similarly kept
+its original Awaiting state until after channel entry. The existing hosted
+liveness check remains authoritative.
+
+The ACP executor now uses its existing commit path to enter Running before
+session-home restoration or channel/model access. It first validates the
+original capability ceiling, ownership, and any accepted resume ticket. An
+already Running recovery does not synthesize another entry, an observed terminal
+Run does not launch, and an unconsumed Awaiting ticket cannot enter ordinary
+execution. Failure to commit prevents channel entry.
+
+Native's existing ResumeCommit metadata and receipt-coherence rule move to the
+existing ThreadCommit aggregate. Native and ACP use that one constructor to
+consume the exact answered ticket and, for a named delivery, append ResumeApplied
+in the same commit. Unnamed direct resumes still consume their exact ticket but
+emit no named receipt. This adds no durable state, permission decision, queue,
+receipt store, or product-specific model policy. The original input remains with
+the ordinary message/terminal commit, and the existing claim/physical-attempt
+recovery policy continues to decide whether an interrupted attempt may re-enter.
+
+Static ownership is unchanged: Worker embeds the executor, Coordinator owns
+ThreadCommit and its committed Run projection, and hosted model access reads
+those facts together with Dispatch's exact claim. Dynamically, fresh entry or a
+validated resume commits Running first, then obtains its current model capability,
+opens ACP, and commits the next ordinary tool/wait/terminal boundary. The
+source tests attach the cause/effect table to these entry and receipt cases;
+real hosted SDK execution remains a separate required acceptance witness.

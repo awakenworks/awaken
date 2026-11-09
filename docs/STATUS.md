@@ -39,6 +39,11 @@ consistent vocabulary. This affects the documentation layers differently:
 
 ## Architecture Execution
 
+ACP Run entry and accepted-resume receipt assembly use the existing shared
+ThreadCommit authority, as specified by the [ADR-0054 amendment](adr/0054-safe-loop-boundary-shared-seam-and-pause-as-durable-await.md#amendment-2026-11-09-acp-commits-run-entry-before-opening-its-channel).
+Entry/receipt source tests and deployed provider execution remain separate
+qualification witnesses.
+
 Current main source `a2a855cd2bb6` (2026-11-06) retains six normally
 committed lifecycle/CI/fixture changes after `8b908ffec6f4`; the rebased combination
 still needs its own source-bound qualification. Private checkpoint

@@ -1029,3 +1029,10 @@
 - [The credential/model-access owner](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md) defines the distinction between
   Provider custody and attempt-local Gateway capabilities. Registered factory
   admission and last-mile process-secret tests preserve that boundary.
+
+
+## 2026-11-09 — Commit ACP entry through the original Run authority
+
+- [ADR-0054](../adr/0054-safe-loop-boundary-shared-seam-and-pause-as-durable-await.md#amendment-2026-11-09-acp-commits-run-entry-before-opening-its-channel)
+  owns shared Run entry and resume receipt consumption; source conformance and
+  deployed provider execution retain separate evidence boundaries.

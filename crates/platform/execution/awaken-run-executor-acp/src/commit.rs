@@ -7,6 +7,67 @@
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
+/// Commit the same Run's entry before the channel may resolve model access.
+pub(super) async fn begin_running(
+    context: &RuntimeRunContext,
+    activation: &RunActivation,
+    accepted_resume: Option<&ResumeCommit>,
+) -> Result<()> {
+    verify_attempt_ownership(context.ownership.as_deref()).await?;
+    if context.commit.is_none() {
+        return Err(Error::Commit(
+            "ACP execution requires a CommitCoordinator".into(),
+        ));
+    }
+    let record = context
+        .reader
+        .as_ref()
+        .and_then(|reader| reader.run(&activation.run_id));
+    if record
+        .as_ref()
+        .is_some_and(|run| run.thread_id != activation.thread_id)
+    {
+        return Err(Error::Execution(
+            "ACP Run entry belongs to another Thread".into(),
+        ));
+    }
+    if let Some(resume) = accepted_resume {
+        let current = context
+            .reader
+            .as_ref()
+            .and_then(|reader| reader.resume_ticket(&activation.run_id));
+        if record.as_ref().map(|run| &run.state) != Some(&RunState::Awaiting)
+            || current.as_ref() != Some(resume.answered_ticket())
+        {
+            return Err(Error::Execution(
+                "ACP channel entry requires the exact current awaiting ticket".into(),
+            ));
+        }
+    } else {
+        match record.map(|run| run.state) {
+            Some(RunState::Running) => return Ok(()),
+            Some(RunState::Awaiting | RunState::Ended(_)) => {
+                return Err(Error::Execution(
+                    "ACP Run entry requires a fresh or Running Run".into(),
+                ));
+            }
+            None => {}
+        }
+    }
+    commit_with_requested_tool(
+        context,
+        Vec::new(),
+        None,
+        &activation.thread_id,
+        RunDisposition::running(activation.run_id.clone()),
+        Vec::new(),
+        Vec::new(),
+        None,
+        accepted_resume,
+    )
+    .await
+}
+
 /// Commit a terminal failure that occurred before/instead of a Step (open fault):
 /// the activation input and one assistant message with the failure prompt, plus
 /// the terminal state.
@@ -58,6 +119,7 @@ pub(super) async fn commit(
         messages,
         state,
         None,
+        None,
     )
     .await
 }
@@ -83,6 +145,7 @@ pub(super) async fn commit_requested_tool(
         messages,
         state,
         Some(call),
+        None,
     )
     .await
 }
@@ -134,6 +197,7 @@ async fn commit_with_requested_tool(
     mut messages: Vec<Message>,
     state: Vec<StateCommand>,
     requested: Option<ToolCall>,
+    accepted_resume: Option<&ResumeCommit>,
 ) -> Result<()> {
     // An ACP Step that ended `TerminationReason::Cancelled` maps to
     // `Ended(Cancelled)`. That terminal commits only when the cancellation ends
@@ -260,6 +324,7 @@ async fn commit_with_requested_tool(
         messages,
         state,
         audit,
+        accepted_resume,
     )
     .await
     .map_err(|e| Error::Commit(e.to_string()))?;

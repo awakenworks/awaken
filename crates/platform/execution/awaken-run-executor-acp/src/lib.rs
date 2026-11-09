@@ -24,6 +24,7 @@ mod cancellation_cause_tests;
 mod cleanup;
 mod commit;
 mod config_home;
+mod entry;
 #[cfg(test)]
 #[path = "tests/failure_projection.rs"]
 mod failure_projection_tests;

@@ -6,43 +6,11 @@
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
-/// Exact accepted durable resume carried until the first successful commit.
-/// This is commit metadata, not another receipt store: after a successful
-/// commit the value is dropped and committed `ResumeApplied` remains authority.
-#[derive(Debug, Clone)]
-pub(super) struct ResumeCommit {
-    operation_id: String,
-    answered_ticket: ResumeTicket,
-}
+pub(super) use awaken_agent_contract::thread::commit::staged::ResumeCommit;
 
-impl ResumeCommit {
-    pub(super) fn for_operation(
-        operation_id: Option<String>,
-        answered_ticket: &ResumeTicket,
-    ) -> Option<Self> {
-        operation_id.map(|operation_id| Self {
-            operation_id,
-            answered_ticket: answered_ticket.clone(),
-        })
-    }
-}
-
-/// A resume receipt can commit only with a disposition that has replaced the
-/// exact answered ticket. Identity observations are supplied by the production
-/// constructor below; keeping the decision heap-free makes the full partition
-/// directly checkable.
-const fn resume_commit_is_coherent(
-    same_thread: bool,
-    same_run: bool,
-    retains_answered_ticket: bool,
-) -> bool {
-    same_thread && same_run && !retains_answered_ticket
-}
-
-/// The sole Runtime constructor for a commit which may consume an accepted
-/// resume. When a durable operation is present, the exact `ResumeApplied` fact
-/// and the disposition which replaces its answered ticket inhabit one
-/// `ThreadCommit`; no caller can commit either half through this owner alone.
+/// Native loop adapter over the shared ThreadCommit resume constructor. The
+/// aggregate owns exact ticket replacement and any named ResumeApplied fact;
+/// this adapter preserves Native's per-step state-change and error projection.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn assemble_attempt_commit(
     thread_id: ThreadId,
@@ -50,39 +18,23 @@ pub(super) fn assemble_attempt_commit(
     state_changed: bool,
     messages: Vec<Message>,
     state: Vec<StateCommand>,
-    mut audit: Vec<EventDraft>,
+    audit: Vec<EventDraft>,
     resume: Option<&ResumeCommit>,
 ) -> Result<ThreadCommit> {
-    if let Some(resume) = resume {
-        let answered = &resume.answered_ticket;
-        let retains_answered_ticket = disposition
-            .resume_ticket()
-            .is_some_and(|next| next.correlation_id == answered.correlation_id);
-        if !resume_commit_is_coherent(
-            answered.thread_id == thread_id,
-            disposition.run_id() == &answered.run_id,
-            retains_answered_ticket,
-        ) {
-            return Err(Error::Execution(
-                "resume receipt commit does not replace the exact answered ticket".into(),
-            ));
-        }
-        audit.push(
-            RunEvent::ResumeApplied {
-                operation_id: resume.operation_id.clone(),
-                correlation_id: answered.correlation_id.clone(),
-            }
-            .into(),
-        );
-    }
-    Ok(ThreadCommit::assemble(
+    let commit = ThreadCommit::assemble(
         thread_id,
         disposition,
         state_changed,
         messages,
         state,
         audit,
-    ))
+    );
+    match resume {
+        Some(resume) => commit
+            .with_consumed_resume(resume)
+            .map_err(|error| Error::Execution(error.to_string())),
+        None => Ok(commit),
+    }
 }
 
 /// What one attempt at driving the loop resolved to, ready to commit: the new
@@ -292,31 +244,6 @@ mod verification {
     }
 }
 
-#[cfg(test)]
-mod exhaustive {
-    use super::resume_commit_is_coherent;
-
-    /// @exhaustive bool(2) x bool(2) x bool(2) = 8
-    /// @obligation tool_result.resume_receipt_is_atomic_with_ticket_consumption
-    #[test]
-    fn a_resume_receipt_requires_consumption_of_the_exact_ticket() {
-        // Causes: exact/foreign Thread, exact/foreign Run and retention/removal
-        // of the answered ticket. Effect: admission exactly for the one rule
-        // exact Thread + exact Run + answered ticket removed. This is the full
-        // Boolean partition consumed by `assemble_attempt_commit`.
-        for same_thread in [false, true] {
-            for same_run in [false, true] {
-                for retains_answered_ticket in [false, true] {
-                    assert_eq!(
-                        resume_commit_is_coherent(same_thread, same_run, retains_answered_ticket),
-                        same_thread && same_run && !retains_answered_ticket
-                    );
-                }
-            }
-        }
-    }
-}
-
 /// Commit one step's staged delta under a `Running` fact — the durable record
 /// that the run is mid-flight with these steps completed. The first step
 /// commit also records the state transition into `Running`; terminal and
@@ -423,7 +350,7 @@ mod resume_commit_tests {
         // R2=!C1|!C2|C3=>E2. The Kani proof covers the complete Boolean kernel;
         // this test cross-checks real ResumeTicket, RunDisposition and Draft.
         let answered = ticket("answered");
-        let resume = ResumeCommit::for_operation(Some("operation".into()), &answered).unwrap();
+        let resume = ResumeCommit::new(Some("operation".into()), &answered);
         for disposition in [
             RunDisposition::running(RunId("run".into())),
             RunDisposition::awaiting(ticket("next")),
