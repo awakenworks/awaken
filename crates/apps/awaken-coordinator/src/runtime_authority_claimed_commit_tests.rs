@@ -1,0 +1,556 @@
+//! The production-selected PostgreSQL writer and real Dispatch transitions.
+
+use super::*;
+use awaken_agent_contract::agent::message::{Id as MessageId, Role};
+use awaken_agent_contract::agent::run::EndCause;
+use awaken_agent_contract::thread::commit::RunDisposition;
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, commit_payload_hash,
+};
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind;
+use awaken_agent_contract::thread::read::transcript::TranscriptView;
+use awaken_dispatch_contract::{
+    DispatchClaims, DispatchEnqueue, DispatchExecution, RunDispatch, SettleOutcome,
+};
+use awaken_dispatch_erasure::DispatchBinding;
+use awaken_runtime_contract::runs::RunErrorKind;
+use awaken_worker_contract::RunClaim;
+use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
+use std::time::Duration;
+
+async fn fixture() -> Option<(String, Arc<DurableRuntimeAuthority>, PgPool)> {
+    let url = awaken_reliability_testkit::postgres_fixture_url()?;
+    // A single connection distinguishes one transaction from an outer claim
+    // lock that waits for a second checkout from the same process pool.
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&url)
+        .await
+        .unwrap();
+    let mut storage = tests::test_storage();
+    storage.store = StoreKind::Postgres;
+    storage.dispatch_backend = DispatchBackend::Postgres;
+    let authority = DurableRuntimeAuthority::open_with_postgres_pool(
+        &storage,
+        SchemaAccess::Migrate,
+        Some(pool.clone()),
+        awaken_time::system_clock(),
+    )
+    .await
+    .unwrap();
+    Some((url, authority, pool))
+}
+
+async fn initial_claim(authority: &DurableRuntimeAuthority) -> ClaimedCommitCommand {
+    claim_dispatch(
+        authority,
+        RunDispatch::new(awaken_dispatch_testkit::worker_http::activation(
+            "atomic-claim",
+        )),
+    )
+    .await
+}
+
+async fn claim_dispatch(
+    authority: &DurableRuntimeAuthority,
+    request: RunDispatch,
+) -> ClaimedCommitCommand {
+    let run_id = request.run_id().clone();
+    let commit = ThreadCommit::assemble(
+        request.thread_id().clone(),
+        RunDisposition::running(run_id.clone()),
+        true,
+        vec![Message::text(
+            MessageId("atomic-message".into()),
+            Role::Assistant,
+            "committed",
+        )],
+        vec![StateCommand::set(
+            awaken_agent_contract::agent::state::Scope::Run,
+            awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+            "step",
+            serde_json::json!(1),
+        )],
+        Vec::new(),
+    );
+    let dispatch = authority.dispatch_store();
+    dispatch.enqueue(request).await.unwrap();
+    let claimed = dispatch
+        .claim("previous-worker", 60_000, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    ClaimedCommitCommand {
+        claim: RunClaim::from(&claimed.lease),
+        operation: CommitOperation {
+            operation_id: CommitOperationId { run_id, ordinal: 0 },
+            expected_thread_version: 0,
+            payload_hash: commit_payload_hash(&commit).unwrap(),
+            commit,
+        },
+    }
+}
+
+async fn assert_commit_rows(pool: &PgPool, expected: i64) {
+    for table in [
+        "runtime_commit",
+        "runtime_message",
+        "runtime_state_command",
+        "runtime_event",
+        "runtime_run_record",
+        "runtime_thread_version",
+        "runtime_commit_receipt",
+    ] {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let expected = if table == "runtime_event" {
+            expected * 2
+        } else {
+            expected
+        };
+        assert_eq!(count, expected, "{table}");
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn selected_postgres_writer_rolls_back_late_failure_and_replays_on_one_connection() {
+    let Some((_, authority, pool)) = fixture().await else {
+        return;
+    };
+    let command = initial_claim(&authority).await;
+    let writer = authority.clone().run_commits();
+
+    // This is the last INSERT, after the commit, message, event and Run state.
+    sqlx::query("ALTER TABLE runtime_commit_receipt ADD CONSTRAINT reject_receipt CHECK (false)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let error = writer.commit_operation(command.clone()).await.unwrap_err();
+    assert!(error.message.contains("reject_receipt"), "{error}");
+    assert_commit_rows(&pool, 0).await;
+    let thread = &command.operation.commit.thread_id;
+    let run = &command.claim.run_id;
+    let recovery = authority.shared_recovery_source().unwrap();
+    let empty = recovery.recovery_snapshot(thread, run).await.unwrap();
+    assert!(empty.messages.is_empty());
+    assert_eq!(empty.thread_version, 0);
+
+    sqlx::query("ALTER TABLE runtime_commit_receipt DROP CONSTRAINT reject_receipt")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let first = writer.commit_operation(command.clone()).await.unwrap();
+    assert_eq!(first.thread_version, 1);
+    let replay = writer.commit_operation(command.clone()).await.unwrap();
+    assert!(replay.duplicate);
+    assert_eq!(replay.commit_sequence, first.commit_sequence);
+    assert_eq!(replay.thread_version, first.thread_version);
+    let snapshot = recovery.recovery_snapshot(thread, run).await.unwrap();
+    assert_eq!(snapshot.messages, command.operation.commit.messages);
+    assert_eq!(snapshot.state, command.operation.commit.state);
+    let page = authority
+        .shared_lifecycle_feed()
+        .unwrap()
+        .events_after(RunLifecycleCursor(0), 10)
+        .await
+        .unwrap();
+    assert_eq!(page.events.len(), 1);
+    // The process-wide reader must not accumulate every Worker's transcript
+    // in the synchronous projection reserved for local execution.
+    assert_eq!(
+        authority.postgres_commit.as_ref().unwrap().commit_count(),
+        0
+    );
+    assert_commit_rows(&pool, 1).await;
+}
+
+async fn wait_for_blocker(pool: &PgPool, waiting: i32, blocker: i32) {
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT $2 = ANY(pg_blocking_pids($1))")
+                .bind(waiting)
+                .bind(blocker)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            if blocked {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("expected PostgreSQL lock ordering was not observed");
+}
+
+#[cfg(test)]
+async fn pause_before_receipt(
+    reader: &PgPool,
+) -> (sqlx::Transaction<'static, sqlx::Postgres>, i32) {
+    let mut blocker = reader.begin().await.unwrap();
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *blocker)
+        .await
+        .unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(i64::from(blocker_pid))
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    sqlx::query(&format!(
+        "CREATE FUNCTION pause_receipt() RETURNS trigger LANGUAGE plpgsql AS \
+         $$ BEGIN PERFORM pg_advisory_xact_lock({blocker_pid}); RETURN NEW; END $$"
+    ))
+    .execute(reader)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER pause_receipt BEFORE INSERT ON runtime_commit_receipt \
+         FOR EACH ROW EXECUTE FUNCTION pause_receipt()",
+    )
+    .execute(reader)
+    .await
+    .unwrap();
+
+    (blocker, blocker_pid)
+}
+
+#[tokio::test]
+async fn selected_postgres_writer_serializes_commit_and_takeover() {
+    let Some((url, authority, pool)) = fixture().await else {
+        return;
+    };
+    let reader = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .unwrap();
+    let contender_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let contender = awaken_dispatch::with_existing_postgres_dispatch_pool(contender_pool.clone())
+        .await
+        .unwrap();
+    let writer_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let contender_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&contender_pool)
+        .await
+        .unwrap();
+    let command = initial_claim(&authority).await;
+    let old_claim = command.claim.clone();
+    let binding = DispatchBinding::coordinator(authority.clone());
+    let writer = binding.local_run_commits().unwrap().clone();
+
+    // Pause at the receipt INSERT, after the transaction has written the
+    // result. Observe both actual PostgreSQL wait edges before unblocking it.
+    let (blocker, blocker_pid) = pause_before_receipt(&reader).await;
+
+    let applying = tokio::spawn({
+        let writer = writer.clone();
+        let command = command.clone();
+        async move { writer.commit_operation(command).await }
+    });
+    wait_for_blocker(&reader, writer_pid, blocker_pid).await;
+    let taking_over = tokio::spawn(async move {
+        assert_eq!(
+            contender.relinquish_claim(&old_claim).await.unwrap(),
+            SettleOutcome::Applied
+        );
+        contender
+            .claim("successor-worker", 60_000, &Default::default())
+            .await
+            .unwrap()
+            .unwrap()
+    });
+    wait_for_blocker(&reader, contender_pid, writer_pid).await;
+    assert_commit_rows(&reader, 0).await;
+    blocker.commit().await.unwrap();
+    let first = applying.await.unwrap().unwrap();
+    let successor = RunClaim::from(&taking_over.await.unwrap().lease);
+    assert!(successor.epoch > command.claim.epoch);
+
+    // Once takeover wins, even an exact duplicate from the previous epoch is
+    // fenced. The current claim can recover the original receipt.
+    let error = writer.commit_operation(command.clone()).await.unwrap_err();
+    assert_eq!(error.kind, RunErrorKind::BadRequest);
+    assert_eq!(error.message, "run claim is stale");
+    let replay = writer
+        .commit_operation(ClaimedCommitCommand {
+            claim: successor,
+            operation: command.operation,
+        })
+        .await
+        .unwrap();
+    assert!(replay.duplicate);
+    assert_eq!(replay.commit_sequence, first.commit_sequence);
+    assert_commit_rows(&reader, 1).await;
+}
+
+#[tokio::test]
+async fn selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_takeover() {
+    let Some((url, authority, _)) = fixture().await else {
+        return;
+    };
+    let mut command = initial_claim(&authority).await;
+    command.operation.commit.messages.push(Message::text(
+        MessageId("second".into()),
+        Role::Assistant,
+        "frozen second",
+    ));
+    command.operation.payload_hash = commit_payload_hash(&command.operation.commit).unwrap();
+    let thread = command.operation.commit.thread_id.clone();
+    let run = command.claim.run_id.clone();
+    let writer = authority.clone().run_commits();
+    let first = writer.commit_operation(command.clone()).await.unwrap();
+
+    let mut request = TranscriptPageRequest {
+        thread_id: thread.clone(),
+        view: TranscriptView::RawCommitted,
+        snapshot: None,
+        start: 0,
+        limit: std::num::NonZeroUsize::MIN,
+    };
+    let page = authority.read_transcript_page(&request).await.unwrap();
+    assert_eq!(page.messages, command.operation.commit.messages[..1]);
+    assert_eq!(page.snapshot.end_seq, 2);
+    request.start = page.next_start().unwrap();
+    request.snapshot = Some(page.snapshot.clone());
+
+    let lifecycle = authority.shared_lifecycle_feed().unwrap();
+    let running = lifecycle
+        .events_after(RunLifecycleCursor(0), 1)
+        .await
+        .unwrap();
+    assert_eq!(running.events.len(), 1);
+    assert_eq!(running.events[0].kind, RunLifecycleEventKind::Running);
+    assert_eq!(
+        running.events[0].source_commit_cursor,
+        first.commit_sequence
+    );
+
+    let dispatch = authority.dispatch_store();
+    assert_eq!(
+        dispatch.relinquish_claim(&command.claim).await.unwrap(),
+        SettleOutcome::Applied
+    );
+    let successor = dispatch
+        .claim("replay-successor", 60_000, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let claim = RunClaim::from(&successor.lease);
+    assert!(claim.epoch > command.claim.epoch);
+    assert!(writer.commit_operation(command.clone()).await.is_err());
+
+    command.claim = claim.clone();
+    let duplicate = writer.commit_operation(command.clone()).await.unwrap();
+    assert!(duplicate.duplicate);
+    assert_eq!(duplicate.commit_sequence, first.commit_sequence);
+    let empty = lifecycle
+        .events_after(running.next_cursor, 1)
+        .await
+        .unwrap();
+    assert!(empty.events.is_empty());
+    assert_eq!(empty.next_cursor, running.next_cursor);
+
+    let commit = ThreadCommit::assemble(
+        thread,
+        RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+        true,
+        vec![Message::text(
+            MessageId("third".into()),
+            Role::Assistant,
+            "new tail",
+        )],
+        Vec::new(),
+        Vec::new(),
+    );
+    let terminal = ClaimedCommitCommand {
+        claim,
+        operation: CommitOperation {
+            operation_id: CommitOperationId::new(run, 1),
+            expected_thread_version: first.thread_version,
+            payload_hash: commit_payload_hash(&commit).unwrap(),
+            commit,
+        },
+    };
+    let applied = writer.commit_operation(terminal).await.unwrap();
+
+    let peer = PostgresCommitCoordinator::connect_existing(&url, 1)
+        .await
+        .unwrap();
+    let frozen = peer.authoritative_transcript_page(&request).await.unwrap();
+    assert_eq!(frozen.snapshot, page.snapshot);
+    assert_eq!(frozen.messages, command.operation.commit.messages[1..]);
+    assert_eq!(frozen.next_start(), None);
+    request.snapshot = None;
+    request.start = 2;
+    let latest = peer.authoritative_transcript_page(&request).await.unwrap();
+    assert_eq!(latest.snapshot.end_seq, 3);
+    assert_eq!(latest.messages[0].text_content(), "new tail");
+    request.snapshot = Some(frozen.snapshot);
+    request.view = TranscriptView::ContextEffective;
+    assert!(peer.authoritative_transcript_page(&request).await.is_err());
+
+    let replay = peer.events_after(running.next_cursor, 1).await.unwrap();
+    assert_eq!(replay.events.len(), 1);
+    assert_eq!(replay.events[0].kind, RunLifecycleEventKind::Completed);
+    assert_eq!(
+        replay.events[0].source_commit_cursor,
+        applied.commit_sequence
+    );
+    let end = peer.events_after(replay.next_cursor, 1).await.unwrap();
+    assert!(end.events.is_empty());
+    assert_eq!(end.next_cursor, replay.next_cursor);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn selected_postgres_writer_fences_after_waiting_for_a_new_epoch() {
+    let Some((url, authority, pool)) = fixture().await else {
+        return;
+    };
+    let command = initial_claim(&authority).await;
+    let writer = authority.clone().run_commits();
+    let writer_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let reader = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .unwrap();
+    let mut takeover = reader.begin().await.unwrap();
+    let takeover_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *takeover)
+        .await
+        .unwrap();
+    // Freeze an exact successor's durable row update before it commits, so the
+    // old request observes the new epoch only after waiting for that transaction.
+    assert_eq!(sqlx::query(
+        "UPDATE runtime_dispatch SET lease_epoch = lease_epoch + 1, lease_owner = $1 WHERE run_id = $2"
+    ).bind("successor-worker").bind(&command.claim.run_id.0)
+        .execute(&mut *takeover).await.unwrap().rows_affected(), 1);
+    let applying = tokio::spawn(async move { writer.commit_operation(command).await });
+    wait_for_blocker(&reader, writer_pid, takeover_pid).await;
+    takeover.commit().await.unwrap();
+    let error = applying.await.unwrap().unwrap_err();
+    assert_eq!(error.kind, RunErrorKind::BadRequest);
+    assert_eq!(error.message, "run claim is stale");
+    assert_commit_rows(&reader, 0).await;
+}
+
+#[tokio::test]
+async fn selected_postgres_writer_rolls_back_when_the_commit_connection_dies() {
+    let Some((url, authority, pool)) = fixture().await else {
+        return;
+    };
+    let reader = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .unwrap();
+    let command = initial_claim(&authority).await;
+    let writer = authority.run_commits();
+    let writer_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let (blocker, blocker_pid) = pause_before_receipt(&reader).await;
+    let applying = tokio::spawn({
+        let writer = writer.clone();
+        let command = command.clone();
+        async move { writer.commit_operation(command).await }
+    });
+    wait_for_blocker(&reader, writer_pid, blocker_pid).await;
+
+    let terminated: bool = sqlx::query_scalar("SELECT pg_terminate_backend($1)")
+        .bind(writer_pid)
+        .fetch_one(&reader)
+        .await
+        .unwrap();
+    assert!(terminated);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(8), applying)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    blocker.commit().await.unwrap();
+    assert_commit_rows(&reader, 0).await;
+    let applied = writer.commit_operation(command).await.unwrap();
+    assert!(!applied.duplicate);
+    assert_commit_rows(&reader, 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn selected_local_writers_commit_child_history_in_the_parent_session() {
+    for kind in [StoreKind::Fs, StoreKind::Sqlite] {
+        let root = tempfile::tempdir().unwrap();
+        let mut storage = tests::test_storage();
+        storage.store = kind;
+        storage.storage_dir = Some(root.path().to_path_buf());
+        let authority = DurableRuntimeAuthority::open(
+            &storage,
+            SchemaAccess::Migrate,
+            awaken_time::system_clock(),
+        )
+        .await
+        .unwrap();
+        let session = ThreadId("parent-session".into());
+        let request = RunDispatch::new(awaken_dispatch_testkit::worker_http::activation("child"))
+            .for_session(session.clone());
+        let command = claim_dispatch(&authority, request).await;
+        let thread = &command.operation.commit.thread_id;
+        let opened = authority.open_commit(&session.0).await.unwrap();
+        let writer = authority.clone().run_commits();
+
+        let mut wrong_thread = command.clone();
+        wrong_thread.operation.commit.thread_id = session;
+        wrong_thread.operation.payload_hash =
+            commit_payload_hash(&wrong_thread.operation.commit).unwrap();
+        let error = writer.commit_operation(wrong_thread).await.unwrap_err();
+        assert_eq!(error.kind, RunErrorKind::BadRequest);
+        assert!(
+            error
+                .message
+                .contains("does not match claimed dispatch thread")
+        );
+
+        let receipt = writer.commit_operation(command.clone()).await.unwrap();
+        assert_eq!(receipt.thread_version, 1);
+        let replay = writer.commit_operation(command.clone()).await.unwrap();
+        assert!(replay.duplicate);
+        assert_eq!(receipt.commit_sequence, replay.commit_sequence);
+        let snapshot = opened
+            .recovery_snapshot(thread, &command.claim.run_id)
+            .await
+            .unwrap();
+        assert_eq!(snapshot.messages, command.operation.commit.messages);
+        assert_eq!(
+            opened
+                .events_after(RunLifecycleCursor(0), 10)
+                .await
+                .unwrap()
+                .events
+                .len(),
+            1
+        );
+        assert_eq!(snapshot.state, command.operation.commit.state);
+        assert!(!authority.durable_thread_exists(&thread.0).await.unwrap());
+        assert!(authority.shared_lifecycle_feed().is_none());
+    }
+}

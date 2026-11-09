@@ -60,7 +60,9 @@ use awaken_runtime_contract::runtime_context::{
 use tracing::Instrument;
 
 use crate::Error;
-use crate::commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
+use crate::commit_fence::{
+    ClaimedCommitCoordinator, ClaimedRunCommit, CoordinatorRunCommits, GuardedRunCommit,
+};
 use crate::execution_capacity::ExecutionCapacity;
 use crate::worker_context::WorkerContext;
 use crate::{
@@ -1627,9 +1629,10 @@ impl DispatchWorker<AnyDispatchStore> {
         let projection = Arc::new(crate::RecoveryProjection::new());
         let local = matches!(binding.placement(), DispatchTopology::Local(_));
         let claimed_commit: Arc<dyn ClaimedRunCommit> = match binding.placement() {
-            DispatchTopology::Local(local) => {
-                Arc::new(GuardedRunCommit::new(commit.clone(), local.clone()))
-            }
+            DispatchTopology::Local(local) => match binding.local_run_commits() {
+                Some(writer) => Arc::new(CoordinatorRunCommits(writer.clone())),
+                None => Arc::new(GuardedRunCommit::new(commit.clone(), local.clone())),
+            },
             DispatchTopology::Remote { commit, .. } => commit.clone(),
         };
         let mut worker = construct_bound_dispatch_worker(

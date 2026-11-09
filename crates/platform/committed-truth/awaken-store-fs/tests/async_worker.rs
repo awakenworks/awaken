@@ -17,8 +17,6 @@ use std::time::Duration;
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::observation::Observed;
-use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
 use awaken_agent_contract::thread::commit::operation::{
@@ -26,7 +24,7 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
+use awaken_store_fs::FsCommitCoordinator;
 use awaken_sync::LeafLock;
 use awaken_time::{UtcTime, WallClock};
 
@@ -229,6 +227,10 @@ async fn a_dropped_commit_finishes_before_the_next_commit_is_admitted() {
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn a_parked_checkpoint_read_leaves_the_one_async_worker_free() {
+    use awaken_agent_contract::observation::Observed;
+    use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+    use awaken_store_fs::FsStreamCheckpointStore;
+
     // Decision table. C1 the checkpoint file is a FIFO, so reading it parks
     // until a writer opens it; C2 another task on the one async worker is
     // waiting to run. E1 that task runs while the read is parked: its signal

@@ -20,15 +20,17 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
+use awaken_agent_contract::thread::commit::operation::CommitReceipt;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
 use awaken_deployment_config::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
 use awaken_dispatch::AnyCoordinatorDispatch;
-use awaken_dispatch_contract::WakeSignal;
+use awaken_dispatch_contract::{ClaimedCommitCommand, ClaimedRunCommit, WakeSignal};
 use awaken_dispatch_erasure::{
     LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
 };
+use awaken_runtime_contract::runs::RunError;
 use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -49,10 +51,40 @@ pub(crate) struct DurableRuntimeAuthority {
     dispatch: Arc<AnyCoordinatorDispatch>,
     wake: Option<Arc<dyn WakeSignal>>,
     postgres_commit: Option<Arc<PostgresCommitCoordinator>>,
+    postgres_run_commits: Option<Arc<PostgresClaimedRunCommit>>,
     /// One live execution projection per Thread, opened only on demand. The
     /// registry prunes idle handles so historic Threads do not accumulate
     /// in Coordinator memory after their Hosts are released.
     local_commits: Arc<LocalCommitInitialization>,
+}
+
+/// Both the Dispatch fence and committed truth use the process's same pool.
+struct PostgresClaimedRunCommit {
+    pool: sqlx::PgPool,
+    commit: Arc<PostgresCommitCoordinator>,
+}
+
+#[async_trait::async_trait]
+impl ClaimedRunCommit<RunError> for PostgresClaimedRunCommit {
+    async fn commit_operation(
+        &self,
+        command: ClaimedCommitCommand,
+    ) -> Result<CommitReceipt, RunError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        let dispatch = awaken_dispatch::lock_running_claim_for_commit(&mut tx, &command.claim)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))?
+            .ok_or_else(|| RunError::bad_request("run claim is stale"))?;
+        awaken_dispatch_erasure::validate_claimed_operation(&dispatch, &command)?;
+        self.commit
+            .commit_operation_in_transaction(tx, command.operation)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))
+    }
 }
 
 const MAX_CONCURRENT_LOCAL_COMMIT_INITIALIZATIONS: usize = 8;
@@ -280,7 +312,7 @@ impl DurableRuntimeAuthority {
         let (dispatch, wake) =
             open_dispatch(storage, schema, postgres_pool.clone(), clock.clone()).await?;
         let postgres_commit = if storage.store == StoreKind::Postgres {
-            let pool = postgres_pool.ok_or_else(|| {
+            let pool = postgres_pool.clone().ok_or_else(|| {
                 "Postgres commit requires the process-owned Coordinator pool".to_owned()
             })?;
             let commit = match schema {
@@ -292,12 +324,26 @@ impl DurableRuntimeAuthority {
         } else {
             None
         };
+        let postgres_run_commits = if storage.dispatch_backend == DispatchBackend::Postgres {
+            postgres_commit
+                .as_ref()
+                .zip(postgres_pool)
+                .map(|(commit, pool)| {
+                    Arc::new(PostgresClaimedRunCommit {
+                        pool,
+                        commit: commit.clone(),
+                    })
+                })
+        } else {
+            None
+        };
         Ok(Arc::new(Self {
             commit: CommitAuthorityConfig::from(storage),
             clock,
             dispatch,
             wake,
             postgres_commit,
+            postgres_run_commits,
             local_commits: Arc::new(LocalCommitInitialization::new(
                 MAX_CONCURRENT_LOCAL_COMMIT_INITIALIZATIONS,
             )),
@@ -527,6 +573,27 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
         }
     }
 
+    fn run_commits(self: Arc<Self>) -> Arc<dyn ClaimedRunCommit<RunError>> {
+        match self.postgres_run_commits.clone() {
+            Some(writer) => writer,
+            None => awaken_dispatch_erasure::guarded_runtime_commits(self),
+        }
+    }
+
+    fn shared_recovery_source(
+        &self,
+    ) -> Option<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>> {
+        self.postgres_commit.clone().map(|commit| {
+            commit as Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>
+        })
+    }
+
+    fn shared_lifecycle_feed(&self) -> Option<Arc<dyn RunLifecycleFeed>> {
+        self.postgres_commit
+            .clone()
+            .map(|commit| commit as Arc<dyn RunLifecycleFeed>)
+    }
+
     fn dispatch_store(&self) -> Arc<AnyCoordinatorDispatch> {
         self.dispatch.clone()
     }
@@ -563,10 +630,6 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
 }
 
 impl DurableRuntimeAuthority {
-    pub(super) fn postgres_commit(&self) -> Option<Arc<PostgresCommitCoordinator>> {
-        self.postgres_commit.clone()
-    }
-
     fn commit_path(&self, thread: &str) -> Result<PathBuf, String> {
         let root = self
             .commit
@@ -685,6 +748,10 @@ impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
         store.events_after(cursor, limit).await
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_authority_claimed_commit_tests.rs"]
+mod claimed_commit_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {

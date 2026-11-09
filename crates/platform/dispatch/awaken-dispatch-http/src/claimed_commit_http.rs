@@ -4,8 +4,12 @@
 
 use std::sync::Arc;
 
-use awaken_dispatch::{ClaimedCommitRequest, ClaimedCommitService, WorkerDirectory};
-use awaken_dispatch_contract::MAX_CLAIMED_COMMIT_BODY_BYTES;
+use awaken_dispatch::{ClaimedCommitRequest, WorkerDirectory};
+use awaken_dispatch_contract::{
+    ClaimedCommitCommand, ClaimedRunCommit, MAX_CLAIMED_COMMIT_BODY_BYTES,
+};
+use awaken_runtime_contract::runs::{RunError, RunErrorKind};
+use awaken_session_execution_contract::ApplicationError;
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
     verify_current_worker_identity,
@@ -17,7 +21,7 @@ use serde_json::{Value, json};
 
 /// Mount the sole registered-Worker claimed-commit HTTP surface.
 pub struct ClaimedCommitHttpService {
-    application: Arc<ClaimedCommitService>,
+    application: Arc<dyn ClaimedRunCommit<RunError>>,
     directory: Arc<dyn WorkerDirectory>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     /// The Coordinator's wall clock: a Worker registration's currency is
@@ -28,7 +32,7 @@ pub struct ClaimedCommitHttpService {
 impl ClaimedCommitHttpService {
     #[must_use]
     pub fn new(
-        application: Arc<ClaimedCommitService>,
+        application: Arc<dyn ClaimedRunCommit<RunError>>,
         directory: Arc<dyn WorkerDirectory>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         clock: Arc<dyn awaken_time::WallClock>,
@@ -88,11 +92,23 @@ async fn commit_claimed(
             Json(json!({ "error": "worker incarnation does not own the claim" })),
         );
     }
-    match service.application.apply_claimed(request).await {
+    let command = ClaimedCommitCommand {
+        claim: request.claim,
+        operation: request.operation,
+    };
+    match service.application.commit_operation(command).await {
         Ok(receipt) => (
             StatusCode::OK,
             Json(serde_json::to_value(receipt).expect("CommitReceipt serializes")),
         ),
-        Err(error) => crate::worker_dispatch::respond(Err(error)),
+        Err(error) => {
+            let error = match error.kind {
+                RunErrorKind::BadRequest => ApplicationError::invalid(error.message),
+                RunErrorKind::Conflict => ApplicationError::conflict(error.message),
+                RunErrorKind::Internal => ApplicationError::internal(error.message),
+                RunErrorKind::Unavailable => ApplicationError::unavailable(error.message),
+            };
+            crate::worker_dispatch::respond(Err(error))
+        }
     }
 }

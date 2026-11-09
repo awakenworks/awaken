@@ -20,12 +20,13 @@ use awaken_session_run_delivery::{
 };
 
 use super::{ControlSurface, DeploymentAndResources, ExecutionStores, ProcessBase};
-use crate::coordinator_execution::{ExecutionCompositionError, SessionCommitOwner};
+use crate::coordinator_execution::ExecutionCompositionError;
 
 /// A construction product consumed after the Session application exists.
 /// The application retains delivery roles; service tasks retain the same commit
 /// and observer owners, whose delivery collaborators retain no process services.
 pub(super) struct RegisteredExecution {
+    binding: DispatchBinding,
     pub(super) sessions: Arc<WorkerPlacedSessions>,
     pub(super) dispatch: Arc<ProcessDispatch>,
     pub(super) owner: Arc<AnyCoordinatorDispatch>,
@@ -68,6 +69,7 @@ impl RegisteredExecution {
             base.stores.platform_workspace.clone(),
             Some(base.agents.catalog.clone()),
         ));
+        let binding = DispatchBinding::coordinator(authority.clone());
         let commits = Arc::new(AuthorityCommits::new(authority));
         let reads = Arc::new(CommittedReads::new(commits.clone(), projections.clone()));
         let hub = Arc::new(ThreadEventHub::new());
@@ -111,6 +113,7 @@ impl RegisteredExecution {
             default_model,
         }));
         Ok(Self {
+            binding,
             sessions,
             dispatch,
             owner,
@@ -161,7 +164,11 @@ impl RegisteredExecution {
             sessions: Arc::new(SessionDispatchObserver::new(application.coordination())),
             memory: memory.clone(),
         });
-        let binding = DispatchBinding::local(self.owner.clone());
+        let binding = self.binding;
+        let worker_commits = binding
+            .local_run_commits()
+            .expect("Coordinator binding has its selected writer")
+            .clone();
         let workers = Arc::new(SessionCommitWorkers::new(
             self.commits,
             Some(binding.clone()),
@@ -196,7 +203,7 @@ impl RegisteredExecution {
             dispatch: self.dispatch,
             dispatch_lifecycle: Arc::new(lifecycle),
             coordinator_dispatch: self.owner,
-            commit_owners: Arc::new(SessionCommitOwner(self.reads.clone())),
+            worker_commits,
             worker_recovery: self.reads,
             worker_completion: completion,
             worker_settlement: memory,

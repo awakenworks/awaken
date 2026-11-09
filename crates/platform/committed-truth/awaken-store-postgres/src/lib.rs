@@ -591,68 +591,100 @@ impl CommitCoordinator for PostgresCommitCoordinator {
 impl OperationCoordinator for PostgresCommitCoordinator {
     async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
         self.require_projection_thread(&operation.commit.thread_id)?;
-        operation
-            .commit
-            .validate()
-            .map_err(|error| Error::Rejected(error.to_string()))?;
-        require_commit_operation_identity(&operation)
-            .map_err(|error| Error::Rejected(error.to_string()))?;
-        let operation_ordinal = i64::try_from(operation.operation_id.ordinal).map_err(|_| {
-            Error::Rejected("commit operation ordinal exceeds backend range".to_string())
-        })?;
-        let mut tx = self.pool.begin().await.map_err(reject)?;
-        let current_version = lock_thread_version(&mut tx, &operation.commit.thread_id).await?;
-        let existing = load_receipt(&mut tx, &operation).await?;
-        if let Some(receipt) = replay_commit_operation_receipt(
-            &operation,
-            existing
-                .as_ref()
-                .map(|(thread_id, receipt)| (thread_id, receipt)),
-        )
-        .map_err(|error| Error::Rejected(error.to_string()))?
-        {
-            return Ok(receipt);
+        let tx = self.pool.begin().await.map_err(reject)?;
+        let (receipt, events) = persist_commit_operation(tx, &operation).await?;
+        if let Some(events) = events {
+            let mut projection = lock(&self.projection)?;
+            advance_projection(
+                &mut projection,
+                operation.commit,
+                receipt.commit_sequence,
+                events,
+            );
         }
-        require_commit_operation_payload_hash(&operation)
-            .map_err(|error| Error::Rejected(error.to_string()))?;
-        let current_ordinal: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {NS}_commit WHERE run_id = $1"
-        ))
-        .bind(&operation.operation_id.run_id.0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(reject)?;
-        let current_ordinal = decode_authority(current_ordinal)?;
-        let thread_version =
-            admit_commit_operation_append(&operation, current_version, current_ordinal)
-                .map_err(|error| Error::Rejected(error.to_string()))?;
-        let (next, committed_events) = append_commit(&mut tx, &operation.commit).await?;
-        set_thread_version(&mut tx, &operation.commit.thread_id, thread_version).await?;
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_commit_receipt \
-             (operation_run_id, operation_ordinal, thread_id, payload_hash, \
-              commit_sequence, thread_version) VALUES ($1, $2, $3, $4, $5, $6)"
-        ))
-        .bind(&operation.operation_id.run_id.0)
-        .bind(operation_ordinal)
-        .bind(&operation.commit.thread_id.0)
-        .bind(&operation.payload_hash.0)
-        .bind(encode_authority(next)?)
-        .bind(encode_authority(thread_version)?)
-        .execute(&mut *tx)
-        .await
-        .map_err(reject)?;
-        tx.commit().await.map_err(reject)?;
-        let receipt = applied_commit_receipt(
-            operation.operation_id,
-            operation.payload_hash,
-            next,
-            thread_version,
-        );
-        let mut projection = lock(&self.projection)?;
-        advance_projection(&mut projection, operation.commit, next, committed_events);
         Ok(receipt)
     }
+}
+
+impl PostgresCommitCoordinator {
+    /// Publish to the authoritative store in the caller's transaction. The
+    /// caller can lock the Dispatch claim first and must use this store's
+    /// database. The shared writer reads durable truth and owns no Thread
+    /// execution projection.
+    pub async fn commit_operation_in_transaction(
+        &self,
+        tx: Transaction<'_, Postgres>,
+        operation: CommitOperation,
+    ) -> Result<CommitReceipt, Error> {
+        self.require_projection_thread(&operation.commit.thread_id)?;
+        persist_commit_operation(tx, &operation)
+            .await
+            .map(|(receipt, _)| receipt)
+    }
+}
+
+async fn persist_commit_operation(
+    mut tx: Transaction<'_, Postgres>,
+    operation: &CommitOperation,
+) -> Result<(CommitReceipt, Option<Vec<EventRecord>>), Error> {
+    operation
+        .commit
+        .validate()
+        .map_err(|error| Error::Rejected(error.to_string()))?;
+    require_commit_operation_identity(operation)
+        .map_err(|error| Error::Rejected(error.to_string()))?;
+    let operation_ordinal = i64::try_from(operation.operation_id.ordinal).map_err(|_| {
+        Error::Rejected("commit operation ordinal exceeds backend range".to_string())
+    })?;
+    let current_version = lock_thread_version(&mut tx, &operation.commit.thread_id).await?;
+    let existing = load_receipt(&mut tx, operation).await?;
+    if let Some(receipt) = replay_commit_operation_receipt(
+        operation,
+        existing
+            .as_ref()
+            .map(|(thread_id, receipt)| (thread_id, receipt)),
+    )
+    .map_err(|error| Error::Rejected(error.to_string()))?
+    {
+        tx.rollback().await.map_err(reject)?;
+        return Ok((receipt, None));
+    }
+    require_commit_operation_payload_hash(operation)
+        .map_err(|error| Error::Rejected(error.to_string()))?;
+    let current_ordinal: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM {NS}_commit WHERE run_id = $1"
+    ))
+    .bind(&operation.operation_id.run_id.0)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(reject)?;
+    let current_ordinal = decode_authority(current_ordinal)?;
+    let thread_version = admit_commit_operation_append(operation, current_version, current_ordinal)
+        .map_err(|error| Error::Rejected(error.to_string()))?;
+    let (next, committed_events) = append_commit(&mut tx, &operation.commit).await?;
+    set_thread_version(&mut tx, &operation.commit.thread_id, thread_version).await?;
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_commit_receipt \
+             (operation_run_id, operation_ordinal, thread_id, payload_hash, \
+              commit_sequence, thread_version) VALUES ($1, $2, $3, $4, $5, $6)"
+    ))
+    .bind(&operation.operation_id.run_id.0)
+    .bind(operation_ordinal)
+    .bind(&operation.commit.thread_id.0)
+    .bind(&operation.payload_hash.0)
+    .bind(encode_authority(next)?)
+    .bind(encode_authority(thread_version)?)
+    .execute(&mut *tx)
+    .await
+    .map_err(reject)?;
+    tx.commit().await.map_err(reject)?;
+    let receipt = applied_commit_receipt(
+        operation.operation_id.clone(),
+        operation.payload_hash.clone(),
+        next,
+        thread_version,
+    );
+    Ok((receipt, Some(committed_events)))
 }
 
 async fn lock_thread_version(

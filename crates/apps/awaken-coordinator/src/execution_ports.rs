@@ -16,7 +16,7 @@
 //! |---|---|---|
 //! | AI SDK / AG-UI / A2A Runs | `SessionRuns`, `RunCapabilities` thread scope | `session_runs`: the root builds the `SessionRunApplication` and binds it back as background submission |
 //! | Durable-ingress verbs | `SessionRuns` | `durable_runs` (session-runtime contract) |
-//! | Worker claim / settle / commit transport | coordinator dispatch, commit owner, recovery, completion, settlement, stream, file content | the `worker_*`, `coordinator_dispatch` and `commit_owners` ports; the commit-owner adapter lives in the root |
+//! | Worker claim / settle / commit transport | coordinator dispatch, commit owner, recovery, completion, settlement, stream, file content | the `worker_*`, `coordinator_dispatch` and `worker_commits` ports; the commit-owner adapter lives in the root |
 //! | Pool, terminal reconciliation (commit-boundary Workers), drain | `CoordinatorRoles` | `dispatch_lifecycle` ([`ProcessDispatchLifecycle`], dispatch-execution) implemented once by Run delivery's `SessionDispatchLifecycle` |
 //! | Child-Run coordination binding, committed-progress wakeup | `SessionApplicationBinding` (session-execution contract) | bound once by the root before the Coordinator exists |
 //! | Worker observation reads | coordinator dispatch, looked up per request | `coordinator_dispatch`, given at construction |
@@ -29,9 +29,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
-use awaken_dispatch::{
-    ClaimedOperationCoordinatorResolver, CompletionSink, DispatchSettlementObserver,
-};
+use awaken_dispatch::{CompletionSink, DispatchSettlementObserver};
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_dispatch_execution::{ProcessDispatch, ProcessDispatchLifecycle};
 use awaken_resource_contract::FileContentSource;
@@ -56,8 +54,10 @@ pub struct ExecutionPorts {
     pub dispatch_lifecycle: Arc<dyn ProcessDispatchLifecycle>,
     /// The durable dispatch authority Workers claim and settle through.
     pub coordinator_dispatch: Arc<AnyCoordinatorDispatch>,
-    /// The Session commit owner every claimed commit writes through.
-    pub commit_owners: Arc<dyn ClaimedOperationCoordinatorResolver>,
+    /// The selected claim-fenced writer for authenticated Worker ingress.
+    pub worker_commits: Arc<
+        dyn awaken_dispatch_contract::ClaimedRunCommit<awaken_runtime_contract::runs::RunError>,
+    >,
     /// Committed-run recovery the Worker transport serves.
     pub worker_recovery: Arc<dyn RunRecoverySource>,
     /// Completion of the claimed Runs Workers settle.

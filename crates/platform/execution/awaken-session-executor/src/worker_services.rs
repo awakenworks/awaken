@@ -20,6 +20,15 @@ struct MemoryDispatchSettlementObserver {
     terminal_observers: Arc<crate::memory::MemoryTerminalObservers>,
 }
 
+/// Select the writer for a Coordinator co-located with this executor.
+pub fn coordinator_run_commits(
+    executor: &ExecutorComponents,
+) -> Option<
+    Arc<dyn awaken_dispatch_contract::ClaimedRunCommit<awaken_runtime_contract::runs::RunError>>,
+> {
+    executor.run_assembly.authority.coordinator_run_commits()
+}
+
 impl ExecutorComponents {
     pub fn worker_recovery_source(&self) -> Arc<dyn RunRecoverySource> {
         self.thread_reads.clone()
