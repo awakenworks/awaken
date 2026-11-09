@@ -458,6 +458,19 @@ async fn historical_terminal_configuration_requires_explicit_no_claim_evidence()
     // HC5 legacy/missing/blank identity or retained PVC => no guessed history.
     // The returned candidate changes only storage policy. Backend observation
     // must still match actual Pod/PVC UIDs and fingerprints before any effect.
+    fn history_expectation(
+        handle: Option<&awaken_sandbox_container::ContainerContinuationHandle>,
+    ) -> ContainerObservationExpectation<'_> {
+        ContainerObservationExpectation {
+            purpose: pc::SandboxObservationPurpose::TerminalCleanup,
+            container_id: "not-read-by-pure-candidate",
+            runtime_handle: handle,
+            adoption_fingerprint: None,
+            realization_fingerprint: None,
+            effect_fence: None,
+            retained_attempt: None,
+        }
+    }
     let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap()).with_continuation_volume(
         awaken_container_contract::K8sContinuationVolume {
             storage_class_name: Some("local-path".into()),
@@ -472,9 +485,16 @@ async fn historical_terminal_configuration_requires_explicit_no_claim_evidence()
     expected.insert("continuation_volume".into(), "none".into());
     assert_eq!(
         runtime
-            .historical_terminal_configuration(Some(&handle))
+            .historical_terminal_projection(history_expectation(Some(&handle)))
+            .await
             .unwrap(),
-        Some(expected)
+        Some(
+            awaken_sandbox_container::ContainerTerminalHistory::Candidate {
+                configuration: expected,
+                rootfs: None,
+                resolved_image: None,
+            }
+        )
     );
     for invalid in [
         None,
@@ -498,7 +518,8 @@ async fn historical_terminal_configuration_requires_explicit_no_claim_evidence()
     ] {
         assert!(
             runtime
-                .historical_terminal_configuration(invalid.as_ref())
+                .historical_terminal_projection(history_expectation(invalid.as_ref()))
+                .await
                 .unwrap()
                 .is_none()
         );

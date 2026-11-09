@@ -231,10 +231,66 @@ fn container_v2(
     owned_paths: Vec<String>,
 ) -> ContainerSandboxHandleV2 {
     ContainerSandboxHandleV2 {
+        creation_rootfs: None,
         previous: container_v1(runtime_handle),
         adoption_fingerprint: fingerprint("fp-adoption"),
         realization_fingerprint: fingerprint("fp-realization"),
         owned_paths,
+    }
+}
+
+#[test]
+fn original_rootfs_is_versioned_complete_evidence_and_survives_roundtrip() {
+    // Cause/effect table H: C1 rootfs absent/present; C2 schema agrees with
+    // that evidence; C3 current fingerprints are complete; C4 rootfs wire is
+    // well-typed. H1 absent -> unchanged historical wire. H2 present+C2+C3+C4
+    // -> schema4 and exact round trip. H3 any !C2/!C3/!C4 -> refusal before a
+    // runtime can use the proposed image. No default image fills missing data.
+    let legacy = pc::SandboxHandle::container_v2("scope", container_v2(None, vec![]));
+    assert_eq!(legacy.payload_schema().unwrap().version(), 2, "H1");
+    assert_eq!(legacy.container_creation_rootfs().unwrap(), None, "H1");
+    let rootfs = crate::RootfsPlan::Image("registry/base@sha256:original".into());
+    let mut value = container_v2(None, vec![]);
+    value.creation_rootfs = Some(rootfs.clone());
+    let current = pc::SandboxHandle::container_v2("scope", value);
+    let wire = serde_json::to_value(&current).unwrap();
+    assert_eq!(current.payload_schema().unwrap().version(), 4, "H2");
+    let decoded: pc::SandboxHandle = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        decoded.container_creation_rootfs().unwrap(),
+        Some(rootfs),
+        "H2"
+    );
+    assert_eq!(serde_json::to_value(decoded).unwrap(), wire, "H2");
+    for fault in [
+        "wrong-version",
+        "missing-rootfs",
+        "missing-realization",
+        "invalid-rootfs",
+    ] {
+        let mut invalid = wire.clone();
+        let payload = invalid["payload"].as_object_mut().unwrap();
+        match fault {
+            "wrong-version" => {
+                payload.insert("schema".into(), "container_v2".into());
+            }
+            "missing-rootfs" => {
+                payload.remove("creation_rootfs");
+            }
+            "missing-realization" => {
+                payload.remove("realization_fingerprint");
+            }
+            _ => {
+                payload.insert(
+                    "creation_rootfs".into(),
+                    serde_json::json!({"unknown": "image"}),
+                );
+            }
+        }
+        if let Ok(invalid) = serde_json::from_value::<pc::SandboxHandle>(invalid) {
+            assert!(invalid.container_payload().is_err(), "H3 {fault}");
+            assert!(invalid.container_creation_rootfs().is_err(), "H3 {fault}");
+        }
     }
 }
 

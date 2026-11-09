@@ -5,6 +5,119 @@ use awaken_provisioning_contract::SandboxAdoption;
 use awaken_provisioning_contract::SandboxProvider;
 
 #[tokio::test]
+async fn terminal_cleanup_retains_original_rootfs_after_default_image_upgrade() {
+    // Causes: C1 exact frozen spec and published original handle; C2 a rolling
+    // upgrade changes only the provider's default image; C3 current terminal
+    // effect authority; C4 ordinary recovery or terminal preparation. Effects:
+    // I1 ordinary recovery refuses the changed execution configuration; I2
+    // terminal preparation recovers the original source without another Create,
+    // live Control binding or physical deletion. C5 original scope/spec/rootfs
+    // evidence agrees. Decision rules: R1 C1+C2+C4
+    // recovery -> I1; R2 C1+C2+C3+C4 terminal -> I2. The provider must validate
+    // retained original projection evidence, never bypass its fingerprints.
+    // R3 missing C3 or any !C5 -> incompatible before runtime observation,
+    // with the original source retained and no create/control/delete effects.
+    let runtime = Arc::new(
+        FakeRuntime::default()
+            .with_live_input_projection()
+            .with_native_memory_archive(Vec::new()),
+    );
+    let mut original_provider = provider(runtime.clone());
+    original_provider.default_image = "image:before-upgrade".into();
+    let mut requested = spec("terminal-image-upgrade");
+    requested.environment = None;
+    requested.mounts.clear();
+    let original = original_provider
+        .create_container(&requested)
+        .await
+        .unwrap();
+    let handle = pc::Sandbox::handle(&original);
+    let mut replacement = provider(runtime.clone());
+    replacement.default_image = "image:after-upgrade".into();
+    let fence =
+        pc::SandboxEffectFence::new("terminal-image", "worker", "boot", 1, u64::MAX).unwrap();
+    let ordinary = replacement
+        .observe(
+            SandboxAdoption::new(&requested, &handle),
+            pc::SandboxObservationBasis::Unattached,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(ordinary, pc::SandboxObservation::Incompatible { .. }),
+        "R1"
+    );
+    for row in [
+        "no-fence",
+        "foreign-scope",
+        "changed-spec",
+        "changed-rootfs",
+    ] {
+        let mut candidate_spec = requested.clone();
+        let candidate_handle = if row == "changed-rootfs" {
+            let mut wire = serde_json::to_value(&handle).unwrap();
+            wire["payload"]["creation_rootfs"] =
+                serde_json::to_value(crate::RootfsPlan::Image("tampered-image".into())).unwrap();
+            serde_json::from_value(wire).unwrap()
+        } else {
+            handle.clone()
+        };
+        if row == "foreign-scope" {
+            candidate_spec.scope = "foreign-session".into();
+        }
+        if row == "changed-spec" {
+            candidate_spec.outputs_path = "/foreign-outputs".into();
+        }
+        let mut adoption = SandboxAdoption::new(&candidate_spec, &candidate_handle);
+        adoption.observation_purpose = pc::SandboxObservationPurpose::TerminalCleanup;
+        let basis = if row == "no-fence" {
+            pc::SandboxObservationBasis::Unattached
+        } else {
+            adoption.effect_basis(&fence)
+        };
+        let before = runtime.st.lock().unwrap().observations;
+        assert!(
+            matches!(
+                replacement.observe(adoption, basis).await.unwrap(),
+                pc::SandboxObservation::Incompatible { .. }
+            ),
+            "R3 {row}"
+        );
+        assert_eq!(
+            runtime.st.lock().unwrap().observations,
+            before,
+            "R3 before physical observation {row}"
+        );
+    }
+    let prepared = replacement
+        .prepare_terminal_for_effect(
+            &requested,
+            Some(&handle),
+            None,
+            &fence,
+            &pc::test_support::EffectAuthority::new(&fence),
+        )
+        .await
+        .expect("R2 terminal cleanup must retain the original image projection")
+        .expect("R2 original physical source still exists");
+    assert_eq!(prepared.handle().sandbox_id, requested.scope);
+    let observed = runtime.st.lock().unwrap();
+    assert_eq!(
+        observed.created_command.len(),
+        1,
+        "R2 no replacement Create"
+    );
+    assert!(
+        observed.control_binding_calls.is_empty(),
+        "R2 no live Control"
+    );
+    assert!(
+        observed.removals.is_empty(),
+        "R2 preparation is not disposal"
+    );
+}
+
+#[tokio::test]
 async fn retirement_observes_original_identity_across_execution_configuration_changes() {
     // Cause/effect table RO: C1 purpose=Retirement(unprepared/prepared), Recovery
     // or TerminalCleanup; C2 current runtime/resident configuration exact/drifted;
@@ -36,6 +149,7 @@ async fn retirement_observes_original_identity_across_execution_configuration_ch
             let foreign = pc::SandboxHandle::container_v2(
                 "foreign-session",
                 crate::ContainerSandboxHandleV2 {
+                    creation_rootfs: None,
                     previous: handle.container_payload().unwrap(),
                     adoption_fingerprint: handle.container_adoption_fingerprint().unwrap().unwrap(),
                     realization_fingerprint: handle.realization_fingerprint().unwrap().clone(),

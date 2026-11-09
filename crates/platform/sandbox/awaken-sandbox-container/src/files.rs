@@ -296,6 +296,7 @@ mod tests {
             runtime_handle: None,
             continuation_excluded_paths: Vec::new(),
             adoption_fingerprint: None,
+            creation_rootfs: None,
             realization_fingerprint: None,
             memory_materializations: Vec::new(),
             owned_paths: awaken_sync::LeafLock::new(Vec::new()),

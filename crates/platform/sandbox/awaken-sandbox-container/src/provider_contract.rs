@@ -391,6 +391,7 @@ pub struct DecodedContainerHandle {
     pub payload: crate::ContainerSandboxHandleV1,
     pub adoption_fingerprint: Option<pc::SandboxRealizationFingerprint>,
     pub realization_fingerprint: Option<pc::SandboxRealizationFingerprint>,
+    pub creation_rootfs: Option<crate::RootfsPlan>,
 }
 
 impl DecodedContainerHandle {
@@ -399,6 +400,7 @@ impl DecodedContainerHandle {
             payload: handle.container_payload()?,
             adoption_fingerprint: handle.container_adoption_fingerprint()?,
             realization_fingerprint: handle.realization_fingerprint().cloned(),
+            creation_rootfs: handle.container_creation_rootfs()?,
         })
     }
 }
