@@ -139,35 +139,82 @@ pub(super) async fn recover(
     plan: &ContainerPlan,
     plan_fingerprint: &str,
     evidence: &pc::SandboxRestorationEvidence,
+    effect: pc::SandboxEffect<'_>,
 ) -> Result<Option<awaken_sandbox_container::RuntimeRestoreTarget>, RuntimeError> {
-    let Some(observation) = observe(runtime, id, plan, plan_fingerprint, evidence, None).await?
-    else {
+    effect
+        .admit()
+        .map_err(|_| RuntimeError::EffectFenceExpired)?;
+    let observed = observe(runtime, id, plan, plan_fingerprint, evidence, None).await;
+    effect
+        .admit()
+        .map_err(|_| RuntimeError::EffectFenceExpired)?;
+    let Some(observation) = observed? else {
         return Ok(None);
     };
-    let name = observation.pod.name_any();
-    let uid = observation
-        .pod
+    let name = converge(
+        runtime,
+        id,
+        observation.pod,
+        plan,
+        plan_fingerprint,
+        evidence,
+        effect,
+    )
+    .await?;
+    Ok(Some(awaken_sandbox_container::RuntimeRestoreTarget {
+        container_id: name,
+        disposition: pc::SandboxRestoreTargetDisposition::Recovered,
+    }))
+}
+
+/// One completion edge for a verified new or recovered Pod. Participants,
+/// metadata retries and readiness all retain this same current effect and UID.
+pub(super) async fn converge(
+    runtime: &K8sRuntime,
+    id: &str,
+    mut pod: Pod,
+    plan: &ContainerPlan,
+    plan_fingerprint: &str,
+    evidence: &pc::SandboxRestorationEvidence,
+    effect: pc::SandboxEffect<'_>,
+) -> Result<String, RuntimeError> {
+    let admit = || effect.admit().map_err(|_| RuntimeError::EffectFenceExpired);
+    admit()?;
+    let name = pod.name_any();
+    let uid = pod
         .metadata
         .uid
         .clone()
         .ok_or_else(|| backend("Kubernetes restore target has no Pod UID"))?;
-    let mut pod = observation.pod;
+    realization::verify_restoration(&pod, evidence)?;
+    if realization::restoration_plan_fingerprint(&pod) != Some(plan_fingerprint) {
+        return Err(backend("restore convergence changed its original plan"));
+    }
     if pod
         .metadata
         .annotations
         .as_ref()
         .is_some_and(|values| values.contains_key(participants::DECLARATION))
     {
+        let already_published = participants::retained(&pod)?.is_some();
         participants::realize(
             runtime,
-            pod,
+            pod.clone(),
             &k8s_runtime_id(id)?,
             plan,
             None,
-            Some((evidence, plan_fingerprint)),
+            Some((evidence, plan_fingerprint, effect)),
         )
         .await?;
-        pod = runtime.pods().get(&name).await.map_err(backend)?;
+        admit()?;
+        if !already_published {
+            let observed = runtime.pods().get(&name).await;
+            admit()?;
+            pod = observed.map_err(backend)?;
+        }
+        if pod.metadata.uid.as_deref() != Some(uid.as_str()) {
+            return Err(backend("restore convergence changed the exact Pod UID"));
+        }
         realization::verify_restoration(&pod, evidence)?;
         if realization::restoration_plan_fingerprint(&pod) != Some(plan_fingerprint) {
             return Err(backend(
@@ -175,14 +222,27 @@ pub(super) async fn recover(
             ));
         }
     }
-    participants::metadata::transfer_runtime_owner(&runtime.pods(), pod, &uid, &runtime.owner_id)
-        .await?;
+    participants::metadata::transfer_runtime_owner(
+        &runtime.pods(),
+        pod,
+        &uid,
+        &runtime.owner_id,
+        &admit,
+    )
+    .await?;
+    admit()?;
     let wait = runtime.unschedulable_wait;
-    realization::await_pod_ready(&runtime.pods(), &name, wait, runtime.clock.as_ref()).await?;
-    Ok(Some(awaken_sandbox_container::RuntimeRestoreTarget {
-        container_id: name,
-        disposition: pc::SandboxRestoreTargetDisposition::Recovered,
-    }))
+    realization::await_pod_ready(
+        &runtime.pods(),
+        &name,
+        wait,
+        runtime.clock.as_ref(),
+        &uid,
+        &admit,
+    )
+    .await?;
+    admit()?;
+    Ok(name)
 }
 
 pub(super) async fn restoration_evidence(

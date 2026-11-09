@@ -710,6 +710,9 @@ enum PublicationFault {
     ReplyAttempt,
     ReplyResults,
     Revoke(Arc<std::sync::atomic::AtomicBool>),
+    // A successful read response can change delivery authority or target
+    // identity without inventing a metadata-conflict write.
+    AfterGet(Arc<dyn Fn(&mut serde_json::Value) + Send + Sync>),
 }
 
 fn projected_client(
@@ -732,7 +735,17 @@ fn projected_client(
         async move {
             let method = request.method().clone();
             let path = request.uri().path().to_owned();
-            let (code, body) = if method == http::Method::POST {
+            let after_get = {
+                let mut pending = faults.lock().unwrap();
+                if method == http::Method::GET
+                    && matches!(pending.front(), Some(PublicationFault::AfterGet(_)))
+                {
+                    pending.pop_front()
+                } else {
+                    None
+                }
+            };
+            let (code, mut body) = if method == http::Method::POST {
                 writes.fetch_add(1, Ordering::SeqCst);
                 let mut body: serde_json::Value =
                     serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
@@ -772,7 +785,14 @@ fn projected_client(
                     serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
                         .unwrap();
                 put_bodies.lock().unwrap().push(body.clone());
-                let fault = faults.lock().unwrap().pop_front();
+                let fault = {
+                    let mut pending = faults.lock().unwrap();
+                    if matches!(pending.front(), Some(PublicationFault::AfterGet(_))) {
+                        None
+                    } else {
+                        pending.pop_front()
+                    }
+                };
                 projected_replace(&objects, &path, body, fault)?
             } else {
                 assert_eq!(
@@ -796,6 +816,9 @@ fn projected_client(
                     }
                 }
             };
+            if let Some(PublicationFault::AfterGet(change)) = after_get {
+                change(&mut body);
+            }
             Ok::<_, std::io::Error>(
                 Response::builder()
                     .status(code)
@@ -1154,6 +1177,7 @@ async fn metadata_owner_cas_matrix(
             pod,
             original_pod.metadata.uid.as_ref().unwrap(),
             "new-owner",
+            &awaken_worker_fleet_kubernetes::pod_metadata::unfenced_checkpoint,
         )
         .await;
         assert_eq!(result.is_ok(), accepted, "C9/{row}: {result:?}");
@@ -1183,3 +1207,5 @@ async fn metadata_owner_cas_matrix(
         }
     }
 }
+
+mod restore_recovery;

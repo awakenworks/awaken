@@ -948,3 +948,26 @@ response-loss, superseded/revoked authority, interrupted I/O, terminal takeover
 and exact-target recovery matrix. Actual ACK Native/OpenCode suspend, physical
 release and file restoration are separate acceptance from source tests. B1
 continues to preserve writable files rather than TCP or browser heap state.
+
+## Amendment 2026-11-10: recovery is an effect-bearing convergence
+
+`ContainerRuntime::recover_restore_target` reads the exact existing target before
+package or host staging, but may also start that container, finish projected
+objects, transfer its runtime label or wait for readiness. It is therefore an
+effect-bearing part of the same restoration, not a read-only exception. Pass the
+same current `SandboxEffect` through recovery as through first acquisition;
+revalidate after backend waits, before each next mutation and before success.
+An absent, superseded or expired grant cannot start or converge a retained
+target. A start failure remains a failure. Both cases preserve the exact target
+and its original staging for the existing terminal cleanup authority.
+
+Reuse the target verifiers, participant publisher, metadata CAS and the existing
+Kubernetes Create transport. All control-client POSTs already cross that broker;
+unsupported restoration coordinates fail there rather than bypassing it. This
+amendment does not add a broker or qualify external-Worker continuation. First
+Kubernetes restoration and recovery share the participant-verification,
+runtime-label and readiness completion edge behind the verified Pod UID. Initial
+live-input installation retains its acquisition scope. Response-loss recovery
+cannot change the target while admitting a subsequent effect. Failure tests cross
+target absence/presence, response positions, authority revocation/replacement/
+expiry/renewal, failed start, unchanged bytes and zero inline disposal.

@@ -1,5 +1,6 @@
 //! Exact restore target acquisition under the canonical Container provider.
 use super::*;
+use pc::test_support::FenceTamper as _;
 
 /*
  * Exact container-target cause/effect decision table (R1-R4, R6-R7).
@@ -309,4 +310,66 @@ async fn revoked_restore_create_response_retains_backend_exposed_host_staging() 
     // staging directory is removed after all assertions; no production target
     // or provider effect is inferred from the refused call.
     remove_host_staging_path(physical.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn retained_restore_recovery_rechecks_the_same_authority_after_its_pending_read() {
+    // C1 an exact existing target survived the previous acquisition; C2 its
+    // recovery read is actually Pending; C3 grant changes by revoke/replace/
+    // expire/renew. R1 first three => refuse before handle/projection work;
+    // R2 renewal => reuse the same target, without creating or deleting it.
+    // These are provider response cuts; backend mutation cuts are separate.
+    for change in ["revoke", "replace", "expire", "renew"] {
+        let runtime = Arc::new(FakeRuntime::default());
+        let provider = provider(runtime.clone());
+        let spec = spec("retained-recovery-authority");
+        let request = restore_request(&spec);
+        let (fence, _) = pc::test_support::fixture_effect(&request.effect_id);
+        let fence = fence.with_persisted(|w| w.expires_at_unix_ms -= 1).unwrap();
+        let authority = pc::test_support::EffectAuthority::new(&fence);
+        let effect = pc::SandboxEffect::Fenced {
+            fence: &fence,
+            authority: &authority,
+        };
+        let _original = provider
+            .acquire_restore_environment(&spec, &request, effect)
+            .await
+            .unwrap();
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let targets = {
+            let mut state = runtime.st.lock().unwrap();
+            state.restore_queries.clear();
+            state.restore_query_gate = Some(("recover", gate.clone()));
+            state.restore_targets.clone()
+        };
+        let mut pending = Box::pin(provider.acquire_restore_environment(&spec, &request, effect));
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        match change {
+            "revoke" => authority.set(None),
+            "replace" => {
+                let mut successor = fence.clone();
+                successor.reassign();
+                authority.set(Some((successor, std::time::Duration::from_secs(1))));
+            }
+            "expire" => authority.set(Some((fence.clone(), std::time::Duration::ZERO))),
+            "renew" => authority.set(Some((
+                fence.with_persisted(|w| w.expires_at_unix_ms += 1).unwrap(),
+                std::time::Duration::from_secs(1),
+            ))),
+            _ => unreachable!(),
+        }
+        gate.add_permits(1);
+        assert_eq!(pending.await.is_ok(), change == "renew", "R1/R2 {change}");
+        let state = runtime.st.lock().unwrap();
+        assert_eq!(state.restore_targets, targets, "original targets retained");
+        assert_eq!(state.restore_creates, 1);
+        assert_eq!(state.restore_disposals, 0);
+        if change != "renew" {
+            assert_eq!(state.restore_queries.len(), 1, "R1 no next query");
+        }
+    }
 }

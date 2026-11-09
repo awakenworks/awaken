@@ -84,8 +84,14 @@ pub(super) async fn prepare(
         .uid
         .clone()
         .ok_or_else(|| backend("created pod has no UID"))?;
-    participants::metadata::transfer_runtime_owner(&pods, created, &pod_uid, &runtime.owner_id)
-        .await?;
+    participants::metadata::transfer_runtime_owner(
+        &pods,
+        created,
+        &pod_uid,
+        &runtime.owner_id,
+        &|| context.admit_current_effect().map_err(backend),
+    )
+    .await?;
     Ok(name)
 }
 
@@ -182,7 +188,15 @@ pub(super) async fn converge(
     .await?;
     let wait = runtime.unschedulable_wait;
     let pods = runtime.pods();
-    let ready = realization::await_pod_ready(&pods, pod_name, wait, runtime.clock.as_ref());
+    let admit = || context.admit_current_effect().map_err(backend);
+    let ready = realization::await_pod_ready(
+        &pods,
+        pod_name,
+        wait,
+        runtime.clock.as_ref(),
+        expected_pod_uid,
+        &admit,
+    );
     match ready.await {
         Err(error @ RuntimeError::CapacityUnavailable(_)) => {
             // Hand the claim back only once this exact Pending Pod is gone; a
@@ -190,7 +204,6 @@ pub(super) async fn converge(
             if let Some(effect_fence) = context.effect_fence {
                 runtime.validate_effect_fence(effect_fence)?;
             }
-            let admit = || context.admit_current_effect().map_err(backend);
             dispose_unscheduled_pod(
                 runtime,
                 pod_name,
@@ -409,16 +422,16 @@ pub(super) async fn restore_or_adopt(
             "restore projected-object CAS changed its original operation",
         ));
     }
-    participants::metadata::transfer_runtime_owner(
-        &runtime.pods(),
+    let name = super::restore::converge(
+        runtime,
+        id,
         published,
-        &pod_uid,
-        &runtime.owner_id,
+        plan,
+        plan_fingerprint,
+        evidence,
+        effect,
     )
     .await?;
-    admit()?;
-    let wait = runtime.unschedulable_wait;
-    realization::await_pod_ready(&runtime.pods(), &name, wait, runtime.clock.as_ref()).await?;
     admit()?;
     live_inputs::project_manifest(runtime, &name, plan).await?;
     admit()?;
@@ -543,6 +556,9 @@ mod tests {
             let fence =
                 SandboxEffectFence::new("create-effect", "worker", "worker-boot", 1, u64::MAX)
                     .unwrap();
+            // U1-U3 are authorized mutations: a static correlation stamp alone
+            // cannot satisfy the owner-transfer callback's current-grant check.
+            let authority = pc::test_support::EffectAuthority::new(&fence);
             let attempt = awaken_sandbox_container::engine::fresh_create_attempt();
             let intent = ContainerRealizationIntent::Create;
             let context = ContainerRealizationContext::new(
@@ -551,7 +567,11 @@ mod tests {
                 Some(&fence),
                 &intent,
                 &attempt,
-            );
+            )
+            .with_effect(pc::SandboxEffect::Fenced {
+                fence: &fence,
+                authority: &authority,
+            });
             let result = prepare(&runtime, &context, &plan, &fingerprint).await;
             if changed_uid {
                 let message = result

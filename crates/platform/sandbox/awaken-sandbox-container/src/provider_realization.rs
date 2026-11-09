@@ -62,7 +62,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // can therefore recover a completed target without reopening sources.
         let recovered = self
             .runtime
-            .recover_restore_target(&runtime_scope, &plan, &plan_fingerprint, &evidence)
+            .recover_restore_target(&runtime_scope, &plan, &plan_fingerprint, &evidence, effect)
             .await
             .map_err(pc::SandboxError::from)?;
         request.admit_effect(effect)?;

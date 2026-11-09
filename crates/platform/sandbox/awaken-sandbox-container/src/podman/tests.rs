@@ -10,9 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use awaken_provisioning_contract::ProcessHandle;
 
-use crate::{NetworkMode, RootfsPlan};
+use crate::test_support::container_plan as plan;
 
 use super::*;
+
+mod restore_recovery;
 
 #[tokio::test]
 async fn restored_disposal_keeps_immutable_id_and_current_authority_at_each_adapter_response() {
@@ -433,31 +435,6 @@ async fn observation_preserves_absence_backend_and_host_bind_recovery_causes() {
         .is_err(),
         "R4"
     );
-}
-
-fn plan() -> ContainerPlan {
-    ContainerPlan {
-        image: "img:latest".into(),
-        command: vec!["/agent".into()],
-        env: vec![],
-        control_services: Default::default(),
-        packages: Default::default(),
-        binds: vec![],
-        outputs_volume: "/out".into(),
-        network: NetworkMode::None,
-        egress_identity: crate::EgressRealizationIdentity {
-            network: NetworkMode::None,
-            proxy_endpoint: None,
-            capability_ttl_secs: None,
-            issuer_revision: None,
-            ephemeral_capability: false,
-        },
-        requests: pc::ResourceRequests::default(),
-        limits: pc::ResourceLimits::default(),
-        filesystem_continuity: pc::FilesystemContinuity::Retained,
-        memory_mounts: vec![],
-        rootfs: RootfsPlan::Image("img:latest".into()),
-    }
 }
 
 #[test]

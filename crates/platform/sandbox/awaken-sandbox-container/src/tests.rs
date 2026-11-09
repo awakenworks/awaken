@@ -3661,37 +3661,47 @@ impl ContainerRuntime for FakeRuntime {
         plan: &ContainerPlan,
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<Option<RuntimeRestoreTarget>, RuntimeError> {
+        effect
+            .admit()
+            .map_err(|_| RuntimeError::EffectFenceExpired)?;
         if restoration_plan_fingerprint(plan) != plan_fingerprint {
             return Err(RuntimeError::Backend(
                 "fake restore target plan mismatch".into(),
             ));
         }
         let cid = format!("restore-{id}");
-        let state = self.st.lock().unwrap();
-        let Some(observed) = state.restore_targets.get(&cid) else {
-            return Ok(None);
-        };
-        if observed != evidence {
-            return Err(RuntimeError::Backend(
-                "fake restore target evidence mismatch".into(),
-            ));
-        }
-        if state
-            .restore_plan_fingerprints
-            .get(&cid)
-            .map(String::as_str)
-            != Some(plan_fingerprint)
         {
-            return Err(RuntimeError::Backend(
-                "fake physical restore plan mismatch".into(),
-            ));
+            let state = self.st.lock().unwrap();
+            let Some(observed) = state.restore_targets.get(&cid) else {
+                return Ok(None);
+            };
+            if observed != evidence {
+                return Err(RuntimeError::Backend(
+                    "fake restore target evidence mismatch".into(),
+                ));
+            }
+            if state
+                .restore_plan_fingerprints
+                .get(&cid)
+                .map(String::as_str)
+                != Some(plan_fingerprint)
+            {
+                return Err(RuntimeError::Backend(
+                    "fake physical restore plan mismatch".into(),
+                ));
+            }
+            if state.alive.get(&cid) != Some(&true) {
+                return Err(RuntimeError::Backend(
+                    "fake exact restore target is not alive".into(),
+                ));
+            }
         }
-        if state.alive.get(&cid) != Some(&true) {
-            return Err(RuntimeError::Backend(
-                "fake exact restore target is not alive".into(),
-            ));
-        }
+        self.restore_query_response("recover", &cid).await;
+        effect
+            .admit()
+            .map_err(|_| RuntimeError::EffectFenceExpired)?;
         Ok(Some(RuntimeRestoreTarget {
             container_id: cid,
             disposition: pc::SandboxRestoreTargetDisposition::Recovered,
