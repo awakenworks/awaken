@@ -193,7 +193,10 @@ impl AvailableModels {
                         .map(ModelEntry::from_publication)
                         .collect()
                 })
-                .map_err(|error| error.to_string()),
+                .map_err(|error| {
+                    tracing::warn!(%error, "executable model directory projection failed");
+                    error.to_string()
+                }),
         }
     }
 }

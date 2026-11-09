@@ -50,6 +50,21 @@ id_newtype!(
     ProtocolEndpointId
 );
 
+impl ProtocolEndpointId {
+    /// The one logical Offering identity of one broker/provider/dialect surface.
+    #[must_use]
+    pub fn for_brokered(broker_id: &str, provider_id: &str, api_dialect: &str) -> Self {
+        Self::new(format!(
+            "{}{provider_id}:{api_dialect}",
+            brokered_endpoint_prefix(broker_id)
+        ))
+    }
+}
+
+fn brokered_endpoint_prefix(broker_id: &str) -> String {
+    format!("brokered:{broker_id}:")
+}
+
 /// The wire/model-API dialect a surface speaks. Replaces oversight's `WireFormat`;
 /// the credential/model bindings are resolved against this dialect (ADR-0043).
 #[derive(
@@ -873,7 +888,7 @@ impl ProviderCatalog {
                 "broker id and control base URL are required".into(),
             ));
         }
-        let endpoint_prefix = format!("brokered:{broker_id}:");
+        let endpoint_prefix = brokered_endpoint_prefix(broker_id);
         let mut normalized = BTreeMap::new();
         let previous_model_ids = self
             .offerings
@@ -896,11 +911,8 @@ impl ProviderCatalog {
                     "provider, model and positive publication revision are required".into(),
                 ));
             }
-            let endpoint_id = ProtocolEndpointId::new(format!(
-                "{endpoint_prefix}{}:{}",
-                provider,
-                model.dialect.as_str()
-            ));
+            let endpoint_id =
+                ProtocolEndpointId::for_brokered(broker_id, provider, model.dialect.as_str());
             let revision = i64::try_from(model.publication_revision).map_err(|_| {
                 CatalogError::InvalidBrokeredProjection(
                     "publication revision exceeds the local catalog range".into(),

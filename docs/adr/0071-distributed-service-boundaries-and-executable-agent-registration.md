@@ -339,3 +339,37 @@ cause rather than an invented missing-provider executable binding error.
 - [Managed Deployments](../design/managed-deployments.md)
 - [Resources, Memory, Files, and Skills](../design/resources-memory-files-skills.md)
 - [Credentials and Vaults](../design/credentials-and-vaults.md)
+
+
+## 2026-11-09 amendment: source-owned public model references
+
+Executable registrations remain the Coordinator's sole current/history input
+for the public Models directory and Dream readiness. Their immutable Provider
+references are source-owned: versioned Config references and hosted route
+publication references are different valid contracts. A generic registration
+reader must not reinterpret every Provider reference as Config `id@version`.
+
+Reuse the existing catalog, publication-time history, selection value and
+Managed model-id codec. Modify their one projection to accept a pure source
+projector, installed once through the existing Coordinator composition seams
+before its first model read. The only new boundary is that stateless projector
+port; it owns no registrations, catalog, model state, credentials or router.
+Standalone composition uses the canonical Config/BackendOwned/Host projection.
+A hosted product projects its own immutable routing references to its existing
+logical Offering coordinate and delegates other source contracts to that same
+canonical projection. The source owner must not expose private route ids or
+query mutable route state while rendering a frozen registration.
+
+Current and historical registrations run through the same configured projector
+under the catalog's existing read lock. Their canonical public IDs determine
+reachability and first durable publication time. Invalid source metadata fails
+the directory rather than becoming an empty result or a guessed priority. The
+public ID is then parsed by the existing Managed codec and resolved by the
+existing authoring/publication owner when a new Agent is created. Existing
+snapshots and execution route/credential pins are never rewritten by discovery.
+
+The existing refresh decorator must forward the selected catalog's complete
+`current_model_publications` read under its refresh admission. Rebuilding it from
+`current_registrations` would discard both source projection and historical
+publication time. The contract's ephemeral-fixture default is not an alternative
+production read path; Models and Dream consume the same delegated owner result.

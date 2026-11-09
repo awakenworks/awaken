@@ -32,7 +32,8 @@ pub mod capability;
 mod managed_model_id;
 mod model_selection;
 pub use managed_model_id::{
-    ManagedModelIdError, ManagedModelIdRefusal, parse_managed_model_id, render_managed_model_id,
+    CanonicalPublishedModelReferenceProjector, ManagedModelIdError, ManagedModelIdRefusal,
+    PublishedModelReferenceProjector, parse_managed_model_id, render_managed_model_id,
 };
 pub use model_selection::ModelSelection;
 mod session_profile;
@@ -237,7 +238,11 @@ pub trait ExecutableAgentInventorySource: Send + Sync {
         workspace_id: &str,
     ) -> Result<Vec<PublishedModelReference>, ExecutableAgentRegistrationError> {
         let current = self.current_registrations(workspace_id).await?;
-        project_current_model_publications(current.iter(), current.iter())
+        project_current_model_publications(
+            current.iter(),
+            current.iter(),
+            &crate::CanonicalPublishedModelReferenceProjector,
+        )
     }
 }
 
@@ -307,6 +312,7 @@ impl ModelPublicationHistory {
 pub fn project_current_model_publications<'a>(
     current: impl IntoIterator<Item = &'a ExecutableAgentRegistration>,
     history: impl IntoIterator<Item = &'a ExecutableAgentRegistration>,
+    projector: &dyn PublishedModelReferenceProjector,
 ) -> Result<Vec<PublishedModelReference>, ExecutableAgentRegistrationError> {
     fn is_unpublished_preview(registration: &ExecutableAgentRegistration) -> bool {
         registration.agent_id.starts_with(PREVIEW_AGENT_PREFIX)
@@ -323,7 +329,7 @@ pub fn project_current_model_publications<'a>(
         if is_unpublished_preview(registration) {
             continue;
         }
-        for model in registration_model_references(registration)? {
+        for model in registration_model_references(registration, projector)? {
             history_by_model
                 .entry(model)
                 .or_default()
@@ -335,7 +341,7 @@ pub fn project_current_model_publications<'a>(
         if is_unpublished_preview(registration) {
             continue;
         }
-        reachable.extend(registration_model_references(registration)?);
+        reachable.extend(registration_model_references(registration, projector)?);
     }
     Ok(reachable
         .into_iter()
@@ -351,12 +357,23 @@ pub fn project_current_model_publications<'a>(
 /// The sole extraction rule for primary and fallback models in a publication.
 pub fn registration_model_references(
     registration: &ExecutableAgentRegistration,
+    projector: &dyn PublishedModelReferenceProjector,
 ) -> Result<Vec<String>, ExecutableAgentRegistrationError> {
     let spec = &registration.snapshot.resolved_spec;
     std::iter::once(&spec.model_binding)
         .chain(spec.model_candidates.iter())
         .map(|candidate| {
-            managed_model_id::render_published_model_id(candidate).map_err(|error| {
+            let project = || {
+                let Some(selection) = projector.project(candidate)? else {
+                    return Ok(None);
+                };
+                let reference = render_managed_model_id(&selection)?;
+                // The sole public grammar gate for every source. A hosted
+                // projector supplies a domain value, never a second codec.
+                parse_managed_model_id(&reference)?;
+                Ok(Some(reference))
+            };
+            project().map_err(|error: ManagedModelIdError| {
                 ExecutableAgentRegistrationError::Invalid(format!(
                     "published model selector is unavailable: {error}"
                 ))
@@ -386,6 +403,7 @@ pub async fn current_model_references(
 
 #[cfg(test)]
 mod tests {
+    mod source_projection;
     use super::*;
     use awaken_runtime_contract::snapshot::AgentId;
     use awaken_runtime_contract::{
@@ -500,7 +518,12 @@ mod tests {
         // rows and is ambiguous when passed back to ordinary Agent creation.
         let one = provider_registration("one@1", "genai", 1_000);
         let two = provider_registration("two@1", "genai", 2_000);
-        let directory = project_current_model_publications([&one, &two], [&one, &two]).unwrap();
+        let directory = project_current_model_publications(
+            [&one, &two],
+            [&one, &two],
+            &crate::CanonicalPublishedModelReferenceProjector,
+        )
+        .unwrap();
         assert_eq!(directory.len(), 2, "E1 both exact routes remain visible");
         for row in directory {
             let parsed = parse_managed_model_id(&row.model_reference)
@@ -539,7 +562,12 @@ mod tests {
         ];
         let entries =
             backends.map(|backend| provider_registration("workspace:route;v=2%@9", backend, 1_000));
-        let directory = project_current_model_publications(entries.iter(), entries.iter()).unwrap();
+        let directory = project_current_model_publications(
+            entries.iter(),
+            entries.iter(),
+            &crate::CanonicalPublishedModelReferenceProjector,
+        )
+        .unwrap();
         assert_eq!(directory.len(), backends.len(), "M1/E1");
         let mut discovered = std::collections::BTreeSet::new();
         for row in directory {
@@ -565,11 +593,21 @@ mod tests {
         ] {
             let corrupt = provider_registration(bad_ref, "genai", 1_000);
             assert!(
-                project_current_model_publications([&corrupt], [&corrupt]).is_err(),
+                project_current_model_publications(
+                    [&corrupt],
+                    [&corrupt],
+                    &crate::CanonicalPublishedModelReferenceProjector
+                )
+                .is_err(),
                 "M3 current {bad_ref}"
             );
             assert!(
-                project_current_model_publications([&valid], [&corrupt, &valid]).is_err(),
+                project_current_model_publications(
+                    [&valid],
+                    [&corrupt, &valid],
+                    &crate::CanonicalPublishedModelReferenceProjector
+                )
+                .is_err(),
                 "M3 history {bad_ref}"
             );
         }
@@ -610,9 +648,13 @@ mod tests {
         let mut preview = registration();
         preview.agent_id = "preview-trial".into();
         assert!(
-            project_current_model_publications([&preview], [&preview])
-                .unwrap()
-                .is_empty(),
+            project_current_model_publications(
+                [&preview],
+                [&preview],
+                &crate::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()
+            .is_empty(),
             "E1"
         );
         assert!(
@@ -627,8 +669,12 @@ mod tests {
         published.publication_sequence = Some(2);
         published.publication_order_verified = true;
         assert_eq!(
-            project_current_model_publications([&preview, &published], [&preview, &published])
-                .unwrap()[0]
+            project_current_model_publications(
+                [&preview, &published],
+                [&preview, &published],
+                &crate::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()[0]
                 .first_published_at_unix_ms,
             Some(1_000),
             "E2"
@@ -637,8 +683,12 @@ mod tests {
         preview.publication_sequence = Some(1);
         preview.publication_order_verified = true;
         assert_eq!(
-            project_current_model_publications([&preview, &published], [&preview, &published])
-                .unwrap()[0]
+            project_current_model_publications(
+                [&preview, &published],
+                [&preview, &published],
+                &crate::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()[0]
                 .first_published_at_unix_ms,
             Some(500),
             "E3"
@@ -666,20 +716,35 @@ mod tests {
         later.publication_sequence = Some(2);
         later.published_at_unix_ms = Some(1_000);
         assert_eq!(
-            project_current_model_publications([&old], [&old]).unwrap()[0]
+            project_current_model_publications(
+                [&old],
+                [&old],
+                &crate::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()[0]
                 .first_published_at_unix_ms,
             Some(2_000),
             "E1"
         );
         assert_eq!(
-            project_current_model_publications([&later], [&old, &later]).unwrap()[0]
+            project_current_model_publications(
+                [&later],
+                [&old, &later],
+                &crate::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()[0]
                 .first_published_at_unix_ms,
             None,
             "E2"
         );
         later.publication_order_verified = true;
         assert_eq!(
-            project_current_model_publications([&later], [&later, &old]).unwrap()[0]
+            project_current_model_publications(
+                [&later],
+                [&later, &old],
+                &crate::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()[0]
                 .first_published_at_unix_ms,
             Some(2_000),
             "E3 recovery order independent"
@@ -687,7 +752,12 @@ mod tests {
         let mut conflicting = old.clone();
         conflicting.published_at_unix_ms = Some(3_000);
         assert_eq!(
-            project_current_model_publications([&later], [&old, &conflicting, &later]).unwrap()[0]
+            project_current_model_publications(
+                [&later],
+                [&old, &conflicting, &later],
+                &crate::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()[0]
                 .first_published_at_unix_ms,
             None,
             "E6"
@@ -697,7 +767,12 @@ mod tests {
         newest.published_at_unix_ms = Some(500);
         newest.publication_order_verified = true;
         assert_eq!(
-            project_current_model_publications([&newest], [&newest, &old, &later]).unwrap()[0]
+            project_current_model_publications(
+                [&newest],
+                [&newest, &old, &later],
+                &crate::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()[0]
                 .first_published_at_unix_ms,
             Some(2_000),
             "E3 one old plus two fenced rows"
@@ -706,15 +781,24 @@ mod tests {
         old_second.publication_sequence = Some(2);
         old_second.published_at_unix_ms = Some(1_500);
         assert_eq!(
-            project_current_model_publications([&newest], [&old, &old_second, &newest],).unwrap()
-                [0]
-            .first_published_at_unix_ms,
+            project_current_model_publications(
+                [&newest],
+                [&old, &old_second, &newest],
+                &crate::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()[0]
+                .first_published_at_unix_ms,
             None,
             "E5 two old rows remain ambiguous after a new fenced row"
         );
         old.publication_order_verified = true;
         assert_eq!(
-            project_current_model_publications([&later], [&later, &old]).unwrap()[0]
+            project_current_model_publications(
+                [&later],
+                [&later, &old],
+                &crate::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()[0]
                 .first_published_at_unix_ms,
             Some(2_000),
             "E4"
