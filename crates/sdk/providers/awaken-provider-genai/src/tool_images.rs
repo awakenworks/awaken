@@ -18,8 +18,8 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::ImageInput;
 use awaken_runtime_contract::llm::ChatMessage;
 
-/// Images one assistant turn's tool calls may deliver together.
-pub const MAX_TOOL_IMAGES_PER_TURN: usize = 8;
+/// Images one assistant step's tool calls may deliver together.
+pub const MAX_TOOL_IMAGES_PER_STEP: usize = 8;
 /// Images from tools one request may carry, across the whole visible history.
 pub const MAX_TOOL_IMAGES_PER_REQUEST: usize = 20;
 /// Base64 bytes of tool images one request may carry. Provider request bodies are
@@ -29,9 +29,9 @@ pub const MAX_TOOL_IMAGE_BYTES_PER_REQUEST: usize = 20 * 1024 * 1024;
 const UNSUPPORTED_NOTE: &str = "Error: the current model does not support image input, so this image was not delivered. Use numeric checks instead.";
 const HISTORY_NOTE: &str = "[Earlier image omitted from this request to stay within the image budget; read the file again if it is still needed.]";
 
-fn turn_limit_note() -> String {
+fn step_limit_note() -> String {
     format!(
-        "Error: this image was not delivered because this turn exceeds the limit of {MAX_TOOL_IMAGES_PER_TURN} images from tools. Read fewer images at once."
+        "Error: this image was not delivered because this turn exceeds the limit of {MAX_TOOL_IMAGES_PER_STEP} images from tools. Read fewer images at once."
     )
 }
 
@@ -50,7 +50,7 @@ fn encoded_size(source: &ImageSource) -> usize {
 
 /// Apply the route's image capability and the request's image budget.
 ///
-/// The current turn, meaning the tool results after the last assistant message,
+/// The current step, meaning the tool results after the last assistant message,
 /// is served first and in call order, and anything over its limits is an error
 /// the model must react to. Older images then fill what remains, newest first,
 /// and anything further is silently expected to age out, so it gets a plain note.
@@ -68,15 +68,18 @@ pub fn shape_tool_result_images(messages: &mut [ChatMessage], image_input: Image
         return;
     }
 
-    let turn_start = messages
+    let step_start = messages
         .iter()
         .rposition(|message| message.role == Role::Assistant)
         .map_or(0, |index| index + 1);
-    let (history, turn) = messages.split_at_mut(turn_start);
+    let (history, step_results) = messages.split_at_mut(step_start);
     let mut count = 0_usize;
     let mut bytes = 0_usize;
 
-    for block in turn.iter_mut().flat_map(|message| &mut message.content) {
+    for block in step_results
+        .iter_mut()
+        .flat_map(|message| &mut message.content)
+    {
         let ContentBlock::ToolResult {
             content, is_error, ..
         } = block
@@ -88,8 +91,8 @@ pub fn shape_tool_result_images(messages: &mut [ChatMessage], image_input: Image
                 continue;
             };
             let size = encoded_size(source);
-            let refusal = if count >= MAX_TOOL_IMAGES_PER_TURN {
-                turn_limit_note()
+            let refusal = if count >= MAX_TOOL_IMAGES_PER_STEP {
+                step_limit_note()
             } else if bytes + size > MAX_TOOL_IMAGE_BYTES_PER_REQUEST {
                 byte_limit_note()
             } else {
@@ -223,24 +226,24 @@ mod tests {
                 .map(|index| tool_image(&format!("c{index}"), "AA=="))
                 .collect::<Vec<_>>()
         };
-        let mut exact = batch(MAX_TOOL_IMAGES_PER_TURN);
+        let mut exact = batch(MAX_TOOL_IMAGES_PER_STEP);
         let untouched = exact.clone();
         shape_tool_result_images(&mut exact, ImageInput::Accepted);
         assert_eq!(exact, untouched);
 
-        let mut over = batch(MAX_TOOL_IMAGES_PER_TURN + 1);
+        let mut over = batch(MAX_TOOL_IMAGES_PER_STEP + 1);
         shape_tool_result_images(&mut over, ImageInput::Accepted);
         assert!(
-            over[..MAX_TOOL_IMAGES_PER_TURN]
+            over[..MAX_TOOL_IMAGES_PER_STEP]
                 .iter()
                 .all(|m| images_in(m) == 1)
         );
-        let refused = &over[MAX_TOOL_IMAGES_PER_TURN];
+        let refused = &over[MAX_TOOL_IMAGES_PER_STEP];
         assert_eq!(images_in(refused), 0);
         assert!(result_is_error(refused));
         assert!(
             awaken_agent_contract::agent::content::extract_text(&refused.content)
-                .contains(&format!("limit of {MAX_TOOL_IMAGES_PER_TURN} images"))
+                .contains(&format!("limit of {MAX_TOOL_IMAGES_PER_STEP} images"))
         );
     }
 

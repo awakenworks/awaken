@@ -15,7 +15,6 @@
 
 use std::sync::Arc;
 
-use awaken_process_startup::SessionCommitOwner;
 use awaken_runtime_contract::runs::Runs;
 use awaken_session_application::{SessionApplication, SessionRunApplication};
 use awaken_session_application_contract::SessionRunBackgroundApplication;
@@ -72,6 +71,10 @@ pub fn coordinator_execution(
         .session_runs()
         .coordinator_dispatch()
         .map_err(|error| CoordinatorExecutionError::Dispatch(error.to_string()))?;
+    let worker_commits =
+        awaken_session_executor::coordinator_run_commits(host).ok_or_else(|| {
+            CoordinatorExecutionError::Dispatch("executor has no local commit authority".to_owned())
+        })?;
     let completion = Arc::new(awaken_session_run_delivery::SettlementWakeup::new(
         host.worker_completion_sink(),
         sessions.lifecycle().reconciliation_wakeup(),
@@ -98,8 +101,8 @@ pub fn coordinator_execution(
         durable_runs: host.session_runs().clone(),
         dispatch: roles.dispatch().clone(),
         dispatch_lifecycle: Arc::new(roles),
+        worker_commits,
         coordinator_dispatch,
-        commit_owners: Arc::new(SessionCommitOwner(host.thread_reads().clone())),
         worker_recovery: host.worker_recovery_source(),
         worker_completion: completion,
         worker_settlement: host.worker_memory_settlement_observer(),

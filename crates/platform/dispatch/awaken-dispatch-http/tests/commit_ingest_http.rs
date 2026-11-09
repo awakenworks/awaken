@@ -9,10 +9,11 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
+use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitOperationId, commit_payload_hash,
+    CommitOperation, CommitOperationId, CommitReceipt, commit_payload_hash,
 };
-use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_coordinator_client::RemoteClaimedRunCommit;
@@ -26,11 +27,36 @@ use awaken_dispatch_http::{ClaimedCommitHttpService, claimed_commit_router};
 use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+use awaken_runtime_contract::runs::RunError;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
 use awaken_worker_transport_security::HeaderWorkerAuthenticator;
+
+struct ObservedCommitWriter {
+    writer: ClaimedCommitService,
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ClaimedRunCommit<RunError> for ObservedCommitWriter {
+    async fn commit(
+        &self,
+        claim: &RunClaim,
+        commit: ThreadCommit,
+    ) -> Result<CommitRecord, CommitError> {
+        self.writer.commit(claim, commit).await
+    }
+
+    async fn commit_operation(
+        &self,
+        command: ClaimedCommitCommand,
+    ) -> Result<CommitReceipt, RunError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.writer.commit_operation(command).await
+    }
+}
 
 struct CurrentWorkerDirectory(RegisteredWorker);
 
@@ -235,8 +261,12 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         .expect("same-incarnation reclaim");
     assert_eq!(current.lease.epoch(), stale.lease.epoch() + 1, "R2/C2");
     let coordinator = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let selected = Arc::new(ObservedCommitWriter {
+        writer: ClaimedCommitService::new(dispatch, coordinator.clone()),
+        calls: AtomicUsize::new(0),
+    });
     let service = Arc::new(ClaimedCommitHttpService::new(
-        Arc::new(ClaimedCommitService::new(dispatch, coordinator.clone())),
+        selected.clone(),
         directory,
         Arc::new(HeaderWorkerAuthenticator),
         awaken_time::system_clock(),
@@ -260,6 +290,7 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         reqwest::StatusCode::UNAUTHORIZED,
         "C2"
     );
+    assert_eq!(selected.calls.load(Ordering::Relaxed), 0);
     assert!(
         CommittedThreadView::committed_messages(
             &*coordinator,
@@ -380,6 +411,9 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         1,
         "R6 leaves truth unchanged"
     );
+    // Stale epoch, invalid body, fresh operation, exact retry. Only
+    // authenticated requests within the wire limit reach the selected writer.
+    assert_eq!(selected.calls.load(Ordering::Relaxed), 4);
 }
 
 /// Cause graph for ambiguous remote commit responses:

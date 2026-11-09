@@ -75,6 +75,7 @@ pub use worker_evidence::{
     WorkerTerminalReconciliation, committed_terminal_ready,
 };
 
+pub use awaken_dispatch_erasure::commit_claimed_operation;
 pub use awaken_dispatch_erasure::{
     AnyCoordinatorDispatch, AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology,
     DurableDispatch, RemoteDispatch,

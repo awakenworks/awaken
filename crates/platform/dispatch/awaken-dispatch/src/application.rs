@@ -7,13 +7,18 @@
 use awaken_session_execution_contract::ApplicationError;
 use std::sync::Arc;
 
-use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
-use awaken_agent_contract::thread::commit::operation::{
-    CommitReceipt, require_commit_operation_payload_hash,
+use awaken_agent_contract::thread::commit::coordinator::{
+    Error as CommitError, OperationCoordinator,
+};
+use awaken_agent_contract::thread::commit::{
+    operation::CommitReceipt,
+    staged::{CommitRecord, ThreadCommit},
 };
 
 use crate::ClaimedCommitRequest;
-use awaken_dispatch_execution::validate_commit_dispatch_binding;
+use awaken_dispatch_contract::{ClaimedCommitCommand, ClaimedRunCommit};
+use awaken_dispatch_execution::commit_claimed_operation;
+use awaken_runtime_contract::runs::{RunError, RunErrorKind};
 use awaken_worker_contract::WorkerProcessEnd;
 
 /// Trusted Coordinator composition resolves an exact running execution domain
@@ -1156,40 +1161,48 @@ impl ClaimedCommitService {
         &self,
         request: ClaimedCommitRequest,
     ) -> Result<CommitReceipt, ApplicationError> {
-        let guard = self
-            .dispatch
-            .lock_commit_epoch(&request.claim)
-            .await
-            .map_err(|error| ApplicationError::internal(error.to_string()))?
-            .ok_or_else(|| ApplicationError::invalid("run claim is stale"))?;
-        let trusted_dispatch = guard.request();
-        validate_commit_dispatch_binding(trusted_dispatch, &request.operation.commit)
-            .map_err(ApplicationError::invalid)?;
-        if request.operation.operation_id.run_id != *trusted_dispatch.run_id() {
-            return Err(ApplicationError::invalid(format!(
-                "commit operation run {} does not match claimed dispatch run {}",
-                request.operation.operation_id.run_id.0,
-                trusted_dispatch.run_id().0
-            )));
-        }
-        require_commit_operation_payload_hash(&request.operation)
-            .map_err(|error| ApplicationError::invalid(error.to_string()))?;
-        // The guarded queue row, never the Worker request, selects the Session
-        // partition. A stale claim returned above before this resolution.
-        let coordinator = self
-            .coordinator
-            .resolve(trusted_dispatch.session_thread_id())
-            .await?;
-        let committed = coordinator
-            .commit_operation(request.operation)
-            .await
-            .map_err(|error| ApplicationError::internal(error.to_string()));
-        match guard.release_after(committed).await {
-            Ok(committed) => committed,
-            Err(error) => Err(ApplicationError::unavailable(format!(
-                "commit claim lock release failed: {error}"
-            ))),
-        }
+        self.commit_operation(ClaimedCommitCommand {
+            claim: request.claim,
+            operation: request.operation,
+        })
+        .await
+        .map_err(|error| match error.kind {
+            RunErrorKind::BadRequest => ApplicationError::invalid(error.message),
+            RunErrorKind::Conflict => ApplicationError::conflict(error.message),
+            RunErrorKind::Internal => ApplicationError::internal(error.message),
+            RunErrorKind::Unavailable => ApplicationError::unavailable(error.message),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl ClaimedRunCommit<RunError> for ClaimedCommitService {
+    async fn commit(
+        &self,
+        _: &crate::RunClaim,
+        _: ThreadCommit,
+    ) -> Result<CommitRecord, CommitError> {
+        Err(CommitError::Rejected(
+            "Coordinator Worker commits require a versioned CommitOperation".to_owned(),
+        ))
+    }
+
+    async fn commit_operation(
+        &self,
+        command: ClaimedCommitCommand,
+    ) -> Result<CommitReceipt, RunError> {
+        commit_claimed_operation(self.dispatch.as_ref(), command, |session| async move {
+            self.coordinator.resolve(&session).await.map_err(|error| {
+                use awaken_session_execution_contract::ApplicationErrorKind;
+                match error.kind {
+                    ApplicationErrorKind::InvalidRequest => RunError::bad_request(error.message),
+                    ApplicationErrorKind::Conflict => RunError::conflict(error.message),
+                    ApplicationErrorKind::Internal => RunError::internal(error.message),
+                    ApplicationErrorKind::Unavailable => RunError::unavailable(error.message),
+                }
+            })
+        })
+        .await
     }
 }
 

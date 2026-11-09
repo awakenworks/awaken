@@ -24,35 +24,12 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 
-use crate::{RecoveryProjection, RunDispatch};
+use crate::RecoveryProjection;
 use crate::{dispatch::ClaimedCommitCommand, dispatch::DispatchCommitAuthority};
 pub use awaken_dispatch_contract::ClaimedRunCommit;
 use awaken_dispatch_contract::CommitEpochGuard;
+pub use awaken_dispatch_erasure::validate_commit_dispatch_binding;
 use awaken_worker_contract::RunClaim;
-
-/// Verify that committed logical Run/Thread truth belongs to the dispatch whose
-/// exact claim is currently fenced. Both embedded and remote workers cross this
-/// helper so topology cannot change the authority check.
-pub fn validate_commit_dispatch_binding(
-    dispatch: &RunDispatch,
-    commit: &ThreadCommit,
-) -> Result<(), String> {
-    if commit.run_id() != dispatch.run_id() {
-        return Err(format!(
-            "commit run {} does not match claimed dispatch run {}",
-            commit.run_id().0,
-            dispatch.run_id().0
-        ));
-    }
-    if &commit.thread_id != dispatch.thread_id() {
-        return Err(format!(
-            "commit thread {} does not match claimed dispatch thread {}",
-            commit.thread_id.0,
-            dispatch.thread_id().0
-        ));
-    }
-    Ok(())
-}
 
 /// Local claim fence around the authority selected at construction.
 /// Versioned callers retain the actual operation port; a plain split reader

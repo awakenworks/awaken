@@ -586,7 +586,8 @@ mod tests {
             .with_backend("thread-a", backend.clone());
             let hook = &plugin.resolve().phase_hooks[0];
             hook.on_phase(&phase_ctx(), &conversation, &Store::new())
-                .await;
+                .await
+                .unwrap();
             assert_eq!(
                 !backend.summarized.lock().unwrap().is_empty(),
                 fires,
@@ -623,7 +624,8 @@ mod tests {
         .with_backend("thread-a", backend.clone());
         let hook = &plugin.resolve().phase_hooks[0];
         hook.on_phase(&phase_ctx(), &conversation, &Store::new())
-            .await;
+            .await
+            .unwrap();
 
         let summarized = backend.summarized.lock().unwrap();
         let seed = &summarized[0].seed;

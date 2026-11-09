@@ -26,6 +26,9 @@ pub fn awaken_provider_genai::OpenAiResponsesExecutor::from_materialized_endpoin
 impl awaken_runtime_contract::llm::LlmExecutor for awaken_provider_genai::OpenAiResponsesExecutor
 pub fn awaken_provider_genai::OpenAiResponsesExecutor::effect_scope(&self, &awaken_runtime_contract::llm::ChatRequest) -> awaken_runtime_contract::model_operation::reentry::ModelEffectScope
 pub fn awaken_provider_genai::OpenAiResponsesExecutor::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::llm::ChatResponse, awaken_runtime_contract::llm::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub const awaken_provider_genai::MAX_TOOL_IMAGES_PER_REQUEST: usize
+pub const awaken_provider_genai::MAX_TOOL_IMAGES_PER_STEP: usize
+pub const awaken_provider_genai::MAX_TOOL_IMAGE_BYTES_PER_REQUEST: usize
 pub fn awaken_provider_genai::classify_error(&str) -> awaken_runtime_contract::llm::Error
 pub const fn awaken_provider_genai::credential_probe_outcome(bool, bool) -> awaken_provider_genai::CredentialProbe
 pub async fn awaken_provider_genai::discover_model_ids(genai::adapter::adapter_kind::AdapterKind, &str, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_provider_genai::ModelDiscoveryError>
@@ -36,6 +39,7 @@ pub fn awaken_provider_genai::map_stop_reason(&genai::chat::chat_response::StopR
 pub fn awaken_provider_genai::map_usage(&genai::chat::usage::Usage) -> awaken_agent_contract::audit::model_request::TokenUsage
 pub async fn awaken_provider_genai::probe_credential(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, &str) -> awaken_provider_genai::CredentialProbe
 pub fn awaken_provider_genai::provider_model_effect_scope(&str, &str, &str, &awaken_runtime_contract::llm::ChatRequest) -> awaken_runtime_contract::model_operation::reentry::ModelEffectScope
+pub fn awaken_provider_genai::shape_tool_result_images(&mut [awaken_runtime_contract::llm::ChatMessage], awaken_runtime_contract::resolved::ImageInput)
 pub fn awaken_provider_genai::to_genai_request(&awaken_runtime_contract::llm::ChatRequest) -> awaken_runtime_contract::llm::Result<genai::chat::chat_request::ChatRequest>
 pub fn awaken_provider_genai::to_genai_request_for_adapter(&awaken_runtime_contract::llm::ChatRequest, genai::adapter::adapter_kind::AdapterKind) -> awaken_runtime_contract::llm::Result<genai::chat::chat_request::ChatRequest>
 pub fn awaken_provider_genai::to_genai_request_for_provider(&awaken_runtime_contract::llm::ChatRequest, &str, genai::adapter::adapter_kind::AdapterKind) -> awaken_runtime_contract::llm::Result<genai::chat::chat_request::ChatRequest>

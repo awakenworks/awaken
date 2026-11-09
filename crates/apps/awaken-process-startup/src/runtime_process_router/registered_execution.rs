@@ -20,7 +20,7 @@ use awaken_session_run_delivery::{
 };
 
 use super::{ControlSurface, DeploymentAndResources, ExecutionStores, ProcessBase};
-use crate::coordinator_execution::{ExecutionCompositionError, SessionCommitOwner};
+use crate::coordinator_execution::ExecutionCompositionError;
 
 /// A construction product consumed after the Session application exists.
 /// The application retains delivery roles; service tasks retain the same commit
@@ -32,6 +32,8 @@ pub(super) struct RegisteredExecution {
     pub(super) capture_policy: awaken_data_governance_contract::CapturePolicy,
     commits: Arc<AuthorityCommits>,
     reads: Arc<CommittedReads>,
+    worker_commits:
+        Arc<dyn awaken_dispatch::ClaimedRunCommit<awaken_runtime_contract::runs::RunError>>,
     completion: Arc<CompletionRegistry>,
     extractions: Arc<MemoryExtractions>,
     clock: Arc<dyn awaken_time::WallClock>,
@@ -68,6 +70,7 @@ impl RegisteredExecution {
             base.stores.platform_workspace.clone(),
             Some(base.agents.catalog.clone()),
         ));
+        let worker_commits = authority.clone().run_commits();
         let commits = Arc::new(AuthorityCommits::new(authority));
         let reads = Arc::new(CommittedReads::new(commits.clone(), projections.clone()));
         let hub = Arc::new(ThreadEventHub::new());
@@ -120,6 +123,7 @@ impl RegisteredExecution {
             ),
             commits,
             reads,
+            worker_commits,
             completion,
             extractions,
             clock,
@@ -196,7 +200,7 @@ impl RegisteredExecution {
             dispatch: self.dispatch,
             dispatch_lifecycle: Arc::new(lifecycle),
             coordinator_dispatch: self.owner,
-            commit_owners: Arc::new(SessionCommitOwner(self.reads.clone())),
+            worker_commits: self.worker_commits,
             worker_recovery: self.reads,
             worker_completion: completion,
             worker_settlement: memory,

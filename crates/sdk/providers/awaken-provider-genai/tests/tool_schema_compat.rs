@@ -154,7 +154,8 @@ fn parallel_read_transcript() -> Vec<ChatMessage> {
 
 fn image_request(model: &str) -> ChatRequest {
     ChatRequest {
-        model_binding: ModelBinding::new("compat", model, "genai"),
+        model_binding: ModelBinding::parse("compat", model, "genai")
+            .expect("fixture model binding"),
         inference: Default::default(),
         messages: parallel_read_transcript(),
         tools: vec![generated_read_descriptor()],

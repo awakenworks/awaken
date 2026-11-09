@@ -424,63 +424,8 @@ impl PostgresDispatchStore {
         claim: &RunClaim,
         required_status: &'static str,
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        let p = NS;
-        // Keep this transaction alive in the opaque guard. The explicit status
-        // keeps repair authority separate from ordinary execution authority.
         let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let current: Option<ClaimEpochStorageRow<Json<RunDispatch>>> = sqlx::query_as(&format!(
-            "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
-                 FROM {p}_dispatch WHERE run_id = $1 AND status = $2 FOR UPDATE"
-        ))
-        .bind(&claim.run_id.0)
-        .bind(required_status)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let request = match current {
-            None => None,
-            Some((
-                epoch,
-                owner,
-                expires_ms,
-                Json(request),
-                cancellation_requested,
-                attempt_owner,
-                attempt_epoch,
-            )) => {
-                let epoch = crate::stored_claim_epoch(epoch)?;
-                match classify_commit_epoch_admission(
-                    true,
-                    owner.is_some(),
-                    expires_ms.is_some(),
-                    owner.as_deref() == Some(&claim.owner),
-                    epoch == claim.epoch,
-                ) {
-                    CommitEpochAdmission::Fenced => None,
-                    CommitEpochAdmission::Corrupt => {
-                        return Err(DispatchError::Rejected(
-                            "current dispatch claim has incomplete lease authority".to_string(),
-                        ));
-                    }
-                    CommitEpochAdmission::Guarded => {
-                        let expires_ms =
-                            expires_ms.expect("guard admission requires a complete lease expiry");
-                        Some((
-                            request,
-                            durable_u64("dispatch lease expiry", expires_ms)?,
-                            cancellation_requested != 0,
-                            awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
-                                attempt_owner.is_some(),
-                                attempt_epoch.is_some(),
-                                attempt_owner.as_deref() == Some(&claim.owner),
-                                attempt_epoch.and_then(|epoch| u64::try_from(epoch).ok())
-                                    == Some(claim.epoch),
-                            ),
-                        ))
-                    }
-                }
-            }
-        };
+        let request = lock_claim_row(&mut tx, claim, required_status).await?;
         Ok(request.map(
             |(request, expires_ms, cancellation_requested, physical_attempt)| {
                 CommitEpochGuard::new_releasing(
@@ -493,6 +438,79 @@ impl PostgresDispatchStore {
             },
         ))
     }
+}
+
+/// Acquire the ordinary Run commit fence inside the transaction that will
+/// publish committed truth. Reservation repair keeps its separate status gate.
+pub async fn lock_running_claim_for_commit(
+    tx: &mut Transaction<'_, Postgres>,
+    claim: &RunClaim,
+) -> Result<Option<RunDispatch>, DispatchError> {
+    Ok(lock_claim_row(tx, claim, "running")
+        .await?
+        .map(|(request, _, _, _)| request))
+}
+
+async fn lock_claim_row(
+    tx: &mut Transaction<'_, Postgres>,
+    claim: &RunClaim,
+    required_status: &str,
+) -> Result<Option<(RunDispatch, u64, bool, PhysicalAttemptSlot)>, DispatchError> {
+    let p = NS;
+    let current: Option<ClaimEpochStorageRow<Json<RunDispatch>>> = sqlx::query_as(&format!(
+            "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
+                 FROM {p}_dispatch WHERE run_id = $1 AND status = $2 FOR UPDATE"
+        ))
+        .bind(&claim.run_id.0)
+        .bind(required_status)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(store_error)?;
+    let request = match current {
+        None => None,
+        Some((
+            epoch,
+            owner,
+            expires_ms,
+            Json(request),
+            cancellation_requested,
+            attempt_owner,
+            attempt_epoch,
+        )) => {
+            let epoch = crate::stored_claim_epoch(epoch)?;
+            match classify_commit_epoch_admission(
+                true,
+                owner.is_some(),
+                expires_ms.is_some(),
+                owner.as_deref() == Some(&claim.owner),
+                epoch == claim.epoch,
+            ) {
+                CommitEpochAdmission::Fenced => None,
+                CommitEpochAdmission::Corrupt => {
+                    return Err(DispatchError::Rejected(
+                        "current dispatch claim has incomplete lease authority".to_string(),
+                    ));
+                }
+                CommitEpochAdmission::Guarded => {
+                    let expires_ms =
+                        expires_ms.expect("guard admission requires a complete lease expiry");
+                    Some((
+                        request,
+                        durable_u64("dispatch lease expiry", expires_ms)?,
+                        cancellation_requested != 0,
+                        awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
+                            attempt_owner.is_some(),
+                            attempt_epoch.is_some(),
+                            attempt_owner.as_deref() == Some(&claim.owner),
+                            attempt_epoch.and_then(|epoch| u64::try_from(epoch).ok())
+                                == Some(claim.epoch),
+                        ),
+                    ))
+                }
+            }
+        }
+    };
+    Ok(request)
 }
 
 include!("postgres/release_claim.rs");

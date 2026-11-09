@@ -1258,12 +1258,7 @@ async fn mount_with_managed_over_and_models(
             ),
         ));
     let commit = Arc::new(awaken_dispatch_http::ClaimedCommitHttpService::new(
-        Arc::new(
-            awaken_dispatch::ClaimedCommitService::with_coordinator_resolver(
-                dispatch as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
-                execution.commit_owners.clone(),
-            ),
-        ),
+        execution.worker_commits.clone(),
         worker_directory.clone(),
         worker_authenticator,
         worker_clock.clone(),

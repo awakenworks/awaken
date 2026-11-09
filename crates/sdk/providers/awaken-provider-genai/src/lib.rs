@@ -46,7 +46,7 @@ mod stop_reason;
 pub use stop_reason::map_stop_reason;
 mod tool_images;
 pub use tool_images::{
-    MAX_TOOL_IMAGE_BYTES_PER_REQUEST, MAX_TOOL_IMAGES_PER_REQUEST, MAX_TOOL_IMAGES_PER_TURN,
+    MAX_TOOL_IMAGE_BYTES_PER_REQUEST, MAX_TOOL_IMAGES_PER_REQUEST, MAX_TOOL_IMAGES_PER_STEP,
     shape_tool_result_images,
 };
 mod transcript_projection;

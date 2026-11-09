@@ -160,14 +160,9 @@ async fn open_with(
             clock,
         )
         .await?;
-    let run_recovery = runtime_authority.postgres_commit().map(|authority| {
-        authority
-            as std::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>
-    });
-    let run_lifecycle = runtime_authority.postgres_commit().map(|authority| {
-        authority
-            as std::sync::Arc<dyn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed>
-    });
+    use awaken_dispatch_erasure::RuntimeAuthority as _;
+    let run_recovery = runtime_authority.shared_recovery_source();
+    let run_lifecycle = runtime_authority.shared_lifecycle_feed();
     debug_assert_eq!(
         run_recovery.is_some() && run_lifecycle.is_some(),
         components.exposes_committed_run_feeds()

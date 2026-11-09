@@ -136,6 +136,14 @@ impl LocalCommitQueries<awaken_store_inmem::MemoryCommitCoordinator> for Scripte
 /// Raw commit access uses the shared `SessionCommitSource` role; execution
 /// choices remain here, with no second commit-opening interface.
 pub(crate) trait SessionAuthority: SessionCommitSource {
+    fn coordinator_run_commits(
+        &self,
+    ) -> Option<
+        Arc<
+            dyn awaken_dispatch_contract::ClaimedRunCommit<awaken_runtime_contract::runs::RunError>,
+        >,
+    >;
+
     /// The durable interrupted-stream checkpoint store, when this process owns
     /// one. A Worker persists checkpoints through its claim-fenced dispatch
     /// transport, so a local store would be a second authority.
@@ -280,6 +288,16 @@ impl SessionCommitSource for LocalAuthority {
 }
 
 impl SessionAuthority for LocalAuthority {
+    fn coordinator_run_commits(
+        &self,
+    ) -> Option<
+        Arc<
+            dyn awaken_dispatch_contract::ClaimedRunCommit<awaken_runtime_contract::runs::RunError>,
+        >,
+    > {
+        Some(self.runtime.clone().run_commits())
+    }
+
     fn stream_checkpoint(
         &self,
         thread: &str,
@@ -443,6 +461,16 @@ impl SessionCommitSource for UpstreamAuthority {
 }
 
 impl SessionAuthority for UpstreamAuthority {
+    fn coordinator_run_commits(
+        &self,
+    ) -> Option<
+        Arc<
+            dyn awaken_dispatch_contract::ClaimedRunCommit<awaken_runtime_contract::runs::RunError>,
+        >,
+    > {
+        None
+    }
+
     fn stream_checkpoint(
         &self,
         _thread: &str,

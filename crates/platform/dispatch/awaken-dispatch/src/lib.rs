@@ -149,6 +149,7 @@ pub use memory::MemoryDispatchStore;
 #[cfg(feature = "durable")]
 pub use postgres::{
     PostgresDispatchStore, PostgresStreamCheckpointStore, StoreError as PostgresStoreError,
+    lock_running_claim_for_commit,
 };
 #[cfg(feature = "durable")]
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
