@@ -1038,6 +1038,7 @@ impl awaken_session_execution_contract::RealizationEffects for ActivationOnlySes
     async fn restore_checkpointed_session_environment(
         &self,
         request: awaken_provisioning_contract::SandboxRestoreRequest,
+        _realization: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
         self.events.lock().unwrap().push("restore");
         self.restores.fetch_add(1, Ordering::SeqCst);

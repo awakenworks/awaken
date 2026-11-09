@@ -1339,9 +1339,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxRestoreTarget<Arc<dyn SessionSandbox>>, pc::SandboxError> {
         Ok(self
-            .acquire_restore_sandbox(spec, request)
+            .acquire_restore_sandbox(spec, request, effect)
             .await?
             .map_target(|sandbox| Arc::new(sandbox) as Arc<dyn SessionSandbox>))
     }
@@ -1367,8 +1368,10 @@ impl<R: ContainerRuntime + 'static> pc::RestoreTargetProvider<Arc<dyn SessionSan
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxRestoreTarget<Arc<dyn SessionSandbox>>, pc::SandboxError> {
-        self.acquire_restore_environment(spec, request).await
+        self.acquire_restore_environment(spec, request, effect)
+            .await
     }
 
     async fn dispose_restored(

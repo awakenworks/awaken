@@ -193,8 +193,12 @@ impl EnvironmentTerminalRealization for RecordingInstallation {
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         store: &dyn pc::SandboxCheckpointStore,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxHandle, pc::SandboxError> {
-        self.inner.terminal().restore(spec, request, store).await
+        self.inner
+            .terminal()
+            .restore(spec, request, store, effect)
+            .await
     }
 
     async fn dispose_restored(

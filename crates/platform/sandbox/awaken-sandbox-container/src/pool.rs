@@ -962,11 +962,14 @@ impl<R: ContainerRuntime + 'static> pc::RestoreTargetProvider<Arc<dyn SessionSan
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxRestoreTarget<Arc<dyn SessionSandbox>>, pc::SandboxError> {
         // Exact restore delegation table: acquisition, byte restoration, and
         // disposal all bypass warm capacity and preserve the same immutable
         // request. The inner provider remains the sole physical target owner.
-        self.inner.acquire_restore_environment(spec, request).await
+        self.inner
+            .acquire_restore_environment(spec, request, effect)
+            .await
     }
 
     async fn dispose_restored(

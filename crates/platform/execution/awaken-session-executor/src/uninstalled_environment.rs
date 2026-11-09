@@ -164,6 +164,7 @@ impl EnvironmentTerminalRealization for UninstalledSandboxProvider {
         _spec: &pc::SandboxSpec,
         _request: &pc::SandboxRestoreRequest,
         _store: &dyn pc::SandboxCheckpointStore,
+        _effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxHandle, pc::SandboxError> {
         Err(not_installed())
     }

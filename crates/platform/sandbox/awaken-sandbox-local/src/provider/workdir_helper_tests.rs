@@ -1114,6 +1114,7 @@ pub(super) struct CheckpointStore {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum CheckpointPause {
+    AfterGet,
     AfterPut,
     AfterDelete,
 }
@@ -1191,12 +1192,15 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
 
     async fn get(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
         self.gets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.objects
+        let result = self
+            .objects
             .lock()
             .unwrap()
             .get(id)
             .map(|stored| stored.bytes.clone())
-            .ok_or_else(|| pc::SandboxError::not_found("checkpoint object not found"))
+            .ok_or_else(|| pc::SandboxError::not_found("checkpoint object not found"));
+        self.pause_at(CheckpointPause::AfterGet).await;
+        result
     }
 
     async fn delete(&self, id: &str) -> Result<(), pc::SandboxError> {

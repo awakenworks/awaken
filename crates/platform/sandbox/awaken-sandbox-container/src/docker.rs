@@ -952,7 +952,10 @@ impl ContainerRuntime for DockerRuntime {
         plan: &ContainerPlan,
         plan_fingerprint: &str,
         evidence: &pc::SandboxRestorationEvidence,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<RuntimeRestoreTarget, RuntimeError> {
+        let admit = || effect.admit().map_err(|_| RuntimeError::EffectFenceExpired);
+        admit()?;
         if restoration_plan_fingerprint(plan) != plan_fingerprint {
             return Err(backend("Docker restore plan fingerprint mismatch"));
         }
@@ -982,19 +985,25 @@ impl ContainerRuntime for DockerRuntime {
             .await
         {
             Ok(created) => {
-                let _ = self
-                    .docker
+                admit()?;
+                self.docker
                     .start_container(&created.id, None::<StartContainerOptions<String>>)
-                    .await;
+                    .await
+                    .map_err(backend)?;
+                admit()?;
                 Ok(RuntimeRestoreTarget {
                     container_id: created.id,
                     disposition: pc::SandboxRestoreTargetDisposition::Created,
                 })
             }
-            Err(create_error) => self
-                .recover_restore_target(id, plan, plan_fingerprint, evidence)
-                .await?
-                .ok_or_else(|| backend(create_error)),
+            Err(create_error) => {
+                admit()?;
+                let recovered = self
+                    .recover_restore_target(id, plan, plan_fingerprint, evidence)
+                    .await?;
+                admit()?;
+                recovered.ok_or_else(|| backend(create_error))
+            }
         }
     }
 

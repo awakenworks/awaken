@@ -28,6 +28,22 @@ pub struct SandboxRestoreRequest {
 }
 
 impl SandboxRestoreRequest {
+    /// Admit delivery of this immutable restore identity under the existing
+    /// Sandbox effect grant. A target identity never substitutes for current
+    /// authority, and a fenced caller cannot switch to an unattached path.
+    pub fn admit_effect(&self, effect: super::SandboxEffect<'_>) -> Result<(), SandboxError> {
+        self.validate()?;
+        if effect
+            .fence()
+            .is_some_and(|fence| fence.operation_id() != self.effect_id)
+        {
+            return Err(SandboxError::conflict(
+                "restore grant names another operation",
+            ));
+        }
+        effect.admit()
+    }
+
     /// Secret-free evidence which a completed physical target and its durable
     /// handle must carry.
     #[must_use]
@@ -323,6 +339,41 @@ mod tests {
                 suspend_effect_id: "suspend-a".into(),
             },
         }
+    }
+
+    #[test]
+    fn restore_identity_requires_its_own_current_delivery_grant() {
+        // Causes: C1 explicit unattached vs fenced effect; C2 operation id
+        // matches the immutable target; C3 authority is current/revoked.
+        // Effects: E1 explicit unowned delivery stays available; E2 only the
+        // exact current fenced delivery admits; E3 wrong id or revocation
+        // refuses, without a weaker fallback. R1 !C1=>E1; R2 C1+C2+C3=>E2;
+        // R3 C1+!C2=>E3; R4 C1+C2+!C3=>E3. This performs no provider I/O.
+        let request = restore_request();
+        assert!(
+            request
+                .admit_effect(crate::SandboxEffect::Unattached)
+                .is_ok(),
+            "R1"
+        );
+        let fence =
+            crate::SandboxEffectFence::new(&request.effect_id, "owner", "boot", 1, u64::MAX)
+                .unwrap();
+        let authority = crate::test_support::EffectAuthority::new(&fence);
+        let effect = crate::SandboxEffect::Fenced {
+            fence: &fence,
+            authority: &authority,
+        };
+        assert!(request.admit_effect(effect).is_ok(), "R2");
+        let mut other = request.clone();
+        other.effect_id =
+            awaken_agent_contract::collision_resistant_fingerprint("other-restore", &[b"other"]);
+        assert!(
+            matches!(other.admit_effect(effect), Err(SandboxError::Conflict(_))),
+            "R3"
+        );
+        authority.set(None);
+        assert!(request.admit_effect(effect).is_err(), "R4");
     }
 
     /*

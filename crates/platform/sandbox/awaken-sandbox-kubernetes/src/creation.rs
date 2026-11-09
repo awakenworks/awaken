@@ -297,7 +297,10 @@ pub(super) async fn restore_or_adopt(
     plan: &ContainerPlan,
     plan_fingerprint: &str,
     evidence: &pc::SandboxRestorationEvidence,
+    effect: pc::SandboxEffect<'_>,
 ) -> Result<awaken_sandbox_container::RuntimeRestoreTarget, RuntimeError> {
+    let admit = || effect.admit().map_err(|_| RuntimeError::EffectFenceExpired);
+    admit()?;
     if awaken_sandbox_container::engine::restoration_plan_fingerprint(plan) != plan_fingerprint {
         return Err(backend("Kubernetes restore plan fingerprint mismatch"));
     }
@@ -323,6 +326,7 @@ pub(super) async fn restore_or_adopt(
                 &runtime.persistent_volume_claims(),
                 &claim,
                 |expected, observed| {
+                    admit()?;
                     projection_verification::verify_claim_projection(expected, observed, None)
                 },
             )
@@ -331,6 +335,7 @@ pub(super) async fn restore_or_adopt(
     } else {
         None
     };
+    admit()?;
     let claim_uid = claim_outcome
         .as_ref()
         .map(|outcome| continuation::claim_uid(&outcome.object))
@@ -343,10 +348,11 @@ pub(super) async fn restore_or_adopt(
         &runtime.owner,
         None,
         Some((evidence, plan_fingerprint)),
-        &|| Ok(()),
+        &admit,
     )
     .await?;
 
+    admit()?;
     let mut pod = runtime.pod(&runtime_id, plan);
     stamp_sandbox_release_annotations(&mut pod, id, &plan.image);
     if let Some(uid) = claim_uid.as_deref() {
@@ -360,10 +366,12 @@ pub(super) async fn restore_or_adopt(
         &runtime.pods(),
         &pod,
         |expected, observed| {
+            admit()?;
             projection_verification::verify_pod_projection(expected, observed, None)
         },
     )
     .await?;
+    admit()?;
     let name = outcome
         .object
         .metadata
@@ -389,10 +397,12 @@ pub(super) async fn restore_or_adopt(
         outcome.object.clone(),
         &pod_uid,
         &projected,
-        &|| Ok(()),
+        &admit,
     )
     .await?;
+    admit()?;
     let published = runtime.pods().get(&name).await.map_err(backend)?;
+    admit()?;
     realization::verify_restoration(&published, evidence)?;
     if realization::restoration_plan_fingerprint(&published) != Some(plan_fingerprint) {
         return Err(backend(
@@ -406,9 +416,12 @@ pub(super) async fn restore_or_adopt(
         &runtime.owner_id,
     )
     .await?;
+    admit()?;
     let wait = runtime.unschedulable_wait;
     realization::await_pod_ready(&runtime.pods(), &name, wait, runtime.clock.as_ref()).await?;
+    admit()?;
     live_inputs::project_manifest(runtime, &name, plan).await?;
+    admit()?;
     Ok(awaken_sandbox_container::RuntimeRestoreTarget {
         container_id: name,
         disposition: if outcome.created {

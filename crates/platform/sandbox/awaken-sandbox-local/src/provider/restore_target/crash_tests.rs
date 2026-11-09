@@ -208,6 +208,7 @@ async fn restore_crash_child() {
         &spec,
         &request,
         &store,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
     )
     .await
     .expect("child restore");
@@ -284,7 +285,11 @@ async fn crashed_restore_is_continued_once_by_the_exact_committed_operation() {
         // O0: a new provider recovers the crashed operation's own target.
         let recovering = LocalProvider::new(&base);
         let observed = recovering
-            .acquire_restore_sandbox(&spec, &committed)
+            .acquire_restore_sandbox(
+                &spec,
+                &committed,
+                awaken_provisioning_contract::SandboxEffect::Unattached,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -301,6 +306,7 @@ async fn crashed_restore_is_continued_once_by_the_exact_committed_operation() {
                 &spec,
                 &committed,
                 &store,
+                awaken_provisioning_contract::SandboxEffect::Unattached,
             )
             .await
             .unwrap_or_else(|error| panic!("{cut}: exact retry: {error}"));
@@ -345,6 +351,7 @@ async fn crashed_restore_is_continued_once_by_the_exact_committed_operation() {
                 &spec,
                 &substitute,
                 &store,
+                awaken_provisioning_contract::SandboxEffect::Unattached,
             )
             .await
             .expect("NC substitute target restores its own bytes");

@@ -302,6 +302,7 @@ impl
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,
         _request: &awaken_provisioning_contract::SandboxRestoreRequest,
+        _effect: awaken_provisioning_contract::SandboxEffect<'_>,
     ) -> Result<
         awaken_provisioning_contract::SandboxRestoreTarget<
             std::sync::Arc<dyn awaken_provisioning_contract::SessionSandbox>,

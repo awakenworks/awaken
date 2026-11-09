@@ -132,7 +132,11 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
     ));
     let first = ContainerProvider::new(Arc::new(first_runtime), "busybox:latest")
         .with_clock(awaken_time::system_clock())
-        .acquire_restore_environment(&spec, &request)
+        .acquire_restore_environment(
+            &spec,
+            &request,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+        )
         .await
         .expect("D1 exact restore create");
     assert_eq!(
@@ -162,13 +166,21 @@ async fn docker_exact_restore_survives_provider_and_wrapper_replacement() {
     mismatch.generation_id.push_str("-other");
     assert!(
         retry
-            .acquire_restore_environment(&spec, &mismatch)
+            .acquire_restore_environment(
+                &spec,
+                &mismatch,
+                awaken_provisioning_contract::SandboxEffect::Unattached
+            )
             .await
             .is_err(),
         "D3/E3",
     );
     let recovered = retry
-        .acquire_restore_environment(&spec, &request)
+        .acquire_restore_environment(
+            &spec,
+            &request,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+        )
         .await
         .expect("D2 fresh provider recovery");
     assert_eq!(

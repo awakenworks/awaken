@@ -63,7 +63,10 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
             if present {
                 let target =
                     pc::RestoreTargetProvider::<std::sync::Arc<dyn pc::Sandbox>>::acquire_restore(
-                        &provider, &spec, &request,
+                        &provider,
+                        &spec,
+                        &request,
+                        awaken_provisioning_contract::SandboxEffect::Unattached,
                     )
                     .await
                     .unwrap();
@@ -280,7 +283,12 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
         .restorable()
         .unwrap();
     let restored = restorable
-        .restore_environment(&spec, &request, &store)
+        .restore_environment(
+            &spec,
+            &request,
+            &store,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+        )
         .await
         .unwrap();
     let expected_evidence = request.evidence(&spec);
@@ -416,7 +424,10 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     let evidence = request.evidence(&spec);
     let exact_root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
     let created = pc::RestoreTargetProvider::<std::sync::Arc<dyn pc::Sandbox>>::acquire_restore(
-        &provider, &spec, &request,
+        &provider,
+        &spec,
+        &request,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
     )
     .await
     .expect("T1 exact target creation");
@@ -438,6 +449,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
         &fresh_provider,
         &spec,
         &request,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
     )
     .await
     .expect("T2 fresh provider recovery");
@@ -475,7 +487,8 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
         pc::RestoreTargetProvider::<std::sync::Arc<dyn pc::Sandbox>>::acquire_restore(
             &fresh_provider,
             &spec,
-            &drifted
+            &drifted,
+            awaken_provisioning_contract::SandboxEffect::Unattached
         )
         .await
         .is_err(),
@@ -541,7 +554,11 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
     let expected_evidence = request.evidence(&spec);
     let restored_root = restore_target::restoration_root(tmp.path(), &expected_evidence).unwrap();
     let restored = pc::RestorableProvider::<std::sync::Arc<dyn pc::Sandbox>>::restore_environment(
-        &provider, &spec, &request, &store,
+        &provider,
+        &spec,
+        &request,
+        &store,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
     )
     .await
     .expect("M1");
@@ -552,7 +569,11 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
 
     std::fs::write(restored_root.join("value"), b"unpublished-crash-residue").unwrap();
     let replay = pc::RestorableProvider::<std::sync::Arc<dyn pc::Sandbox>>::restore_environment(
-        &provider, &spec, &request, &store,
+        &provider,
+        &spec,
+        &request,
+        &store,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
     )
     .await
     .expect("M2");
@@ -578,7 +599,11 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
     let gets_before_reject = store.gets.load(std::sync::atomic::Ordering::Relaxed);
     assert!(
         pc::RestorableProvider::<std::sync::Arc<dyn pc::Sandbox>>::restore_environment(
-            &provider, &spec, &malformed, &store
+            &provider,
+            &spec,
+            &malformed,
+            &store,
+            awaken_provisioning_contract::SandboxEffect::Unattached
         )
         .await
         .is_err(),
@@ -651,7 +676,11 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
     let restored_root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
     assert!(
         pc::RestorableProvider::<std::sync::Arc<dyn pc::Sandbox>>::restore_environment(
-            &provider, &spec, &request, &store
+            &provider,
+            &spec,
+            &request,
+            &store,
+            awaken_provisioning_contract::SandboxEffect::Unattached
         )
         .await
         .is_err(),
@@ -671,7 +700,11 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
         .unwrap()
         .bytes = original;
     let recovered = pc::RestorableProvider::<std::sync::Arc<dyn pc::Sandbox>>::restore_environment(
-        &provider, &spec, &request, &store,
+        &provider,
+        &spec,
+        &request,
+        &store,
+        awaken_provisioning_contract::SandboxEffect::Unattached,
     )
     .await
     .expect("F2 exact retry");
@@ -701,3 +734,5 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
     .await
     .expect("F3 disposal response-loss replay");
 }
+
+mod current_authority;

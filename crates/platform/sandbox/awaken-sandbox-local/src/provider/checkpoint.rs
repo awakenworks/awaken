@@ -162,7 +162,9 @@ impl LocalProvider {
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
         store: &dyn pc::SandboxCheckpointStore,
+        effect: pc::SandboxEffect<'_>,
     ) -> Result<pc::SandboxRestoreResult<LocalSandbox>, pc::SandboxError> {
+        request.admit_effect(effect)?;
         request.validate_for_spec(spec)?;
         if request.checkpoint.format != "awaken-fs-tar-v1" {
             return Err(pc::SandboxError::unsupported(format!(
@@ -170,10 +172,12 @@ impl LocalProvider {
                 request.checkpoint.format
             )));
         }
-        let target = self.acquire_restore_sandbox(spec, request).await?;
+        let target = self.acquire_restore_sandbox(spec, request, effect).await?;
+        request.admit_effect(effect)?;
         let evidence = target.evidence().clone();
         let sandbox = target.into_target();
         let bytes = store.get(&request.checkpoint.id).await?;
+        request.admit_effect(effect)?;
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != request.checkpoint.size_bytes
             || content_id(&bytes) != request.checkpoint.digest
         {
@@ -184,11 +188,14 @@ impl LocalProvider {
 
         let _target_lock =
             super::restore_target::lock_bound_target(sandbox.root.root(), &evidence).await?;
+        request.admit_effect(effect)?;
         let root_identity = awaken_fs_durability::directory_identity_nofollow(sandbox.root.root())
             .map_err(|error| pc::SandboxError::backend("restore_exact_sandbox", error))?;
         extract_checkpoint(&sandbox, root_identity, &bytes, || {
+            request.admit_effect(effect)?;
             super::restore_target::verify_binding(sandbox.root.root(), &evidence)
         })?;
+        request.admit_effect(effect)?;
         let handle = pc::Sandbox::handle(&sandbox);
         pc::SandboxRestoreResult::complete(request, spec, sandbox, &handle)
     }

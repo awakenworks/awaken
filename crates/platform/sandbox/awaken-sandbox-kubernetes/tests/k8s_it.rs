@@ -470,7 +470,11 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
         std::env::var("AWAKEN_K8S_FIXTURE_IMAGE").unwrap_or_else(|_| "awaken-bb:1".to_string());
     let first = ContainerProvider::new(Arc::new(first_runtime), image.clone())
         .with_clock(awaken_time::system_clock())
-        .acquire_restore_environment(&spec, &request)
+        .acquire_restore_environment(
+            &spec,
+            &request,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+        )
         .await
         .expect("KR1 exact Pod/PVC create");
     assert_eq!(
@@ -515,13 +519,21 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     mismatch.generation_id.push_str("-other");
     assert!(
         retry
-            .acquire_restore_environment(&spec, &mismatch)
+            .acquire_restore_environment(
+                &spec,
+                &mismatch,
+                awaken_provisioning_contract::SandboxEffect::Unattached
+            )
             .await
             .is_err(),
         "KR3/E3",
     );
     let recovered = retry
-        .acquire_restore_environment(&spec, &request)
+        .acquire_restore_environment(
+            &spec,
+            &request,
+            awaken_provisioning_contract::SandboxEffect::Unattached,
+        )
         .await
         .expect("KR2 fresh provider recovery");
     assert_eq!(
@@ -596,7 +608,11 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     );
     assert!(
         retry
-            .acquire_restore_environment(&spec, &request)
+            .acquire_restore_environment(
+                &spec,
+                &request,
+                awaken_provisioning_contract::SandboxEffect::Unattached
+            )
             .await
             .is_err(),
         "KR5 D1 terminating target cannot become runnable"
