@@ -11,6 +11,7 @@
 //! Live Postgres config-store CRUD. An absent optional fixture skips; isolates
 //! each test in a fresh schema (the store takes no prefix; ADR-0029/ADR-0031).
 
+use awaken_agent_config::personal_selection::PersonalAgentSelectionRepository;
 use awaken_agent_config::{
     AgentConfig, AuditedConfigWrite, ConfigRegistry, ConfigWrite, ManagementAuditRecord,
     ManagementEffect, PublicationState, PublicationWrite, ScopeId, ScopedConfigRegistry,
@@ -1237,5 +1238,56 @@ async fn postgres_publication_commit_order_lock_serializes_only_its_workspace() 
             PublicationWrite::Committed { .. }
         ),
         "E4"
+    );
+}
+
+#[path = "support/personal_selection.rs"]
+mod personal_selection;
+
+#[tokio::test]
+async fn postgres_personal_agent_selection_preserves_original_outcome_and_owner_partition() {
+    let Some(pool) = schema_pool("t_personal_agent_selection").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool.clone()).await.unwrap();
+    let other = PostgresConfigStore::with_existing_pool(pool).await.unwrap();
+    personal_selection::original_outcome(&store).await;
+    personal_selection::concurrent_cas(&store, &other).await;
+}
+
+#[tokio::test]
+async fn postgres_personal_agent_selection_receipt_failure_rolls_back_the_preference() {
+    let Some(pool) = schema_pool("t_personal_agent_selection_fault").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool.clone()).await.unwrap();
+    sqlx::query(
+        "ALTER TABLE config_personal_agent_selection_receipt ADD CHECK(request_key <> 'fault')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let scope = ScopeId::from("fault-ws");
+    let owner = personal_selection::owner("https://issuer.example", "a");
+    let intent = personal_selection::intent("fault", 0, true);
+    assert!(
+        store
+            .set_personal_agent_selection(&scope, &owner, "agent", &intent)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .personal_agent_selection(&scope, &owner, "agent")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .personal_agent_selection_outcome(&scope, &owner, "agent", "fault")
+            .await
+            .unwrap(),
+        None
     );
 }

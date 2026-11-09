@@ -21,6 +21,8 @@
     )
 )]
 
+mod personal_selection;
+
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;

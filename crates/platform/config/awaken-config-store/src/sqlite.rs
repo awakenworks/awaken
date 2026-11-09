@@ -21,6 +21,8 @@
     )
 )]
 
+mod personal_selection;
+
 use async_trait::async_trait;
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedPool;

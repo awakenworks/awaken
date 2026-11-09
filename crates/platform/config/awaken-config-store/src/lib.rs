@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod codec;
+mod personal_selection;
 mod postgres;
 mod schema;
 mod sqlite;

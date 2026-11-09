@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use awaken_agent_config::personal_selection::PersonalAgentSelectionRepository;
 use awaken_agent_config::{
     AgentConfig, AuditedConfigWrite, ConfigRegistry, ConfigWrite, DEFAULT_SCOPE,
     ManagementAuditRecord, ManagementEffect, ModelSelection, PublicationState, PublicationWrite,
@@ -1577,4 +1578,52 @@ async fn reopening_the_same_file_reruns_migrations_idempotently_and_keeps_data()
     assert_eq!(got.instructions, "keep-me");
 
     let _ = std::fs::remove_file(&path);
+}
+
+#[path = "support/personal_selection.rs"]
+mod personal_selection;
+
+#[tokio::test]
+async fn sqlite_personal_agent_selection_preserves_original_outcome_and_owner_partition() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("personal-agent-concurrency.sqlite");
+    let path = path.to_str().unwrap();
+    let store = SqliteConfigStore::open(path).await.unwrap();
+    let other = SqliteConfigStore::open(path).await.unwrap();
+    personal_selection::original_outcome(&store).await;
+    personal_selection::concurrent_cas(&store, &other).await;
+}
+
+#[tokio::test]
+async fn sqlite_personal_agent_selection_receipt_failure_rolls_back_the_preference() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("personal-agent-selection.sqlite");
+    let path = path.to_str().unwrap();
+    let store = SqliteConfigStore::open(path).await.unwrap();
+    let pool = EmbeddedSqlite::file(path).open().await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_selection_receipt BEFORE INSERT ON config_personal_agent_selection_receipt BEGIN SELECT RAISE(ABORT, 'receipt unavailable'); END")
+        .execute(&pool).await.unwrap();
+    let scope = ScopeId::from("fault-ws");
+    let owner = personal_selection::owner("https://issuer.example", "a");
+    let intent = personal_selection::intent("fault", 0, true);
+    assert!(
+        store
+            .set_personal_agent_selection(&scope, &owner, "agent", &intent)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .personal_agent_selection(&scope, &owner, "agent")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .personal_agent_selection_outcome(&scope, &owner, "agent", "fault")
+            .await
+            .unwrap(),
+        None
+    );
 }
