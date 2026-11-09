@@ -508,7 +508,7 @@ impl ExecutableAgentInventorySource for ExecutableAgentCatalog {
         workspace_id: &str,
     ) -> Result<Vec<PublishedModelReference>, ExecutableAgentRegistrationError> {
         let state = self.read_state()?;
-        Ok(project_current_model_publications(
+        project_current_model_publications(
             state.current.iter().filter_map(|((workspace, _), entry)| {
                 (workspace == workspace_id)
                     .then_some(entry.registration.as_ref())
@@ -520,7 +520,7 @@ impl ExecutableAgentInventorySource for ExecutableAgentCatalog {
                 .filter_map(|((workspace, _, _), registration)| {
                     (workspace == workspace_id).then_some(registration)
                 }),
-        ))
+        )
     }
 }
 

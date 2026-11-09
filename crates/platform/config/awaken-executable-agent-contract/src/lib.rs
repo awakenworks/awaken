@@ -29,6 +29,12 @@ use awaken_runtime_contract::ExecutableAgentSnapshot;
 use serde::{Deserialize, Serialize};
 
 pub mod capability;
+mod managed_model_id;
+mod model_selection;
+pub use managed_model_id::{
+    ManagedModelIdError, ManagedModelIdRefusal, parse_managed_model_id, render_managed_model_id,
+};
+pub use model_selection::ModelSelection;
 mod session_profile;
 mod snapshot_pin;
 
@@ -231,10 +237,7 @@ pub trait ExecutableAgentInventorySource: Send + Sync {
         workspace_id: &str,
     ) -> Result<Vec<PublishedModelReference>, ExecutableAgentRegistrationError> {
         let current = self.current_registrations(workspace_id).await?;
-        Ok(project_current_model_publications(
-            current.iter(),
-            current.iter(),
-        ))
+        project_current_model_publications(current.iter(), current.iter())
     }
 }
 
@@ -304,7 +307,7 @@ impl ModelPublicationHistory {
 pub fn project_current_model_publications<'a>(
     current: impl IntoIterator<Item = &'a ExecutableAgentRegistration>,
     history: impl IntoIterator<Item = &'a ExecutableAgentRegistration>,
-) -> Vec<PublishedModelReference> {
+) -> Result<Vec<PublishedModelReference>, ExecutableAgentRegistrationError> {
     fn is_unpublished_preview(registration: &ExecutableAgentRegistration) -> bool {
         registration.agent_id.starts_with(PREVIEW_AGENT_PREFIX)
             && registration.published_at_unix_ms.is_none()
@@ -320,7 +323,7 @@ pub fn project_current_model_publications<'a>(
         if is_unpublished_preview(registration) {
             continue;
         }
-        for model in registration_model_references(registration) {
+        for model in registration_model_references(registration)? {
             history_by_model
                 .entry(model)
                 .or_default()
@@ -332,9 +335,9 @@ pub fn project_current_model_publications<'a>(
         if is_unpublished_preview(registration) {
             continue;
         }
-        reachable.extend(registration_model_references(registration));
+        reachable.extend(registration_model_references(registration)?);
     }
-    reachable
+    Ok(reachable
         .into_iter()
         .map(|model_reference| PublishedModelReference {
             first_published_at_unix_ms: history_by_model
@@ -342,17 +345,25 @@ pub fn project_current_model_publications<'a>(
                 .and_then(ModelPublicationHistory::first_time),
             model_reference,
         })
-        .collect()
+        .collect())
 }
 
 /// The sole extraction rule for primary and fallback models in a publication.
-pub fn registration_model_references(registration: &ExecutableAgentRegistration) -> Vec<String> {
+pub fn registration_model_references(
+    registration: &ExecutableAgentRegistration,
+) -> Result<Vec<String>, ExecutableAgentRegistrationError> {
     let spec = &registration.snapshot.resolved_spec;
     std::iter::once(&spec.model_binding)
         .chain(spec.model_candidates.iter())
-        .map(|candidate| candidate.binding().identity().1.to_owned())
-        .filter(|model_reference| !model_reference.trim().is_empty())
-        .collect()
+        .map(|candidate| {
+            managed_model_id::render_published_model_id(candidate).map_err(|error| {
+                ExecutableAgentRegistrationError::Invalid(format!(
+                    "published model selector is unavailable: {error}"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|references| references.into_iter().flatten().collect())
 }
 
 /// Model references reachable from the current executable Agent publications in
@@ -427,6 +438,143 @@ mod tests {
         }
     }
 
+    fn provider_registration(
+        route_ref: &str,
+        backend: &str,
+        at: u64,
+    ) -> ExecutableAgentRegistration {
+        use awaken_runtime_contract::resolved::{
+            ModelProvisioning, ProviderAccessKind, ResolvedModelCandidate,
+        };
+        let mut entry = registration();
+        entry.agent_id = format!("agent-{route_ref}-{backend}");
+        entry.snapshot.root_agent_id = AgentId(entry.agent_id.clone());
+        entry.snapshot.metadata.source.agent_id = AgentId(entry.agent_id.clone());
+        entry.published_at_unix_ms = Some(at);
+        entry.publication_sequence = Some(at);
+        entry.publication_order_verified = true;
+        entry.snapshot.resolved_spec.model_binding = ResolvedModelCandidate::try_from_parts(
+            awaken_runtime_contract::resolved::ModelBinding::parse(
+                "shared-account",
+                "shared/model",
+                backend,
+            )
+            .unwrap(),
+            ModelProvisioning::Provider {
+                provider_ref: "vendor@1".into(),
+                route_ref: route_ref.into(),
+                access_kind: ProviderAccessKind::Brokered,
+                scope_id: "workspace-a".into(),
+                credential: None,
+                endpoint: Box::new(awaken_runtime_contract::resolved::InferenceEndpoint {
+                    adapter_kind: "openai".into(),
+                    api_dialect: "open_ai_chat".into(),
+                    base_url: "https://provider.example.invalid".into(),
+                    upstream_model: "shared/model".into(),
+                    processing_placement: None,
+                }),
+                unspecified_reasoning: Default::default(),
+                image_input: Default::default(),
+                acp: (backend != "genai").then(|| {
+                    Box::new(awaken_runtime_contract::resolved::AcpExecutionProfile {
+                        supports_tool_aliases: false,
+                        capability_adapter_version: "fixture-version".into(),
+                        capability_fingerprint: "fixture-capability".into(),
+                        session_configuration: Default::default(),
+                    })
+                }),
+            },
+        )
+        .unwrap();
+        entry
+    }
+
+    #[test]
+    fn model_directory_keeps_same_named_provider_routes_selectable() {
+        // Causes: D1 two current publications share one provider-account/model
+        // binding name; D2 their frozen protocol endpoints differ; D3 public
+        // IDs are parsed by the SAME authoring codec. Effects: E1 two distinct
+        // directory choices, E2 each choice retains vendor/dialect/endpoint and
+        // executor, E3 original publication times stay per exact choice.
+        // R1 D1+D2+D3 -> E1+E2+E3. A bare binding model name collapses the two
+        // rows and is ambiguous when passed back to ordinary Agent creation.
+        let one = provider_registration("one@1", "genai", 1_000);
+        let two = provider_registration("two@1", "genai", 2_000);
+        let directory = project_current_model_publications([&one, &two], [&one, &two]).unwrap();
+        assert_eq!(directory.len(), 2, "E1 both exact routes remain visible");
+        for row in directory {
+            let parsed = parse_managed_model_id(&row.model_reference)
+                .expect("D3 ordinary public authoring codec");
+            let (target, backend) = parsed.target().expect("E2 exact provider target");
+            assert_eq!(target.model_id, "shared/model");
+            assert_eq!(target.provider_id.as_deref(), Some("vendor"));
+            assert_eq!(target.api_dialect.as_deref(), Some("open_ai_chat"));
+            assert_eq!(backend, "genai");
+            let endpoint = target.endpoint_name.as_deref().unwrap();
+            assert!(matches!(endpoint, "one" | "two"));
+            assert_eq!(
+                row.first_published_at_unix_ms,
+                Some(if endpoint == "one" { 1_000 } else { 2_000 }),
+                "E3"
+            );
+        }
+    }
+
+    #[test]
+    fn model_directory_preserves_runtime_and_rejects_unselectable_history() {
+        // Causes: M1 same provider/model/route with six executor bindings;
+        // M2 reserved bytes in a route; M3 malformed versioned route reference
+        // or public grammar. Effects: E1 each runtime remains separately
+        // selectable through the original codec; E2 exact decoded route; E3
+        // current OR historical corruption fails the whole read, never an
+        // empty page or silently dropped choice. Rules M1=>E1, M2=>E2,
+        // M3(current/history)=>E3. No catalog lookup or credential I/O.
+        let backends = [
+            "genai",
+            "acp:claude",
+            "acp:codex",
+            "acp:gemini",
+            "acp:opencode",
+            "acp:hermes",
+        ];
+        let entries =
+            backends.map(|backend| provider_registration("workspace:route;v=2%@9", backend, 1_000));
+        let directory = project_current_model_publications(entries.iter(), entries.iter()).unwrap();
+        assert_eq!(directory.len(), backends.len(), "M1/E1");
+        let mut discovered = std::collections::BTreeSet::new();
+        for row in directory {
+            let parsed = parse_managed_model_id(&row.model_reference).unwrap();
+            let (target, backend) = parsed.target().unwrap();
+            assert_eq!(
+                target.endpoint_name.as_deref(),
+                Some("workspace:route;v=2%"),
+                "M2/E2"
+            );
+            discovered.insert(backend.to_owned());
+        }
+        assert_eq!(
+            discovered,
+            backends.map(str::to_owned).into_iter().collect()
+        );
+        let valid = provider_registration("current@1", "genai", 2_000);
+        for bad_ref in [
+            "no-version",
+            "route@0",
+            "route@invalid",
+            "route with space@1",
+        ] {
+            let corrupt = provider_registration(bad_ref, "genai", 1_000);
+            assert!(
+                project_current_model_publications([&corrupt], [&corrupt]).is_err(),
+                "M3 current {bad_ref}"
+            );
+            assert!(
+                project_current_model_publications([&valid], [&corrupt, &valid]).is_err(),
+                "M3 history {bad_ref}"
+            );
+        }
+    }
+
     #[test]
     fn publication_commit_coordinate_is_paired_and_nonzero() {
         // Causes: C1 legacy command omits both; C2 only time or only sequence
@@ -462,7 +610,9 @@ mod tests {
         let mut preview = registration();
         preview.agent_id = "preview-trial".into();
         assert!(
-            project_current_model_publications([&preview], [&preview]).is_empty(),
+            project_current_model_publications([&preview], [&preview])
+                .unwrap()
+                .is_empty(),
             "E1"
         );
         assert!(
@@ -477,7 +627,8 @@ mod tests {
         published.publication_sequence = Some(2);
         published.publication_order_verified = true;
         assert_eq!(
-            project_current_model_publications([&preview, &published], [&preview, &published])[0]
+            project_current_model_publications([&preview, &published], [&preview, &published])
+                .unwrap()[0]
                 .first_published_at_unix_ms,
             Some(1_000),
             "E2"
@@ -486,7 +637,8 @@ mod tests {
         preview.publication_sequence = Some(1);
         preview.publication_order_verified = true;
         assert_eq!(
-            project_current_model_publications([&preview, &published], [&preview, &published])[0]
+            project_current_model_publications([&preview, &published], [&preview, &published])
+                .unwrap()[0]
                 .first_published_at_unix_ms,
             Some(500),
             "E3"
@@ -514,19 +666,20 @@ mod tests {
         later.publication_sequence = Some(2);
         later.published_at_unix_ms = Some(1_000);
         assert_eq!(
-            project_current_model_publications([&old], [&old])[0].first_published_at_unix_ms,
+            project_current_model_publications([&old], [&old]).unwrap()[0]
+                .first_published_at_unix_ms,
             Some(2_000),
             "E1"
         );
         assert_eq!(
-            project_current_model_publications([&later], [&old, &later])[0]
+            project_current_model_publications([&later], [&old, &later]).unwrap()[0]
                 .first_published_at_unix_ms,
             None,
             "E2"
         );
         later.publication_order_verified = true;
         assert_eq!(
-            project_current_model_publications([&later], [&later, &old])[0]
+            project_current_model_publications([&later], [&later, &old]).unwrap()[0]
                 .first_published_at_unix_ms,
             Some(2_000),
             "E3 recovery order independent"
@@ -534,7 +687,7 @@ mod tests {
         let mut conflicting = old.clone();
         conflicting.published_at_unix_ms = Some(3_000);
         assert_eq!(
-            project_current_model_publications([&later], [&old, &conflicting, &later])[0]
+            project_current_model_publications([&later], [&old, &conflicting, &later]).unwrap()[0]
                 .first_published_at_unix_ms,
             None,
             "E6"
@@ -544,7 +697,7 @@ mod tests {
         newest.published_at_unix_ms = Some(500);
         newest.publication_order_verified = true;
         assert_eq!(
-            project_current_model_publications([&newest], [&newest, &old, &later])[0]
+            project_current_model_publications([&newest], [&newest, &old, &later]).unwrap()[0]
                 .first_published_at_unix_ms,
             Some(2_000),
             "E3 one old plus two fenced rows"
@@ -553,14 +706,15 @@ mod tests {
         old_second.publication_sequence = Some(2);
         old_second.published_at_unix_ms = Some(1_500);
         assert_eq!(
-            project_current_model_publications([&newest], [&old, &old_second, &newest],)[0]
-                .first_published_at_unix_ms,
+            project_current_model_publications([&newest], [&old, &old_second, &newest],).unwrap()
+                [0]
+            .first_published_at_unix_ms,
             None,
             "E5 two old rows remain ambiguous after a new fenced row"
         );
         old.publication_order_verified = true;
         assert_eq!(
-            project_current_model_publications([&later], [&later, &old])[0]
+            project_current_model_publications([&later], [&later, &old]).unwrap()[0]
                 .first_published_at_unix_ms,
             Some(2_000),
             "E4"
@@ -626,7 +780,11 @@ mod tests {
             current_model_references(&inventory, "workspace-a")
                 .await
                 .unwrap(),
-            vec!["model-a", "model-b", "model-c"]
+            vec![
+                "model-a;provider=provider",
+                "model-b;provider=provider",
+                "model-c;provider=provider"
+            ]
         );
     }
 

@@ -49,3 +49,11 @@ Owner: [Configuration-to-application and request-to-response flows](../design/co
 - Fact: Serve and Doctor verify the deployment's exact PostgreSQL installation identity read-only. Ordinary rollout migration accepts only exact bindings; fresh initialization and verified legacy adoption each require their own explicit operator switch and recorded audit reference after all-target preflight.
 - Links: [migration sequence](../design/config-to-run-execution-flow.md#database-and-migration-ownership); guardrail G51
 - Verification: installation rules E29 through E34 in the owner document.
+
+## FACT-FLOW-006: Model discovery preserves the publication selection
+
+- Status: active
+- Owner: [Selectable publication identity](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md#amendment-2026-11-09-model-discovery-preserves-selectable-publication-identity)
+- Fact: executable model discovery uses the same Config selector codec as Agent authoring and retains exact route and runtime choices from the sole publication history.
+- Links: [Models behavior](../design/managed-agents-behavior-conformance.md#local-executable-models-projection)
+- Verification: publication selector decision tables and SDK Models-to-Agent creation acceptance.
