@@ -7,7 +7,7 @@
 // Kept free of React/DOM so they are unit-testable in isolation.
 
 import type { ContentBlock, SessionEvent } from "./api/types";
-import { pairToolResults } from "@awaken/managed-session-projection";
+import { pairToolResults, type ManagedEvent } from "@awaken/managed-session-projection";
 export { pairToolResults };
 
 /** Shared tool-call family used by chat, callbacks and diagnostics. */
@@ -23,7 +23,7 @@ export function textOf(content: ContentBlock[] | undefined): string {
 }
 
 /** A concise, actionable explanation for a committed run failure. */
-export function sessionErrorText(event: SessionEvent): string {
+export function sessionErrorText(event: ManagedEvent): string {
   if (event.type !== "session.error") return "";
   const message = event.error.message;
   if (/usage limit|quota/i.test(message)) {
