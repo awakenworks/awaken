@@ -1,6 +1,5 @@
 //! Exact restore target acquisition under the canonical Container provider.
 use super::*;
-use pc::test_support::FenceTamper as _;
 
 /*
  * Exact container-target cause/effect decision table (R1-R4, R6-R7).

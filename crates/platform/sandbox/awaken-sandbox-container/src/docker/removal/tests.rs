@@ -19,12 +19,14 @@ struct Reply {
     body: Value,
     force: Option<bool>,
 }
+type ResponseHook = Arc<dyn Fn(&Reply) + Send + Sync>;
+
 struct Engine {
     replies: Mutex<VecDeque<Reply>>,
     repeat: Option<Reply>,
     calls: Mutex<Vec<(Method, String)>>,
     removing: Semaphore,
-    response_hook: Mutex<Option<Arc<dyn Fn(&Reply) + Send + Sync>>>,
+    response_hook: Mutex<Option<ResponseHook>>,
 }
 
 async fn respond(
@@ -92,9 +94,15 @@ async fn fixture(replies: Vec<Reply>, repeat: Option<Reply>) -> Fixture {
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    let docker =
-        Docker::connect_with_http(&format!("http://{addr}"), 5, bollard::API_DEFAULT_VERSION)
-            .unwrap();
+    // The paused clock must expire the production removal deadline before the
+    // fixture transport deadline, including when an HTTP reply is still in flight.
+    let request_timeout = (REMOVAL_TIMEOUT + Duration::from_secs(5)).as_secs();
+    let docker = Docker::connect_with_http(
+        &format!("http://{addr}"),
+        request_timeout,
+        bollard::API_DEFAULT_VERSION,
+    )
+    .unwrap();
     Fixture {
         runtime: Arc::new(DockerRuntime::with_client(docker, 8080)),
         engine,
@@ -227,9 +235,10 @@ async fn pending_removal_keeps_ownership_until_its_bounded_unknown_outcome() {
     );
     tokio::time::pause();
     tokio::time::advance(REMOVAL_TIMEOUT + Duration::from_secs(1)).await;
+    let outcome = task.await.unwrap();
     assert!(
-        matches!(task.await.unwrap(), Err(RuntimeError::MayHaveCommitted(_))),
-        "R8 exact unknown outcome"
+        matches!(&outcome, Err(RuntimeError::MayHaveCommitted(_))),
+        "R8 exact unknown outcome: {outcome:?}"
     );
     assert_eq!(
         fixture
