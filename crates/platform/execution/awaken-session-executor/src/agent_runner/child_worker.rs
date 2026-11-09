@@ -12,7 +12,6 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_credential_contract::CredentialRealizationCapabilities;
 use awaken_dispatch_contract::Claimed;
@@ -42,10 +41,11 @@ pub(crate) struct ClaimedChildAttempt {
 fn isolated_child_recovery_projection(
     binding: &DispatchBinding,
 ) -> Option<Arc<RecoveryProjection>> {
-    matches!(
-        binding.placement(),
-        awaken_dispatch_erasure::DispatchTopology::Remote { .. }
-    )
+    (binding.local_run_commits().is_some()
+        || matches!(
+            binding.placement(),
+            awaken_dispatch_erasure::DispatchTopology::Remote { .. }
+        ))
     .then(|| Arc::new(RecoveryProjection::new()))
 }
 
@@ -168,14 +168,18 @@ impl ChildWorkerFactory {
         Ok(())
     }
 
-    fn split(
+    fn bound(
         runtime: Arc<Runtime>,
         binding: DispatchBinding,
-        commit: Arc<dyn CommitCoordinator>,
+        commit: Arc<SessionCommit>,
         reader: Arc<dyn CommittedThreadView>,
         owner: String,
     ) -> DispatchWorker<AnyDispatchStore> {
-        DispatchWorker::from_binding(runtime, binding, commit, reader, owner)
+        if binding.local_run_commits().is_some() {
+            DispatchWorker::new_bound(runtime, binding, commit, owner)
+        } else {
+            DispatchWorker::from_binding(runtime, binding, commit, reader, owner)
+        }
     }
 
     /// Parent-mediated start/resume. A remote parent's projection may only
@@ -197,7 +201,7 @@ impl ChildWorkerFactory {
         let worker_reader: Arc<dyn CommittedThreadView> = child_projection
             .as_ref()
             .map_or_else(|| reader.clone(), |projection| projection.clone());
-        let mut worker = Self::split(
+        let mut worker = Self::bound(
             runtime,
             scheduler.binding.clone(),
             scheduler.commit.clone(),
@@ -219,7 +223,7 @@ impl ChildWorkerFactory {
         if let Some(projection) = child_projection {
             worker = worker
                 .with_recovery_projection(projection)
-                .expect("remote binding supplies its required recovery RPC");
+                .expect("bound Worker supplies its required recovery source");
         }
         (worker, worker_reader)
     }
@@ -230,7 +234,7 @@ impl ChildWorkerFactory {
         runtime: Arc<Runtime>,
         scheduler: &RunScheduler,
     ) -> DispatchWorker<AnyDispatchStore> {
-        Self::split(
+        Self::bound(
             runtime,
             scheduler.binding.clone(),
             scheduler.commit.clone(),

@@ -29,7 +29,24 @@ use crate::{dispatch::ClaimedCommitCommand, dispatch::DispatchCommitAuthority};
 pub use awaken_dispatch_contract::ClaimedRunCommit;
 use awaken_dispatch_contract::CommitEpochGuard;
 pub use awaken_dispatch_erasure::validate_commit_dispatch_binding;
+use awaken_runtime_contract::runs::RunError;
 use awaken_worker_contract::RunClaim;
+
+/// Adapt the selected Coordinator writer to the SDK's execution error.
+pub(crate) struct CoordinatorRunCommits(pub Arc<dyn ClaimedRunCommit<RunError>>);
+
+#[async_trait]
+impl ClaimedRunCommit for CoordinatorRunCommits {
+    async fn commit_operation(
+        &self,
+        command: ClaimedCommitCommand,
+    ) -> Result<CommitReceipt, CommitError> {
+        self.0
+            .commit_operation(command)
+            .await
+            .map_err(|error| CommitError::Rejected(error.to_string()))
+    }
+}
 
 /// Local claim fence around the authority selected at construction.
 /// Versioned callers retain the actual operation port; a plain split reader

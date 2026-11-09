@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::CommitReceipt;
-use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_dispatch_contract::{ClaimedCommitCommand, ClaimedCommitRequest, ClaimedRunCommit};
-use awaken_worker_contract::{RunClaim, WorkerIdentity};
+use awaken_worker_contract::WorkerIdentity;
 use awaken_worker_transport_security::{WORKER_ID_HEADER, WorkerRequestAuthorizer, WorkerUpstream};
 
 const TRANSPORT_ATTEMPTS: usize = 3;
@@ -87,16 +86,6 @@ impl RemoteClaimedRunCommit {
 
 #[async_trait::async_trait]
 impl ClaimedRunCommit for RemoteClaimedRunCommit {
-    async fn commit(
-        &self,
-        _claim: &RunClaim,
-        _commit: ThreadCommit,
-    ) -> Result<CommitRecord, CommitError> {
-        Err(CommitError::Rejected(
-            "remote Worker commits require a versioned CommitOperation".to_string(),
-        ))
-    }
-
     async fn commit_operation(
         &self,
         command: ClaimedCommitCommand,

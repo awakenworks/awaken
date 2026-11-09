@@ -157,6 +157,7 @@ pub(super) struct LiveSseSource {
     pub(super) revision: u64,
     pub(super) current: bool,
     pub(super) deadline: Option<MonoDeadline>,
+    pub(super) api_version: ManagedApiVersion,
 }
 
 /// Snapshot, broadcast wake, silent-period reconciliation and lag recovery all
@@ -165,7 +166,6 @@ pub(super) fn live_sse_stream<F>(
     source: LiveSseSource,
     snapshot: Vec<Event>,
     mut rx: broadcast::Receiver<Event>,
-    api_version: crate::common::api_version::ManagedApiVersion,
     previews: PreviewSelection,
     terminal_scope: SseTerminalScope,
     project: F,
@@ -178,6 +178,7 @@ where
     F: Fn(Event) -> Option<Event> + Send + Sync + 'static,
 {
     let deadline = source.deadline;
+    let api_version = source.api_version;
     let stream = async_stream::stream! {
         let mut delivery = CommittedEventDelivery::default();
         let mut preview_event_ids = HashSet::new();

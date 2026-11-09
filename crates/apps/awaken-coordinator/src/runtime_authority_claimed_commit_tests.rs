@@ -2,14 +2,20 @@
 
 use super::*;
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
+use awaken_agent_contract::agent::run::EndCause;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, commit_payload_hash,
 };
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind;
+use awaken_agent_contract::thread::read::transcript::TranscriptView;
 use awaken_dispatch_contract::{
     DispatchClaims, DispatchEnqueue, DispatchExecution, RunDispatch, SettleOutcome,
 };
+use awaken_dispatch_erasure::DispatchBinding;
 use awaken_runtime_contract::runs::RunErrorKind;
+use awaken_worker_contract::RunClaim;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use std::time::Duration;
@@ -243,7 +249,8 @@ async fn selected_postgres_writer_serializes_commit_and_takeover() {
         .unwrap();
     let command = initial_claim(&authority).await;
     let old_claim = command.claim.clone();
-    let writer = authority.clone().run_commits();
+    let binding = DispatchBinding::coordinator(authority.clone());
+    let writer = binding.local_run_commits().unwrap().clone();
 
     // Pause at the receipt INSERT, after the transaction has written the
     // result. Observe both actual PostgreSQL wait edges before unblocking it.
@@ -288,6 +295,124 @@ async fn selected_postgres_writer_serializes_commit_and_takeover() {
     assert!(replay.duplicate);
     assert_eq!(replay.commit_sequence, first.commit_sequence);
     assert_commit_rows(&reader, 1).await;
+}
+
+#[tokio::test]
+async fn selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_takeover() {
+    let Some((url, authority, _)) = fixture().await else {
+        return;
+    };
+    let mut command = initial_claim(&authority).await;
+    command.operation.commit.messages.push(Message::text(
+        MessageId("second".into()),
+        Role::Assistant,
+        "frozen second",
+    ));
+    command.operation.payload_hash = commit_payload_hash(&command.operation.commit).unwrap();
+    let thread = command.operation.commit.thread_id.clone();
+    let run = command.claim.run_id.clone();
+    let writer = authority.clone().run_commits();
+    let first = writer.commit_operation(command.clone()).await.unwrap();
+
+    let mut request = TranscriptPageRequest {
+        thread_id: thread.clone(),
+        view: TranscriptView::RawCommitted,
+        snapshot: None,
+        start: 0,
+        limit: std::num::NonZeroUsize::MIN,
+    };
+    let page = authority.read_transcript_page(&request).await.unwrap();
+    assert_eq!(page.messages, command.operation.commit.messages[..1]);
+    assert_eq!(page.snapshot.end_seq, 2);
+    request.start = page.next_start().unwrap();
+    request.snapshot = Some(page.snapshot.clone());
+
+    let lifecycle = authority.shared_lifecycle_feed().unwrap();
+    let running = lifecycle
+        .events_after(RunLifecycleCursor(0), 1)
+        .await
+        .unwrap();
+    assert_eq!(running.events.len(), 1);
+    assert_eq!(running.events[0].kind, RunLifecycleEventKind::Running);
+    assert_eq!(
+        running.events[0].source_commit_cursor,
+        first.commit_sequence
+    );
+
+    let dispatch = authority.dispatch_store();
+    assert_eq!(
+        dispatch.relinquish_claim(&command.claim).await.unwrap(),
+        SettleOutcome::Applied
+    );
+    let successor = dispatch
+        .claim("replay-successor", 60_000, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let claim = RunClaim::from(&successor.lease);
+    assert!(claim.epoch > command.claim.epoch);
+    assert!(writer.commit_operation(command.clone()).await.is_err());
+
+    command.claim = claim.clone();
+    let duplicate = writer.commit_operation(command.clone()).await.unwrap();
+    assert!(duplicate.duplicate);
+    assert_eq!(duplicate.commit_sequence, first.commit_sequence);
+    let empty = lifecycle
+        .events_after(running.next_cursor, 1)
+        .await
+        .unwrap();
+    assert!(empty.events.is_empty());
+    assert_eq!(empty.next_cursor, running.next_cursor);
+
+    let commit = ThreadCommit::assemble(
+        thread,
+        RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+        true,
+        vec![Message::text(
+            MessageId("third".into()),
+            Role::Assistant,
+            "new tail",
+        )],
+        Vec::new(),
+        Vec::new(),
+    );
+    let terminal = ClaimedCommitCommand {
+        claim,
+        operation: CommitOperation {
+            operation_id: CommitOperationId::new(run, 1),
+            expected_thread_version: first.thread_version,
+            payload_hash: commit_payload_hash(&commit).unwrap(),
+            commit,
+        },
+    };
+    let applied = writer.commit_operation(terminal).await.unwrap();
+
+    let peer = PostgresCommitCoordinator::connect_existing(&url, 1)
+        .await
+        .unwrap();
+    let frozen = peer.authoritative_transcript_page(&request).await.unwrap();
+    assert_eq!(frozen.snapshot, page.snapshot);
+    assert_eq!(frozen.messages, command.operation.commit.messages[1..]);
+    assert_eq!(frozen.next_start(), None);
+    request.snapshot = None;
+    request.start = 2;
+    let latest = peer.authoritative_transcript_page(&request).await.unwrap();
+    assert_eq!(latest.snapshot.end_seq, 3);
+    assert_eq!(latest.messages[0].text_content(), "new tail");
+    request.snapshot = Some(frozen.snapshot);
+    request.view = TranscriptView::ContextEffective;
+    assert!(peer.authoritative_transcript_page(&request).await.is_err());
+
+    let replay = peer.events_after(running.next_cursor, 1).await.unwrap();
+    assert_eq!(replay.events.len(), 1);
+    assert_eq!(replay.events[0].kind, RunLifecycleEventKind::Completed);
+    assert_eq!(
+        replay.events[0].source_commit_cursor,
+        applied.commit_sequence
+    );
+    let end = peer.events_after(replay.next_cursor, 1).await.unwrap();
+    assert!(end.events.is_empty());
+    assert_eq!(end.next_cursor, replay.next_cursor);
 }
 
 #[cfg(test)]

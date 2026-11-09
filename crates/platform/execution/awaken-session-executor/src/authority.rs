@@ -328,8 +328,8 @@ impl SessionAuthority for LocalAuthority {
     }
 
     fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding> {
-        Some(awaken_dispatch_erasure::DispatchBinding::local(
-            self.runtime.dispatch_store(),
+        Some(awaken_dispatch_erasure::DispatchBinding::coordinator(
+            self.runtime.clone(),
         ))
     }
 

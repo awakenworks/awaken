@@ -1101,10 +1101,10 @@ async fn stream_thread_events(
             revision,
             current: observation == ProjectionObservationDecision::UseRefreshed,
             deadline,
+            api_version,
         },
         snapshot,
         rx,
-        api_version,
         previews,
         if primary {
             SseTerminalScope::Session
@@ -1598,10 +1598,10 @@ async fn stream_events(
             revision,
             current: observation == ProjectionObservationDecision::UseRefreshed,
             deadline,
+            api_version,
         },
         snapshot,
         rx,
-        api_version,
         previews,
         SseTerminalScope::Session,
         move |event| {

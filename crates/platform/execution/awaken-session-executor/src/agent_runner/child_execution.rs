@@ -13,6 +13,7 @@ use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
 use awaken_dispatch_contract::PendingInput;
 use awaken_dispatch_erasure::DispatchBinding;
 use awaken_runtime::RunInput;
@@ -31,7 +32,7 @@ use super::child_attempt::{
 };
 use super::{AgentRunBoundary, AgentRunError, AgentRunSandbox, settled_agent_boundary};
 use crate::config::{build_runtime_with_authorization, effective_tool_authorization};
-use awaken_session_run_delivery::child_dispatch_request;
+use awaken_session_run_delivery::{SessionCommit, child_dispatch_request};
 
 /// A child task must not outlive the parent future that owns its delegation
 /// boundary. Tokio's bare `JoinHandle` detaches on drop; this guard makes parent
@@ -188,6 +189,7 @@ impl AgentRunError {
 /// worker cannot leave the parent hanging indefinitely.
 pub(super) async fn await_committed_child_boundary(
     reader: &dyn CommittedThreadView,
+    local: Option<(&SessionCommit, &ThreadId)>,
     child_run_id: &RunId,
     cancellation: Option<&CancellationToken>,
 ) -> Result<RunState, AgentRunError> {
@@ -197,7 +199,7 @@ pub(super) async fn await_committed_child_boundary(
     let settled = async {
         loop {
             if let Some(state @ (RunState::Awaiting | RunState::Ended(_))) =
-                reader.run_state(child_run_id)
+                child_run_state(reader, local, child_run_id).await?
             {
                 return Ok(state);
             }
@@ -232,6 +234,46 @@ pub(super) async fn await_committed_child_boundary(
         })?
 }
 
+async fn child_run_state(
+    reader: &dyn CommittedThreadView,
+    local: Option<(&SessionCommit, &ThreadId)>,
+    run: &RunId,
+) -> Result<Option<RunState>, AgentRunError> {
+    let Some((commit, thread)) = local else {
+        return Ok(reader.run_state(run));
+    };
+    let record = commit
+        .authoritative_run(run)
+        .await
+        .map_err(child_read_error)?;
+    if record
+        .as_ref()
+        .is_some_and(|record| &record.thread_id != thread)
+    {
+        return Err(child_read_error(
+            "committed child Run belongs to another Thread",
+        ));
+    }
+    Ok(record.map(|record| record.state))
+}
+
+async fn child_snapshot(
+    commit: &SessionCommit,
+    thread: &ThreadId,
+    run: &RunId,
+) -> Result<RunRecoverySnapshot, AgentRunError> {
+    commit
+        .recovery_snapshot(thread, run)
+        .await
+        .map_err(child_read_error)
+}
+
+fn child_read_error(error: impl std::fmt::Display) -> AgentRunError {
+    AgentRunError::Runtime(awaken_runtime_contract::execution::Error::Execution(
+        error.to_string(),
+    ))
+}
+
 /// Drive a configured Agent to exactly one settled Run boundary.
 ///
 /// This is the substrate used by parent-mediated child Runs. Starting and
@@ -261,16 +303,28 @@ pub(crate) async fn run_configured_agent_until_boundary(
         })?;
     }
     let config = config.clone();
-    if resume.is_some()
-        && let Some(ticket) = scheduler
+    let thread = child_run_id.0.clone();
+    let thread_id = ThreadId(thread.clone());
+    let local = scheduler
+        .as_ref()
+        .filter(|scheduler| scheduler.binding.local_run_commits().is_some())
+        .map(|scheduler| scheduler.commit.clone());
+    let local_reader: Option<Arc<dyn CommittedThreadView>> = match &local {
+        Some(commit) => Some(Arc::new(
+            child_snapshot(commit, &thread_id, &child_run_id).await?,
+        )),
+        None => scheduler
             .as_ref()
-            .and_then(RunScheduler::local_child_reader)
+            .and_then(RunScheduler::local_child_reader),
+    };
+    if resume.is_some()
+        && let Some(ticket) = local_reader
+            .clone()
             .or_else(|| context.reader.clone())
             .and_then(|reader| reader.resume_ticket(&child_run_id))
     {
         context.inherited_toolsets = ticket.inherited_toolsets;
     }
-    let thread = child_run_id.0.clone();
     super::child_attempt::validate_child_tool_configuration(
         &config,
         context.inherited_toolsets.as_ref(),
@@ -337,11 +391,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
     // Session commit authority already carried by its scheduler. Remote children
     // keep the parent projection out of their lifecycle and install a distinct
     // child projection below when their own claim is acquired.
-    let reader = scheduler
-        .as_ref()
-        .and_then(RunScheduler::local_child_reader)
-        .unwrap_or(parent_reader);
-    let thread_id = ThreadId(thread.clone());
+    let reader = local_reader.unwrap_or(parent_reader);
     let runtime = Arc::new(runtime);
     let background_commit = scheduler
         .as_ref()
@@ -413,6 +463,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
     // Queue claims, committed readers and cancellation authority stay unchanged.
     AbortOnDropTask::spawn(async move {
         let mut boundary_reader = reader.clone();
+        let local_read = local.as_deref().map(|commit| (commit, &thread_id));
         let state = if let Some(scheduler) = scheduler {
             // The foreground child scheduler and every later ownership operation
             // retain this one edge clock. The Worker never substitutes another time
@@ -441,7 +492,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
                 (Some(activation), None) => {
                     // Stable child identity reconnects to committed truth. Only a
                     // genuinely new child is scheduled; retries never create another.
-                    match reader.run_state(&child_run_id) {
+                    match child_run_state(reader.as_ref(), local_read, &child_run_id).await? {
                         Some(state @ (RunState::Awaiting | RunState::Ended(_))) => state,
                         _ => {
                             let request = child_dispatch_request(
@@ -467,6 +518,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
                                 None => {
                                     await_committed_child_boundary(
                                         boundary_reader.as_ref(),
+                                        local_read,
                                         &child_run_id,
                                         context.cancellation.as_ref(),
                                     )
@@ -477,7 +529,11 @@ pub(crate) async fn run_configured_agent_until_boundary(
                     }
                 }
                 (Some(_), Some(command)) => {
-                    let ticket = reader.resume_ticket(&child_run_id).ok_or_else(|| {
+                    let ticket = match local_read {
+                        Some((commit, thread)) => child_snapshot(commit, thread, &child_run_id)
+                            .await?.resume_ticket(&child_run_id),
+                        None => reader.resume_ticket(&child_run_id),
+                    }.ok_or_else(|| {
                         AgentRunError::Configuration(format!(
                             "child Run {:?} is not awaiting",
                             child_run_id.0
@@ -511,6 +567,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
                         None => {
                             await_committed_child_boundary(
                                 boundary_reader.as_ref(),
+                                local_read,
                                 &child_run_id,
                                 context.cancellation.as_ref(),
                             )
@@ -555,6 +612,10 @@ pub(crate) async fn run_configured_agent_until_boundary(
             }
             outcome
         }?;
+        if let Some((commit, thread)) = local_read {
+            let snapshot = child_snapshot(commit, thread, &child_run_id).await?;
+            return settled_agent_boundary(&snapshot, &thread_id, state);
+        }
         settled_agent_boundary(boundary_reader.as_ref(), &thread_id, state)
     })
     .join()
@@ -686,9 +747,10 @@ mod tests {
         let reader = EventuallySettledReader {
             reads: AtomicUsize::new(0),
         };
-        let state = await_committed_child_boundary(&reader, &RunId("child-race".to_string()), None)
-            .await
-            .expect("the competing worker settles the child");
+        let state =
+            await_committed_child_boundary(&reader, None, &RunId("child-race".to_string()), None)
+                .await
+                .expect("the competing worker settles the child");
 
         assert_eq!(state, RunState::Awaiting);
         assert!(reader.reads.load(Ordering::SeqCst) >= 3);
@@ -728,6 +790,7 @@ mod tests {
         cancellation.cancel();
         let error = await_committed_child_boundary(
             &RunningReader,
+            None,
             &RunId("child-cancelled".to_string()),
             Some(&cancellation),
         )
@@ -1352,9 +1415,16 @@ mod tests {
         let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let dispatch_path = tmp.path().join("child-dispatch.db");
         let dispatch_path = dispatch_path.to_string_lossy().to_string();
+        let commit_owner = Arc::new(crate::LocalCommitAdapter::projected_shared(commit.clone()));
+        let bind_dispatch = |dispatch| {
+            awaken_dispatch_erasure::DispatchBinding::coordinator(Arc::new(
+                awaken_dispatch_erasure::ReferenceAuthority::with_dispatch(clock.clone(), dispatch)
+                    .with_commit("parent-thread", commit_owner.clone()),
+            ))
+        };
         let scheduler = RunScheduler {
             clock: clock.clone(),
-            binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
+            binding: bind_dispatch(Arc::new(
                 awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
                     .await
                     .expect("child dispatch store"),
@@ -1424,7 +1494,7 @@ mod tests {
         // runtime object from committed truth; no child handle crosses this seam.
         let replacement = RunScheduler {
             clock: clock.clone(),
-            binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
+            binding: bind_dispatch(Arc::new(
                 awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
                     .await
                     .expect("reopen child dispatch"),
@@ -1495,7 +1565,7 @@ mod tests {
             clock.clone(),
             execution(RunScheduler {
                 clock: clock.clone(),
-                binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
+                binding: bind_dispatch(Arc::new(
                     awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
                         .await
                         .expect("reopen terminal child dispatch"),

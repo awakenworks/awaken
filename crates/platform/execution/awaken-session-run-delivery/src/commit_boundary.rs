@@ -25,6 +25,7 @@ use awaken_agent_contract::thread::read::lifecycle::{
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_agent_contract::thread::read::transcript::{TranscriptPage, TranscriptPageRequest};
 use std::sync::Arc;
 
 /// One thread's commit boundary: either a `Local` read+write store (an
@@ -64,6 +65,15 @@ impl<A> CommittedAuthority<A> {
 }
 
 impl CommittedAuthority<Arc<dyn awaken_dispatch_erasure::LocalCommit>> {
+    pub async fn transcript_page(
+        &self,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, String> {
+        self.authority()
+            .authoritative_transcript_page(request)
+            .await
+    }
+
     pub async fn committed_state(&self, thread_id: &ThreadId) -> Result<Vec<StateCommand>, String> {
         self.authority()
             .authoritative_committed_state(thread_id)

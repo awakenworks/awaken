@@ -11,11 +11,16 @@ use awaken_worker_contract::RunClaim;
 /// Atomically apply a [`ThreadCommit`] under one durable [`RunClaim`].
 #[async_trait::async_trait]
 pub trait ClaimedRunCommit<OperationError = CommitError>: Send + Sync {
+    /// Compatibility for an explicitly embedded Worker with a plain SDK store.
     async fn commit(
         &self,
-        claim: &RunClaim,
-        commit: ThreadCommit,
-    ) -> Result<CommitRecord, CommitError>;
+        _claim: &RunClaim,
+        _commit: ThreadCommit,
+    ) -> Result<CommitRecord, CommitError> {
+        Err(CommitError::Rejected(
+            "Worker commits require a versioned CommitOperation".to_owned(),
+        ))
+    }
 
     /// Return the original atomically persisted operation receipt. Every
     /// implementation validates the exact current claim and its Dispatch

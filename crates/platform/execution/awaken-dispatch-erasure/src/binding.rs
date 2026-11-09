@@ -5,6 +5,7 @@ use super::{AnyCoordinatorDispatch, AnyDispatchStore, RemoteDispatch};
 use awaken_dispatch_contract::{
     ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, ClaimedRunCommit,
 };
+use awaken_runtime_contract::runs::RunError;
 use std::sync::Arc;
 #[derive(Clone)]
 pub enum DispatchTopology {
@@ -42,13 +43,23 @@ pub enum DispatchTopology {
 pub struct DispatchBinding {
     queue: Arc<AnyDispatchStore>,
     placement: DispatchTopology,
+    local_run_commits: Option<Arc<dyn ClaimedRunCommit<RunError>>>,
 }
 impl DispatchBinding {
     pub fn local(owner: Arc<AnyCoordinatorDispatch>) -> Self {
         Self {
             queue: owner.worker_view(),
             placement: DispatchTopology::Local(owner),
+            local_run_commits: None,
         }
+    }
+
+    /// Bind the deployed local Worker to the same versioned writer as the
+    /// registered Worker HTTP ingress.
+    pub fn coordinator(authority: Arc<dyn crate::RuntimeAuthority>) -> Self {
+        let mut binding = Self::local(authority.dispatch_store());
+        binding.local_run_commits = Some(authority.run_commits());
+        binding
     }
     pub fn remote(owner: Arc<dyn RemoteDispatch>, commit: Arc<dyn ClaimedRunCommit>) -> Self {
         Self {
@@ -58,6 +69,7 @@ impl DispatchBinding {
                 credentials: owner,
                 commit,
             },
+            local_run_commits: None,
         }
     }
     pub fn queue(&self) -> Arc<AnyDispatchStore> {
@@ -65,5 +77,9 @@ impl DispatchBinding {
     }
     pub fn placement(&self) -> &DispatchTopology {
         &self.placement
+    }
+
+    pub fn local_run_commits(&self) -> Option<&Arc<dyn ClaimedRunCommit<RunError>>> {
+        self.local_run_commits.as_ref()
     }
 }

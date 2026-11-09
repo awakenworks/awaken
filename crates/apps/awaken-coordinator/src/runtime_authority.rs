@@ -20,12 +20,11 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
-use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
 use awaken_agent_contract::thread::commit::operation::CommitReceipt;
-use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
+use awaken_agent_contract::thread::read::transcript::{TranscriptPage, TranscriptPageRequest};
 use awaken_deployment_config::{CoordinatorStorage, DispatchBackend, StoreKind, Wake};
 use awaken_dispatch::AnyCoordinatorDispatch;
 use awaken_dispatch_contract::{ClaimedCommitCommand, ClaimedRunCommit, WakeSignal};
@@ -37,7 +36,6 @@ use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_sync::{InvariantLock, TryLockFailure};
-use awaken_worker_contract::RunClaim;
 use tokio::runtime::{Handle, RuntimeFlavor};
 
 #[derive(Clone, Copy)]
@@ -69,12 +67,6 @@ struct PostgresClaimedRunCommit {
 
 #[async_trait::async_trait]
 impl ClaimedRunCommit<RunError> for PostgresClaimedRunCommit {
-    async fn commit(&self, _: &RunClaim, _: ThreadCommit) -> Result<CommitRecord, CommitError> {
-        Err(CommitError::Rejected(
-            "Coordinator Worker commits require a versioned CommitOperation".to_owned(),
-        ))
-    }
-
     async fn commit_operation(
         &self,
         command: ClaimedCommitCommand,
@@ -554,6 +546,23 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
         }
     }
 
+    async fn read_transcript_page(
+        &self,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, RuntimeAuthorityError> {
+        if let Some(store) = &self.postgres_commit {
+            return store
+                .authoritative_transcript_page(request)
+                .await
+                .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()));
+        }
+        self.open_commit(&request.thread_id.0)
+            .await?
+            .authoritative_transcript_page(request)
+            .await
+            .map_err(RuntimeAuthorityError::unavailable)
+    }
+
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError> {
         match self.commit.store {
             StoreKind::Postgres => self
@@ -733,6 +742,17 @@ impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
     ) -> Result<Vec<StateCommand>, String> {
         store
             .authoritative_committed_state(thread_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn authoritative_transcript_page(
+        &self,
+        store: &PostgresCommitCoordinator,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, String> {
+        store
+            .authoritative_transcript_page(request)
             .await
             .map_err(|error| error.to_string())
     }

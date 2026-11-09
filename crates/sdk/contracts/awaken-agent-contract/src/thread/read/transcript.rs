@@ -4,6 +4,7 @@
 //! decide *which* ranges they need; the transcript contract only freezes a
 //! committed prefix and returns validated half-open ranges from it.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,91 @@ pub struct TranscriptSnapshotRef {
     pub view: TranscriptView,
     pub version: u64,
     pub end_seq: u64,
+}
+
+/// A bounded read of one committed transcript. A continuation supplies the
+/// first page's snapshot and the preceding page's exclusive end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptPageRequest {
+    pub thread_id: ThreadId,
+    pub view: TranscriptView,
+    pub snapshot: Option<TranscriptSnapshotRef>,
+    pub start: u64,
+    pub limit: NonZeroUsize,
+}
+
+impl TranscriptPageRequest {
+    /// Resolve the bounds for stores whose transcript versions are append-only
+    /// message counts, as used by the existing frozen transcript references.
+    pub fn resolve_append_only(
+        &self,
+        available_end: u64,
+    ) -> Result<(TranscriptSnapshotRef, TranscriptRange), TranscriptError> {
+        let snapshot = match &self.snapshot {
+            Some(snapshot) => {
+                if snapshot.thread_id != self.thread_id
+                    || snapshot.view != self.view
+                    || snapshot.version != snapshot.end_seq
+                {
+                    return Err(TranscriptError::SnapshotMismatch);
+                }
+                if snapshot.end_seq > available_end {
+                    return Err(TranscriptError::SnapshotUnavailable {
+                        requested_end: snapshot.end_seq,
+                        available_end,
+                    });
+                }
+                snapshot.clone()
+            }
+            None => TranscriptSnapshotRef {
+                thread_id: self.thread_id.clone(),
+                view: self.view,
+                version: available_end,
+                end_seq: available_end,
+            },
+        };
+        if self.start > snapshot.end_seq {
+            return Err(TranscriptError::InvalidRange {
+                start: self.start,
+                end: self.start,
+                snapshot_end: snapshot.end_seq,
+            });
+        }
+        let limit =
+            u64::try_from(self.limit.get()).map_err(|_| TranscriptError::SequenceOverflow)?;
+        let end = self.start.saturating_add(limit).min(snapshot.end_seq);
+        Ok((snapshot, TranscriptRange::new(self.start, end)))
+    }
+
+    pub fn page_from_append_only(
+        &self,
+        messages: Vec<Message>,
+    ) -> Result<TranscriptPage, TranscriptError> {
+        let len = u64::try_from(messages.len()).map_err(|_| TranscriptError::SequenceOverflow)?;
+        let (snapshot, range) = self.resolve_append_only(len)?;
+        let start = usize::try_from(range.start).map_err(|_| TranscriptError::SequenceOverflow)?;
+        let end = usize::try_from(range.end).map_err(|_| TranscriptError::SequenceOverflow)?;
+        let messages = messages.into_iter().skip(start).take(end - start).collect();
+        Ok(TranscriptPage {
+            snapshot,
+            range,
+            messages,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TranscriptPage {
+    pub snapshot: TranscriptSnapshotRef,
+    pub range: TranscriptRange,
+    pub messages: Vec<Message>,
+}
+
+impl TranscriptPage {
+    #[must_use]
+    pub fn next_start(&self) -> Option<u64> {
+        (self.range.end < self.snapshot.end_seq).then_some(self.range.end)
+    }
 }
 
 /// An immutable in-process snapshot. Clones share the message allocation.
@@ -174,6 +260,45 @@ fn validate_ranges(ranges: &[TranscriptRange], snapshot_end: u64) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transcript_pages_reuse_the_frozen_prefix_and_reject_invalid_bounds() {
+        let mut request = TranscriptPageRequest {
+            thread_id: ThreadId("thread".into()),
+            view: TranscriptView::RawCommitted,
+            snapshot: None,
+            start: 1,
+            limit: NonZeroUsize::MIN,
+        };
+        let (snapshot, range) = request.resolve_append_only(3).unwrap();
+        assert_eq!(range, TranscriptRange::new(1, 2));
+        assert_eq!(snapshot.end_seq, 3);
+        request.snapshot = Some(snapshot.clone());
+        request.start = range.end;
+        assert_eq!(
+            request.resolve_append_only(5).unwrap(),
+            (snapshot, TranscriptRange::new(2, 3))
+        );
+        request.start = 3;
+        assert_eq!(
+            request.resolve_append_only(5).unwrap().1,
+            TranscriptRange::new(3, 3)
+        );
+        request.start = 4;
+        assert!(matches!(
+            request.resolve_append_only(5),
+            Err(TranscriptError::InvalidRange { .. })
+        ));
+        assert!(matches!(
+            request.resolve_append_only(2),
+            Err(TranscriptError::SnapshotUnavailable { .. })
+        ));
+        request.thread_id = ThreadId("other".into());
+        assert_eq!(
+            request.resolve_append_only(5),
+            Err(TranscriptError::SnapshotMismatch)
+        );
+    }
     use crate::agent::message::{Id as MessageId, Role};
 
     fn messages() -> Vec<Message> {

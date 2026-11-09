@@ -26,14 +26,13 @@ use crate::coordinator_execution::ExecutionCompositionError;
 /// The application retains delivery roles; service tasks retain the same commit
 /// and observer owners, whose delivery collaborators retain no process services.
 pub(super) struct RegisteredExecution {
+    binding: DispatchBinding,
     pub(super) sessions: Arc<WorkerPlacedSessions>,
     pub(super) dispatch: Arc<ProcessDispatch>,
     pub(super) owner: Arc<AnyCoordinatorDispatch>,
     pub(super) capture_policy: awaken_data_governance_contract::CapturePolicy,
     commits: Arc<AuthorityCommits>,
     reads: Arc<CommittedReads>,
-    worker_commits:
-        Arc<dyn awaken_dispatch::ClaimedRunCommit<awaken_runtime_contract::runs::RunError>>,
     completion: Arc<CompletionRegistry>,
     extractions: Arc<MemoryExtractions>,
     clock: Arc<dyn awaken_time::WallClock>,
@@ -70,7 +69,7 @@ impl RegisteredExecution {
             base.stores.platform_workspace.clone(),
             Some(base.agents.catalog.clone()),
         ));
-        let worker_commits = authority.clone().run_commits();
+        let binding = DispatchBinding::coordinator(authority.clone());
         let commits = Arc::new(AuthorityCommits::new(authority));
         let reads = Arc::new(CommittedReads::new(commits.clone(), projections.clone()));
         let hub = Arc::new(ThreadEventHub::new());
@@ -114,6 +113,7 @@ impl RegisteredExecution {
             default_model,
         }));
         Ok(Self {
+            binding,
             sessions,
             dispatch,
             owner,
@@ -123,7 +123,6 @@ impl RegisteredExecution {
             ),
             commits,
             reads,
-            worker_commits,
             completion,
             extractions,
             clock,
@@ -165,7 +164,11 @@ impl RegisteredExecution {
             sessions: Arc::new(SessionDispatchObserver::new(application.coordination())),
             memory: memory.clone(),
         });
-        let binding = DispatchBinding::local(self.owner.clone());
+        let binding = self.binding;
+        let worker_commits = binding
+            .local_run_commits()
+            .expect("Coordinator binding has its selected writer")
+            .clone();
         let workers = Arc::new(SessionCommitWorkers::new(
             self.commits,
             Some(binding.clone()),
@@ -200,7 +203,7 @@ impl RegisteredExecution {
             dispatch: self.dispatch,
             dispatch_lifecycle: Arc::new(lifecycle),
             coordinator_dispatch: self.owner,
-            worker_commits: self.worker_commits,
+            worker_commits,
             worker_recovery: self.reads,
             worker_completion: completion,
             worker_settlement: memory,

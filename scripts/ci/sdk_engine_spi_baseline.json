@@ -54,7 +54,7 @@
     "awaken-coordinator-client": {
       "awaken_agent_contract::stream::checkpoint": 1,
       "awaken_agent_contract::stream::sink": 1,
-      "awaken_agent_contract::thread::commit": 3
+      "awaken_agent_contract::thread::commit": 2
     }
   }
 }
