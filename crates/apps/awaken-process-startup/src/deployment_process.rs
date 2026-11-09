@@ -128,6 +128,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     .await?;
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
+        agent_governance: deployment.cloud_iam.agent_governance.clone(),
         coordinator: deployment.coordinator.clone(),
         resources: Some(resources),
         postgres_pools: &mut postgres_pools,
@@ -326,6 +327,7 @@ pub(crate) async fn migrate_deployment_schema_prepared(
     {
         open_process_stores(ProcessStoreOpenOptions {
             control: deployment.control.clone(),
+            agent_governance: deployment.cloud_iam.agent_governance.clone(),
             coordinator: deployment.coordinator.clone(),
             resources,
             postgres_pools: &mut postgres_pools,

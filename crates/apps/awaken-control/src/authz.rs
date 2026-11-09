@@ -153,14 +153,12 @@ mod entitlement;
 mod hosted_route_profile;
 mod local_browser;
 mod managed_context;
-mod off_event_loop;
+pub(crate) mod off_event_loop;
 mod private_assistant;
 mod profiles;
 mod route_policy;
-use credentials::{
-    authorization_bearer_token, bearer_token, is_legacy_tunnel_route, is_tunnel_route,
-    query_workspace_id,
-};
+pub(crate) use credentials::authorization_bearer_token;
+use credentials::{bearer_token, is_legacy_tunnel_route, is_tunnel_route, query_workspace_id};
 use managed_context::memory_actor;
 pub(crate) use managed_context::with_composed_workspace;
 use route_policy::ROUTE_POLICIES;

@@ -84,6 +84,7 @@ pub(super) struct FileConfig {
     pub(super) cloud_api_url: Option<String>,
     pub(super) cloud_iam_audience: Option<String>,
     pub(super) cloud_iam_issuer: Option<String>,
+    pub(super) agent_governance: Option<awaken_control::AgentGovernanceConfig>,
     pub(super) cloud_oauth_client_id: Option<String>,
     pub(super) cloud_oauth_redirect_uri: Option<String>,
     pub(super) cloud_access_token: Option<String>,

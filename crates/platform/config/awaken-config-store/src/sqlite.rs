@@ -1083,3 +1083,5 @@ mod scope_tests {
         );
     }
 }
+
+mod catalog_snapshot;

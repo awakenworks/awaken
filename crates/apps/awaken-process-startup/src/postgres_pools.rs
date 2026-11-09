@@ -198,6 +198,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let stores = crate::open_process_stores(crate::ProcessStoreOpenOptions {
             control: awaken_control::ControlStoreConfig::local(root.path()),
+            agent_governance: None,
             coordinator: crate::config::CoordinatorStoreConfig {
                 sessions: awaken_control::StoreBackend::Postgres(url.clone()),
                 captured_content: awaken_control::StoreBackend::Postgres(url.clone()),

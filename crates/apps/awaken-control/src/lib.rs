@@ -21,6 +21,11 @@
 //! asks `awaken-coordinator` for the data-plane router, merges them, and applies the
 //! guard exactly where it applied before.
 
+mod agent_governance;
+pub use agent_governance::{
+    AgentGovernanceConfig, AgentGovernanceStores, agent_governance_authorization_profile,
+    agent_governance_resource_id, agent_governance_resource_model,
+};
 pub mod admin_assistant;
 mod application_credentials;
 mod application_mcp_credentials;
@@ -379,6 +384,7 @@ pub struct ControlRouterInput {
     pub agent_archive_cascade: Option<Arc<dyn AgentArchiveCascade>>,
     /// The config authoring plane (scope edge over the config service).
     pub plane: ConfigPlane,
+    pub agent_governance: AgentGovernanceStores,
     /// Model selection used to publish or recover the reserved Console Assistant.
     pub assistant_model_selection: Option<awaken_agent_config::ModelSelection>,
     /// The host's global tool descriptors, for `GET /v1/capabilities`.
@@ -487,6 +493,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         agent_repository,
         agent_archive_cascade,
         plane,
+        agent_governance,
         assistant_model_selection,
         global_tools,
         plugins,
@@ -606,6 +613,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
     }
+    let agent_directory = agent_governance::router(agent_governance, remote_iam.clone());
     let no_login = iam.is_none() && remote_iam.is_none();
     mgmt = awaken_protocol_managed::with_managed_response_context(protect_management_router(
         mgmt,
@@ -614,6 +622,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         remote_iam,
         managed_request_limiter,
     ));
+    mgmt = mgmt.merge(agent_directory);
     if no_login {
         mgmt = crate::authz::with_composed_workspace(mgmt, Some(platform_workspace));
     }

@@ -89,6 +89,7 @@ pub struct ControlDependencies {
     pub webhook_store: Arc<dyn WebhookStore>,
     pub resource_store: Arc<dyn AgentInputBindingRepository>,
     pub config_store: Arc<dyn ScopedConfigRegistry>,
+    pub agent_governance: crate::AgentGovernanceStores,
     pub executable_agent_registrar: Arc<dyn ExecutableAgentRegistrar>,
     /// Optional local lifecycle command edge. Present only in AllInOne
     /// composition; its execution-owned implementation stays outside Control.
@@ -190,6 +191,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         webhook_store,
         resource_store,
         config_store,
+        agent_governance,
         executable_agent_registrar,
         agent_archive_cascade,
         model_publication_resolver,
@@ -392,6 +394,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         agent_repository: agent_repository.clone(),
         agent_archive_cascade,
         plane: config_plane.clone(),
+        agent_governance,
         assistant_model_selection,
         global_tools,
         plugins: PluginConfigurationSource::capabilities(&platform_plugins),

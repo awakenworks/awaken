@@ -12,6 +12,7 @@ pub struct CloudIamConfig {
     pub inference_base_url: String,
     pub audience: String,
     pub issuer: String,
+    pub agent_governance: Option<awaken_control::AgentGovernanceConfig>,
     pub oauth_client_id: String,
     pub oauth_redirect_uri: String,
     pub access_token: Option<String>,
@@ -66,6 +67,7 @@ impl CloudIamConfig {
                 .cloud_iam_issuer
                 .clone()
                 .unwrap_or_else(|| "https://accounts.awakenworks.com".to_owned()),
+            agent_governance: file.agent_governance.clone(),
             oauth_client_id: file
                 .cloud_oauth_client_id
                 .clone()
@@ -90,6 +92,7 @@ impl std::fmt::Debug for CloudIamConfig {
             .field("inference_base_url", &self.inference_base_url)
             .field("audience", &self.audience)
             .field("issuer", &self.issuer)
+            .field("agent_governance", &self.agent_governance)
             .field("oauth_client_id", &self.oauth_client_id)
             .field("oauth_redirect_uri", &self.oauth_redirect_uri)
             .field(
