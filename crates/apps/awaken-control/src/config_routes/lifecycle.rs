@@ -11,7 +11,7 @@ use awaken_protocol_managed::{
 };
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
@@ -110,11 +110,33 @@ async fn archive(
     }
 }
 
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionEvidenceQuery {
+    agent_id: Option<String>,
+    version: Option<u64>,
+}
+
 async fn execution_evidence(
     State(state): State<Arc<AgentRegistryState>>,
     RequiredScope(scope): RequiredScope,
+    Query(query): Query<ExecutionEvidenceQuery>,
 ) -> (StatusCode, Json<Value>) {
-    match state.execution_evidence(scope.as_str()).await {
+    let publication = match (query.agent_id.as_deref(), query.version) {
+        (None, None) => None,
+        (Some(id), Some(version)) if !id.trim().is_empty() && version > 0 => Some((id, version)),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                problem_details(
+                    "invalid_publication_selector",
+                    "Select one exact Agent publication",
+                    "agent_id and a positive version must be supplied together",
+                ),
+            );
+        }
+    };
+    match state.execution_evidence(scope.as_str(), publication).await {
         Ok(data) => (StatusCode::OK, Json(json!({"data": data}))),
         Err(error) => (
             StatusCode::SERVICE_UNAVAILABLE,

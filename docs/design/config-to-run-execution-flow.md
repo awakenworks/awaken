@@ -777,7 +777,14 @@ separate from the frozen Managed Agent wire. It reuses `ManagedAgentRepository`
 and its canonical visible-publication list; one request-local publication index
 serves both visibility and exact `(agent_id, version)` execution lookup. Each
 row exposes only backend ref, model ref and provisioning kind from the immutable
-candidate. Drafts, current-catalog guesses, endpoint details and credential
+candidate.
+The same GET accepts `agent_id` and a positive `version` together to read one
+exact visible publication, including a Project pin older than the latest Agent.
+With neither parameter it retains the visible-list behavior. Partial/invalid
+selectors return 400; a missing or foreign pin exposes no row. The selector
+reuses the repository's existing version visibility and request-local publication
+index, without loading the same owning publication table twice. Unknown selector
+fields are rejected rather than silently discarding a misspelled revision. Drafts, current-catalog guesses, endpoint details and credential
 material never replace those facts. No diagnostic row grants placement.
 
 Static ownership: Control ConfigPlane/publication -> repository query -> native

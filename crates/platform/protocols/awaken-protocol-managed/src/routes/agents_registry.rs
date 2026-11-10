@@ -81,6 +81,7 @@ pub trait ManagedAgentRepository: Send + Sync {
     async fn execution_evidence(
         &self,
         _workspace_id: &str,
+        _publication: Option<(&str, u64)>,
     ) -> Result<Vec<AgentExecutionEvidence>, ManagedAgentError> {
         Err(ManagedAgentError::Invalid(
             "Agent execution evidence is unavailable".into(),
@@ -141,8 +142,11 @@ impl AgentRegistryState {
     pub async fn execution_evidence(
         &self,
         workspace_id: &str,
+        publication: Option<(&str, u64)>,
     ) -> Result<Vec<AgentExecutionEvidence>, ManagedAgentError> {
-        self.repository.execution_evidence(workspace_id).await
+        self.repository
+            .execution_evidence(workspace_id, publication)
+            .await
     }
 
     /// Native and Managed HTTP adapters share this state and its one downstream
