@@ -22,6 +22,22 @@ use awaken_runtime_contract::runs::RunError;
 use std::future::Future;
 use std::sync::Arc;
 
+/// Retain definite store capacity failure through the Coordinator result port.
+/// Other store failures keep the existing internal classification unchanged.
+pub fn claimed_store_run_error(
+    error: awaken_agent_contract::thread::commit::coordinator::Error,
+) -> RunError {
+    match error {
+        awaken_agent_contract::thread::commit::coordinator::Error::CapacityExhausted(message) => {
+            RunError::unavailable_classified(
+                awaken_dispatch_contract::COMMIT_CAPACITY_EXHAUSTED,
+                message,
+            )
+        }
+        error => RunError::internal(error.to_string()),
+    }
+}
+
 /// The complete durable capability injected into one Coordinator Runtime Host.
 ///
 /// Source-owner rule A3: composition consumes this original canonical declaration;
@@ -217,7 +233,7 @@ where
         coordinator
             .commit_operation(command.operation)
             .await
-            .map_err(|error| RunError::internal(error.to_string()))
+            .map_err(claimed_store_run_error)
     }
     .await;
     guard.release_after(committed).await.map_err(|error| {

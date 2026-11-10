@@ -132,7 +132,9 @@ impl ClaimedRunCommit<RunError> for PostgresClaimedRunCommit {
                     PostgresCommitFailure::OutcomeUnknown(_) => {
                         RunError::unavailable_classified(COMMIT_OUTCOME_UNKNOWN, error.to_string())
                     }
-                    PostgresCommitFailure::Rejected(_) => RunError::internal(error.to_string()),
+                    PostgresCommitFailure::Rejected(error) => {
+                        awaken_dispatch_erasure::claimed_store_run_error(error)
+                    }
                 }
             })
     }

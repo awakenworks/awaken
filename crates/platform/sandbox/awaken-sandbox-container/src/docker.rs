@@ -949,9 +949,13 @@ impl ContainerRuntime for DockerRuntime {
             }
         }
         admit()?;
+        let observed_handle = self.handle_extra(&container_id).await;
+        admit()?;
+        let runtime_handle = observed_handle?;
         Ok(Some(RuntimeRestoreTarget {
             container_id,
             disposition: pc::SandboxRestoreTargetDisposition::Recovered,
+            runtime_handle,
         }))
     }
 
@@ -1000,9 +1004,13 @@ impl ContainerRuntime for DockerRuntime {
                     .await
                     .map_err(backend)?;
                 admit()?;
+                let observed_handle = self.handle_extra(&created.id).await;
+                admit()?;
+                let runtime_handle = observed_handle?;
                 Ok(RuntimeRestoreTarget {
                     container_id: created.id,
                     disposition: pc::SandboxRestoreTargetDisposition::Created,
+                    runtime_handle,
                 })
             }
             Err(create_error) => {

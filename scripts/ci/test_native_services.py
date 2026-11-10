@@ -136,7 +136,7 @@ class NativeReceiptIdentityTests(unittest.TestCase):
     def test_same_source_receipt_requires_this_service_and_this_fixture(self):
         with tempfile.TemporaryDirectory() as temporary:
             base=Path(temporary);paths=postgres_receipts(base,"core")
-            self.assertEqual(len(self.verify(base,paths)),19)
+            self.assertEqual(len(self.verify(base,paths)),22)
             path=paths[0]/"results.json";original=json.loads(path.read_text())
             for fixture in (None,{"kind":"postgres","owner":"older-fixture"},
                             {"kind":"nats","owner":FIXTURE_OWNER}):
@@ -236,8 +236,8 @@ class ExecutionReceiptTests(unittest.TestCase):
             base=Path(directory);receipts=postgres_receipts(base,"core")
             log="".join("execution evidence: "+str(path)+"\n" for path in receipts)
             with mock.patch.dict(os.environ,{"CARGO_TARGET_DIR":str(base)}):
-                self.assertEqual(len(gate.reconcile_postgres(log,"source",fixture_owner=FIXTURE_OWNER)),19)
-                with self.assertRaisesRegex(ValueError,"all 19"):gate.reconcile_postgres("","source",fixture_owner=FIXTURE_OWNER)
+                self.assertEqual(len(gate.reconcile_postgres(log,"source",fixture_owner=FIXTURE_OWNER)),22)
+                with self.assertRaisesRegex(ValueError,"all 22"):gate.reconcile_postgres("","source",fixture_owner=FIXTURE_OWNER)
                 path=receipts[0]/"results.json";original=json.loads(path.read_text())
                 for key in ("postgres_fixture_required","postgres_fixture_configured"):
                     for invalid in (False,"1"):
@@ -631,7 +631,7 @@ class IndependentPostgresDomainTests(unittest.TestCase):
             root=Path(temporary);path=root/"scripts/ci/pg_tests.sh";path.parent.mkdir(parents=True)
             path.write_text(source,encoding="utf-8")
             rows=root/"scripts/ci/service_suites.toml";rows.write_text(table,encoding="utf-8")
-            self.assertEqual(len(postgres_phases("core",root)),19)
+            self.assertEqual(len(postgres_phases("core",root)),22)
             parity_rows=r'(?ms)^\[\[postgres\]\]\nid = "[^"]+"\nphase = "backend_parity"\n.*?(?=^\[\[|^#|\Z)'
             for phases in replacements:
                 changed=re.sub(parity_rows,"",table)+"".join(
@@ -681,7 +681,7 @@ class DispatchObservationSelectionTests(unittest.TestCase):
         text=suite_table()
         phases=self.verify(text)
         dispatch=[phase for phase in phases if phase.package=='awaken-dispatch']
-        self.assertEqual(len(phases),19)
+        self.assertEqual(len(phases),22)
         self.assertEqual(len(dispatch),1)
         self.assertEqual(dispatch[0].selector,'backend_parity')
         self.assertIn('--require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock',dispatch[0].arguments)
@@ -863,7 +863,7 @@ class SessionCapacityObservationSelectionTests(unittest.TestCase):
 
 
 # unittest discovers these imported policy cases in the native gate suite.
-from test_postgres_work_tiers import WorkCalibrationAdmissionTests, WorkParitySelectionTests, WorkStoreSelectionTests, SessionWorkReleaseSelectionTests
+from test_postgres_work_tiers import WorkCalibrationAdmissionTests, WorkParitySelectionTests, WorkStoreSelectionTests, SessionWorkReleaseSelectionTests, ClaimedCommitSelectionTests
 from test_native_work_targets import WorkTargetMetadataTests
 
 

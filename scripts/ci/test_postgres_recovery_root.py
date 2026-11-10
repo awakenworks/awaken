@@ -460,21 +460,21 @@ class RecoveryRootTests(unittest.TestCase):
 
 class CoordinatorDurabilitySelectionTests(unittest.TestCase):
     def test_exact_library_case_and_execution_evidence_are_required(self):
-        # S1 one library-only, locked, ignored exact case with a required
-        # execution receipt passes the producer guard. S2 independently remove
-        # the library target, lock, required case, ignored selector or exact
-        # selector: the actual --self-test must reject the changed suite row.
-        # Only the row in the suite table is mutated; the guard is left intact.
+        # S1 other coordinator rows may coexist; exactly one canonical row needs
+        # the required runner and lib/locked/required/ignored/exact. S2 missing,
+        # duplicate or wrong-target rows and selector mutations refuse; guard unchanged.
         producer = DRILL.with_name("pg_tests.sh")
         table = DRILL.with_name("service_suites.toml")
         rows = table.read_text(encoding="utf-8")
         original = producer.read_text(encoding="utf-8")
-        commands = [line for line in rows.splitlines() if line.startswith("-p awaken-coordinator ")]
-        self.assertEqual(len(commands), 1)
-        command = commands[0]
+        from service_test_plan import load
+        selected = [row for row in load(rows) if row.id == "postgres.critical.coordinator"]
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].runner, "pg_required_test")
+        command = shlex.join(selected[0].args)
         case = "application_access_store::tests::provisioned_postgres_application_access_durability_release_gate"
         required = "--require-case=" + case
-        arguments = shlex.split(command)
+        arguments = selected[0].args
         for token in ("--lib", "--locked", case, required, "--ignored", "--exact"):
             self.assertIn(token, arguments)
         with tempfile.TemporaryDirectory(prefix="awaken-pg-selector-") as directory:

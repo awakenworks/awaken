@@ -33,7 +33,8 @@ mod managed_model_id;
 mod model_selection;
 pub use managed_model_id::{
     CanonicalPublishedModelReferenceProjector, ManagedModelIdError, ManagedModelIdRefusal,
-    PublishedModelReferenceProjector, parse_managed_model_id, render_managed_model_id,
+    PublishedModelReferenceProjector, parse_managed_model_id, project_published_model_reference,
+    render_managed_model_id,
 };
 pub use model_selection::ModelSelection;
 mod session_profile;
@@ -355,6 +356,7 @@ pub fn project_current_model_publications<'a>(
 }
 
 /// The sole extraction rule for primary and fallback models in a publication.
+/// Duplicate public IDs retain their first occurrence in the original pool.
 pub fn registration_model_references(
     registration: &ExecutableAgentRegistration,
     projector: &dyn PublishedModelReferenceProjector,
@@ -363,24 +365,21 @@ pub fn registration_model_references(
     std::iter::once(&spec.model_binding)
         .chain(spec.model_candidates.iter())
         .map(|candidate| {
-            let project = || {
-                let Some(selection) = projector.project(candidate)? else {
-                    return Ok(None);
-                };
-                let reference = render_managed_model_id(&selection)?;
-                // The sole public grammar gate for every source. A hosted
-                // projector supplies a domain value, never a second codec.
-                parse_managed_model_id(&reference)?;
-                Ok(Some(reference))
-            };
-            project().map_err(|error: ManagedModelIdError| {
+            project_published_model_reference(candidate, projector).map_err(|error| {
                 ExecutableAgentRegistrationError::Invalid(format!(
                     "published model selector is unavailable: {error}"
                 ))
             })
         })
         .collect::<Result<Vec<_>, _>>()
-        .map(|references| references.into_iter().flatten().collect())
+        .map(|references| {
+            let mut seen = std::collections::BTreeSet::new();
+            references
+                .into_iter()
+                .flatten()
+                .filter(|reference| seen.insert(reference.clone()))
+                .collect()
+        })
 }
 
 /// Model references reachable from the current executable Agent publications in

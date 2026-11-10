@@ -1226,16 +1226,10 @@ impl awaken_dispatch_contract::DispatchAttemptControl for PostgresDispatchStore 
         handoff: bool,
     ) -> Result<AttemptAdmission, DispatchError> {
         let snapshot = guard.snapshot().clone();
-        let identity = &snapshot.identity;
         // A binding, when present, names the guarded incarnation; an unbound
         // admission is judged by the claim owner alone. Either way the standing
         // law below runs on database time inside the carried transaction.
-        if identity.lease_owner() != claim.owner || binding.is_some_and(|b| b.worker() != identity)
-        {
-            return Err(DispatchError::Rejected(
-                "Registry guard does not match the physical attempt".into(),
-            ));
-        }
+        crate::application::validate_guarded_incarnation_identity(&snapshot, claim, binding)?;
         let Some((tx, pool)) = guard.take_resource::<(Transaction<'static, Postgres>, PgPool)>()
         else {
             return Err(DispatchError::Rejected(

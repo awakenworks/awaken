@@ -202,6 +202,15 @@ impl CatalogModelPublicationResolver {
 
 #[async_trait::async_trait]
 impl ModelPublicationResolver for CatalogModelPublicationResolver {
+    fn model_reference_projector(
+        &self,
+    ) -> &dyn awaken_executable_agent_contract::PublishedModelReferenceProjector {
+        match &self.brokered_publication {
+            Some(source) => source.model_reference_projector(),
+            None => &awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector,
+        }
+    }
+
     async fn resolve_models(
         &self,
         workspace: &ScopeId,
@@ -389,6 +398,54 @@ mod tests {
     /// The wall clock these fixtures compose resolvers with.
     pub(super) fn test_clock() -> Arc<dyn awaken_time::WallClock> {
         awaken_time::system_clock()
+    }
+
+    #[test]
+    fn projection_borrows_the_configured_brokered_source_without_resolving() {
+        // C1 a brokered source is already configured; C2 resolution would
+        // fail/panic if called. The pure read facet is that same borrowed owner,
+        // not the canonical default or a fresh resolution/state copy.
+        struct FacetOnly;
+        impl awaken_executable_agent_contract::PublishedModelReferenceProjector for FacetOnly {
+            fn project(
+                &self,
+                candidate: &ResolvedModelCandidate,
+            ) -> Result<Option<ModelSelection>, awaken_executable_agent_contract::ManagedModelIdError>
+            {
+                awaken_executable_agent_contract::PublishedModelReferenceProjector::project(
+                    &awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector,
+                    candidate,
+                )
+            }
+        }
+        #[async_trait::async_trait]
+        impl ModelPublicationResolver for FacetOnly {
+            fn model_reference_projector(
+                &self,
+            ) -> &dyn awaken_executable_agent_contract::PublishedModelReferenceProjector
+            {
+                self
+            }
+            async fn resolve_models(
+                &self,
+                _: &ScopeId,
+                _: &ModelSelection,
+                _: &[ModelBinding],
+            ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+                panic!("borrowing a frozen-candidate view must not resolve again")
+            }
+        }
+        let source = Arc::new(FacetOnly);
+        let resolver = CatalogModelPublicationResolver::new(
+            ProviderCatalog::default(),
+            Arc::new(InMemoryCredentialRepo::new()),
+            test_clock(),
+        )
+        .with_brokered_publication(source.clone());
+        assert!(std::ptr::addr_eq(
+            resolver.model_reference_projector(),
+            source.model_reference_projector()
+        ));
     }
 
     /// A reading of [`test_clock`] in epoch milliseconds.

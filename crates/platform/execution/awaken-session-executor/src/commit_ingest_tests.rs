@@ -216,12 +216,27 @@ async fn cold_claimed_memory_host() -> (
     Arc<ExecutorComponents>,
     Arc<ExecutorComponents>,
     Arc<dyn awaken_resource_contract::MemoryVersionQueries>,
+    Arc<MemoryDispatchStore>,
 ) {
-    let (dependencies, versions) = crate::host::tests::fixtures::with_test_memory_history(
+    let dependencies =
         crate::SessionExecutorBuilder::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-            .await,
-    )
-    .await;
+            .await;
+    // One granting Dispatch and one edge clock serve both the outer claimed
+    // service and the Host-selected authority. A second test queue must not
+    // conceal a mismatched final claim or change cold Memory settlement.
+    let clock = dependencies.clock();
+    let queue = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    let runtime_authority = Arc::new(awaken_dispatch_erasure::ReferenceAuthority::with_dispatch(
+        clock,
+        Arc::new(
+            awaken_dispatch_erasure::AnyCoordinatorDispatch::from_durable_dispatch(queue.clone()),
+        ),
+    ));
+    let dependencies = dependencies
+        .with_runtime_authority(runtime_authority)
+        .expect("cold fixture keeps its existing local Runtime role");
+    let (dependencies, versions) =
+        crate::host::tests::fixtures::with_test_memory_history(dependencies).await;
     let host = dependencies
         .with_session_execution(
             crate::SessionExecutionDependencies::default()
@@ -230,7 +245,7 @@ async fn cold_claimed_memory_host() -> (
         .build()
         .expect("validated Host dependencies");
     let managed = host.clone();
-    (host, managed, versions)
+    (host, managed, versions, queue)
 }
 
 fn assert_no_resident_session_projection(host: &ExecutorComponents, thread: &str, rule: &str) {
@@ -374,7 +389,7 @@ async fn remote_terminal_settlement_observation_is_coordinator_owned_and_idempot
         OVERRIDE_MODEL_REF,
         "R1-R3/C5"
     );
-    let (host, _managed, versions) = cold_claimed_memory_host().await;
+    let (host, _managed, versions, _queue) = cold_claimed_memory_host().await;
     assert!(
         host.run_assembly
             .installed_sessions
@@ -726,7 +741,7 @@ async fn claimed_child_commit_uses_guarded_parent_partition_and_logical_child_th
         OVERRIDE_MODEL_REF,
         "R1-R5/C7"
     );
-    let (host, _managed, versions) = cold_claimed_memory_host().await;
+    let (host, _managed, versions, queue) = cold_claimed_memory_host().await;
     assert!(
         host.run_assembly
             .installed_sessions
@@ -741,13 +756,10 @@ async fn claimed_child_commit_uses_guarded_parent_partition_and_logical_child_th
                 .is_none(),
         "R1-R5/C6 target starts cold"
     );
-    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
-    let queue = Arc::new(MemoryDispatchStore::new(clock.clone()));
     queue
         .enqueue(request)
         .await
         .expect("enqueue child dispatch");
-    clock.set(0);
     let claimed = queue
         .claim("remote-child-worker", 30_000, &Default::default())
         .await
@@ -1053,8 +1065,7 @@ async fn retained_memory_settlement_observes_frozen_child_after_executor_release
             None,
         )
         .expect("production child dispatch decoration");
-        let (host, managed, versions) = cold_claimed_memory_host().await;
-        let queue = Arc::new(MemoryDispatchStore::new(host.run_assembly.clock()));
+        let (host, managed, versions, queue) = cold_claimed_memory_host().await;
         queue
             .enqueue(request)
             .await

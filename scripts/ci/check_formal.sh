@@ -402,6 +402,30 @@ run_required_rust_tests -p awaken-session-executor --lib \
 # Async return/cleanup is not covered by the scalar physical-slot proof.
 run_required_rust_tests -p awaken-dispatch --features test-support --test pool_memory
 run_required_rust_tests -p awaken-dispatch --features test-support --test lease_semantics
+# SQLite transaction transfer is justified by the opened database identity,
+# not matching path text. The journal-alias test is Unix-only in its Rust owner.
+sqlite_identity_cases=(--require-case=identity::tests::identity_comes_from_opened_database_without_acquiring_its_transaction)
+case "$(uname -s)" in
+  Linux|Darwin|FreeBSD|NetBSD|OpenBSD|DragonFly)
+    sqlite_identity_cases+=(--require-case=identity::tests::hard_link_alias_and_replaced_filename_do_not_prove_transaction_provenance)
+    ;;
+esac
+run_required_rust_tests -p awaken-sqlite-pool --lib identity::tests "${sqlite_identity_cases[@]}"
+# Cross the single physical-slot law through the original Registry transaction:
+# Busy/error rollback, real SDK SQL lock order, identity, handoff and cancel.
+run_required_rust_tests -p awaken-dispatch --lib sqlite::guarded_admission_tests::tests \
+  --require-case=sqlite::guarded_admission_tests::tests::shared_database_busy_dispatch_exclusion_rolls_back_without_waiting_or_effects \
+  --require-case=sqlite::guarded_admission_tests::tests::shared_database_slot_failure_rolls_back_operation_and_releases_original_registry \
+  --require-case=sqlite::guarded_admission_tests::tests::shared_database_commit_guard_and_registry_writer_allow_sdk_sql_after_busy_rollback \
+  --require-case=sqlite::guarded_admission_tests::tests::shared_database_rejected_identity_and_stale_claim_release_without_effects \
+  --require-case=sqlite::guarded_admission_tests::tests::shared_database_handoff_replaces_only_predecessor_and_preserves_retry_binding \
+  --require-case=sqlite::guarded_admission_tests::tests::shared_database_unpolled_admission_cancellation_releases_original_registry
+# One shared standing/binding table covers the three actual SQLite topologies;
+# PostgreSQL's required service row owns its live original-transaction binding.
+run_required_rust_tests -p awaken-dispatch --features test-support --test guarded_admission_conformance sqlite_ \
+  --require-case=sqlite_guarded_admission_follows_incarnation_standing \
+  --require-case=sqlite_shared_file_guarded_admission_follows_incarnation_standing \
+  --require-case=sqlite_independent_files_guarded_admission_follows_incarnation_standing
 # Settlement fencing and pending input have one shared cross-adapter table:
 # stale Awaiting/Done settlements preserve dispatch, pending input, completion
 # and wake eligibility, while current settlements publish every exact effect.

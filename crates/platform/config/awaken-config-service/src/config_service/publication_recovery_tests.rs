@@ -72,7 +72,10 @@ async fn startup_reconciliation_uses_frozen_publication_inputs() {
     // Recovery cause/effect table: F1 publication freezes Resource rev1;
     // F2 mutable draft advances to rev2; F3 a fresh Coordinator reconciles
     // -> the current Session profile still carries rev1's mount, with no
-    // fallback read from the mutable Resource repository.
+    // fallback read from the mutable Resource repository. F4 Auto's public id
+    // is projected from the same frozen candidate; attempting fresh resolution
+    // during this cold replay is an unconditional fixture failure. F5 a newer
+    // model draft is not a new publication and cannot change that public id.
     let store = Arc::new(SqliteConfigStore::open_in_memory().await.unwrap());
     let resources = Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
     let scope = ScopeId::from("wrkspc_frozen_inputs");
@@ -98,17 +101,44 @@ async fn startup_reconciliation_uses_frozen_publication_inputs() {
         store.clone(),
         Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
     );
-    author
-        .put(&scope, &agent_config("frozen-agent"))
-        .await
-        .unwrap();
-    author.publish(&scope, "frozen-agent").await.unwrap();
+    let mut config = agent_config("frozen-agent");
+    config.model_binding = ModelSelection::Auto;
+    author.put(&scope, &config).await.unwrap();
+    let publication = author.publish(&scope, "frozen-agent").await.unwrap();
+    let expected_model = awaken_executable_agent_contract::project_published_model_reference(
+        &publication.snapshot.resolved_spec.model_binding,
+        author.service().as_ref(),
+    )
+    .unwrap();
     resources
         .put_agent_inputs(scope.as_str(), inputs(2, "/draft-v2"))
         .await
         .unwrap();
 
-    let (cold, catalog) = test_service_and_catalog();
+    let mut later = agent_config("frozen-agent");
+    later.model_binding = ModelSelection::pinned("later-source", "later-model", "genai").unwrap();
+    author.put(&scope, &later).await.unwrap();
+
+    struct NoFreshResolution;
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for NoFreshResolution {
+        async fn resolve_models(
+            &self,
+            _: &ScopeId,
+            _: &ModelSelection,
+            _: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+            panic!("F4 cold recovery must consume frozen candidates, not resolve again")
+        }
+    }
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let cold = ConfigService::new(
+        Arc::new(NoFreshResolution),
+        Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+        std::sync::Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+        Vec::new(),
+        |_| true,
+    );
     cold.reconcile_registrations(store.as_ref(), &scope)
         .await
         .unwrap();
@@ -117,6 +147,7 @@ async fn startup_reconciliation_uses_frozen_publication_inputs() {
         .session_profile_in(scope.as_str(), "frozen-agent")
         .expect("F3 frozen publication survives restart");
     assert_eq!(view.resources[0].mount_path, "/published");
+    assert_eq!(view.model, expected_model, "F4 frozen public primary");
 }
 
 #[tokio::test]

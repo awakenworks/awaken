@@ -11,6 +11,7 @@ pub(super) const PROJECTOR: &str = "input-projector";
 pub(super) const PROJECTION_VOLUME: &str = "projection-ready";
 pub(super) const PROJECTION_ROOT: &str = "/run/awaken-projection";
 pub(super) const PROJECTION_FENCE_ENV: &str = "AWAKEN_PROJECTION_FENCE";
+pub(super) const PROJECTOR_UID_ENV: &str = "AWAKEN_PROJECTOR_POD_UID";
 const PROJECTION_MARKER: &str = "/run/awaken-projection/complete";
 
 pub(super) fn projection_fence_value(effect_fence: &SandboxEffectFence) -> String {

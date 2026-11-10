@@ -108,18 +108,28 @@ impl ConfigService {
             };
             let is_current = !first_for_agent.contains(&publication.agent_id);
             let frozen_defaults = publication.agent_inputs.clone();
+            let invalid_model = |error| {
+                format!(
+                    "publication `{}` has an invalid public model reference: {error}",
+                    publication.fingerprint,
+                )
+            };
             let session_profile = if let Some(defaults) = frozen_defaults {
                 registered_session_profile(
                     &publication.snapshot,
                     &source.config,
                     &source.config.model_binding,
+                    self,
                     Some(defaults),
                 )
-                .ok_or_else(|| {
-                    format!(
-                        "publication `{}` frozen Agent inputs do not match its snapshot",
-                        publication.fingerprint
-                    )
+                .map_err(invalid_model)
+                .and_then(|profile| {
+                    profile.ok_or_else(|| {
+                        format!(
+                            "publication `{}` frozen Agent inputs do not match its snapshot",
+                            publication.fingerprint
+                        )
+                    })
                 })
             } else if is_current {
                 let defaults = match self.resources.as_ref() {
@@ -134,20 +144,26 @@ impl ConfigService {
                     &publication.snapshot,
                     &source.config,
                     &source.config.model_binding,
+                    self,
                     defaults,
                 )
-                .ok_or_else(|| {
-                    format!(
-                        "current publication `{}` no longer matches Agent Session defaults",
-                        publication.fingerprint
-                    )
+                .map_err(invalid_model)
+                .and_then(|profile| {
+                    profile.ok_or_else(|| {
+                        format!(
+                            "current publication `{}` no longer matches Agent Session defaults",
+                            publication.fingerprint
+                        )
+                    })
                 })
             } else {
-                Ok(historical_session_profile(
+                historical_session_profile(
                     &publication.snapshot,
                     &source.config,
                     &source.config.model_binding,
-                ))
+                    self,
+                )
+                .map_err(invalid_model)
             };
             let session_profile = match session_profile {
                 Ok(profile) => profile,

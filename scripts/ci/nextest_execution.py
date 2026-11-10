@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import unittest
@@ -190,9 +191,8 @@ def run(arguments: list[str], evidence: Path) -> int:
         if status == 0:
             status = _status(subprocess.run(native_command(command), cwd=ROOT, stdout=output,
                                             stderr=subprocess.STDOUT).returncode)
-    if report.exists():
-        report.replace(evidence / "junit.xml")
     try:
+        shutil.copyfile(report, evidence / "junit.xml")
         observed = qualify((evidence / "list.json").read_text(encoding="utf-8"),
                            (evidence / "junit.xml").read_text(encoding="utf-8"), status, required,
                            runs_ignored=bool(set(RUNS_IGNORED) & set(command)),
@@ -401,6 +401,19 @@ class QualifyTests(unittest.TestCase):
         self.assertEqual((code, receipt["status"], receipt["source_unchanged"]), (1, "failed", False))
         self.assertIn("source changed during the required run", receipt["errors"])
         self.assertEqual(self.run_fixture(23, ["a"])[0], 23)
+        from unittest import mock
+        # R1 workspace report and evidence can live on different filesystems:
+        # rename would raise EXDEV, while the original strict qualification
+        # must still consume the same run's copied list/JUnit evidence.
+        with mock.patch.object(Path, "replace", side_effect=OSError(18, "cross-device fixture")):
+            self.assertEqual(self.run_fixture(0, ["a"])[1]["status"], "passed")
+        # R2 archive failure after nextest success -> Failed, never Passed;
+        # R3 the same failure after nextest failure retains its original code.
+        for status in (0, 23):
+            with mock.patch.object(shutil, "copyfile", side_effect=OSError(28, "archive fixture full")):
+                code, receipt = self.run_fixture(status, ["a"])
+            self.assertEqual((code, receipt["status"]), (status or 1, "failed"))
+            self.assertIn("archive fixture full", receipt["errors"][0])
 
     def test_execution_inputs_refuse_partial_or_malformed_fixture_identity(self) -> None:
         from unittest import mock

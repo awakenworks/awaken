@@ -327,8 +327,12 @@ async fn collection(
     let params = params.ok_or(Failure::Invalid)?;
     let mut agents = Vec::new();
     for entry in entries {
-        let agent = crate::managed_agents::project_catalog_entry(entry, state.clock.as_ref())
-            .map_err(|_| Failure::Unavailable)?;
+        let agent = crate::managed_agents::project_catalog_entry(
+            entry,
+            state.clock.as_ref(),
+            state.plane.service().as_ref(),
+        )
+        .map_err(|_| Failure::Unavailable)?;
         if !params.include_archived && agent.archived_at.is_some() {
             continue;
         }

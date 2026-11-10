@@ -62,48 +62,66 @@ async fn memory_guarded_admission_follows_incarnation_standing() {
 
 #[tokio::test]
 async fn sqlite_guarded_admission_follows_incarnation_standing() {
-    let clock = Arc::new(ManualClock::new(10_000_000));
-    let store = Arc::new(
-        SqliteDispatchStore::open_in_memory(clock.clone())
-            .await
-            .unwrap(),
-    );
-    let temporary = tempfile::tempdir().unwrap();
-    let directory = SqliteWorkerDirectory::open(temporary.path().join("worker-registry.db"))
-        .await
-        .unwrap();
-    assert_guarded_admission_follows_standing(
-        "sqlite",
-        store.as_ref(),
-        &directory,
-        || {
-            let clock = clock.clone();
-            async move { clock.now_ms() }
-        },
-        |tag, worker| {
-            let store = store.clone();
-            async move { claim_with(store.as_ref(), tag, worker).await }
-        },
-    )
-    .await;
+    sqlite_guarded_pair(SqliteTopology::PrivateDispatch).await;
+}
+
+#[tokio::test]
+async fn sqlite_independent_files_guarded_admission_follows_incarnation_standing() {
+    // R1: real, distinct Dispatch/Registry files => retain the original Registry
+    // transaction around Dispatch's own transaction. All eighteen standing ×
+    // binding rows must have the same result as the shared-file and private pair.
+    sqlite_guarded_pair(SqliteTopology::IndependentFiles).await;
 }
 
 #[tokio::test]
 async fn sqlite_shared_file_guarded_admission_follows_incarnation_standing() {
-    // The embedded product composition opens both native owners on one file.
-    // Their original Registry exclusion must be the Dispatch writer, rather
-    // than blocking a second BEGIN IMMEDIATE on that same database.
-    let temporary = tempfile::tempdir().unwrap();
-    let database = temporary.path().join("shared-process.db");
+    // R2: the embedded composition opens two native owners on one file. Reuse
+    // the Registry transaction for Dispatch, with the original five-second
+    // transcript budget; setup runs before that budget starts.
+    sqlite_guarded_pair(SqliteTopology::SharedFile).await;
+}
+
+#[derive(Clone, Copy)]
+enum SqliteTopology {
+    PrivateDispatch,
+    IndependentFiles,
+    SharedFile,
+}
+
+async fn sqlite_guarded_pair(topology: SqliteTopology) {
     let clock = Arc::new(ManualClock::new(10_000_000));
-    let store = Arc::new(
-        SqliteDispatchStore::open(database.to_str().unwrap(), clock.clone())
+    let temporary = tempfile::tempdir().unwrap();
+    let registry_path = temporary.path().join(match topology {
+        SqliteTopology::SharedFile => "shared-process.db",
+        _ => "worker-registry.db",
+    });
+    let (store, label) = match topology {
+        SqliteTopology::PrivateDispatch => (
+            SqliteDispatchStore::open_in_memory(clock.clone())
+                .await
+                .unwrap(),
+            "sqlite",
+        ),
+        SqliteTopology::IndependentFiles => (
+            SqliteDispatchStore::open(
+                temporary.path().join("dispatch.db").to_str().unwrap(),
+                clock.clone(),
+            )
             .await
             .unwrap(),
-    );
-    let directory = SqliteWorkerDirectory::open(&database).await.unwrap();
+            "sqlite-independent-files",
+        ),
+        SqliteTopology::SharedFile => (
+            SqliteDispatchStore::open(registry_path.to_str().unwrap(), clock.clone())
+                .await
+                .unwrap(),
+            "sqlite-shared-file",
+        ),
+    };
+    let store = Arc::new(store);
+    let directory = SqliteWorkerDirectory::open(registry_path).await.unwrap();
     let transcript = assert_guarded_admission_follows_standing(
-        "sqlite-shared-file",
+        label,
         store.as_ref(),
         &directory,
         || {
@@ -115,9 +133,13 @@ async fn sqlite_shared_file_guarded_admission_follows_incarnation_standing() {
             async move { claim_with(store.as_ref(), tag, worker).await }
         },
     );
-    tokio::time::timeout(std::time::Duration::from_secs(5), transcript)
-        .await
-        .expect("shared-file native admission must not wait on its own Registry transaction");
+    if matches!(topology, SqliteTopology::SharedFile) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), transcript)
+            .await
+            .expect("shared-file native admission must not wait on its own Registry transaction");
+    } else {
+        transcript.await;
+    }
 }
 
 #[tokio::test]

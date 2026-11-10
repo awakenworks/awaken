@@ -100,6 +100,8 @@ test-support = [
 k8s-tests = ["awaken-session-realization/k8s-tests"]
 
 [dev-dependencies]
+# The real PG child case uses the public, process-owned Coordinator composition.
+awaken-coordinator.workspace = true
 awaken-dispatch-erasure = { workspace = true, features = ["test-support"] }
 # Unit fixtures reuse the testkit's sole storage-dir extraction selection.
 # It returns the common MemoryExtractionRepository port, never a second Host.
@@ -125,7 +127,7 @@ awaken-session-mcp = { workspace = true, features = ["test-support"] }
 awaken-acp-catalog.workspace = true
 awaken-run-executor-acp = { workspace = true, features = ["real-acp"] }
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
-awaken-reliability-testkit.workspace = true
+awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 # Test doubles decode real container handles through the container provider's
 # codec; the live-backend tests build a real provider.
 awaken-sandbox-container.workspace = true

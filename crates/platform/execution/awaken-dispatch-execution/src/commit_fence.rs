@@ -51,13 +51,19 @@ impl ClaimedRunCommit for CoordinatorRunCommits {
                 {
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                 }
-                result => return result.map_err(|error| CommitError::Rejected(error.to_string())),
+                result => {
+                    return result.map_err(|error| {
+                        awaken_dispatch_contract::claimed_commit_sdk_error(
+                            &error.code,
+                            error.to_string(),
+                        )
+                    });
+                }
             }
         }
-        self.0
-            .commit_operation(command)
-            .await
-            .map_err(|error| CommitError::Rejected(error.to_string()))
+        self.0.commit_operation(command).await.map_err(|error| {
+            awaken_dispatch_contract::claimed_commit_sdk_error(&error.code, error.to_string())
+        })
     }
 }
 

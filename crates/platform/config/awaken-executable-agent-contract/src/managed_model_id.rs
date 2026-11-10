@@ -218,6 +218,21 @@ pub trait PublishedModelReferenceProjector: Send + Sync {
     ) -> Result<Option<ModelSelection>, ManagedModelIdError>;
 }
 
+/// Project one frozen candidate through its selected source and the sole public
+/// grammar. Directory and primary-model views share this gate without resolving
+/// a model again or interpreting private account/route coordinates themselves.
+pub fn project_published_model_reference(
+    candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+    projector: &dyn PublishedModelReferenceProjector,
+) -> Result<Option<String>, ManagedModelIdError> {
+    let Some(selection) = projector.project(candidate)? else {
+        return Ok(None);
+    };
+    let reference = render_managed_model_id(&selection)?;
+    parse_managed_model_id(&reference)?;
+    Ok(Some(reference))
+}
+
 /// Standalone Config, backend-owned and installed-executor reference projection.
 pub struct CanonicalPublishedModelReferenceProjector;
 impl PublishedModelReferenceProjector for CanonicalPublishedModelReferenceProjector {

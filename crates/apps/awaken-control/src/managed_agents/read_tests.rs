@@ -96,6 +96,201 @@ impl ScopedConfigRegistry for PublicationReadProbe {
     }
 }
 
+#[test]
+fn ordinary_and_governed_policy_views_share_frozen_source_projection() {
+    // Decision table: V1 Auto/Profile + exact revision + valid frozen Native
+    // refs -> full public provider/API/endpoint, not private account; V2 invalid
+    // source refs -> Storage in both readers. V3 missing/stale publication ->
+    // original Auto Invalid/Profile policy id; a newer draft is never pinned.
+    // V4 authored Pinned remains intent. The original async read-probe test
+    // owns publication-read bounds and storage faults; this is its pure mapper.
+    use awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector;
+    let projector = &CanonicalPublishedModelReferenceProjector;
+    let clock = awaken_time::system_clock();
+    let candidate = |route: &str| {
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider(
+            awaken_runtime_contract::resolved::ModelBinding::parse(
+                "private-account",
+                "chat",
+                "gateway",
+            )
+            .unwrap(),
+            "public-vendor@2",
+            route,
+            "workspace",
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                api_dialect: "open_ai_chat".into(),
+                base_url: "https://provider.example.invalid".into(),
+                upstream_model: "chat".into(),
+                processing_placement: None,
+            },
+        )
+        .unwrap()
+    };
+    let publication = |route| {
+        StoredPublication::published_at_revision(
+            awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent")
+                .resolved_model(candidate(route))
+                .build(),
+            "agent",
+            7,
+            "workspace",
+        )
+    };
+    let valid = publication("public-endpoint@4");
+    let broken = publication("unowned-opaque-route");
+    let public_id = "chat;provider=public-vendor;api=open_ai_chat;endpoint=public-endpoint";
+    for selection in [
+        ModelSelection::Auto,
+        ModelSelection::Profile {
+            profile_id: "policy".into(),
+        },
+    ] {
+        let revision = AgentConfigRevision {
+            config: AgentConfig {
+                id: "agent".into(),
+                model_binding: selection.clone(),
+                ..Default::default()
+            },
+            revision: 7,
+            created_at_unix_ms: Some(1_000),
+            updated_at_unix_ms: Some(2_000),
+        };
+        let ordinary = project_revision_with_publication(
+            revision.clone(),
+            Some(&valid),
+            clock.as_ref(),
+            projector,
+        )
+        .unwrap();
+        let governed = project_catalog_entry(
+            awaken_agent_config::catalog_snapshot::AgentCatalogEntry {
+                head: revision.clone(),
+                published: None,
+                publication: Some(valid.clone()),
+            },
+            clock.as_ref(),
+            projector,
+        )
+        .unwrap();
+        assert_eq!(ordinary.model.id, public_id, "V1");
+        assert_eq!(
+            serde_json::to_value(ordinary).unwrap(),
+            serde_json::to_value(governed).unwrap(),
+            "V1 same original DTO"
+        );
+        assert!(
+            matches!(
+                project_revision_with_publication(
+                    revision.clone(),
+                    Some(&broken),
+                    clock.as_ref(),
+                    projector
+                ),
+                Err(ManagedAgentError::Storage(_))
+            ),
+            "V2"
+        );
+        assert!(
+            matches!(
+                project_catalog_entry(
+                    awaken_agent_config::catalog_snapshot::AgentCatalogEntry {
+                        head: revision.clone(),
+                        published: None,
+                        publication: Some(broken.clone())
+                    },
+                    clock.as_ref(),
+                    projector,
+                ),
+                Err(ManagedAgentError::Storage(_))
+            ),
+            "V2 governed"
+        );
+        let mut stale = broken.clone();
+        stale.source_revision = 6;
+        for receipt in [None, Some(&stale)] {
+            let projected = project_revision_with_publication(
+                revision.clone(),
+                receipt,
+                clock.as_ref(),
+                projector,
+            );
+            if matches!(selection, ModelSelection::Auto) {
+                assert!(
+                    matches!(projected, Err(ManagedAgentError::Invalid(_))),
+                    "V3"
+                );
+            } else {
+                assert_eq!(projected.unwrap().model.id, "profile=policy", "V3");
+            }
+        }
+    }
+    let authored = AgentConfigRevision {
+        config: AgentConfig {
+            id: "agent".into(),
+            model_binding: ModelSelection::pinned("authored", "model", "genai").unwrap(),
+            ..Default::default()
+        },
+        revision: 7,
+        created_at_unix_ms: Some(1_000),
+        updated_at_unix_ms: Some(2_000),
+    };
+    assert_eq!(
+        project_revision_with_publication(authored, Some(&valid), clock.as_ref(), projector)
+            .unwrap()
+            .model
+            .id,
+        "model;provider=authored",
+        "V4"
+    );
+}
+
+#[test]
+fn a_non_model_primary_never_borrows_a_fallback_model_id() {
+    // N1 a typed Remote primary has no local model; N2 a separate local model
+    // exists in the snapshot's fallback vector. The primary view retains its
+    // original executor-only representation, never the fallback's public ID.
+    // This is projection evidence, not qualification of mixed-pool execution.
+    use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+    let remote = ResolvedModelCandidate::try_remote(
+        ModelBinding::parse("", "", "a2a:https://remote.example").unwrap(),
+        "workspace",
+        None,
+        "security-v1",
+    )
+    .unwrap();
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent")
+        .resolved_model(remote)
+        .resolved_model_candidates(vec![ResolvedModelCandidate::host(
+            ModelBinding::parse("fallback", "fallback-model", "genai").unwrap(),
+        )])
+        .build();
+    let publication = StoredPublication::published_at_revision(snapshot, "agent", 7, "workspace");
+    let revision = AgentConfigRevision {
+        config: AgentConfig {
+            id: "agent".into(),
+            model_binding: ModelSelection::Auto,
+            ..Default::default()
+        },
+        revision: 7,
+        created_at_unix_ms: Some(1_000),
+        updated_at_unix_ms: Some(2_000),
+    };
+    assert_eq!(
+        project_revision_with_publication(
+            revision,
+            Some(&publication),
+            awaken_time::system_clock().as_ref(),
+            &awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector,
+        )
+        .unwrap()
+        .model
+        .id,
+        "executor=a2a:https://remote.example"
+    );
+}
+
 #[tokio::test]
 async fn managed_archive_projection_refusal_has_no_lifecycle_effect() {
     // Cause/effect graph: C1 a Config-authored current model has no Managed

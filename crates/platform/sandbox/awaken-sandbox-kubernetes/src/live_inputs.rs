@@ -1,3 +1,7 @@
+// @formal surface obligation=sandbox.fail_closed_policy_never_downgrades
+// @formal reason: The original input projector retains one current grant and acquired Pod UID through
+// @formal reason: channel dispatch and its trusted in-target prelude. Adapter tests classify this boundary;
+// @formal reason: this is not live provider qualification or an atomic Kubernetes GET/exec claim.
 //! Kubernetes realization of the live, read-only Managed File projection.
 
 use super::projection::PROJECTOR;
@@ -7,8 +11,10 @@ use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_sandbox_container::{BindPlan, ContainerPlan};
 use k8s_openapi::api::core::v1::{Container, EmptyDirVolumeSource, EnvVar, Volume, VolumeMount};
 use kube::api::AttachParams;
+use std::pin::Pin;
 use std::sync::atomic::Ordering;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::task::Poll;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pub(super) const VOLUME: &str = "live-inputs";
 
@@ -63,17 +69,30 @@ pub(super) fn append_projection(
             ..Default::default()
         });
     }
+    let mut projector_env = effect_fence
+        .into_iter()
+        .map(|fence| EnvVar {
+            name: super::projection::PROJECTION_FENCE_ENV.into(),
+            value: Some(super::projection::projection_fence_value(fence)),
+            value_from: None,
+        })
+        .collect::<Vec<_>>();
+    projector_env.push(EnvVar {
+        name: super::projection::PROJECTOR_UID_ENV.into(),
+        value: None,
+        value_from: Some(k8s_openapi::api::core::v1::EnvVarSource {
+            field_ref: Some(k8s_openapi::api::core::v1::ObjectFieldSelector {
+                api_version: Some("v1".into()),
+                field_path: "metadata.uid".into(),
+            }),
+            ..Default::default()
+        }),
+    });
     sidecars.push(Container {
         name: PROJECTOR.into(),
         image: Some(plan.image.clone()),
         command: Some(awaken_sandbox_container::engine::environment_keepalive_command()),
-        env: effect_fence.map(|fence| {
-            vec![EnvVar {
-                name: super::projection::PROJECTION_FENCE_ENV.into(),
-                value: Some(super::projection::projection_fence_value(fence)),
-                value_from: None,
-            }]
-        }),
+        env: Some(projector_env),
         volume_mounts: Some(projector_mounts),
         security_context: Some(hardened_security_context()),
         ..Default::default()
@@ -87,7 +106,12 @@ fn bytes(bind: &BindPlan) -> Option<&[u8]> {
         .or(bind.content_bytes.as_deref())
 }
 
-async fn clear(runtime: &K8sRuntime, container_id: &str) -> Result<(), RuntimeError> {
+async fn clear(
+    runtime: &K8sRuntime,
+    container_id: &str,
+    expected_uid: &str,
+    checkpoint: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
+) -> Result<(), RuntimeError> {
     let argv = vec![
         "/bin/sh".into(),
         "-c".into(),
@@ -95,28 +119,46 @@ async fn clear(runtime: &K8sRuntime, container_id: &str) -> Result<(), RuntimeEr
         "awaken-input-clear".into(),
         awaken_container_contract::LIVE_INPUTS_ROOT.into(),
     ];
-    exec(runtime, container_id, argv, None).await
+    exec(
+        runtime,
+        container_id,
+        argv,
+        None,
+        Some(expected_uid),
+        checkpoint,
+    )
+    .await
 }
 
 pub(super) async fn project_manifest(
     runtime: &K8sRuntime,
     container_id: &str,
     plan: &ContainerPlan,
+    expected_uid: &str,
+    checkpoint: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
     // Environment creation/recovery is a consistency boundary: no attempt is
     // released until this exact desired tree succeeds. Clearing first prevents a
     // removed File from surviving a host restart; any partial failure is retryable
     // against the same stable Pod and begins by clearing again.
-    clear(runtime, container_id).await?;
+    clear(runtime, container_id, expected_uid, checkpoint).await?;
     for bind in content_binds(plan)
         .into_iter()
         .filter(|bind| awaken_sandbox_container::engine::manages_live_input(bind))
     {
         let contents = bytes(bind)
             .ok_or_else(|| backend("managed live input did not carry resolved bytes"))?;
-        project(runtime, container_id, &bind.mount_path, contents).await?;
+        project(
+            runtime,
+            container_id,
+            &bind.mount_path,
+            contents,
+            Some(expected_uid),
+            checkpoint,
+        )
+        .await?;
     }
-    Ok(())
+    checkpoint()
 }
 
 async fn exec(
@@ -124,7 +166,30 @@ async fn exec(
     container_id: &str,
     argv: Vec<String>,
     bytes: Option<&[u8]>,
+    expected_uid: Option<&str>,
+    checkpoint: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
+    // Keep the original admission and acquired UID on the existing projector
+    // across API attachment and stream I/O. An unfenced update supplies its
+    // explicit old checkpoint; it cannot replace a restore's current grant.
+    let admit = || async {
+        checkpoint()?;
+        if let Some(expected_uid) = expected_uid {
+            let pod = runtime.pods().get(container_id).await.map_err(backend)?;
+            checkpoint()?;
+            if expected_uid.trim().is_empty()
+                || pod.metadata.uid.as_deref() != Some(expected_uid)
+                || pod.metadata.deletion_timestamp.is_some()
+            {
+                return Err(backend(
+                    "Kubernetes input projector Pod changed its original UID or live state",
+                ));
+            }
+        }
+        Ok::<(), RuntimeError>(())
+    };
+    admit().await?;
+    let argv = uid_bound_command(argv, expected_uid)?;
     let mut attached = runtime
         .pods()
         .exec(
@@ -138,6 +203,7 @@ async fn exec(
         )
         .await
         .map_err(backend)?;
+    admit().await?;
     let mut stdout = attached
         .stdout()
         .ok_or_else(|| backend("k8s input projector has no stdout"))?;
@@ -148,16 +214,101 @@ async fn exec(
         let mut stdin = attached
             .stdin()
             .ok_or_else(|| backend("k8s input projector has no stdin"))?;
-        stdin.write_all(bytes).await.map_err(backend)?;
-        stdin.shutdown().await.map_err(backend)?;
+        admit().await?;
+        write_projector_input(&mut stdin, bytes, checkpoint).await?;
+        admit().await?;
     }
-    let mut ignored = Vec::new();
-    stdout.read_to_end(&mut ignored).await.map_err(backend)?;
+    let _ignored = read_projector_output(&mut stdout, checkpoint).await?;
+    admit().await?;
     let status = status.await;
+    admit().await?;
     if status.as_ref().and_then(|status| status.status.as_deref()) != Some("Success") {
         return Err(backend("k8s input projector command failed"));
     }
     Ok(())
+}
+
+// These loops own the existing projector channel I/O. Check each underlying
+// dispatch, including consecutive Ready-partial writes in one future poll;
+// wrapping write_all itself would leave those later dispatches unguarded.
+async fn write_projector_input<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    bytes: &[u8],
+    checkpoint: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
+) -> Result<(), RuntimeError> {
+    let mut written = 0;
+    while written < bytes.len() {
+        let count = std::future::poll_fn(|cx| {
+            if let Err(error) = checkpoint() {
+                return Poll::Ready(Err(error));
+            }
+            Pin::new(&mut *writer)
+                .poll_write(cx, &bytes[written..])
+                .map(|result| result.map_err(backend))
+        })
+        .await?;
+        if count == 0 {
+            return Err(backend(std::io::Error::from(std::io::ErrorKind::WriteZero)));
+        }
+        written += count;
+    }
+    std::future::poll_fn(|cx| {
+        if let Err(error) = checkpoint() {
+            return Poll::Ready(Err(error));
+        }
+        Pin::new(&mut *writer)
+            .poll_shutdown(cx)
+            .map(|result| result.map_err(backend))
+    })
+    .await?;
+    checkpoint()
+}
+
+async fn read_projector_output<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    checkpoint: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
+) -> Result<Vec<u8>, RuntimeError> {
+    let mut output = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let count = std::future::poll_fn(|cx| {
+            if let Err(error) = checkpoint() {
+                return Poll::Ready(Err(error));
+            }
+            let mut bytes = ReadBuf::new(&mut buffer);
+            Pin::new(&mut *reader)
+                .poll_read(cx, &mut bytes)
+                .map(|result| result.map(|()| bytes.filled().len()).map_err(backend))
+        })
+        .await?;
+        if count == 0 {
+            break;
+        }
+        output.extend_from_slice(&buffer[..count]);
+    }
+    checkpoint()?;
+    Ok(output)
+}
+
+fn uid_bound_command(
+    mut argv: Vec<String>,
+    expected_uid: Option<&str>,
+) -> Result<Vec<String>, RuntimeError> {
+    let Some(expected_uid) = expected_uid else {
+        return Ok(argv);
+    };
+    if argv.len() < 4 || argv[0] != "/bin/sh" || !matches!(argv[1].as_str(), "-c" | "-ec") {
+        return Err(backend(
+            "Kubernetes input projection has no bounded shell command",
+        ));
+    }
+    let script = &argv[2];
+    argv[2] = format!(
+        "awaken_expected_uid=$1; shift; [ -n \"${{{uid_env}:-}}\" ] && [ \"${{{uid_env}}}\" = \"$awaken_expected_uid\" ] || exit 72; {script}",
+        uid_env = super::projection::PROJECTOR_UID_ENV,
+    );
+    argv.insert(4, expected_uid.to_owned());
+    Ok(argv)
 }
 
 pub(super) async fn project(
@@ -165,6 +316,8 @@ pub(super) async fn project(
     container_id: &str,
     path: &str,
     bytes: &[u8],
+    expected_uid: Option<&str>,
+    checkpoint: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
     awaken_container_contract::live_input_relative_path(path)
         .ok_or_else(|| backend("live input path escaped its projection root"))?;
@@ -180,7 +333,15 @@ pub(super) async fn project(
         path.into(),
         temp,
     ];
-    exec(runtime, container_id, argv, Some(bytes)).await
+    exec(
+        runtime,
+        container_id,
+        argv,
+        Some(bytes),
+        expected_uid,
+        checkpoint,
+    )
+    .await
 }
 
 pub(super) async fn remove(
@@ -198,8 +359,20 @@ pub(super) async fn remove(
         path.into(),
         awaken_container_contract::LIVE_INPUTS_ROOT.into(),
     ];
-    exec(runtime, container_id, argv, None).await
+    exec(
+        runtime,
+        container_id,
+        argv,
+        None,
+        None,
+        &awaken_worker_fleet_kubernetes::pod_metadata::unfenced_checkpoint,
+    )
+    .await
 }
+
+#[cfg(test)]
+#[path = "live_inputs/current_authority_tests.rs"]
+mod current_authority_tests;
 
 #[cfg(test)]
 mod tests {
@@ -359,6 +532,35 @@ mod tests {
         );
         let projector = &spec.containers[1];
         assert_eq!(projector.name, PROJECTOR);
+        let uid = projector
+            .env
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|var| var.name == super::super::projection::PROJECTOR_UID_ENV)
+            .expect("trusted projector has Downward API UID");
+        assert!(uid.value.is_none());
+        assert_eq!(
+            uid.value_from
+                .as_ref()
+                .unwrap()
+                .field_ref
+                .as_ref()
+                .unwrap()
+                .field_path,
+            "metadata.uid"
+        );
+        assert_eq!(
+            uid.value_from
+                .as_ref()
+                .unwrap()
+                .field_ref
+                .as_ref()
+                .unwrap()
+                .api_version
+                .as_deref(),
+            Some("v1")
+        );
         assert!(
             projector
                 .volume_mounts
@@ -371,6 +573,41 @@ mod tests {
         assert_eq!(
             projector.env.as_ref().unwrap()[0].value.as_deref(),
             Some(crate::projection::projection_fence_value(&fence).as_str())
+        );
+    }
+
+    #[test]
+    fn historical_projector_without_uid_attestation_is_not_adopted() {
+        // R1 the newly projected immutable sidecar contains its Downward API
+        // UID and the existing verifier admits it. R2 a historical same-name
+        // Pod copies every digest/label but omits this field -> reject before
+        // restore; no mutation/migration of that retained Pod is authorized.
+        let mut desired = build_pod("uid-attestation", &plan(), &None, None, &[]);
+        super::super::realization::stamp_pod_realization(&mut desired).unwrap();
+        assert!(
+            super::super::projection_verification::verify_pod_projection(&desired, &desired, None)
+                .is_ok()
+        );
+        let mut historical = desired.clone();
+        historical
+            .spec
+            .as_mut()
+            .unwrap()
+            .containers
+            .iter_mut()
+            .find(|container| container.name == PROJECTOR)
+            .unwrap()
+            .env
+            .as_mut()
+            .unwrap()
+            .retain(|var| var.name != super::super::projection::PROJECTOR_UID_ENV);
+        assert!(
+            super::super::projection_verification::verify_pod_projection(
+                &desired,
+                &historical,
+                None
+            )
+            .is_err()
         );
     }
 }

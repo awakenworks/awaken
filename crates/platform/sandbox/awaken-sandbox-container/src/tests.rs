@@ -2952,6 +2952,7 @@ struct FakeState {
     restore_queries: Vec<(&'static str, String)>,
     restore_targets: HashMap<String, pc::SandboxRestorationEvidence>,
     restore_plan_fingerprints: HashMap<String, String>,
+    restore_runtime_handle: Option<crate::ContainerContinuationHandle>,
     restore_creates: usize,
     restore_disposals: usize,
     restore_disposal_observation_gate: Option<Arc<tokio::sync::Semaphore>>,
@@ -3672,7 +3673,7 @@ impl ContainerRuntime for FakeRuntime {
             ));
         }
         let cid = format!("restore-{id}");
-        {
+        let runtime_handle = {
             let state = self.st.lock().unwrap();
             let Some(observed) = state.restore_targets.get(&cid) else {
                 return Ok(None);
@@ -3697,7 +3698,8 @@ impl ContainerRuntime for FakeRuntime {
                     "fake exact restore target is not alive".into(),
                 ));
             }
-        }
+            state.restore_runtime_handle.clone()
+        };
         self.restore_query_response("recover", &cid).await;
         effect
             .admit()
@@ -3705,6 +3707,7 @@ impl ContainerRuntime for FakeRuntime {
         Ok(Some(RuntimeRestoreTarget {
             container_id: cid,
             disposition: pc::SandboxRestoreTargetDisposition::Recovered,
+            runtime_handle,
         }))
     }
 
@@ -3746,6 +3749,7 @@ impl ContainerRuntime for FakeRuntime {
                 return Ok(RuntimeRestoreTarget {
                     container_id: cid,
                     disposition: pc::SandboxRestoreTargetDisposition::Recovered,
+                    runtime_handle: state.restore_runtime_handle.clone(),
                 });
             }
             state.restore_targets.insert(cid.clone(), evidence.clone());
@@ -3763,6 +3767,7 @@ impl ContainerRuntime for FakeRuntime {
             RuntimeRestoreTarget {
                 container_id: cid,
                 disposition: pc::SandboxRestoreTargetDisposition::Created,
+                runtime_handle: state.restore_runtime_handle.clone(),
             }
         };
         self.creation_response("restore-created").await;
@@ -3805,9 +3810,10 @@ impl ContainerRuntime for FakeRuntime {
         &self,
         container_id: &str,
     ) -> Result<Option<crate::ContainerContinuationHandle>, RuntimeError> {
+        let handle = self.st.lock().unwrap().restore_runtime_handle.clone();
         self.restore_query_response("handle", container_id).await;
         self.creation_response("handle").await;
-        Ok(None)
+        Ok(handle)
     }
 
     async fn dispose_restore_target(

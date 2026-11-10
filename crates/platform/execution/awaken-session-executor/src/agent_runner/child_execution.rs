@@ -187,33 +187,43 @@ impl AgentRunError {
 /// failure: the winner owns execution and the parent observes the resulting
 /// committed boundary. This path is bounded and cancellation-aware so a dead
 /// worker cannot leave the parent hanging indefinitely.
-pub(super) async fn await_committed_child_boundary(
-    reader: &dyn CommittedThreadView,
-    local: Option<(&SessionCommit, &ThreadId)>,
+pub(super) async fn await_committed_child_boundary<F, Fut>(
     child_run_id: &RunId,
     cancellation: Option<&CancellationToken>,
-) -> Result<RunState, AgentRunError> {
+    mut read_state: F,
+) -> Result<RunState, AgentRunError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Option<RunState>, AgentRunError>>,
+{
     const SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
     const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+    let cancelled = || {
+        AgentRunError::Runtime(awaken_runtime_contract::execution::Error::Execution(
+            format!("waiting for child Run {:?} was cancelled", child_run_id.0),
+        ))
+    };
     let settled = async {
         loop {
-            if let Some(state @ (RunState::Awaiting | RunState::Ended(_))) =
-                child_run_state(reader, local, child_run_id).await?
-            {
+            let state = if let Some(cancellation) = cancellation {
+                tokio::select! {
+                    // Preserve the original ready-read truth/error priority;
+                    // only Pending authoritative I/O yields to cancellation.
+                    biased;
+                    state = read_state() => state?,
+                    () = cancellation.cancelled() => return Err(cancelled()),
+                }
+            } else {
+                read_state().await?
+            };
+            if let Some(state @ (RunState::Awaiting | RunState::Ended(_))) = state {
                 return Ok(state);
             }
 
             if let Some(cancellation) = cancellation {
                 tokio::select! {
-                    () = cancellation.cancelled() => {
-                        return Err(AgentRunError::Runtime(
-                            awaken_runtime_contract::execution::Error::Execution(format!(
-                                "waiting for child Run {:?} was cancelled",
-                                child_run_id.0
-                            )),
-                        ));
-                    }
+                    () = cancellation.cancelled() => return Err(cancelled()),
                     () = tokio::time::sleep(POLL_INTERVAL) => {}
                 }
             } else {
@@ -272,6 +282,23 @@ fn child_read_error(error: impl std::fmt::Display) -> AgentRunError {
     AgentRunError::Runtime(awaken_runtime_contract::execution::Error::Execution(
         error.to_string(),
     ))
+}
+
+/// Project the answer already frozen by ResumeCommand. Observing a later wait
+/// cannot authorize retargeting this answer to another correlation or context.
+fn child_resume_input(command: ResumeCommand) -> PendingInput {
+    PendingInput {
+        message_id: format!(
+            "child-resume:{}:{}",
+            command.run_id.0, command.correlation_id
+        ),
+        run_id: command.run_id,
+        thread_id: command.thread_id,
+        correlation_id: command.correlation_id,
+        available_at_ms: None,
+        context_messages: command.context_messages,
+        result: command.result,
+    }
 }
 
 /// Drive a configured Agent to exactly one settled Run boundary.
@@ -517,10 +544,9 @@ pub(crate) async fn run_configured_agent_until_boundary(
                                 Some((_, state)) => state,
                                 None => {
                                     await_committed_child_boundary(
-                                        boundary_reader.as_ref(),
-                                        local_read,
                                         &child_run_id,
                                         context.cancellation.as_ref(),
+                                        || child_run_state(boundary_reader.as_ref(), local_read, &child_run_id),
                                     )
                                     .await?
                                 }
@@ -529,28 +555,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
                     }
                 }
                 (Some(_), Some(command)) => {
-                    let ticket = match local_read {
-                        Some((commit, thread)) => child_snapshot(commit, thread, &child_run_id)
-                            .await?.resume_ticket(&child_run_id),
-                        None => reader.resume_ticket(&child_run_id),
-                    }.ok_or_else(|| {
-                        AgentRunError::Configuration(format!(
-                            "child Run {:?} is not awaiting",
-                            child_run_id.0
-                        ))
-                    })?;
-                    let input = PendingInput {
-                        message_id: format!(
-                            "child-resume:{}:{}",
-                            child_run_id.0, ticket.correlation_id
-                        ),
-                        run_id: child_run_id.clone(),
-                        thread_id: ticket.thread_id.clone(),
-                        correlation_id: ticket.correlation_id,
-                        available_at_ms: None,
-                        context_messages: Vec::new(),
-                        result: command.result,
-                    };
+                    let input = child_resume_input(command);
                     let resumed =
                         worker
                             .resume_run(input, clock.clone())
@@ -566,10 +571,9 @@ pub(crate) async fn run_configured_agent_until_boundary(
                         Some((_, state)) => state,
                         None => {
                             await_committed_child_boundary(
-                                boundary_reader.as_ref(),
-                                local_read,
                                 &child_run_id,
                                 context.cancellation.as_ref(),
+                                || child_run_state(boundary_reader.as_ref(), local_read, &child_run_id),
                             )
                             .await?
                         }
@@ -653,7 +657,7 @@ mod tests {
 
     use super::{
         ChildExecutionAdapters, ChildRunRequest, RunScheduler, await_committed_child_boundary,
-        run_configured_agent_until_boundary,
+        child_read_error, child_resume_input, child_run_state, run_configured_agent_until_boundary,
     };
     use crate::agent_catalog::AgentCatalog;
     use crate::agent_runner::AgentRunBoundary;
@@ -747,8 +751,9 @@ mod tests {
         let reader = EventuallySettledReader {
             reads: AtomicUsize::new(0),
         };
+        let run = RunId("child-race".to_string());
         let state =
-            await_committed_child_boundary(&reader, None, &RunId("child-race".to_string()), None)
+            await_committed_child_boundary(&run, None, || child_run_state(&reader, None, &run))
                 .await
                 .expect("the competing worker settles the child");
 
@@ -788,12 +793,10 @@ mod tests {
 
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        let error = await_committed_child_boundary(
-            &RunningReader,
-            None,
-            &RunId("child-cancelled".to_string()),
-            Some(&cancellation),
-        )
+        let run = RunId("child-cancelled".to_string());
+        let error = await_committed_child_boundary(&run, Some(&cancellation), || {
+            child_run_state(&RunningReader, None, &run)
+        })
         .await
         .expect_err("a cancelled parent stops waiting for its child");
 
@@ -1362,265 +1365,7 @@ mod tests {
         }
     }
 
-    /// A delegated child reaches the same typed HITL boundary as a root Run. The
-    /// parent-facing coordinator resumes it with a `ResumeResult`; no child-only
-    /// continuation language or automatic permission bypass exists.
-    #[tokio::test]
-    async fn durable_child_permission_recovers_and_duplicate_resume_is_idempotent() {
-        // Causes: C0 the child publication explicitly sets write=always_ask;
-        // C1 a local durable child has a Session-wide committed reader;
-        // C2 its inherited parent reader contains no child state; C3 the child is
-        // new, Awaiting, resumed, or terminal on replay. Effects: E1 every child
-        // state/ticket comes from C1; E2 duplicate start reconnects without a
-        // second seed; E3 exact resume ends once; E4 terminal replay is a stutter.
-        // Constraints: K1 SessionCommit is the sole local committed authority; K2 a
-        // parent claim projection cannot own a child Thread; K3 the queue/claim
-        // remains the sole execution fence; K4 no second read model is introduced.
-        // Decision table: R1=C0+C1+C2+new=>Awaiting; R2=R1+duplicate=>E2;
-        // R3=R1+resume=>E3; R4=E3+replay=>E4.
-        // C4 default test-thread stack, with no RUST_MIN_STACK override: all
-        // four rules exercise the durable owned-task boundary. Restoring direct
-        // Worker polling must reproduce stack overflow, not merely an assertion.
-        struct PermissionModel;
-
-        #[async_trait::async_trait]
-        impl LlmExecutor for PermissionModel {
-            async fn infer(&self, request: ChatRequest) -> LlmResult<ChatResponse> {
-                let output = if request.messages.iter().any(|m| m.role == Role::Tool) {
-                    AssistantOutput::text("child done")
-                } else {
-                    AssistantOutput::from_tool_calls(vec![awaken_tool_contract::tool::ToolCall {
-                        call_id: "child-write".into(),
-                        tool_id: "write".into(),
-                        arguments: serde_json::json!({
-                            "path": "child.txt",
-                            "content": "from child"
-                        }),
-                    }])
-                };
-                Ok(ChatResponse {
-                    output,
-                    usage: None,
-                    stop_reason: None,
-                })
-            }
-        }
-
-        let tmp = tempfile::tempdir().unwrap();
-        let provider = LocalProvider::new(tmp.path());
-        let sandbox = provider
-            .create_sandbox(&crate::sandbox_layout::agent_run_sandbox_spec("parent"))
-            .await
-            .unwrap();
-        let clock = awaken_time::system_clock();
-        let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
-        let dispatch_path = tmp.path().join("child-dispatch.db");
-        let dispatch_path = dispatch_path.to_string_lossy().to_string();
-        let commit_owner = Arc::new(crate::LocalCommitAdapter::projected_shared(commit.clone()));
-        let bind_dispatch = |dispatch| {
-            awaken_dispatch_erasure::DispatchBinding::coordinator(Arc::new(
-                awaken_dispatch_erasure::ReferenceAuthority::with_dispatch(clock.clone(), dispatch)
-                    .with_commit("parent-thread", commit_owner.clone()),
-            ))
-        };
-        let scheduler = RunScheduler {
-            recovery_history: None,
-            clock: clock.clone(),
-            binding: bind_dispatch(Arc::new(
-                awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
-                    .await
-                    .expect("child dispatch store"),
-            )),
-            commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(
-                crate::LocalCommitAdapter::projected_shared(commit.clone()),
-            ))),
-            reader: commit.clone(),
-            owner: "replacement-worker".to_string(),
-            session_resources: None,
-            publication_source: None,
-            claimed_model_request_gate: None,
-        };
-        assert!(matches!(
-            awaken_dispatch_execution::DispatchWorker::from_binding(
-                Arc::new(awaken_runtime::Runtime::new()),
-                scheduler.binding.clone(),
-                scheduler.commit.clone(),
-                scheduler.reader.clone(),
-                "invalid-deployed-worker",
-            ),
-            Err(error) if error.to_string().contains("requires a committed recovery source")
-        ));
-        let parent_reader: Arc<dyn CommittedThreadView> =
-            Arc::new(MemoryCommitCoordinator::new(clock.clone()));
-        let context = || {
-            RuntimeRunContext::new()
-                .with_commit(commit.clone())
-                .with_reader(parent_reader.clone())
-        };
-        let child_run_id = RunId("child-run-1".into());
-        let origin = DelegationOrigin::root_for_agent(
-            RunId("parent-run-1".into()),
-            "delegate-call-1",
-            "parent-agent",
-        );
-        let no_delegates = HashSet::new();
-        let permission_toolsets = vec![crate::config::test_agent_toolset_permission(
-            "write",
-            awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
-        )];
-        let execution = |scheduler: RunScheduler| AgentExecution {
-            agent_id: "worker",
-            model_ref: "default",
-            delegates: &no_delegates,
-            run_delegation: None,
-            context: Some(context()),
-            scheduler: Some(scheduler),
-            toolsets: &permission_toolsets,
-        };
-
-        let first = run_agent_until_boundary(
-            Arc::new(PermissionModel),
-            clock.clone(),
-            execution(scheduler),
-            AgentRunSandbox::SharedLocal(&sandbox),
-            ChildRunRequest {
-                run_id: child_run_id.clone(),
-                origin: origin.clone(),
-                seed: Some(vec![user("write the file")].into()),
-                resume: None,
-                parent_thread_id: ThreadId("parent-thread".to_string()),
-            },
-        )
-        .await
-        .unwrap();
-        assert!(matches!(first, AgentRunBoundary::Awaiting));
-        let ticket = commit.resume_ticket(&child_run_id).expect("child ticket");
-        assert_eq!(
-            ticket.reason(),
-            awaken_agent_contract::agent::awaiting::AwaitReason::ToolPermission
-        );
-        assert_eq!(ticket.call_id(), Some("child-write"));
-        assert_eq!(ticket.delegation_origin.as_ref(), Some(&origin));
-
-        // A replacement process reopens the durable queue and rebuilds every live
-        // runtime object from committed truth; no child handle crosses this seam.
-        let replacement = RunScheduler {
-            recovery_history: None,
-            clock: clock.clone(),
-            binding: bind_dispatch(Arc::new(
-                awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
-                    .await
-                    .expect("reopen child dispatch"),
-            )),
-            commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(
-                crate::LocalCommitAdapter::projected_shared(commit.clone()),
-            ))),
-            reader: commit.clone(),
-            owner: "replacement-worker-2".to_string(),
-            session_resources: None,
-            publication_source: None,
-            claimed_model_request_gate: None,
-        };
-
-        let recovered_boundary = run_agent_until_boundary(
-            Arc::new(PermissionModel),
-            clock.clone(),
-            execution(replacement.clone()),
-            AgentRunSandbox::SharedLocal(&sandbox),
-            ChildRunRequest {
-                run_id: child_run_id.clone(),
-                origin: origin.clone(),
-                seed: Some(vec![user("write the file")].into()),
-                resume: None,
-                parent_thread_id: ThreadId("parent-thread".to_string()),
-            },
-        )
-        .await
-        .expect("duplicate start reconnects to the awaiting child");
-        assert!(matches!(recovered_boundary, AgentRunBoundary::Awaiting));
-        assert_eq!(
-            commit
-                .committed()
-                .messages
-                .iter()
-                .filter(|message| message.role == Role::User)
-                .count(),
-            1,
-            "recovery start does not duplicate the child seed"
-        );
-
-        let second = run_agent_until_boundary(
-            Arc::new(PermissionModel),
-            clock.clone(),
-            execution(replacement),
-            AgentRunSandbox::SharedLocal(&sandbox),
-            ChildRunRequest {
-                run_id: child_run_id.clone(),
-                origin: origin.clone(),
-                seed: None,
-                resume: Some(ResumeResult::allow()),
-                parent_thread_id: ThreadId("parent-thread".to_string()),
-            },
-        )
-        .await
-        .unwrap();
-        assert!(matches!(
-            second,
-            AgentRunBoundary::Ended { ref text, .. } if text == "child done"
-        ));
-
-        // Simulate a replacement process that did not observe the returned child
-        // result before crashing. The child is already terminal and its ticket is
-        // gone; replaying the same resume must return committed truth without
-        // entering the model or appending a duplicate assistant message.
-        let replay = run_agent_until_boundary(
-            Arc::new(PermissionModel),
-            clock.clone(),
-            execution(RunScheduler {
-                recovery_history: None,
-                clock: clock.clone(),
-                binding: bind_dispatch(Arc::new(
-                    awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
-                        .await
-                        .expect("reopen terminal child dispatch"),
-                )),
-                commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(
-                    crate::LocalCommitAdapter::projected_shared(commit.clone()),
-                ))),
-                reader: commit.clone(),
-                owner: "replacement-worker-3".to_string(),
-                session_resources: None,
-                publication_source: None,
-                claimed_model_request_gate: None,
-            }),
-            AgentRunSandbox::SharedLocal(&sandbox),
-            ChildRunRequest {
-                run_id: RunId("child-run-1".into()),
-                origin: DelegationOrigin::root_for_agent(
-                    RunId("parent-run-1".into()),
-                    "delegate-call-1",
-                    "parent-agent",
-                ),
-                seed: None,
-                resume: Some(ResumeResult::allow()),
-                parent_thread_id: ThreadId("parent-thread".to_string()),
-            },
-        )
-        .await
-        .expect("terminal child replay is idempotent");
-        assert!(matches!(
-            replay,
-            AgentRunBoundary::Ended { ref text, .. } if text == "child done"
-        ));
-        assert_eq!(
-            commit
-                .committed()
-                .messages
-                .iter()
-                .filter(|message| message.text_content() == "child done")
-                .count(),
-            1,
-            "replacement resume does not duplicate the child result"
-        );
-    }
+    // The original permission model/round-trip and independent child negatives.
+    // include! keeps their original test module and exact required case names.
+    include!("child_execution/permission_tests.rs");
 }

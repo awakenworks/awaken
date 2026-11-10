@@ -84,6 +84,7 @@
     "only_path_and_domain_are_selections": "only_path_domain_and_header_are_selections",
     "hosted_draft_store_uses_only_the_run_execution_workspace": "hosted_execution_scope_does_not_authorize_definition_effects",
     "package_builder_job_is_rootless_bounded_and_registry_backed": "package_builder_job_is_kaniko_bounded_and_registry_backed",
-    "settled_delivers_the_state_and_clears_the_slot": "settled_notifies_once_and_the_guard_clears_the_slot"
+    "settled_delivers_the_state_and_clears_the_slot": "settled_notifies_once_and_the_guard_clears_the_slot",
+    "only_a_root_run_behind_an_occupied_slot_parks_its_session_work": "only_a_closed_model_only_root_attempt_parks_its_session_work"
   }
 }

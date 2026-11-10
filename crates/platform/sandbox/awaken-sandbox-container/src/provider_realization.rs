@@ -106,34 +106,23 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         request.admit_effect(effect)?;
         let target = match recovered {
             Some(target) => target,
-            None => match self
-                .runtime
-                .restore_or_adopt(&runtime_scope, &plan, &plan_fingerprint, &evidence, effect)
-                .await
-            {
-                Ok(target) => target,
-                Err(error) => {
-                    // The runtime contract may have crossed a mutation boundary.
-                    // A host locator already exposed to that object must not be
-                    // unlinked by this process-local wrapper.
-                    if let Some(staging) = staging.guard.as_mut() {
-                        staging.retain_for_restoration();
-                    }
-                    return Err(pc::SandboxError::from(error));
+            None => {
+                // A cancelled response can leave a physical target bound to
+                // this locator. Retain it before the backend can see it; only
+                // exact terminal cleanup can discharge that responsibility.
+                if let Some(staging) = staging.guard.as_mut() {
+                    staging.retain_for_restoration();
                 }
-            },
+                self.runtime
+                    .restore_or_adopt(&runtime_scope, &plan, &plan_fingerprint, &evidence, effect)
+                    .await
+                    .map_err(pc::SandboxError::from)?
+            }
         };
         let container_id = target.container_id;
         let disposition = target.disposition;
+        let captured_runtime_handle = target.runtime_handle;
 
-        if self.runtime.uses_host_live_input_bind()
-            && disposition == pc::SandboxRestoreTargetDisposition::Created
-            && let Some(staging) = staging.guard.as_mut()
-        {
-            staging.retain_for_restoration();
-        }
-        // Physical creation may have completed while its response was pending.
-        // Retain backend-exposed staging BEFORE refusing a revoked delivery.
         request.admit_effect(effect)?;
 
         let runtime_handle = match self.runtime.handle_extra(&container_id).await {
@@ -147,6 +136,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         };
 
         request.admit_effect(effect)?;
+        if runtime_handle != captured_runtime_handle {
+            return Err(pc::SandboxError::conflict(
+                "container restore target changed its acquired physical incarnation",
+            ));
+        }
         if self.runtime.uses_host_live_input_bind() {
             let physical_staging =
                 retained_host_staging(runtime_handle.as_ref()).map_err(pc::SandboxError::from)?;

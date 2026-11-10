@@ -8,7 +8,8 @@ use awaken_agent_config::AgentConfig;
 use awaken_config_resolver::AgentInputConfig;
 use awaken_executable_agent_contract::{
     ExecutableAgentDelegate, ExecutableAgentEnvironment, ExecutableAgentMcpServer,
-    ExecutableAgentSessionProfile,
+    ExecutableAgentSessionProfile, ManagedModelIdError, PublishedModelReferenceProjector,
+    project_published_model_reference,
 };
 use awaken_runtime_contract::{ExecutableAgentSnapshot, ResolvedInputVersion};
 
@@ -19,12 +20,14 @@ pub(crate) fn registered_session_profile(
     snapshot: &ExecutableAgentSnapshot,
     authored: &AgentConfig,
     authored_model_selection: &awaken_agent_config::ModelSelection,
+    projector: &dyn PublishedModelReferenceProjector,
     current_defaults: Option<AgentInputConfig>,
-) -> Option<ExecutableAgentSessionProfile> {
+) -> Result<Option<ExecutableAgentSessionProfile>, ManagedModelIdError> {
     project(
         snapshot,
         authored,
         authored_model_selection,
+        projector,
         current_defaults,
         true,
     )
@@ -38,18 +41,27 @@ pub(crate) fn historical_session_profile(
     snapshot: &ExecutableAgentSnapshot,
     authored: &AgentConfig,
     authored_model_selection: &awaken_agent_config::ModelSelection,
-) -> ExecutableAgentSessionProfile {
-    project(snapshot, authored, authored_model_selection, None, false)
-        .expect("historical projection ignores unavailable Session defaults")
+    projector: &dyn PublishedModelReferenceProjector,
+) -> Result<ExecutableAgentSessionProfile, ManagedModelIdError> {
+    project(
+        snapshot,
+        authored,
+        authored_model_selection,
+        projector,
+        None,
+        false,
+    )?
+    .ok_or(ManagedModelIdError::UnsupportedSelection)
 }
 
 fn project(
     snapshot: &ExecutableAgentSnapshot,
     authored: &AgentConfig,
     authored_model_selection: &awaken_agent_config::ModelSelection,
+    projector: &dyn PublishedModelReferenceProjector,
     current_defaults: Option<AgentInputConfig>,
     require_exact_defaults: bool,
-) -> Option<ExecutableAgentSessionProfile> {
+) -> Result<Option<ExecutableAgentSessionProfile>, ManagedModelIdError> {
     let spec = &snapshot.resolved_spec;
     let bindings = spec.plugin_config.agent.clone();
     let pinned_defaults_revision = snapshot
@@ -66,7 +78,7 @@ fn project(
         });
     let defaults = match (pinned_defaults_revision, current_defaults) {
         (Some(expected), Some(defaults)) if defaults.revision == expected => defaults,
-        (Some(_), _) if require_exact_defaults => return None,
+        (Some(_), _) if require_exact_defaults => return Ok(None),
         _ => AgentInputConfig {
             agent_id: snapshot.root_agent_id.0.clone(),
             environment: None,
@@ -74,14 +86,26 @@ fn project(
             revision: 1,
         },
     };
-    let managed_model = crate::render_managed_model_id(authored_model_selection)
-        .or_else(|_| {
-            crate::render_managed_model_id(&awaken_agent_config::ModelSelection::Pinned(
-                spec.model_binding.binding().clone(),
-            ))
-        })
-        .ok();
-    Some(ExecutableAgentSessionProfile {
+    let binding_fallback = || {
+        crate::render_managed_model_id(&awaken_agent_config::ModelSelection::Pinned(
+            spec.model_binding.binding().clone(),
+        ))
+        .ok()
+    };
+    let managed_model = match crate::render_managed_model_id(authored_model_selection) {
+        Ok(reference) => Some(reference),
+        Err(_)
+            if matches!(
+                authored_model_selection,
+                awaken_agent_config::ModelSelection::Auto
+            ) =>
+        {
+            project_published_model_reference(&spec.model_binding, projector)?
+                .or_else(binding_fallback)
+        }
+        Err(_) => binding_fallback(),
+    };
+    Ok(Some(ExecutableAgentSessionProfile {
         name: authored.name.clone(),
         description: authored.description.clone(),
         source_revision: snapshot.metadata.source.revision,
@@ -152,7 +176,7 @@ fn project(
                 environment_id: binding.environment_id,
                 revision: binding.revision,
             }),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -218,8 +242,10 @@ mod tests {
             &snapshot,
             &authored,
             &authored.model_binding,
+            &awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector,
             Some(defaults(2)),
         )
+        .unwrap()
         .unwrap();
         assert_eq!(exact.resources.len(), 1, "P1");
         assert_eq!(exact.name.as_deref(), Some("Agent A"), "P1 identity");
@@ -229,22 +255,140 @@ mod tests {
                 &snapshot,
                 &authored,
                 &authored.model_binding,
+                &awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector,
                 Some(defaults(3)),
             )
+            .unwrap()
             .is_none(),
             "P2"
         );
         assert!(
-            registered_session_profile(&snapshot, &authored, &authored.model_binding, None)
-                .is_none(),
+            registered_session_profile(
+                &snapshot,
+                &authored,
+                &authored.model_binding,
+                &awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector,
+                None
+            )
+            .unwrap()
+            .is_none(),
             "P3"
         );
         assert!(
-            historical_session_profile(&snapshot, &authored, &authored.model_binding)
-                .resources
-                .is_empty(),
+            historical_session_profile(
+                &snapshot,
+                &authored,
+                &authored.model_binding,
+                &awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector
+            )
+            .unwrap()
+            .resources
+            .is_empty(),
             "P4"
         );
+    }
+
+    #[test]
+    fn auto_uses_frozen_source_identity_while_authored_selectors_remain_intent() {
+        // A1 Auto + valid frozen source -> complete public primary, never its
+        // private account. A2 Profile/Target/Pinned -> exact authored selector.
+        // A3 invalid source -> typed error for Auto current AND historical
+        // views, while A2 still needs no source projection. No live resolver is
+        // available in this pure test; recovery's test owns the no-resolve gate.
+        use awaken_agent_config::ModelSelection;
+        let snapshot = |route: &str| {
+            let candidate =
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider(
+                    ModelBinding::parse("private-account", "chat", "gateway").unwrap(),
+                    "public-vendor@2",
+                    route,
+                    "workspace",
+                    awaken_runtime_contract::InferenceEndpoint {
+                        adapter_kind: "openai".into(),
+                        api_dialect: "open_ai_chat".into(),
+                        base_url: "https://provider.example.invalid".into(),
+                        upstream_model: "chat".into(),
+                        processing_placement: None,
+                    },
+                )
+                .unwrap();
+            ExecutableAgentSnapshot::builder("agent")
+                .resolved_model(candidate)
+                .build()
+        };
+        let valid = snapshot("public-endpoint@4");
+        let invalid = snapshot("unowned-opaque-route");
+        let projector =
+            &awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector;
+        for (selection, expected) in [
+            (
+                ModelSelection::Auto,
+                "chat;provider=public-vendor;api=open_ai_chat;endpoint=public-endpoint",
+            ),
+            (
+                ModelSelection::Profile {
+                    profile_id: "policy".into(),
+                },
+                "profile=policy",
+            ),
+            (
+                crate::parse_managed_model_id("chat;provider=authored-vendor").unwrap(),
+                "chat;provider=authored-vendor",
+            ),
+            (
+                ModelSelection::pinned("authored-source", "authored-model", "genai").unwrap(),
+                "authored-model;provider=authored-source",
+            ),
+        ] {
+            let authored = AgentConfig {
+                model_binding: selection,
+                ..Default::default()
+            };
+            let current = registered_session_profile(
+                &valid,
+                &authored,
+                &authored.model_binding,
+                projector,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(current.model.as_deref(), Some(expected), "A1/A2");
+            assert_eq!(current.execution_model_ref.as_deref(), Some("chat"));
+            assert_eq!(current.backend_ref, "gateway");
+            assert_eq!(
+                historical_session_profile(&valid, &authored, &authored.model_binding, projector)
+                    .unwrap(),
+                current
+            );
+            let current_bad = registered_session_profile(
+                &invalid,
+                &authored,
+                &authored.model_binding,
+                projector,
+                None,
+            );
+            let historical_bad =
+                historical_session_profile(&invalid, &authored, &authored.model_binding, projector);
+            if matches!(authored.model_binding, ModelSelection::Auto) {
+                assert!(current_bad.is_err(), "A3 current");
+                assert!(
+                    historical_bad.is_err(),
+                    "A3 historical is fallible, never panic"
+                );
+            } else {
+                assert_eq!(
+                    current_bad.unwrap().unwrap().model.as_deref(),
+                    Some(expected),
+                    "A2"
+                );
+                assert_eq!(
+                    historical_bad.unwrap().model.as_deref(),
+                    Some(expected),
+                    "A2 historical"
+                );
+            }
+        }
     }
 
     fn spec_model(snapshot: &ExecutableAgentSnapshot) -> awaken_runtime_contract::ModelBinding {

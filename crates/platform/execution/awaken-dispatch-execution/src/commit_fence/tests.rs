@@ -174,6 +174,7 @@ async fn coordinator_writer_retries_only_ambiguous_commits_with_the_same_identit
         store: MemoryCommitCoordinator,
         calls: std::sync::Mutex<Vec<ClaimedCommitCommand>>,
         lose_receipt: bool,
+        capacity_exhausted: bool,
     }
 
     #[async_trait]
@@ -188,6 +189,11 @@ async fn coordinator_writer_retries_only_ambiguous_commits_with_the_same_identit
                 calls.push(command.clone());
                 first
             };
+            if self.capacity_exhausted {
+                return Err(awaken_dispatch_erasure::claimed_store_run_error(
+                    CommitError::CapacityExhausted("original store is full".into()),
+                ));
+            }
             if !self.lose_receipt {
                 return Err(RunError::conflict_classified(
                     awaken_dispatch_contract::COMMIT_CONFLICT,
@@ -209,11 +215,15 @@ async fn coordinator_writer_retries_only_ambiguous_commits_with_the_same_identit
         }
     }
 
-    for lose_receipt in [false, true] {
+    // T1 definite conflict and T2 definite capacity each return after one call;
+    // only T3 a lost receipt retries the exact same operation. Capacity retains
+    // its SDK enum and cannot become another append or a transparent retry.
+    for (lose_receipt, capacity_exhausted) in [(false, false), (true, false), (false, true)] {
         let writer = Arc::new(Writer {
             store: MemoryCommitCoordinator::new(awaken_time::system_clock()),
             calls: std::sync::Mutex::new(Vec::new()),
             lose_receipt,
+            capacity_exhausted,
         });
         let request = command(0, 0);
         let result = CoordinatorRunCommits(writer.clone())
@@ -229,6 +239,11 @@ async fn coordinator_writer_retries_only_ambiguous_commits_with_the_same_identit
         if lose_receipt {
             assert!(result.unwrap().duplicate);
             assert_eq!(writer.store.commit_count(), 1);
+        } else if capacity_exhausted {
+            assert!(
+                matches!(result.unwrap_err(), CommitError::CapacityExhausted(detail) if detail.contains("original store is full"))
+            );
+            assert_eq!(writer.store.commit_count(), 0);
         } else {
             assert!(result.unwrap_err().to_string().contains("stale version"));
             assert_eq!(writer.store.commit_count(), 0);
@@ -356,6 +371,7 @@ struct BlockedCommit {
     held: Arc<AtomicBool>,
     entered: tokio::sync::Notify,
     allowed: tokio::sync::Notify,
+    capacity_exhausted: bool,
 }
 
 #[async_trait]
@@ -385,6 +401,11 @@ impl OperationCoordinator for BlockedCommit {
             self.held.load(Ordering::SeqCst),
             "epoch held through original operation IO"
         );
+        if self.capacity_exhausted {
+            return Err(CommitError::CapacityExhausted(
+                "original store is full".into(),
+            ));
+        }
         self.store.commit_operation(operation).await
     }
 }
@@ -402,6 +423,7 @@ async fn guarded_versioned_commit_holds_exact_epoch_across_original_operation_io
         held: authority.held.clone(),
         entered: tokio::sync::Notify::new(),
         allowed: tokio::sync::Notify::new(),
+        capacity_exhausted: false,
     });
     let service = GuardedRunCommit::new(owner.clone(), authority.clone());
     let applying = tokio::spawn(async move { service.commit_operation(command(0, 0)).await });
@@ -418,4 +440,66 @@ async fn guarded_versioned_commit_holds_exact_epoch_across_original_operation_io
     assert_eq!(store.commit_count(), 1, "H2");
     assert_eq!(authority.releases.load(Ordering::SeqCst), 1, "H2");
     assert!(!authority.held.load(Ordering::SeqCst), "H2");
+}
+
+#[tokio::test]
+async fn guarded_capacity_failure_is_classified_only_after_exact_release() {
+    // C1 the original operation returns CapacityExhausted after guarded IO;
+    // C2 the exact epoch is released. R1 C1+C2 -> explicit capacity code then
+    // SDK capacity, zero append/receipt and one release. R2 a Rejected variant
+    // with the same prose remains Internal. The existing blocked IO fixture
+    // asserts the epoch is still held inside the failing operation.
+    let store = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let authority = Arc::new(Authority::new(false));
+    let owner = Arc::new(BlockedCommit {
+        store: store.clone(),
+        held: authority.held.clone(),
+        entered: tokio::sync::Notify::new(),
+        allowed: tokio::sync::Notify::new(),
+        capacity_exhausted: true,
+    });
+    owner.allowed.notify_one();
+    let selected = owner.clone();
+    let failure = awaken_dispatch_erasure::commit_claimed_operation(
+        authority.as_ref(),
+        command(0, 0),
+        move |_session| async move { Ok(selected as Arc<dyn OperationCoordinator>) },
+    )
+    .await
+    .expect_err("R1 original capacity failure");
+    assert_eq!(
+        failure.code,
+        awaken_dispatch_contract::COMMIT_CAPACITY_EXHAUSTED
+    );
+    assert_eq!(
+        failure.kind,
+        awaken_runtime_contract::runs::RunErrorKind::Unavailable
+    );
+    assert_eq!(failure.message, "original store is full");
+    assert!(matches!(
+        awaken_dispatch_contract::claimed_commit_sdk_error(&failure.code, failure.to_string()),
+        CommitError::CapacityExhausted(_)
+    ));
+    assert_eq!(store.commit_count(), 0, "R1 no append or receipt");
+    assert_eq!(
+        authority.releases.load(Ordering::SeqCst),
+        1,
+        "R1 exact release"
+    );
+    assert!(
+        !authority.held.load(Ordering::SeqCst),
+        "R1 completion follows release"
+    );
+    let rejected = awaken_dispatch_erasure::claimed_store_run_error(CommitError::Rejected(
+        "original store is full".into(),
+    ));
+    assert_eq!(
+        rejected.kind,
+        awaken_runtime_contract::runs::RunErrorKind::Internal,
+        "R2 type, not prose"
+    );
+    assert_ne!(
+        rejected.code,
+        awaken_dispatch_contract::COMMIT_CAPACITY_EXHAUSTED
+    );
 }

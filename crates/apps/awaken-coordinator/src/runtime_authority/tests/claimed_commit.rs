@@ -21,6 +21,9 @@ use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use std::time::Duration;
 
+#[path = "runtime_authority_claimed_pool_tests.rs"]
+mod pool_tests;
+
 async fn fixture() -> Option<(String, Arc<DurableRuntimeAuthority>, PgPool)> {
     let url = awaken_reliability_testkit::postgres_fixture_url()?;
     // A single connection distinguishes one transaction from an outer claim
@@ -31,10 +34,15 @@ async fn fixture() -> Option<(String, Arc<DurableRuntimeAuthority>, PgPool)> {
         .connect(&url)
         .await
         .unwrap();
+    let authority = authority_for_pool(pool.clone()).await;
+    Some((url, authority, pool))
+}
+
+async fn authority_for_pool(pool: PgPool) -> Arc<DurableRuntimeAuthority> {
     let mut storage = tests::test_storage();
     storage.store = StoreKind::Postgres;
     storage.dispatch_backend = DispatchBackend::Postgres;
-    let authority = DurableRuntimeAuthority::open_with_postgres_pools(
+    DurableRuntimeAuthority::open_with_postgres_pools(
         &storage,
         SchemaAccess::Migrate,
         Some(pool.clone()),
@@ -42,15 +50,14 @@ async fn fixture() -> Option<(String, Arc<DurableRuntimeAuthority>, PgPool)> {
             awaken_sql_storage::postgres_pool_options()
                 .max_connections(1)
                 .acquire_timeout(Duration::from_secs(5))
-                .connect(&url)
+                .connect_with(pool.connect_options().as_ref().clone())
                 .await
                 .unwrap(),
         ),
         awaken_time::system_clock(),
     )
     .await
-    .unwrap();
-    Some((url, authority, pool))
+    .unwrap()
 }
 
 async fn initial_claim(authority: &DurableRuntimeAuthority) -> ClaimedCommitCommand {
@@ -895,9 +902,16 @@ async fn selected_postgres_writer_serializes_commit_and_takeover() {
     assert_commit_rows(&reader, 1).await;
 }
 
+#[cfg(test)]
 #[tokio::test]
 async fn selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_takeover() {
-    let Some((url, authority, _)) = fixture().await else {
+    // C1 committed prefix freezes end=2; C2 takeover and exact replay stutter;
+    // C3 a later terminal append is outside that cut; C4 its message becomes
+    // undecodable. R1 old/cold root pages still return only the frozen range;
+    // R2 a full/fresh read that includes the poison must fail (independent
+    // negative control); R3 restoring the owned tail exposes it only to a new
+    // cut. No execution view is opened or paired writer reconstructed.
+    let Some((url, authority, pool)) = fixture().await else {
         return;
     };
     let mut command = initial_claim(&authority).await;
@@ -1019,6 +1033,62 @@ async fn selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_ta
     assert_eq!(frozen.snapshot, page.snapshot);
     assert_eq!(frozen.messages, command.operation.commit.messages[1..]);
     assert_eq!(frozen.next_start(), None);
+
+    let original_tail: sqlx::types::Json<serde_json::Value> = sqlx::query_scalar(
+        "SELECT data FROM runtime_message WHERE thread_id=$1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&request.thread_id.0)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let poisoned = sqlx::query(
+        "UPDATE runtime_message SET data='null'::jsonb WHERE thread_id=$1 AND id=(SELECT MAX(id) FROM runtime_message WHERE thread_id=$1)",
+    ).bind(&request.thread_id.0).execute(&pool).await.unwrap();
+    assert_eq!(
+        poisoned.rows_affected(),
+        1,
+        "C4 poison only the owned new tail"
+    );
+    assert!(
+        peer.authoritative_committed_messages(&request.thread_id)
+            .await
+            .is_err(),
+        "R2 poison defeats full decoding"
+    );
+    let cold = authority_for_pool(pool.clone()).await;
+    let cold_frozen = cold
+        .read_transcript_page(&request.thread_id.0, &request)
+        .await
+        .unwrap();
+    assert_eq!(
+        cold_frozen, frozen,
+        "R1 cold SQL page never decodes the later tail"
+    );
+    assert!(
+        cold.postgres_commit
+            .as_ref()
+            .unwrap()
+            .committed_messages(&request.thread_id)
+            .is_empty(),
+        "R1 root does not hydrate execution history"
+    );
+    let mut includes_tail = request.clone();
+    includes_tail.snapshot = None;
+    includes_tail.start = 2;
+    assert!(
+        cold.read_transcript_page(&request.thread_id.0, &includes_tail)
+            .await
+            .is_err(),
+        "R2 fresh range includes the poisoned tail"
+    );
+    let restored = sqlx::query(
+        "UPDATE runtime_message SET data=$1 WHERE thread_id=$2 AND id=(SELECT MAX(id) FROM runtime_message WHERE thread_id=$2)",
+    ).bind(original_tail).bind(&request.thread_id.0).execute(&pool).await.unwrap();
+    assert_eq!(
+        restored.rows_affected(),
+        1,
+        "R3 restore only the owned tail"
+    );
     request.snapshot = None;
     request.start = 2;
     let latest = peer.authoritative_transcript_page(&request).await.unwrap();

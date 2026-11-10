@@ -134,7 +134,10 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
                         None | Some(COMMIT_OUTCOME_UNKNOWN | "unavailable")
                     );
                 if !retry {
-                    return Err(CommitError::Rejected(message));
+                    return Err(awaken_dispatch_contract::claimed_commit_sdk_error(
+                        code.as_deref().unwrap_or_default(),
+                        message,
+                    ));
                 }
                 last_transport_error = Some(message);
                 if attempt < TRANSPORT_ATTEMPTS {

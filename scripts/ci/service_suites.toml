@@ -258,6 +258,40 @@ args = '''
 '''
 
 [[postgres]]
+id = "postgres.critical.claimed-commit-pool"
+phase = "critical_durability_evidence"
+args = '''
+-p awaken-coordinator --locked --lib runtime_authority::claimed_commit_tests::pool_tests::
+--require-case=runtime_authority::claimed_commit_tests::pool_tests::claimed_commit_shared_pool_cap_one_progresses
+--require-case=runtime_authority::claimed_commit_tests::pool_tests::claimed_commit_shared_pool_cap_two_concurrent_progresses
+--require-case=runtime_authority::claimed_commit_tests::pool_tests::claimed_postgres_cold_child_scope_replay_and_ordinary_binding
+--require-case=runtime_authority::claimed_commit_tests::pool_tests::claimed_postgres_rollback_preserves_projection_and_receipt
+-- --ignored --test-threads=1
+'''
+
+[[postgres]]
+id = "postgres.critical.claimed-child-recovery"
+phase = "critical_durability_evidence"
+args = '''
+-p awaken-session-executor --locked --lib agent_runner::child_execution::tests::local_postgres_child_permission_recovers_with_its_own_prefix
+--require-case=agent_runner::child_execution::tests::local_postgres_child_permission_recovers_with_its_own_prefix
+-- --ignored --exact --test-threads=1
+'''
+
+[[postgres]]
+id = "postgres.critical.coordinator-claimed-writer"
+phase = "critical_durability_evidence"
+args = '''
+-p awaken-coordinator --locked --lib runtime_authority::claimed_commit_tests::selected_postgres_
+--require-case=runtime_authority::claimed_commit_tests::selected_postgres_writer_rolls_back_late_failure_and_replays_on_one_connection
+--require-case=runtime_authority::claimed_commit_tests::selected_postgres_writer_serializes_commit_and_takeover
+--require-case=runtime_authority::claimed_commit_tests::selected_postgres_writer_fences_after_waiting_for_a_new_epoch
+--require-case=runtime_authority::claimed_commit_tests::selected_postgres_writer_rolls_back_when_the_commit_connection_dies
+--require-case=runtime_authority::claimed_commit_tests::selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_takeover
+-- --test-threads=1
+'''
+
+[[postgres]]
 id = "postgres.critical.coordinator"
 phase = "critical_durability_evidence"
 args = '''

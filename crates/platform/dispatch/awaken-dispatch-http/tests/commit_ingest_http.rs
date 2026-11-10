@@ -491,6 +491,9 @@ async fn t2_retries_ambiguous_server_failure_with_the_same_operation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn non_retryable_claimed_commit_preserves_the_server_cause() {
+    // N1 definite fenced/conflict/internal results keep their diagnostics;
+    // N2 an explicit capacity code keeps SDK CapacityExhausted. All four rows
+    // are definite failures: exactly one HTTP attempt, never a retry/receipt.
     for (status, code, message) in [
         (
             axum::http::StatusCode::BAD_REQUEST,
@@ -506,6 +509,11 @@ async fn non_retryable_claimed_commit_preserves_the_server_cause() {
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
             "commit failed before publication",
+        ),
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            awaken_dispatch_contract::COMMIT_CAPACITY_EXHAUSTED,
+            "original store is full",
         ),
     ] {
         let identity = WorkerIdentity::new("diagnostic-worker", "diagnostic-boot", 1);
@@ -548,6 +556,23 @@ async fn non_retryable_claimed_commit_preserves_the_server_cause() {
             .expect_err("a definite failure remains fail-closed");
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert!(error.to_string().contains(message));
+        if code == awaken_dispatch_contract::COMMIT_CAPACITY_EXHAUSTED {
+            assert!(
+                matches!(
+                    error,
+                    awaken_agent_contract::thread::commit::coordinator::Error::CapacityExhausted(_)
+                ),
+                "N2"
+            );
+        } else {
+            assert!(
+                matches!(
+                    error,
+                    awaken_agent_contract::thread::commit::coordinator::Error::Rejected(_)
+                ),
+                "N1"
+            );
+        }
         server.abort();
     }
 }

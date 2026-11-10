@@ -151,7 +151,7 @@ pub(super) async fn recover(
     let Some(observation) = observed? else {
         return Ok(None);
     };
-    let name = converge(
+    let acquired_pod = converge(
         runtime,
         id,
         observation.pod,
@@ -162,8 +162,9 @@ pub(super) async fn recover(
     )
     .await?;
     Ok(Some(awaken_sandbox_container::RuntimeRestoreTarget {
-        container_id: name,
+        container_id: acquired_pod.name_any(),
         disposition: pc::SandboxRestoreTargetDisposition::Recovered,
+        runtime_handle: continuation::handle_extra(&acquired_pod)?,
     }))
 }
 
@@ -177,7 +178,7 @@ pub(super) async fn converge(
     plan_fingerprint: &str,
     evidence: &pc::SandboxRestorationEvidence,
     effect: pc::SandboxEffect<'_>,
-) -> Result<String, RuntimeError> {
+) -> Result<Pod, RuntimeError> {
     let admit = || effect.admit().map_err(|_| RuntimeError::EffectFenceExpired);
     admit()?;
     let name = pod.name_any();
@@ -222,7 +223,7 @@ pub(super) async fn converge(
             ));
         }
     }
-    participants::metadata::transfer_runtime_owner(
+    let acquired_pod = participants::metadata::transfer_runtime_owner(
         &runtime.pods(),
         pod,
         &uid,
@@ -242,7 +243,9 @@ pub(super) async fn converge(
     )
     .await?;
     admit()?;
-    Ok(name)
+    // Return the already verified CAS result. A later same-name GET must not
+    // become the acquisition's original physical proof.
+    Ok(acquired_pod)
 }
 
 pub(super) async fn restoration_evidence(

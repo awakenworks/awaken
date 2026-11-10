@@ -117,7 +117,121 @@ fn source_projector_cannot_bypass_the_existing_public_grammar() {
     let current = provider_registration("workspace:endpoint@1", "genai", 20);
     for auto in [false, true] {
         assert!(
+            project_published_model_reference(
+                &current.snapshot.resolved_spec.model_binding,
+                &Invalid(auto),
+            )
+            .is_err(),
+            "the shared single-candidate gate is the directory grammar gate"
+        );
+        assert!(
             project_current_model_publications([&current], [&current], &Invalid(auto)).is_err()
+        );
+    }
+}
+
+#[test]
+fn one_account_pool_contributes_one_id_but_distinct_publications_retain_their_time_evidence() {
+    // D1 one registration has two account candidates for one public Offering;
+    // D2 its legacy sequence is not verified; D3 a distinct publication of the
+    // same ID is also unverified. R1 D1+D2 -> one ID and factual time 10;
+    // R2 D3 -> unknown time, not min(clock). R3 the later row becomes fenced ->
+    // original first time 10. Deduplication is local to each registration only.
+    let mut pool = provider_registration("opaque-source-first", "genai", 10);
+    let primary = &pool.snapshot.resolved_spec.model_binding;
+    let second = ResolvedModelCandidate::try_from_parts(
+        awaken_runtime_contract::resolved::ModelBinding::parse(
+            "second-account",
+            "shared/model",
+            "genai",
+        )
+        .unwrap(),
+        primary.provisioning().clone(),
+    )
+    .unwrap();
+    pool.snapshot.resolved_spec.model_candidates.push(second);
+    pool.publication_order_verified = false;
+    let ids = registration_model_references(&pool, &OpaqueSourceProjector).unwrap();
+    assert_eq!(
+        ids,
+        vec!["shared/model;provider=vendor;api=open_ai_chat;endpoint=logical-broker-surface"],
+        "R1"
+    );
+    let rows =
+        project_current_model_publications([&pool], [&pool], &OpaqueSourceProjector).unwrap();
+    assert_eq!(
+        rows[0].first_published_at_unix_ms,
+        Some(10),
+        "R1 one publication"
+    );
+    let mut later = pool.clone();
+    later.source_revision += 1;
+    later.snapshot.metadata.source.revision = later.source_revision;
+    later.snapshot.recompute_fingerprint().unwrap();
+    later.publication_sequence = Some(20);
+    later.published_at_unix_ms = Some(5);
+    let rows =
+        project_current_model_publications([&later], [&pool, &later], &OpaqueSourceProjector)
+            .unwrap();
+    assert_eq!(
+        rows[0].first_published_at_unix_ms, None,
+        "R2 distinct unfenced publications"
+    );
+    later.publication_order_verified = true;
+    let rows =
+        project_current_model_publications([&later], [&pool, &later], &OpaqueSourceProjector)
+            .unwrap();
+    assert_eq!(
+        rows[0].first_published_at_unix_ms,
+        Some(10),
+        "R3 sequence, not later clock"
+    );
+}
+
+#[test]
+fn registration_deduplication_preserves_first_occurrence_while_the_directory_stays_sorted() {
+    // O1 primary z with fallback a then duplicate z -> [z,a]; O2 primary a
+    // with fallback z then duplicate a -> [a,z]. The public helper keeps the
+    // original primary/fallback traversal after local deduplication. In both
+    // rows the existing directory boundary independently remains sorted [a,z].
+    let binding = |model| {
+        awaken_runtime_contract::resolved::ModelBinding::parse("provider", model, "genai").unwrap()
+    };
+    for (primary, fallbacks, expected) in [
+        (
+            "z-model",
+            ["a-model", "z-model"],
+            ["z-model;provider=provider", "a-model;provider=provider"],
+        ),
+        (
+            "a-model",
+            ["z-model", "a-model"],
+            ["a-model;provider=provider", "z-model;provider=provider"],
+        ),
+    ] {
+        let mut entry = registration();
+        entry.snapshot.resolved_spec.model_binding = ResolvedModelCandidate::host(binding(primary));
+        entry.snapshot.resolved_spec.model_candidates = fallbacks
+            .into_iter()
+            .map(|model| ResolvedModelCandidate::host(binding(model)))
+            .collect();
+        assert_eq!(
+            registration_model_references(&entry, &CanonicalPublishedModelReferenceProjector)
+                .unwrap(),
+            expected
+        );
+        let directory = project_current_model_publications(
+            [&entry],
+            [&entry],
+            &CanonicalPublishedModelReferenceProjector,
+        )
+        .unwrap();
+        assert_eq!(
+            directory
+                .into_iter()
+                .map(|row| row.model_reference)
+                .collect::<Vec<_>>(),
+            ["a-model;provider=provider", "z-model;provider=provider"]
         );
     }
 }

@@ -220,7 +220,7 @@ esac
 PARTIAL_LIST_CARGO = """#!/usr/bin/env bash
 if [ "$1" = awaken-ci-deadline ]; then entry=$(command -v "cargo-$1"); exec "$entry" "$@"; fi
 case "$*" in
-  "install --list") echo 'cargo-mutants 1' ;;
+  "install --list") printf '%s\\n' 'prefix cargo-fuzz 1' 'cargo-fuzz-extra 1' 'cargo-mutants 1' ;;
 """ + FAKE_NEXTEST + """  *"heartbeat_snapshot_never_mixes_concurrent_publication_batches"*)
     echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
 esac
@@ -365,6 +365,8 @@ esac
         # D7 each actual mutation package must be cleaned before and after the
         # batch. D8 cleanup/mutations use the isolated target AND build directory;
         # ordinary tests retain their original cache even after tool failure.
+        # D9 fresh + valid tools + a draining grep that exits 2 => no matcher dispatch,
+        # original full flow; query failure/missing exact tool remain Q1/Q2.
         # Removing the mkdir line must kill the fresh-directory positive control.
         with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -392,7 +394,14 @@ case "$*" in
     echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
 esac
 '''
-            for name, body in {"cargo": cargo, "python3": self.python_adapter(), "rustup": "#!/bin/sh\necho nightly-test\n", "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n"}.items():
+            tools = {"cargo": cargo, "python3": self.python_adapter(), "rustup": "#!/bin/sh\necho nightly-test\n", "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n"}
+            if case == "fresh":
+                tools["grep"] = '''#!/bin/sh
+printf '%s\\n' "$@" > "$CALL_LOG.grep"
+while IFS= read -r line; do printf '%s\\n' "$line" >> "$CALL_LOG.grep"; done
+exit 2
+'''
+            for name, body in tools.items():
                 tool = binary / name
                 tool.write_text(body, encoding="utf-8", newline="\n")
                 tool.chmod(0o755)
@@ -413,7 +422,9 @@ esac
                 self.assertEqual(Path(target), expected_target, "D8 target isolation")
                 self.assertEqual(Path(build), expected_build, "D8 build isolation")
             passed = case in ("fresh", "existing", "nested")
-            self.assertEqual(result.returncode == 0, passed, result.stderr)
+            self.assertEqual(result.returncode == 0, passed, f"{result.stderr}\nstdout={result.stdout}\ncargo={shutil.which('cargo', path=env['PATH'])}; actual calls={calls!r}")
+            if case == "fresh":
+                self.assertFalse((root / "target/calls.grep").exists(), "D9 no external matcher")
             self.assertEqual(len(mutations), 6 if passed else 0 if case in ("blocked", "fuzz-lock-stale") else 1)
             if case == "fuzz-lock-stale":
                 self.assertEqual(result.returncode, 41, "D6 exact preflight refusal")
@@ -469,12 +480,10 @@ esac
                 self.assertEqual(output.read_text(), "owned file must remain unchanged")
 
     def test_a_failed_tool_query_is_not_reported_as_a_missing_tool(self) -> None:
-        """Q1 the listing command fails; Q2 it succeeds but omits the tool.
+        """Q1 a failed query stays unknown; Q2 no exact tool line is absence.
 
-        Both used to read "cargo-fuzz is required": the listing was piped
-        straight into grep, so a pipeline that could not run at all (a failed
-        fork under load) accused an installed tool of being absent, and the
-        gate's verdict depended on machine load rather than on the machine.
+        Q2 includes embedded/suffixed near matches. The failed-fork rationale
+        lives with the gate; these process stubs keep its two outcomes distinct.
         """
 
         for case, listing, expected in (

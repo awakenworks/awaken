@@ -782,9 +782,13 @@ impl ContainerRuntime for PodmanRuntime {
             started?;
         }
         admit()?;
+        let observed_handle = self.handle_extra(&container_id).await;
+        admit()?;
+        let runtime_handle = observed_handle?;
         Ok(Some(RuntimeRestoreTarget {
             container_id,
             disposition: pc::SandboxRestoreTargetDisposition::Recovered,
+            runtime_handle,
         }))
     }
 
@@ -813,10 +817,22 @@ impl ContainerRuntime for PodmanRuntime {
         let outcome = self.run(&args).await;
         admit()?;
         match outcome {
-            Ok(_) => Ok(RuntimeRestoreTarget {
-                container_id: name,
-                disposition: pc::SandboxRestoreTargetDisposition::Created,
-            }),
+            Ok(created) => {
+                let container_id = created.trim().to_owned();
+                if container_id.is_empty() {
+                    return Err(backend(
+                        "Podman restore Create omitted its immutable container ID",
+                    ));
+                }
+                let observed_handle = self.handle_extra(&container_id).await;
+                admit()?;
+                let runtime_handle = observed_handle?;
+                Ok(RuntimeRestoreTarget {
+                    container_id,
+                    disposition: pc::SandboxRestoreTargetDisposition::Created,
+                    runtime_handle,
+                })
+            }
             Err(error) => {
                 let recovered = self
                     .recover_restore_target(id, plan, plan_fingerprint, evidence, effect)

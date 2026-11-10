@@ -1207,18 +1207,12 @@ pub(crate) async fn admit_with_incarnation_guard(
     handoff: bool,
 ) -> Result<crate::AttemptAdmission, crate::DispatchError> {
     let snapshot = guard.snapshot();
-    // Same order as PostgreSQL: a guard that names another attempt is an
-    // integrity error whatever the time; only a matching guard is judged.
-    if snapshot.identity.lease_owner() != claim.owner
-        || binding.is_some_and(|binding| binding.worker() != &snapshot.identity)
-    {
+    if let Err(error) = validate_guarded_incarnation_identity(snapshot, claim, binding) {
         guard
             .release()
             .await
             .map_err(crate::DispatchError::unavailable)?;
-        return Err(crate::DispatchError::Rejected(
-            "Registry guard does not match the physical attempt".into(),
-        ));
+        return Err(error);
     }
     if !snapshot.standing(now_ms).holds_authority() {
         guard
@@ -1237,6 +1231,24 @@ pub(crate) async fn admit_with_incarnation_guard(
         .await
         .map_err(crate::DispatchError::unavailable)?;
     admission
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn validate_guarded_incarnation_identity(
+    snapshot: &awaken_worker_contract::WorkerSnapshot,
+    claim: &crate::RunClaim,
+    binding: Option<&crate::AttemptExecutionBinding>,
+) -> Result<(), crate::DispatchError> {
+    // Identity is an integrity check before the store-clock standing decision.
+    // Every adapter uses this law while retaining its original release boundary.
+    if snapshot.identity.lease_owner() != claim.owner
+        || binding.is_some_and(|binding| binding.worker() != &snapshot.identity)
+    {
+        return Err(crate::DispatchError::Rejected(
+            "Registry guard does not match the physical attempt".into(),
+        ));
+    }
+    Ok(())
 }
 
 use awaken_dispatch_contract::{

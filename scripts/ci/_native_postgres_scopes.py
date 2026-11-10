@@ -13,7 +13,7 @@ POSTGRES_PACKAGES = {
         "awaken-data-subject-store", "awaken-captured-content-store", "awaken-work-store",
         "awaken-session-store", "awaken-memory-store", "awaken-dispatch", "awaken-skill-store", "awaken-work-store",
         "awaken-dispatch-http", "awaken-config-store", "awaken-session-store",
-        "awaken-credential-store", "awaken-process-startup", "awaken-process-startup", "awaken-process-startup", "awaken-coordinator"),
+        "awaken-credential-store", "awaken-process-startup", "awaken-process-startup", "awaken-process-startup", "awaken-coordinator", "awaken-session-executor", "awaken-coordinator", "awaken-coordinator"),
     "storage": (
         "awaken-sql-storage", "awaken-session-store", "awaken-config-store", "awaken-store-postgres",
         "awaken-env-store", "awaken-file-store", "awaken-store-schema", "awaken-store-sqlite"),
@@ -49,6 +49,20 @@ CORE_SESSION_WORK_RELEASE_CASE_FLOORS = (
     'session_work_release::tests::live_postgres_shared_root_and_separate_work_database',
 )
 
+CORE_CLAIMED_COMMIT_CASE_FLOORS = (
+    'runtime_authority::claimed_commit_tests::pool_tests::claimed_commit_shared_pool_cap_one_progresses',
+    'runtime_authority::claimed_commit_tests::pool_tests::claimed_commit_shared_pool_cap_two_concurrent_progresses',
+    'runtime_authority::claimed_commit_tests::pool_tests::claimed_postgres_cold_child_scope_replay_and_ordinary_binding',
+    'runtime_authority::claimed_commit_tests::pool_tests::claimed_postgres_rollback_preserves_projection_and_receipt',
+)
+CORE_CLAIMED_CHILD_CASE = 'agent_runner::child_execution::tests::local_postgres_child_permission_recovers_with_its_own_prefix'
+CORE_SELECTED_POSTGRES_WRITER_CASE_FLOORS = (
+    'runtime_authority::claimed_commit_tests::selected_postgres_writer_rolls_back_late_failure_and_replays_on_one_connection',
+    'runtime_authority::claimed_commit_tests::selected_postgres_writer_serializes_commit_and_takeover',
+    'runtime_authority::claimed_commit_tests::selected_postgres_writer_fences_after_waiting_for_a_new_epoch',
+    'runtime_authority::claimed_commit_tests::selected_postgres_writer_rolls_back_when_the_commit_connection_dies',
+    'runtime_authority::claimed_commit_tests::selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_takeover',
+)
 
 # The race requires a live database; the integer conversion is a pure unit
 # boundary retained here as an independently named outcome, not DB evidence.
@@ -184,6 +198,43 @@ def _require_session_work_release_phase(phases):
         raise ValueError('PostgreSQL selector changed independent Session Work release outcomes')
 
 
+def _require_claimed_commit_phases(phases):
+    # Separate exact rows retain pool/child and production-selected writer
+    # outcomes. Three Coordinator rows share a package, not a responsibility:
+    # pool, selected writer and Application Access cannot replace one another.
+    pool_prefix = 'runtime_authority::claimed_commit_tests::pool_tests::'
+    writer_prefix = 'runtime_authority::claimed_commit_tests::selected_postgres_'
+    application_access = 'application_access_store::tests::provisioned_postgres_application_access_durability_release_gate'
+    expected = (
+        ('awaken-coordinator', pool_prefix, (
+            '-p', 'awaken-coordinator', '--locked', '--lib', pool_prefix,
+            *('--require-case=' + case for case in CORE_CLAIMED_COMMIT_CASE_FLOORS),
+            '--', '--ignored', '--test-threads=1',
+        )),
+        ('awaken-session-executor', None, (
+            '-p', 'awaken-session-executor', '--locked', '--lib', CORE_CLAIMED_CHILD_CASE,
+            '--require-case=' + CORE_CLAIMED_CHILD_CASE,
+            '--', '--ignored', '--exact', '--test-threads=1',
+        )),
+        ('awaken-coordinator', writer_prefix, (
+            '-p', 'awaken-coordinator', '--locked', '--lib', writer_prefix,
+            *('--require-case=' + case for case in CORE_SELECTED_POSTGRES_WRITER_CASE_FLOORS),
+            '--', '--test-threads=1',
+        )),
+        ('awaken-coordinator', application_access, (
+            '-p', 'awaken-coordinator', '--locked', '--lib', application_access,
+            '--require-case=' + application_access,
+            '--', '--ignored', '--exact', '--test-threads=1',
+        )),
+    )
+    for package, subject, arguments in expected:
+        selected = [phase for phase in phases
+                    if phase.selector == 'critical_durability_evidence' and phase.package == package
+                    and (subject is None or subject in phase.arguments)]
+        if len(selected) != 1 or selected[0].arguments != arguments or selected[0].environment:
+            raise ValueError('PostgreSQL selector changed independent claimed-commit outcomes')
+
+
 SESSION_CAPACITY_OBSERVATION_CASE = "postgres_session_capacity_reference_and_indexed_observation"
 SESSION_CAPACITY_ROOTS = 100_000
 
@@ -252,6 +303,8 @@ def postgres_phases(scope, root=None):
         _require_work_parity_phase(phases, root or Path(__file__).resolve().parents[2])
         _require_work_store_phase(phases, root or Path(__file__).resolve().parents[2])
         _require_session_work_release_phase(phases)
+        # Keep the original Dispatch observation's own refusal boundary;
+        # the independently checked pool target is a different exact domain.
         dispatch = [phase for phase in phases if phase.package == 'awaken-dispatch']
         if len(dispatch) != 1:
             raise ValueError('PostgreSQL selector changed independent Dispatch observation phase')
@@ -267,6 +320,7 @@ def postgres_phases(scope, root=None):
                 or '--exact' not in runtime_flags
                 or {'--ignored', '--include-ignored', '--skip'} & runtime_flags):
             raise ValueError('PostgreSQL selector changed independent Dispatch observation outcome')
+        _require_claimed_commit_phases(phases)
     for phase in phases:
         if (phase.selector == "critical_durability_evidence"
                 and phase.package in ("awaken-config-store", "awaken-session-store", "awaken-credential-store")

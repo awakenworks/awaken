@@ -145,6 +145,7 @@ nats = ["awaken-dispatch/nats"]
 container-k8s = ["dep:awaken-container-contract"]
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-session-application = { workspace = true, features = ["test-support"] }
 # The Broker regressions retain the original real Kube client/ledger fixture.

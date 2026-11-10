@@ -70,5 +70,21 @@ pub struct ConfigService {
         Vec<awaken_executable_agent_contract::capability::PluginConfigurationSource>,
 }
 
+impl awaken_executable_agent_contract::PublishedModelReferenceProjector for ConfigService {
+    /// Adapt the existing pure read role through the already selected source.
+    /// The authoring service adds no mapping, lookup or registration state.
+    fn project(
+        &self,
+        candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+    ) -> Result<
+        Option<awaken_agent_config::ModelSelection>,
+        awaken_executable_agent_contract::ManagedModelIdError,
+    > {
+        self.model_publication_resolver
+            .model_reference_projector()
+            .project(candidate)
+    }
+}
+
 #[cfg(test)]
 include!("config_service/test_support.rs");

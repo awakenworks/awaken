@@ -331,13 +331,11 @@ impl SqliteDispatchStore {
             Ok(true) => {}
         }
         let snapshot = guard.snapshot();
-        if snapshot.identity.lease_owner() != claim.owner
-            || binding.is_some_and(|binding| binding.worker() != &snapshot.identity)
+        if let Err(error) =
+            crate::application::validate_guarded_incarnation_identity(snapshot, claim, binding)
         {
             tx.rollback().await.map_err(store_error)?;
-            return Err(DispatchError::Rejected(
-                "Registry guard does not match the physical attempt".into(),
-            ));
+            return Err(error);
         }
         if !snapshot.standing(now_ms).holds_authority() {
             tx.rollback().await.map_err(store_error)?;

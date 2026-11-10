@@ -10,6 +10,16 @@ pub const COMMIT_FENCED: &str = "commit_fenced";
 pub const COMMIT_CONFLICT: &str = "commit_conflict";
 pub const COMMIT_IDENTITY_MISMATCH: &str = "commit_identity_mismatch";
 pub const COMMIT_OUTCOME_UNKNOWN: &str = "commit_outcome_unknown";
+pub const COMMIT_CAPACITY_EXHAUSTED: &str = "commit_capacity_exhausted";
+
+/// Project an explicit Coordinator result into the existing SDK error family.
+/// The caller retains its original diagnostic; text never selects a category.
+pub fn claimed_commit_sdk_error(code: &str, message: String) -> CommitError {
+    match code {
+        COMMIT_CAPACITY_EXHAUSTED => CommitError::CapacityExhausted(message),
+        _ => CommitError::Rejected(message),
+    }
+}
 
 /// Atomically publish a versioned Thread commit under a durable Run claim.
 #[async_trait::async_trait]
@@ -26,4 +36,34 @@ pub trait ClaimedRunCommit<OperationError = CommitError>: Send + Sync {
         &self,
         command: ClaimedCommitCommand,
     ) -> Result<CommitReceipt, OperationError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdk_projection_uses_the_capacity_code_and_preserves_other_result_families() {
+        // E1 explicit capacity code -> SDK CapacityExhausted. E2 every existing
+        // code (and a legacy absent code) -> original Rejected diagnostic, even
+        // when that same text says capacity. No category comes from prose.
+        let message = "capacity exhausted in original store";
+        assert!(
+            matches!(claimed_commit_sdk_error(COMMIT_CAPACITY_EXHAUSTED, message.into()),
+            CommitError::CapacityExhausted(detail) if detail == message)
+        );
+        for code in [
+            COMMIT_FENCED,
+            COMMIT_CONFLICT,
+            COMMIT_IDENTITY_MISMATCH,
+            COMMIT_OUTCOME_UNKNOWN,
+            "",
+        ] {
+            assert!(
+                matches!(claimed_commit_sdk_error(code, message.into()),
+                CommitError::Rejected(detail) if detail == message),
+                "E2 {code}"
+            );
+        }
+    }
 }

@@ -234,7 +234,7 @@ pub(super) async fn converge(
         if !plan.memory_mounts.is_empty() {
             memory::project_snapshots(runtime, pod_name, plan, effect_fence).await?;
         }
-        live_inputs::project_manifest(runtime, pod_name, plan).await?;
+        live_inputs::project_manifest(runtime, pod_name, plan, expected_pod_uid, &admit).await?;
         projection::mark_projection_complete(runtime, pod_name, effect_fence).await
     } else {
         if !plan.memory_mounts.is_empty() {
@@ -242,7 +242,7 @@ pub(super) async fn converge(
                 "Kubernetes Memory convergence requires an Environment effect fence",
             ));
         }
-        live_inputs::project_manifest(runtime, pod_name, plan).await
+        live_inputs::project_manifest(runtime, pod_name, plan, expected_pod_uid, &admit).await
     }
 }
 
@@ -416,13 +416,16 @@ pub(super) async fn restore_or_adopt(
     admit()?;
     let published = runtime.pods().get(&name).await.map_err(backend)?;
     admit()?;
+    if published.metadata.uid.as_deref() != Some(pod_uid.as_str()) {
+        return Err(backend("restore publication changed the acquired Pod UID"));
+    }
     realization::verify_restoration(&published, evidence)?;
     if realization::restoration_plan_fingerprint(&published) != Some(plan_fingerprint) {
         return Err(backend(
             "restore projected-object CAS changed its original operation",
         ));
     }
-    let name = super::restore::converge(
+    let acquired_pod = super::restore::converge(
         runtime,
         id,
         published,
@@ -433,7 +436,7 @@ pub(super) async fn restore_or_adopt(
     )
     .await?;
     admit()?;
-    live_inputs::project_manifest(runtime, &name, plan).await?;
+    live_inputs::project_manifest(runtime, &name, plan, &pod_uid, &admit).await?;
     admit()?;
     Ok(awaken_sandbox_container::RuntimeRestoreTarget {
         container_id: name,
@@ -442,6 +445,7 @@ pub(super) async fn restore_or_adopt(
         } else {
             pc::SandboxRestoreTargetDisposition::Recovered
         },
+        runtime_handle: continuation::handle_extra(&acquired_pod)?,
     })
 }
 

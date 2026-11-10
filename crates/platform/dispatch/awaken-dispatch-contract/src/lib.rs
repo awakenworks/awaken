@@ -61,8 +61,8 @@ pub use wake::WakeSignal;
 pub use session_run_events::SessionRunEventPage;
 
 pub use claimed_commit::{
-    COMMIT_CONFLICT, COMMIT_FENCED, COMMIT_IDENTITY_MISMATCH, COMMIT_OUTCOME_UNKNOWN,
-    ClaimedRunCommit,
+    COMMIT_CAPACITY_EXHAUSTED, COMMIT_CONFLICT, COMMIT_FENCED, COMMIT_IDENTITY_MISMATCH,
+    COMMIT_OUTCOME_UNKNOWN, ClaimedRunCommit, claimed_commit_sdk_error,
 };
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{

@@ -1044,3 +1044,28 @@ Known filesystem absence and actor retirement remain separate facts. Hibernated
 or tracked unadmitted-target terminal cleanup may skip provider I/O, but a
 foreign cleanup actor still requires the existing exact predecessor-exit
 observation after lease expiry; terminal demand retains that responsibility.
+
+The acquisition result carries its originally selected continuation handle.
+Kubernetes convergence returns the Pod already verified by the owner CAS and
+keeps its UID through readiness; first acquisition also compares the published
+Pod with the original Create outcome. A later observation must equal that
+captured handle before provider delivery, rather than supply a new UID. Docker
+and Podman capture their existing extra evidence by immutable container ID;
+successful Podman creation must return a nonempty immutable ID.
+
+Host-bind staging becomes retained responsibility before a restore call can
+expose its locator to the backend. Dropping a pending creation response must
+preserve that exact directory and the possibly created target for the existing
+terminal cleanup owner. The canonical restoration plan excludes every authored
+mount, so recovery does not clear or replay a later live File generation.
+
+The existing trusted input projector receives its Pod UID through the Downward
+API. Its mutating shell command compares that value with the acquired UID passed
+as an independent argument before clearing, creating directories or writing.
+Wrong or missing attestation refuses filesystem mutation even if a same-name
+replacement copies restore labels. Historical projectors without attestation
+fail closed and remain for exact terminal cleanup; restore does not rewrite
+their immutable Pod specification. The same current grant is checked before
+each underlying stdin/stdout/shutdown poll, including multiple Ready-partial
+dispatches within one outer poll. These checks qualify this input projection,
+not atomic Kubernetes GET/exec routing or arbitrary process helpers.

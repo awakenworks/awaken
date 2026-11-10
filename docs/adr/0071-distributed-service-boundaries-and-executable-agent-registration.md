@@ -360,6 +360,17 @@ logical Offering coordinate and delegates other source contracts to that same
 canonical projection. The source owner must not expose private route ids or
 query mutable route state while rendering a frozen registration.
 
+The selected model-publication resolver exposes that same projector as a
+borrowed, pure facet. Catalog and hosted/direct wrappers forward their existing
+source owner; Config Service and its Plane add no projector field or store.
+Config Service adapts the existing read role by delegation; Plane callers use
+its original Service reference rather than another forwarding getter.
+Directory, Managed Agent policy views and Config's Auto fallback share the one
+project/render/parse grammar gate over the frozen primary candidate. A non-model
+primary never takes a fallback model's ID. Profile, Target and Pinned authoring
+intent retain their original Config projection. Current and historical source
+errors remain explicit, and cold recovery never resolves a model again.
+
 Current and historical registrations run through the same configured projector
 under the catalog's existing read lock. Their canonical public IDs determine
 reachability and first durable publication time. Invalid source metadata fails

@@ -31,8 +31,8 @@ pub use local_commit::{
     LocalCommit, LocalCommitAdapter, LocalCommitQueries, ProjectedQueries, transcript_read_error,
 };
 pub use runtime_authority::{
-    RuntimeAuthority, RuntimeAuthorityError, commit_claimed_operation, guarded_runtime_commits,
-    validate_claimed_operation, validate_commit_dispatch_binding,
+    RuntimeAuthority, RuntimeAuthorityError, claimed_store_run_error, commit_claimed_operation,
+    guarded_runtime_commits, validate_claimed_operation, validate_commit_dispatch_binding,
 };
 use std::sync::Arc;
 

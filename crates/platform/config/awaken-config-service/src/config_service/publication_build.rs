@@ -117,8 +117,16 @@ pub(super) async fn prepare_publication(
         &snapshot,
         &resolved.config,
         &resolved.authored_model_selection,
+        service,
         defaults,
     )
+    .map_err(|error| {
+        PublishError::Registration(
+            awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(format!(
+                "Agent publication has an invalid public model reference: {error}"
+            )),
+        )
+    })?
     .ok_or_else(|| {
         PublishError::Registration(
             awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(

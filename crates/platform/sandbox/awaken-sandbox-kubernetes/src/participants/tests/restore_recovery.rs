@@ -137,6 +137,13 @@ async fn exact_recovery_refuses_stale_read_retry_or_ready_target_replacement() {
         );
         if let Ok(Some(target)) = result {
             assert_eq!(target.container_id, pod_name(&runtime_id));
+            assert_eq!(
+                target.runtime_handle.as_ref().and_then(
+                    awaken_sandbox_container::ContainerContinuationHandle::kubernetes_incarnation
+                ),
+                Some(("original-pod", None)),
+                "R1 acquisition carries the CAS-verified original UID"
+            );
         }
         assert_eq!(
             writes.load(Ordering::SeqCst),
@@ -152,5 +159,65 @@ async fn exact_recovery_refuses_stale_read_retry_or_ready_target_replacement() {
             retained[&path]["metadata"]["annotations"][RESULTS],
             pod.metadata.annotations.as_ref().unwrap()[RESULTS]
         );
+    }
+}
+
+#[tokio::test]
+async fn manifest_entry_refuses_changed_uid_or_stale_grant_before_exec() {
+    // M1 current grant + same-name replacement UID => Backend before clear or
+    // exec. M2 exact UID + revoked grant => original EffectFenceExpired before
+    // any GET. These two causes isolate the new manifest admission boundary;
+    // recovery's grant/readiness combinations remain in the original table.
+    // Both rules retain the API object and issue zero mutation/exec requests.
+    for changed_uid in [true, false] {
+        let mut runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+        let plan = awaken_sandbox_container::test_support::container_plan();
+        let mut pod = runtime.pod("manifest-entry", &plan);
+        pod.metadata.uid = Some(
+            if changed_uid {
+                "replacement"
+            } else {
+                "original"
+            }
+            .into(),
+        );
+        let name = pod.metadata.name.clone().unwrap();
+        let path = format!("/api/v1/namespaces/default/pods/{name}");
+        let retained = serde_json::to_value(&pod).unwrap();
+        let objects: ProjectionObjects =
+            Arc::new(Mutex::new([(path.clone(), retained.clone())].into()));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        runtime.clients.control = projected_client(
+            objects.clone(),
+            Default::default(),
+            writes.clone(),
+            reads.clone(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        let (fence, authority) = pc::test_support::fixture_effect("manifest-entry");
+        if !changed_uid {
+            authority.set(None);
+        }
+        let admit = || {
+            pc::SandboxEffect::Fenced {
+                fence: &fence,
+                authority: &authority,
+            }
+            .admit()
+            .map_err(|_| RuntimeError::EffectFenceExpired)
+        };
+        let result =
+            crate::live_inputs::project_manifest(&runtime, &name, &plan, "original", &admit).await;
+        assert!(if changed_uid {
+            matches!(result, Err(RuntimeError::Backend(_)))
+        } else {
+            matches!(result, Err(RuntimeError::EffectFenceExpired))
+        });
+        assert_eq!(reads.lock().unwrap().len(), usize::from(changed_uid));
+        assert_eq!(writes.load(Ordering::SeqCst), 0, "M1/M2 no next effect");
+        assert_eq!(objects.lock().unwrap()[&path], retained);
     }
 }

@@ -11,7 +11,7 @@ from _native_postgres_gap_policy import (
     postgres_product_gap_report, validate_work_product_gaps, validate_work_calibration, postgres_work_limitations,
 )
 from _native_postgres_scopes import postgres_phases
-from _postgres_phase_plan import edit_row
+from _postgres_phase_plan import edit_row, row_block
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_GAPS = ()
@@ -42,7 +42,7 @@ class WorkParitySelectionTests(unittest.TestCase):
 
     def test_all_current_cases_are_required_without_retired_gap_exclusions(self):
         phases = self.verify(self.source)
-        self.assertEqual(len(phases), 19)
+        self.assertEqual(len(phases), 22)
         work = [p for p in phases if p.selector == 'backend_parity' and p.package == 'awaken-work-store']
         self.assertEqual(len(work), 1)
         self.assertEqual(len(WORK_CURRENT_CASES), 24)
@@ -267,7 +267,7 @@ class WorkStoreSelectionTests(unittest.TestCase):
         parity = [p for p in phases if p.selector == 'backend_parity' and p.package == 'awaken-work-store']
         self.assertEqual(len(parity), 1)
         self.assertIn('work_queue_conformance', parity[0].arguments)
-        self.assertEqual(len(phases), 19)
+        self.assertEqual(len(phases), 22)
 
     def test_missing_targets_and_broad_all_package_or_conformance_selection_are_refused(self):
         mutations = [lambda s: s.replace('--lib ', '', 1)]
@@ -329,10 +329,10 @@ class SessionWorkReleaseSelectionTests(unittest.TestCase):
         return edit_row(self.table, 'postgres.critical.process-startup-work-release', transform)
 
     def test_additive_six_case_floor_preserves_the_original_eighteen_domains(self):
-        # R1 old 18 domains + one exact startup Work row => admit 19, with all
+        # R1 original 18 + startup Work + three exact claimed rows => admit 22; all
         # six independently named outcomes. The old binding/pool rows remain.
         phases = self.verify()
-        self.assertEqual(len(phases), 19)
+        self.assertEqual(len(phases), 22)
         startup = [p for p in phases if p.package == 'awaken-process-startup']
         self.assertEqual(len(startup), 3)
         for original in (
@@ -374,6 +374,127 @@ class SessionWorkReleaseSelectionTests(unittest.TestCase):
                 self.verify(table=self.changed_release(mutation))
         with self.assertRaisesRegex(ValueError, 'independent required domain coverage'):
             self.verify(table=self.changed_release(lambda s: s.replace('awaken-process-startup', 'awaken-coordinator', 1)))
+
+
+class ClaimedCommitSelectionTests(unittest.TestCase):
+    setUpClass = classmethod(WorkParitySelectionTests.setUpClass.__func__)
+    verify = WorkParitySelectionTests.verify
+    # Independent policy oracles: do not derive required evidence from the
+    # executable suite table or from the production selector's own floor list.
+    rows = (
+        ('postgres.critical.claimed-commit-pool', (
+            'runtime_authority::claimed_commit_tests::pool_tests::claimed_commit_shared_pool_cap_one_progresses',
+            'runtime_authority::claimed_commit_tests::pool_tests::claimed_commit_shared_pool_cap_two_concurrent_progresses',
+            'runtime_authority::claimed_commit_tests::pool_tests::claimed_postgres_cold_child_scope_replay_and_ordinary_binding',
+            'runtime_authority::claimed_commit_tests::pool_tests::claimed_postgres_rollback_preserves_projection_and_receipt',
+        )),
+        ('postgres.critical.claimed-child-recovery', (
+            'agent_runner::child_execution::tests::local_postgres_child_permission_recovers_with_its_own_prefix',
+        )),
+        ('postgres.critical.coordinator-claimed-writer', (
+            'runtime_authority::claimed_commit_tests::selected_postgres_writer_rolls_back_late_failure_and_replays_on_one_connection',
+            'runtime_authority::claimed_commit_tests::selected_postgres_writer_serializes_commit_and_takeover',
+            'runtime_authority::claimed_commit_tests::selected_postgres_writer_fences_after_waiting_for_a_new_epoch',
+            'runtime_authority::claimed_commit_tests::selected_postgres_writer_rolls_back_when_the_commit_connection_dies',
+            'runtime_authority::claimed_commit_tests::selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_takeover',
+        )),
+        ('postgres.critical.coordinator', (
+            'application_access_store::tests::provisioned_postgres_application_access_durability_release_gate',
+        )),
+    )
+
+    def test_exact_pool_child_and_selected_writer_outcomes_add_to_every_existing_domain(self):
+        # C1 all old domains remain; C2 five pool/child and five selected-Postgres
+        # outcomes are declared on their exact targets => admit 22 domains.
+        # Constraint: the five ordinary selected-Postgres cases have their own
+        # row beside ignored pool/child and original Application Access. All prior
+        # Work/Dispatch observations remain independently required.
+        phases = self.verify()
+        self.assertEqual(len(phases), 22)
+        for row, cases in self.rows:
+            block = self.table.split('id = "' + row + '"', 1)[1].split('[[', 1)[0]
+            for case in cases:
+                self.assertIn('--require-case=' + case, block)
+        observations = [p for p in phases if p.package == 'awaken-dispatch'
+                        and p.selector == 'backend_parity']
+        self.assertEqual(len(observations), 1)
+        self.assertIn('--require-case=postgres_exact_physical_execution_observations_use_the_original_store_clock', observations[0].arguments)
+
+    def test_every_live_outcome_refuses_deletion_replacement_or_runtime_skip(self):
+        # R1 any missing/renamed floor or excluded execution => refusal, even
+        # when every other named case and all previous domains remain present.
+        for row, cases in self.rows:
+            for case in cases:
+                for index, mutation in enumerate((
+                    lambda s: s.replace('--require-case=' + case, '', 1),
+                    lambda s: s.replace('--require-case=' + case, '--require-case=unrelated', 1),
+                    lambda s: s.replace('--test-threads=1', '--skip ' + case + ' --test-threads=1', 1),
+                )):
+                    # The one-case row loses its entire floor at the table
+                    # admission owner before the domain selector can run.
+                    error = ('nonempty required case floors are mandatory'
+                             if len(cases) == 1 and index == 0 else 'independent claimed-commit')
+                    with self.subTest(row=row, case=case), self.assertRaisesRegex(ValueError, error):
+                        self.verify(table=edit_row(self.table, row, mutation))
+
+    def test_target_scope_ignored_execution_and_domain_identity_stay_exact(self):
+        # R2 broad target/runtime mode/thread policy or another package cannot
+        # substitute for the causal pool, child recovery or selected-writer
+        # cases. R3 adding ignored/exact to the ordinary prefix would execute
+        # none of its five witnesses; changing their target/filter also refuses.
+        for row, _ in self.rows:
+            mutations = [
+                lambda s: s.replace('--locked', '--locked --all-targets', 1),
+                lambda s: s.replace('--test-threads=1', '--test-threads=2', 1),
+            ]
+            if row == 'postgres.critical.coordinator-claimed-writer':
+                mutations.extend((
+                    lambda s: s.replace('--test-threads=1', '--ignored --test-threads=1', 1),
+                    lambda s: s.replace('--test-threads=1', '--exact --test-threads=1', 1),
+                    lambda s: s.replace('--lib ', '--test other_target ', 1),
+                    lambda s: s.replace('selected_postgres_ ', 'another_prefix ', 1),
+                    # The old four-writer prefix silently omits the cold-page
+                    # witness despite declaring its floor: reject that narrowing.
+                    lambda s: s.replace('selected_postgres_ ', 'selected_postgres_writer_ ', 1),
+                ))
+            else:
+                mutations.append(lambda s: s.replace('--ignored', '--include-ignored', 1))
+                if row == 'postgres.critical.claimed-commit-pool':
+                    mutations.extend((
+                        lambda s: s.replace('--lib ', '--test other_target ', 1),
+                        lambda s: s.replace('pool_tests:: ', 'other_prefix:: ', 1),
+                        lambda s: s.replace('--ignored', '--ignored --exact', 1),
+                    ))
+            for mutation in mutations:
+                with self.subTest(row=row), self.assertRaisesRegex(ValueError, 'independent claimed-commit'):
+                    self.verify(table=edit_row(self.table, row, mutation))
+        for row, original in (
+            ('postgres.critical.claimed-commit-pool', 'awaken-coordinator'),
+            ('postgres.critical.claimed-child-recovery', 'awaken-session-executor'),
+            ('postgres.critical.coordinator-claimed-writer', 'awaken-coordinator'),
+            ('postgres.critical.coordinator', 'awaken-coordinator'),
+        ):
+            with self.subTest(row=row), self.assertRaisesRegex(ValueError, 'independent required domain coverage'):
+                replacement = 'awaken-dispatch' if original == 'awaken-coordinator' else 'awaken-coordinator'
+                self.verify(table=edit_row(self.table, row, lambda s: s.replace(original, replacement, 1)))
+
+    def test_coordinator_rows_cannot_replace_one_another_with_the_same_package_count(self):
+        # R4 removal loses one independent domain. R5 each same-package copy
+        # preserves the Counter yet must refuse: pool, selected-writer and
+        # Application Access receipts each prove different original effects.
+        rows = ('postgres.critical.claimed-commit-pool',
+                'postgres.critical.coordinator-claimed-writer', 'postgres.critical.coordinator')
+        for removed in rows:
+            original = row_block(self.table, removed)
+            with self.subTest(row=removed, rule='missing'), self.assertRaisesRegex(ValueError, 'independent required domain coverage'):
+                self.verify(table=self.table.replace(original, '', 1))
+            for other in rows:
+                if other == removed:
+                    continue
+                replacement = row_block(self.table, other).replace(
+                    'id = "' + other + '"', 'id = "' + removed + '"', 1)
+                with self.subTest(row=removed, substitute=other), self.assertRaisesRegex(ValueError, 'independent claimed-commit'):
+                    self.verify(table=self.table.replace(original, replacement, 1))
 
 
 if __name__ == '__main__':

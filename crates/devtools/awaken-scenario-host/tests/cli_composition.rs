@@ -185,6 +185,12 @@ async fn shared_binding_preserves_host_owner_selection() {
         "stub",
     )
     .await;
+    let writer = awaken_session_executor::coordinator_run_commits(&host)
+        .expect("the Host selected its canonical Coordinator writer");
+    let dispatch = host
+        .session_runs()
+        .coordinator_dispatch()
+        .expect("same Dispatch owner");
     let thread = ThreadId("unknown-shared-commit-session".into());
     let reads = host.thread_reads().clone();
     let binding = SessionCommitOwner(reads.clone());
@@ -209,6 +215,61 @@ async fn shared_binding_preserves_host_owner_selection() {
             .expect("healthy registry")
             .is_none()
     );
+    // R3 main's selected global writer derives the physical parent from the
+    // locked Dispatch. The logical child is never an external partition hint.
+    // R4 release the execution composition, then exact replay returns its
+    // original receipt without recreating a Host/resident Session.
+    use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
+    use awaken_agent_contract::thread::commit::RunDisposition;
+    use awaken_agent_contract::thread::commit::operation::{
+        CommitOperation, CommitOperationId, commit_payload_hash,
+    };
+    use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+    use awaken_dispatch::{DispatchClaims as _, DispatchEnqueue as _};
+    let logical = ThreadId("logical-shared-child".into());
+    let run = RunId("shared-child-run".into());
+    let activation = awaken_runtime_contract::RunActivation::new(
+        run.clone(),
+        logical.clone(),
+        awaken_runtime_contract::ExecutableAgentSnapshot::builder("shared-child")
+            .model(
+                awaken_runtime_contract::ModelBinding::parse("test", "test", "default")
+                    .expect("complete fixture binding"),
+            )
+            .build(),
+        Vec::new(),
+    );
+    dispatch
+        .enqueue(awaken_dispatch::RunDispatch::new(activation).for_session(thread.clone()))
+        .await
+        .unwrap();
+    let claimed = dispatch
+        .claim("shared-composition", 30_000, &Default::default())
+        .await
+        .unwrap()
+        .expect("the composed owner grants the exact claim");
+    let commit = ThreadCommit::assemble(
+        logical.clone(),
+        RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+        true,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let command = awaken_dispatch::ClaimedCommitCommand {
+        claim: awaken_dispatch::RunClaim::from(&claimed.lease),
+        operation: CommitOperation {
+            operation_id: CommitOperationId::new(run, 0),
+            expected_thread_version: 0,
+            payload_hash: commit_payload_hash(&commit).unwrap(),
+            commit,
+        },
+    };
+    let first = writer
+        .commit_operation(command.clone())
+        .await
+        .expect("R3 selected writer routes the parent scope");
+    assert!(!first.duplicate, "R3 original append");
     let composition = Arc::downgrade(&host);
     drop(host);
     assert!(composition.upgrade().is_none(), "R2 no retained executor");
@@ -217,4 +278,28 @@ async fn shared_binding_preserves_host_owner_selection() {
         .await
         .expect("R2 original configured commit source survives composition release");
     assert!(composition.upgrade().is_none(), "R2 no resurrection");
+    let replay = writer
+        .commit_operation(command)
+        .await
+        .expect("R4 selected writer survives execution release");
+    assert!(
+        replay.duplicate,
+        "R4 exact retry returns the original receipt"
+    );
+    assert_eq!(
+        replay.commit_sequence, first.commit_sequence,
+        "R4 no second append"
+    );
+    assert_eq!(
+        replay.thread_version, first.thread_version,
+        "R4 same Thread CAS"
+    );
+    assert!(
+        !reads.has_durable_thread(&logical.0).await.unwrap(),
+        "R4 parent owns the physical partition"
+    );
+    assert!(
+        composition.upgrade().is_none(),
+        "R4 no executor resurrection"
+    );
 }

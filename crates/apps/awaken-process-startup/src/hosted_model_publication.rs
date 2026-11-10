@@ -175,6 +175,14 @@ impl HostedAndDirectModelPublicationResolver {
 
 #[async_trait::async_trait]
 impl ModelPublicationResolver for HostedAndDirectModelPublicationResolver {
+    fn model_reference_projector(
+        &self,
+    ) -> &dyn awaken_executable_agent_contract::PublishedModelReferenceProjector {
+        // The existing hosted source also delegates ordinary Config candidates
+        // to the canonical projector, matching this resolver's mixed pool.
+        self.hosted.model_reference_projector()
+    }
+
     async fn resolve_models(
         &self,
         workspace: &ScopeId,
@@ -266,6 +274,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ModelPublicationResolver for SourceResolver {
+        fn model_reference_projector(
+            &self,
+        ) -> &dyn awaken_executable_agent_contract::PublishedModelReferenceProjector {
+            self
+        }
+
         async fn resolve_models(
             &self,
             _workspace: &ScopeId,
@@ -300,6 +314,19 @@ mod tests {
         }
     }
 
+    impl awaken_executable_agent_contract::PublishedModelReferenceProjector for SourceResolver {
+        fn project(
+            &self,
+            candidate: &ResolvedModelCandidate,
+        ) -> Result<Option<ModelSelection>, awaken_executable_agent_contract::ManagedModelIdError>
+        {
+            awaken_executable_agent_contract::PublishedModelReferenceProjector::project(
+                &awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector,
+                candidate,
+            )
+        }
+    }
+
     /// Cause/effect graph and decision table:
     /// C1 hosted owns primary, C2 direct owns fallback, C3 hosted authority is
     /// unavailable. E1 preserve exact order, E2 never consult direct after a
@@ -322,6 +349,19 @@ mod tests {
             hosted: hosted.clone(),
             direct: direct.clone(),
         };
+        // The mixed resolver must retain the hosted source's borrowed inverse;
+        // its source contract also handles Config candidates. Merely taking
+        // that facet performs no live resolution on either underlying owner.
+        assert!(std::ptr::addr_eq(
+            resolver.model_reference_projector(),
+            hosted.model_reference_projector()
+        ));
+        assert!(!std::ptr::addr_eq(
+            resolver.model_reference_projector(),
+            direct.model_reference_projector()
+        ));
+        assert!(hosted.calls.lock().unwrap().is_empty());
+        assert!(direct.calls.lock().unwrap().is_empty());
         let resolved = resolver
             .resolve_models(
                 &workspace,

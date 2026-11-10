@@ -26,6 +26,24 @@ async fn exact_restore_target_is_shared_by_concurrent_and_fresh_container_provid
     let request = restore_request(&sandbox_spec);
     let left_provider = provider(runtime.clone());
     let right_provider = provider(runtime.clone());
+    // R0 exact exclusions cover every authored mount. The canonical restore
+    // plan therefore has no readonly File/Memory inputs or control services to
+    // publish/replay; those independent owners run after restore admission.
+    let restore_plan = left_provider
+        .restoration_environment_plan(&sandbox_spec, &request.checkpoint.excluded_mounts)
+        .unwrap();
+    assert!(
+        restore_plan.binds.is_empty(),
+        "R0 no desired readonly input bytes"
+    );
+    assert!(
+        restore_plan.memory_mounts.is_empty(),
+        "R0 Memory stays independently owned"
+    );
+    assert!(
+        restore_plan.control_services.is_empty(),
+        "R0 control services stay independently owned"
+    );
 
     let (left, right) = tokio::join!(
         left_provider.acquire_restore_environment(
@@ -252,63 +270,162 @@ async fn restored_target_delivery_refuses_revoked_response_without_disposing_phy
 
 #[tokio::test]
 async fn revoked_restore_create_response_retains_backend_exposed_host_staging() {
-    // R3: C1 host-bind target has physically consumed a staging locator; C2
-    // response is actually Pending when its current grant is revoked. Effects:
-    // return refusal before handle lookup; retain that exact directory and
-    // bytes; do not remove the physical target or invent a cleanup receipt.
-    let runtime = Arc::new(FakeRuntime::default());
-    let gate = Arc::new(tokio::sync::Semaphore::new(0));
-    {
-        let mut state = runtime.st.lock().unwrap();
-        state.host_live_input_bind = true;
-        state.creation_response_gate = Some(("restore-created", gate.clone()));
-    }
-    let provider = provider(runtime.clone());
-    let spec = spec("restore-retains-staging");
-    let request = restore_request(&spec);
-    let (fence, authority) = pc::test_support::fixture_effect(&request.effect_id);
-    let mut pending = Box::pin(provider.acquire_restore_environment(
-        &spec,
-        &request,
-        pc::SandboxEffect::Fenced {
-            fence: &fence,
-            authority: &authority,
-        },
-    ));
-    std::future::poll_fn(|cx| {
-        assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
-        std::task::Poll::Ready(())
-    })
-    .await;
-    let physical = {
+    // R3/R4: C1 a host-bind target physically consumed the staging locator;
+    // C2 its response is actually Pending; C3 the grant is revoked and the
+    // response resumes, or the current caller is dropped while still Pending.
+    // Both rows retain the exact directory/bytes and physical target, perform
+    // zero handle/evidence queries or disposal, and mint no cleanup receipt.
+    // This exercises cancellation itself, not a response that was first joined.
+    for cancel in [false, true] {
+        let runtime = Arc::new(FakeRuntime::default());
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        {
+            let mut state = runtime.st.lock().unwrap();
+            state.host_live_input_bind = true;
+            state.creation_response_gate = Some(("restore-created", gate.clone()));
+        }
+        let provider = provider(runtime.clone());
+        let spec = spec("restore-retains-staging");
+        let request = restore_request(&spec);
+        let (fence, authority) = pc::test_support::fixture_effect(&request.effect_id);
+        let mut pending = Box::pin(provider.acquire_restore_environment(
+            &spec,
+            &request,
+            pc::SandboxEffect::Fenced {
+                fence: &fence,
+                authority: &authority,
+            },
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let physical = {
+            let state = runtime.st.lock().unwrap();
+            let bind = state
+                .created_binds
+                .values()
+                .next()
+                .unwrap()
+                .iter()
+                .find(|bind| bind.mount_path == LIVE_INPUTS_ROOT)
+                .unwrap();
+            std::path::PathBuf::from(&bind.source_ref)
+        };
+        assert!(physical.is_dir());
+        std::fs::write(physical.join("retained"), b"physical owner").unwrap();
+        if cancel {
+            drop(pending);
+        } else {
+            authority.set(None);
+            gate.add_permits(1);
+            assert!(pending.await.is_err());
+        }
+        assert_eq!(
+            std::fs::read(physical.join("retained")).unwrap(),
+            b"physical owner"
+        );
         let state = runtime.st.lock().unwrap();
-        let bind = state
-            .created_binds
-            .values()
-            .next()
-            .unwrap()
-            .iter()
-            .find(|bind| bind.mount_path == LIVE_INPUTS_ROOT)
-            .unwrap();
-        std::path::PathBuf::from(&bind.source_ref)
-    };
-    assert!(physical.is_dir());
-    std::fs::write(physical.join("retained"), b"physical owner").unwrap();
-    authority.set(None);
-    gate.add_permits(1);
-    assert!(pending.await.is_err());
-    assert_eq!(
-        std::fs::read(physical.join("retained")).unwrap(),
-        b"physical owner"
-    );
-    let state = runtime.st.lock().unwrap();
-    assert_eq!(state.restore_creates, 1);
-    assert_eq!(state.restore_disposals, 0);
-    assert!(state.restore_queries.is_empty());
-    // The fake daemon has no real terminal reconciler. Only this exact test
-    // staging directory is removed after all assertions; no production target
-    // or provider effect is inferred from the refused call.
-    remove_host_staging_path(physical.parent().unwrap()).unwrap();
+        assert_eq!(state.restore_creates, 1);
+        assert_eq!(state.restore_disposals, 0);
+        assert!(state.restore_queries.is_empty());
+        // The fake daemon has no real terminal reconciler. Only this exact test
+        // staging directory is removed after all assertions; no production target
+        // or provider effect is inferred from the refused call.
+        remove_host_staging_path(physical.parent().unwrap()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn restore_delivery_never_resamples_a_replacement_incarnation_from_copied_labels() {
+    // C1 the backend has captured original physical proof before a Pending
+    // Create response; C2 the later same-name observation is exact/replaced.
+    // R1 exact proof -> success. R2 replacement copying every restoration/plan
+    // label -> Conflict before evidence/plan queries, zero receipt or disposal.
+    // The required RuntimeRestoreTarget field and original Fake response gate
+    // exercise production delivery, not a second UID observer or fake mode.
+    for replacement in [false, true] {
+        let runtime = Arc::new(FakeRuntime::default());
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let original = crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+            pod_uid: "original-restore-uid".into(),
+            claim_uid: None,
+        };
+        {
+            let mut state = runtime.st.lock().unwrap();
+            state.restore_runtime_handle = Some(original.clone());
+            state.creation_response_gate = Some(("restore-created", gate.clone()));
+        }
+        let provider = provider(runtime.clone());
+        let spec = spec("restore-incarnation-response");
+        let request = restore_request(&spec);
+        let (fence, authority) = pc::test_support::fixture_effect(&request.effect_id);
+        let mut pending = Box::pin(provider.acquire_restore_environment(
+            &spec,
+            &request,
+            pc::SandboxEffect::Fenced {
+                fence: &fence,
+                authority: &authority,
+            },
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let labels = {
+            let mut state = runtime.st.lock().unwrap();
+            if replacement {
+                state.restore_runtime_handle = Some(
+                    crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                        pod_uid: "replacement-restore-uid".into(),
+                        claim_uid: None,
+                    },
+                );
+            }
+            (
+                state.restore_targets.clone(),
+                state.restore_plan_fingerprints.clone(),
+            )
+        };
+        gate.add_permits(1);
+        let result = pending.await;
+        if replacement {
+            assert!(
+                matches!(result, Err(pc::SandboxError::Conflict(_))),
+                "R2 original proof cannot be replaced"
+            );
+        } else {
+            assert_eq!(
+                result
+                    .unwrap()
+                    .target()
+                    .handle()
+                    .container_payload()
+                    .unwrap()
+                    .runtime_handle,
+                Some(original)
+            );
+        }
+        let state = runtime.st.lock().unwrap();
+        assert_eq!(state.restore_targets, labels.0, "copied restoration labels");
+        assert_eq!(
+            state.restore_plan_fingerprints, labels.1,
+            "copied immutable plan"
+        );
+        assert_eq!(state.restore_creates, 1);
+        assert_eq!(state.restore_disposals, 0);
+        if replacement {
+            assert!(
+                state
+                    .restore_queries
+                    .iter()
+                    .all(|(query, _)| *query == "handle"),
+                "R2 no next phase"
+            );
+        }
+    }
 }
 
 #[tokio::test]

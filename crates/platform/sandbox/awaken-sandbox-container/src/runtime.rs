@@ -356,6 +356,9 @@ pub enum ContainerState {
 pub struct RuntimeRestoreTarget {
     pub container_id: String,
     pub disposition: pc::SandboxRestoreTargetDisposition,
+    /// Original physical extra selected during acquisition, never a later
+    /// same-name observation. Runtimes without extra evidence state None.
+    pub runtime_handle: Option<crate::ContainerContinuationHandle>,
 }
 
 /// Whether a provider is binding a newly realized runtime object or proving an

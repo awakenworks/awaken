@@ -113,6 +113,15 @@ impl ResolvedPublicationModels {
 /// operation. The trusted execution Workspace is an input, never ambient state.
 #[async_trait::async_trait]
 pub trait ModelPublicationResolver: Send + Sync {
+    /// Borrow the pure inverse for this resolver's frozen source contracts.
+    /// Composed adapters forward their existing source facet; this performs no
+    /// catalog/credential IO and supplies no additional publication state.
+    fn model_reference_projector(
+        &self,
+    ) -> &dyn awaken_executable_agent_contract::PublishedModelReferenceProjector {
+        &awaken_executable_agent_contract::CanonicalPublishedModelReferenceProjector
+    }
+
     async fn resolve_models(
         &self,
         workspace: &ScopeId,

@@ -789,6 +789,16 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
     // physical cleanup may consume a held Session. Synchronous admission close
     // is required before waiting; cancellation keeps Closed and its exact lease.
     // Existing revocation selection (not Live-only renewal) owns cleanup retry.
+    // M5 observation cut: renewal uses the whole remaining proof (about 90s),
+    // not the nominal 50s request timeout. A fixed 60s sleep can sample before
+    // timeout, and advancing time alone does not poll semaphore wake reservations.
+    // The spawned task therefore ACKs one complete poll of the ORIGINAL sweep.
+    // After its unchanged proof-derived deadline, poll one must destroy all
+    // transport futures; poll two consumes their real scheduler wakeups before
+    // sampling/aborting. Closed is the checked effect, never the wait predicate:
+    // moving close after the held mutex or leaking a permit must still fail.
+    // The canonical budget is used only for this composition synchronization;
+    // its independent formula/law remains with the original kernel tests/formal model.
     let mut observations = Vec::new();
     for cancel_waiting_completion in [false, true] {
         const SESSION_COUNT: usize = 16;
@@ -858,15 +868,49 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 .collect::<Vec<_>>()
         };
         let before_wait = held_frame();
+        let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(300_000);
+        // Captured before the sweep's first poll: this is an upper bound of its
+        // same proof-derived request budget, without adding timer slack or TTL.
+        let deadline = tokio::time::Instant::now()
+            + timing
+                .renewal_request_budget(
+                    proof
+                        .remaining_at(awaken_authority_clock::authority_proof_started().unwrap())
+                        .expect("M5 original proof is live before Control entry"),
+                )
+                .expect("M5 the original proof supplies a renewal budget");
+        let (poll_request, mut poll_commands) =
+            tokio::sync::mpsc::unbounded_channel::<Option<tokio::sync::oneshot::Sender<()>>>();
         let running_host = host.clone();
         let reconciliation = tokio::spawn(async move {
-            running_host
-                .run_assembly
-                .renew_due_session_realizations(
-                    awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(300_000),
-                )
-                .await
+            let mut sweep = Box::pin(
+                running_host
+                    .run_assembly
+                    .renew_due_session_realizations(timing),
+            );
+            loop {
+                match poll_commands
+                    .recv()
+                    .await
+                    .expect("M5 the test owns polling")
+                {
+                    Some(polled) => {
+                        assert!(
+                            futures_util::poll!(sweep.as_mut()).is_pending(),
+                            "M5 the original held mutex must keep the sweep pending"
+                        );
+                        polled.send(()).expect("M5 the observer awaits this poll");
+                    }
+                    None => return sweep.await,
+                }
+            }
         });
+        let poll_reconciliation = || async {
+            let (polled, observed) = tokio::sync::oneshot::channel();
+            poll_request.send(Some(polled)).expect("M5 original task");
+            observed.await.expect("M5 whole sweep poll completed");
+        };
+        poll_reconciliation().await;
         // C4 expires proof only after entry. Initially expired proof must never
         // start a Control request (F2); this test isolates completion capacity
         // from cleanup mutexes instead. Notification selects the exact boundary.
@@ -894,9 +938,17 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 })
                 .unwrap();
         }
-        // Yield past the remaining-proof deadline without a runnable spin loop
-        // that would prevent Tokio's paused clock from advancing.
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        // Replace the old fixed delay with the original proof deadline. ACKs
+        // then establish actual poll/drop causality on this current-thread
+        // runtime; neither transport-active=0 nor all-Closed is a barrier.
+        tokio::time::sleep_until(deadline).await;
+        poll_reconciliation().await;
+        assert_eq!(
+            control.renewals_active.load(Ordering::SeqCst),
+            0,
+            "M5 the deadline poll destroyed the real transport futures"
+        );
+        poll_reconciliation().await;
         assert_eq!(
             control.renewal_sessions.lock().unwrap().len(),
             crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
@@ -917,6 +969,17 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                     .installed_sessions
                     .contains(&format!("deadline-mutex-{index:02}")),
                 "M1/E2 held Session remains installed"
+            );
+            assert!(
+                host.run_assembly
+                    .installed_sessions
+                    .realizations()
+                    .read_realization(&format!("deadline-mutex-{index:02}"), |r| {
+                        r.execution().authority.is_closed()
+                    })
+                    .expect("installed Sessions")
+                    .unwrap_or(false),
+                "M5 completion closes admission before waiting for its held mutex"
             );
         }
 
@@ -983,6 +1046,9 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
             );
         } else {
             drop(held);
+            poll_request
+                .send(None)
+                .expect("M3 resume the same original sweep after mutex release");
             assert_eq!(
                 tokio::time::timeout(std::time::Duration::from_secs(2), reconciliation)
                     .await

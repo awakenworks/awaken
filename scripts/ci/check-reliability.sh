@@ -119,14 +119,15 @@ fi
 # straight into grep collapsed both into "$tool is required": under load a
 # failed fork in the pipeline reported a missing cargo-fuzz on a machine that
 # had it installed, so the gate's verdict depended on system load. Capture the
-# listing, judge the query first, then judge its content.
+# listing, judge the query first, then use builtin line-prefix membership.
+# A content matcher must not introduce another failing process or pipeline.
 if ! installed_tools="$(cargo install --list 2>&1)"; then
   echo "ERROR: could not list installed cargo tools; the reliability gate cannot decide" >&2
   printf '%s\n' "$installed_tools" | sed 's/^/  /' >&2
   exit 1
 fi
 for tool in cargo-fuzz cargo-mutants; do
-  if ! printf '%s\n' "$installed_tools" | grep -q "^${tool} "; then
+  if [[ $'\n'"$installed_tools" != *$'\n'"$tool "* ]]; then
     echo "ERROR: $tool is required by the release reliability gate" >&2
     exit 1
   fi
@@ -136,7 +137,7 @@ if ! installed_toolchains="$(rustup toolchain list 2>&1)"; then
   printf '%s\n' "$installed_toolchains" | sed 's/^/  /' >&2
   exit 1
 fi
-if ! printf '%s\n' "$installed_toolchains" | grep -q '^nightly'; then
+if [[ $'\n'"$installed_toolchains" != *$'\n'nightly* ]]; then
   echo "ERROR: nightly Rust is required by the release reliability gate" >&2
   exit 1
 fi

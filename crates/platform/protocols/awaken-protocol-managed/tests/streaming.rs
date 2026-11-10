@@ -1260,10 +1260,13 @@ async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
 async fn the_stream_full_replays_and_ignores_last_event_id() {
     // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
     // stores and committed facts remain the single behavior authority.
-    // Coverage rationale: `the stream full replays and ignores last event id` is one independent
-    // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
-    // together`; a multi-row decision table is not applicable, and sibling tests own alternate
-    // causes.
+    // Version/connection decision table: C1 legacy/current API date; C2 Session
+    // or primary-Thread endpoint; C3 a real Root Agent-configuration update.
+    // S1 legacy -> exact original Agent fields; S2 current -> service-account
+    // execution_identity on that same immutable update. All four C1 x C2 rows
+    // retain the original full-replay/terminal ordering despite Last-Event-ID.
+    // Both callers carry the parsed date in the existing LiveSseSource; neither
+    // a connection default nor the other endpoint may replace that choice.
     let runtime = CoordinatedRuntimeFake::default();
     let state = Arc::new(support::state(runtime.clone()).await);
     let app = router(state.clone());
@@ -1278,6 +1281,37 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
     support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
         .await;
 
+    // The existing fake deliberately refuses tool projection. Update only
+    // AFTER the original Run completes: the authoritative Root update commits
+    // before that explicit projection error, and no later model runs against
+    // the unsupported projection. SSE must serialize the committed fact, not
+    // infer its existence or identity from an HTTP success or a fake counter.
+    let update = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/sessions/{id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"agent":{"tools":[{
+                        "type":"custom", "name":"api_date_echo", "description":"projection fixture",
+                        "input_schema":{"type":"object"}
+                    }]}})
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let failure: serde_json::Value =
+        serde_json::from_slice(&update.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        failure["error"]["message"],
+        "session tool runtime is unsupported"
+    );
+
     // Discover the final id from the canonical chronological event list.
     let list = http_json(
         &app,
@@ -1288,22 +1322,71 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
     .await;
     let events = list["data"].as_array().unwrap();
     let last_id = events.last().unwrap()["id"].as_str().unwrap().to_string();
+    let committed_update = events
+        .iter()
+        .find(|event| event["type"] == "session.updated" && event["agent"].is_object())
+        .expect("the original Root fact/event committed despite runtime projection failure");
+    assert_eq!(
+        committed_update["agent"]["tools"][0]["name"],
+        "api_date_echo"
+    );
+    let executed = runtime.completed_user_dispatches().lock().len();
 
     // Reconnect claiming to have already seen the LAST event: an incremental resume
     // would send nothing after it, but the full snapshot is replayed regardless.
-    let sse = http_sse(
-        &app,
-        &format!("/v1/sessions/{id}/events/stream"),
-        &[("last-event-id", &last_id)],
-        None,
-    )
-    .await
-    .expect(StatusCode::OK);
-    assert!(
-        sse.contains("event: session.status_running")
-            && sse.contains("event: agent.message")
-            && sse.contains("event: session.status_idle"),
-        "the full committed log is replayed, Last-Event-ID notwithstanding — sse:\n{sse}"
+    let primary = http_primary_thread_id(&app, &id).await;
+    for date in ["2023-06-01", "2026-10-21"] {
+        for path in [
+            format!("/v1/sessions/{id}/events/stream"),
+            format!("/v1/sessions/{id}/threads/{primary}/stream"),
+        ] {
+            let sse = http_sse(
+                &app,
+                &path,
+                &[("last-event-id", &last_id), ("anthropic-version", date)],
+                None,
+            )
+            .await
+            .expect(StatusCode::OK);
+            assert!(
+                sse.contains("event: session.status_running")
+                    && sse.contains("event: agent.message")
+                    && sse.contains("event: session.status_idle"),
+                "the full committed log is replayed, Last-Event-ID notwithstanding — sse:\n{sse}"
+            );
+            let updates = sse
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .filter(|event| event["type"] == "session.updated" && event["agent"].is_object())
+                .collect::<Vec<_>>();
+            assert_eq!(updates.len(), 1, "S1/S2 exact Root update: {date}/{path}");
+            let agent = &updates[0]["agent"];
+            assert_eq!(
+                updates[0]["id"], committed_update["id"],
+                "same committed event"
+            );
+            assert_eq!(
+                agent.get("execution_identity").is_some(),
+                date == "2026-10-21"
+            );
+            if date == "2026-10-21" {
+                for field in ["id", "version", "tools"] {
+                    assert_eq!(agent[field], committed_update["agent"][field]);
+                }
+                assert_eq!(
+                    agent["execution_identity"],
+                    serde_json::json!({"type":"service_account"})
+                );
+            } else {
+                assert_eq!(agent, &committed_update["agent"], "S1 exact legacy Agent");
+            }
+        }
+    }
+    assert_eq!(
+        runtime.completed_user_dispatches().lock().len(),
+        executed,
+        "no model execution after the projection failure"
     );
 }
 

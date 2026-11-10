@@ -1845,34 +1845,142 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
     // | G3 | admitted retryable failure | no new request | 2 | E3+E4 |
     // Constraints/invariants: admission occurs once per logical request, before
     // Provider I/O; transparent retries never become separately gated requests.
-    let paused_model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
-    let paused_gate = Arc::new(SequencedModelRequestGate::new([
-        ModelRequestAdmission::Pause(
+    // Extend G0 through the original direct SDK resume entry. Causes: C1 the
+    // exact committed BudgetReached ticket; C2 unnamed Continue (no input delta);
+    // C3 the gate is still Pause or now Admit. Continue's contract requires
+    // admission to be available; ThreadCommit must consume the exact ticket.
+    // | Rule | Initial gate | Resume gate | Effect |
+    // | G0R | Pause | Pause | explicit coherence refusal; original Awaiting,
+    // |     |       |       | ticket and commit count unchanged; zero model |
+    // | G0A | Pause | Admit | Running consumes ticket before model; no named
+    // |     |       |       | ResumeApplied; original model completes normally |
+    // Reuse this fixture's MaxTokens-then-text model: G0A also admits its next
+    // logical request, so its two Provider entries finish without a test-gate
+    // exhaustion fault. That continuation is not another resume decision.
+    for resume_admitted in [false, true] {
+        let paused_model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
+        let mut decisions = vec![ModelRequestAdmission::Pause(
             awaken_agent_contract::agent::awaiting::PauseReason::BudgetReached,
-        ),
-    ]));
-    let paused_commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-    let paused = Runtime::new()
-        .with_llm(paused_model.clone())
-        .execute(
-            activation("catalog-a"),
-            RuntimeRunContext::new()
-                .with_commit(paused_commit.clone())
-                .with_model_request_gate(paused_gate.clone()),
-        )
-        .await
-        .expect("G0 pauses before provider sampling");
-    assert_eq!(paused, RunState::Awaiting, "G0/E2");
-    assert_eq!(paused_model.0.load(Ordering::SeqCst), 0, "G0/E2");
-    assert!(
-        model_operations(&paused_commit).is_empty(),
-        "G0 no invocation evidence"
-    );
-    assert_eq!(paused_gate.requests().len(), 1, "G0/E3");
-    assert!(
-        committed_model_requests(&paused_commit).is_empty(),
-        "G0/no audit"
-    );
+        )];
+        decisions.push(if resume_admitted {
+            ModelRequestAdmission::Admit
+        } else {
+            ModelRequestAdmission::Pause(
+                awaken_agent_contract::agent::awaiting::PauseReason::BudgetReached,
+            )
+        });
+        if resume_admitted {
+            decisions.push(ModelRequestAdmission::Admit);
+        }
+        let paused_gate = Arc::new(SequencedModelRequestGate::new(decisions));
+        let paused_commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let runtime = Runtime::new().with_llm(paused_model.clone());
+        let paused = runtime
+            .execute(
+                activation("catalog-a"),
+                RuntimeRunContext::new()
+                    .with_commit(paused_commit.clone())
+                    .with_model_request_gate(paused_gate.clone()),
+            )
+            .await
+            .expect("G0 pauses before provider sampling");
+        assert_eq!(paused, RunState::Awaiting, "G0/E2");
+        assert_eq!(paused_model.0.load(Ordering::SeqCst), 0, "G0/E2");
+        assert!(
+            model_operations(&paused_commit).is_empty(),
+            "G0 no invocation evidence"
+        );
+        assert_eq!(paused_gate.requests().len(), 1, "G0/E3");
+        assert!(
+            committed_model_requests(&paused_commit).is_empty(),
+            "G0/no audit"
+        );
+        let ticket = paused_commit
+            .resume_ticket(&RunId("run-1".into()))
+            .expect("G0 committed BudgetReached ticket");
+        let before = paused_commit.commit_count();
+        let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Continue, 0);
+        assert!(
+            command.operation_id.is_none(),
+            "G0R/G0A direct unnamed SDK input"
+        );
+        let resumed = runtime
+            .resume(
+                command,
+                paused_commit.as_ref(),
+                RuntimeRunContext::new()
+                    .with_commit(paused_commit.clone())
+                    .with_model_request_gate(paused_gate.clone()),
+            )
+            .await;
+        if resume_admitted {
+            assert_eq!(
+                resumed.expect("G0A available model admission consumes the ticket"),
+                RunState::Ended(EndCause::NaturalEnd)
+            );
+            assert_eq!(
+                paused_model.0.load(Ordering::SeqCst),
+                2,
+                "G0A model entries"
+            );
+            assert_eq!(
+                paused_gate.requests().len(),
+                3,
+                "G0A plus MaxTokens continuation"
+            );
+            assert!(
+                paused_commit.resume_ticket(&ticket.run_id).is_none(),
+                "G0A consumed"
+            );
+            assert_eq!(
+                committed_model_requests(&paused_commit).len(),
+                2,
+                "G0A audit"
+            );
+        } else {
+            assert!(
+                matches!(resumed, Err(Error::Execution(message))
+                if message == "invalid commit plan: resume receipt commit does not replace the exact answered ticket"),
+                "G0R explicit strict consumption refusal"
+            );
+            assert_eq!(
+                paused_commit.commit_count(),
+                before,
+                "G0R no partial commit"
+            );
+            assert_eq!(
+                paused_commit.run(&ticket.run_id).unwrap().state,
+                RunState::Awaiting
+            );
+            assert_eq!(
+                paused_commit.resume_ticket(&ticket.run_id),
+                Some(ticket),
+                "G0R retained"
+            );
+            assert_eq!(
+                paused_model.0.load(Ordering::SeqCst),
+                0,
+                "G0R zero model entries"
+            );
+            assert_eq!(paused_gate.requests().len(), 2, "G0R no further admission");
+            assert!(
+                model_operations(&paused_commit).is_empty(),
+                "G0R zero model intent"
+            );
+            assert!(
+                committed_model_requests(&paused_commit).is_empty(),
+                "G0R zero audit"
+            );
+        }
+        assert!(
+            paused_commit
+                .committed()
+                .events
+                .iter()
+                .all(|event| event.kind != awaken_agent_contract::audit::kind::Kind::ResumeApplied),
+            "G0R/G0A unnamed input never fabricates a named receipt"
+        );
+    }
 
     let continuation_model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
     let continuation_gate = Arc::new(SequencedModelRequestGate::new([

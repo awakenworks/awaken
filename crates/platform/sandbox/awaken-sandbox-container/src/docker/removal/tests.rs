@@ -359,8 +359,10 @@ async fn recovery_http_rechecks_authority_before_start_and_after_each_response()
     // inspect/start response revokes/replaces/expires/renews delivery; C4 start
     // succeeds/fails. R1 absent => None; R2 running or created+successful start
     // under live authority => exact target; R3 stale inspect => zero starts;
-    // R4 stale start/failing start/wrong metadata/exited => no success. No row
-    // may send DELETE. This exercises the actual Bollard HTTP adapter.
+    // R4 stale start/failing start/wrong metadata/exited => no success. R5 an
+    // inspect 403/503 preserves Unauthorized/Backend, never absence or a start.
+    // Successful rows capture extra evidence only by the same immutable ID.
+    // No row may send DELETE. This exercises the actual Bollard HTTP adapter.
     let rows = [
         ("missing", "none", "renew", false, false),
         ("running", "none", "renew", false, false),
@@ -368,6 +370,8 @@ async fn recovery_http_rechecks_authority_before_start_and_after_each_response()
         ("created", "none", "renew", true, false),
         ("created", "none", "renew", false, true),
         ("exited", "none", "renew", false, false),
+        ("forbidden", "none", "renew", false, false),
+        ("unavailable", "none", "renew", false, false),
     ]
     .into_iter()
     .chain(["inspect", "start"].into_iter().flat_map(|boundary| {
@@ -376,6 +380,10 @@ async fn recovery_http_rechecks_authority_before_start_and_after_each_response()
     }));
     for (state, boundary, change, start_fails, wrong_metadata) in rows {
         let plan = crate::test_support::container_plan();
+        let staging = tempfile::Builder::new()
+            .prefix("awaken-acp-stage-")
+            .tempdir()
+            .unwrap();
         let fingerprint = restoration_plan_fingerprint(&plan);
         let evidence = pc::SandboxRestorationEvidence::from_exact_parts(
             "effect",
@@ -403,26 +411,27 @@ async fn recovery_http_rechecks_authority_before_start_and_after_each_response()
             },
         );
         let info = json!({"Id":"exact-id","Config":{"Labels":labels},"State":{"Status":state,"Running":state=="running"}});
-        let replies = vec![
-            Reply {
-                method: Method::GET,
-                suffix: format!(
-                    "/containers/{}/json",
-                    restore_container_name("stable-target")
-                ),
-                status: if state == "missing" {
-                    StatusCode::NOT_FOUND
-                } else {
-                    StatusCode::OK
-                },
-                body: if state == "missing" {
-                    json!({"message":"no such target"})
-                } else {
-                    info
-                },
-                force: None,
+        let mut replies = vec![Reply {
+            method: Method::GET,
+            suffix: format!(
+                "/containers/{}/json",
+                restore_container_name("stable-target")
+            ),
+            status: match state {
+                "missing" => StatusCode::NOT_FOUND,
+                "forbidden" => StatusCode::FORBIDDEN,
+                "unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::OK,
             },
-            Reply {
+            body: if matches!(state, "missing" | "forbidden" | "unavailable") {
+                json!({"message":"planned recovery response"})
+            } else {
+                info.clone()
+            },
+            force: None,
+        }];
+        if state == "created" {
+            replies.push(Reply {
                 method: Method::POST,
                 suffix: "/containers/exact-id/start".into(),
                 status: if start_fails {
@@ -432,15 +441,43 @@ async fn recovery_http_rechecks_authority_before_start_and_after_each_response()
                 },
                 body: json!({"message":"start response"}),
                 force: None,
+            });
+        }
+        // A successful start changes the engine state before the immutable-ID
+        // proof GET. Failed starts never reach that proof observation.
+        let mut proof_info = info;
+        if state == "created" && !start_fails {
+            proof_info["State"] = json!({"Status":"running","Running":true});
+        }
+        replies.extend([
+            Reply {
+                method: Method::GET,
+                suffix: "/containers/exact-id/json".into(),
+                status: StatusCode::OK,
+                body: proof_info,
+                force: None,
             },
-        ];
+            Reply {
+                method: Method::GET,
+                suffix: "/containers/exact-id/json".into(),
+                status: StatusCode::OK,
+                body: json!({"Mounts":[{"Source":staging.path().join("live-inputs"),"Destination":awaken_container_contract::LIVE_INPUTS_ROOT}]}),
+                force: None,
+            },
+        ]);
         let fixture = fixture(replies, None).await;
         let changing = authority.clone();
         *fixture.engine.response_hook.lock().unwrap() = Some(Arc::new(move |reply| {
-            let selected = if reply.method == Method::GET {
+            let selected = if reply.method == Method::GET
+                && reply.suffix.ends_with(&format!(
+                    "/containers/{}/json",
+                    restore_container_name("stable-target")
+                )) {
                 "inspect"
-            } else {
+            } else if reply.method == Method::POST {
                 "start"
+            } else {
+                "proof"
             };
             if selected == boundary {
                 let mut current = changing
@@ -470,14 +507,30 @@ async fn recovery_http_rechecks_authority_before_start_and_after_each_response()
             )
             .await;
         let current = boundary == "none" || change == "renew";
-        let accepted = current && !start_fails && !wrong_metadata && state != "exited";
+        let accepted = current
+            && !start_fails
+            && !wrong_metadata
+            && !matches!(state, "exited" | "forbidden" | "unavailable");
         assert_eq!(
             result.is_ok(),
             accepted,
-            "{state}/{boundary}/{change}/{start_fails}/{wrong_metadata}"
+            "{state}/{boundary}/{change}/{start_fails}/{wrong_metadata}: {:?}",
+            result.as_ref().err()
         );
+        if state == "forbidden" {
+            assert!(matches!(&result, Err(RuntimeError::Unauthorized(_))), "R5");
+        } else if state == "unavailable" {
+            assert!(matches!(&result, Err(RuntimeError::Backend(_))), "R5");
+        }
         if let Ok(target) = result {
             assert_eq!(target.is_some(), state != "missing");
+            if let Some(target) = target {
+                assert_eq!(target.container_id, "exact-id");
+                assert!(matches!(
+                    target.runtime_handle,
+                    Some(crate::ContainerContinuationHandle::HostBindRestoration(_))
+                ));
+            }
         }
         let calls = fixture.engine.calls.lock().unwrap();
         let starts = calls

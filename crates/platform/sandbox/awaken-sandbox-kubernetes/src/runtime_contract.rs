@@ -417,7 +417,15 @@ impl ContainerRuntime for K8sRuntime {
         path: &str,
         bytes: &[u8],
     ) -> Result<(), RuntimeError> {
-        live_inputs::project(self, container_id, path, bytes).await
+        live_inputs::project(
+            self,
+            container_id,
+            path,
+            bytes,
+            None,
+            &awaken_worker_fleet_kubernetes::pod_metadata::unfenced_checkpoint,
+        )
+        .await
     }
 
     async fn remove_live_input(&self, container_id: &str, path: &str) -> Result<(), RuntimeError> {

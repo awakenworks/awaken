@@ -31,7 +31,8 @@ fn generated_read_descriptor() -> ToolDescriptor {
 
 fn request(model: &str, tool: ToolDescriptor) -> ChatRequest {
     ChatRequest {
-        model_binding: ModelBinding::new("compat", model, "genai"),
+        model_binding: ModelBinding::parse("compat", model, "genai")
+            .expect("valid fixture model binding"),
         inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
@@ -152,13 +153,12 @@ fn parallel_read_transcript() -> Vec<ChatMessage> {
     ]
 }
 
+// Image cases change only the transcript; the original request fixture owns
+// validated binding, inference defaults and the generated tool descriptor.
 fn image_request(model: &str) -> ChatRequest {
     ChatRequest {
-        model_binding: ModelBinding::parse("compat", model, "genai")
-            .expect("fixture model binding"),
-        inference: Default::default(),
         messages: parallel_read_transcript(),
-        tools: vec![generated_read_descriptor()],
+        ..request(model, generated_read_descriptor())
     }
 }
 

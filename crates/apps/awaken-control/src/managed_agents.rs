@@ -203,25 +203,17 @@ impl ConfigPlaneManagedAgentRepository {
     async fn project_current(
         &self,
         publications: &ManagedAgentPublications,
-        mut revision: AgentConfigRevision,
+        revision: AgentConfigRevision,
     ) -> Result<Agent, ManagedAgentError> {
-        if let Some(publication) = publications
+        let publication = publications
             .get(&revision.config.id, revision.revision)
-            .await?
-            && matches!(
-                &revision.config.model_binding,
-                ModelSelection::Auto | ModelSelection::Profile { .. }
-            )
-        {
-            let binding = publication
-                .snapshot
-                .resolved_spec
-                .model_binding
-                .binding()
-                .clone();
-            revision.config.model_binding = ModelSelection::Pinned(binding);
-        }
-        project(revision, self.clock.as_ref())
+            .await?;
+        project_revision_with_publication(
+            revision,
+            publication,
+            self.clock.as_ref(),
+            self.plane.service().as_ref(),
+        )
     }
 
     async fn versions_for_read(
@@ -781,23 +773,37 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
 pub(crate) fn project_catalog_entry(
     entry: awaken_agent_config::catalog_snapshot::AgentCatalogEntry,
     clock: &dyn WallClock,
+    projector: &dyn awaken_executable_agent_contract::PublishedModelReferenceProjector,
 ) -> Result<Agent, ManagedAgentError> {
-    let mut revision = entry.head;
-    if let Some(publication) = entry.publication
+    project_revision_with_publication(entry.head, entry.publication.as_ref(), clock, projector)
+}
+
+/// The ordinary publication index and governed Config snapshot supply their
+/// existing captured publication; this shared projection performs no reads.
+fn project_revision_with_publication(
+    mut revision: AgentConfigRevision,
+    publication: Option<&awaken_agent_config::StoredPublication>,
+    clock: &dyn WallClock,
+    projector: &dyn awaken_executable_agent_contract::PublishedModelReferenceProjector,
+) -> Result<Agent, ManagedAgentError> {
+    if let Some(publication) = publication
         && publication.source_revision == revision.revision
         && matches!(
             &revision.config.model_binding,
             ModelSelection::Auto | ModelSelection::Profile { .. }
         )
     {
-        revision.config.model_binding = ModelSelection::Pinned(
-            publication
-                .snapshot
-                .resolved_spec
-                .model_binding
-                .binding()
-                .clone(),
-        );
+        let candidate = &publication.snapshot.resolved_spec.model_binding;
+        revision.config.model_binding =
+            match awaken_executable_agent_contract::project_published_model_reference(
+                candidate, projector,
+            )
+            .map_err(|error| ManagedAgentError::Storage(error.to_string()))?
+            {
+                Some(reference) => parse_managed_model_id(&reference)
+                    .map_err(|error| ManagedAgentError::Storage(error.to_string()))?,
+                None => ModelSelection::Pinned(candidate.binding().clone()),
+            };
     }
     project(revision, clock)
 }
