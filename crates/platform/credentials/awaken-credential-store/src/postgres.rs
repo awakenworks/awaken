@@ -183,11 +183,10 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
                 "Managed Vault workspace does not match its authority".into(),
             ));
         }
-        let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let existing_owner = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT workspace_id FROM {p}_managed_vault WHERE id = $1 FOR UPDATE"
-        ))
+        let existing_owner = sqlx::query_scalar::<_, String>(
+            "SELECT workspace_id FROM credential_managed_vault WHERE id = $1 FOR UPDATE",
+        )
         .bind(&vault.id)
         .fetch_optional(&mut *tx)
         .await
@@ -201,7 +200,7 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
                 "Managed Vault id belongs to another workspace".into(),
             ));
         }
-        let changed = sqlx::query(&format!("INSERT INTO {p}_managed_vault (id, workspace_id, data) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING"))
+        let changed = sqlx::query("INSERT INTO credential_managed_vault (id, workspace_id, data) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING")
             .bind(&vault.id).bind(&vault.workspace_id).bind(Json(&vault)).execute(&mut *tx).await.map_err(storage)?;
         if changed.rows_affected() == 0 {
             return Err(CredentialError::MutationConflict(
@@ -222,21 +221,20 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
                 "Managed Vault workspace does not match its authority".into(),
             ));
         }
-        let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_managed_vault (id, workspace_id, data) VALUES ($1, $2, $3) \
-             ON CONFLICT (id) DO NOTHING"
-        ))
+        sqlx::query(
+            "INSERT INTO credential_managed_vault (id, workspace_id, data) VALUES ($1, $2, $3) \
+             ON CONFLICT (id) DO NOTHING",
+        )
         .bind(&vault.id)
         .bind(&vault.workspace_id)
         .bind(Json(&vault))
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        let row = sqlx::query(&format!(
-            "SELECT workspace_id, data FROM {p}_managed_vault WHERE id = $1 FOR UPDATE"
-        ))
+        let row = sqlx::query(
+            "SELECT workspace_id, data FROM credential_managed_vault WHERE id = $1 FOR UPDATE",
+        )
         .bind(&vault.id)
         .fetch_one(&mut *tx)
         .await
@@ -262,15 +260,12 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
         expected_revision: u64,
         vault: ManagedVault,
     ) -> Result<(), ManagedVaultMutationError> {
-        let p = NS;
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|error| ManagedVaultMutationError::Store(storage(error)))?;
-        let current = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault WHERE workspace_id = $1 AND id = $2 FOR UPDATE"
-        ))
+        let current = sqlx::query("SELECT data FROM credential_managed_vault WHERE workspace_id = $1 AND id = $2 FOR UPDATE")
         .bind(workspace_id)
         .bind(&vault.id)
         .fetch_optional(&mut *tx)
@@ -283,9 +278,9 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
         })
         .transpose()?;
         admit_managed_vault_replacement(workspace_id, current.as_ref(), expected_revision, &vault)?;
-        sqlx::query(&format!(
-            "UPDATE {p}_managed_vault SET data = $1 WHERE workspace_id = $2 AND id = $3"
-        ))
+        sqlx::query(
+            "UPDATE credential_managed_vault SET data = $1 WHERE workspace_id = $2 AND id = $3",
+        )
         .bind(Json(&vault))
         .bind(workspace_id)
         .bind(&vault.id)
@@ -303,10 +298,9 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<ManagedVault>, CredentialError> {
-        let p = NS;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault WHERE workspace_id = $1 AND id = $2"
-        ))
+        let row = sqlx::query(
+            "SELECT data FROM credential_managed_vault WHERE workspace_id = $1 AND id = $2",
+        )
         .bind(workspace_id)
         .bind(id)
         .fetch_optional(&self.pool)
@@ -321,10 +315,9 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
     }
 
     async fn list_vaults(&self, workspace_id: &str) -> Result<Vec<ManagedVault>, CredentialError> {
-        let p = NS;
-        let rows = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault WHERE workspace_id = $1 ORDER BY id"
-        ))
+        let rows = sqlx::query(
+            "SELECT data FROM credential_managed_vault WHERE workspace_id = $1 ORDER BY id",
+        )
         .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
@@ -343,10 +336,7 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
-        let p = NS;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault_credential WHERE workspace_id = $1 AND id = $2"
-        ))
+        let row = sqlx::query("SELECT data FROM credential_managed_vault_credential WHERE workspace_id = $1 AND id = $2")
         .bind(workspace_id)
         .bind(id)
         .fetch_optional(&self.pool)
@@ -365,10 +355,7 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
         workspace_id: &str,
         source_id: &CredentialSourceId,
     ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
-        let p = NS;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault_credential WHERE workspace_id = $1 AND source_id = $2"
-        ))
+        let row = sqlx::query("SELECT data FROM credential_managed_vault_credential WHERE workspace_id = $1 AND source_id = $2")
         .bind(workspace_id)
         .bind(&source_id.0)
         .fetch_optional(&self.pool)
@@ -387,10 +374,7 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
         workspace_id: &str,
         vault_id: &str,
     ) -> Result<Vec<ManagedVaultCredential>, CredentialError> {
-        let p = NS;
-        let rows = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault_credential WHERE workspace_id = $1 AND vault_id = $2 ORDER BY id"
-        ))
+        let rows = sqlx::query("SELECT data FROM credential_managed_vault_credential WHERE workspace_id = $1 AND vault_id = $2 ORDER BY id")
         .bind(workspace_id)
         .bind(vault_id)
         .fetch_all(&self.pool)
@@ -433,9 +417,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             .validate_for_begin(now_unix_ms)
             .map_err(invalid_managed_pending)?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let durable = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_credential_mutation WHERE source_id = $1 FOR UPDATE"
-        ))
+        let durable = sqlx::query("SELECT data FROM credential_managed_credential_mutation WHERE source_id = $1 FOR UPDATE")
         .bind(&pending.after_source.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -455,22 +437,21 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             tx.commit().await.map_err(storage)?;
             return Ok(false);
         }
-        let current_source = sqlx::query(&format!(
-            "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&pending.after_source.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            row.try_get::<Json<CredentialSource>, _>("data")
-                .map(|Json(value)| value)
-                .map_err(storage)
-        })
-        .transpose()?;
-        let current_child = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_vault_credential WHERE id = $1 FOR UPDATE"
-        ))
+        let current_source =
+            sqlx::query("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+                .bind(&pending.after_source.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?
+                .map(|row| {
+                    row.try_get::<Json<CredentialSource>, _>("data")
+                        .map(|Json(value)| value)
+                        .map_err(storage)
+                })
+                .transpose()?;
+        let current_child = sqlx::query(
+            "SELECT data FROM credential_managed_vault_credential WHERE id = $1 FOR UPDATE",
+        )
         .bind(&pending.after_credential.id)
         .fetch_optional(&mut *tx)
         .await
@@ -486,18 +467,18 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 "Managed credential changed before its mutation was prepared".into(),
             ));
         }
-        let inserted = sqlx::query(&format!(
-            "INSERT INTO {NS}_managed_credential_mutation (source_id, data) VALUES ($1, $2) \
-             ON CONFLICT (source_id) DO NOTHING"
-        ))
+        let inserted = sqlx::query(
+            "INSERT INTO credential_managed_credential_mutation (source_id, data) VALUES ($1, $2) \
+             ON CONFLICT (source_id) DO NOTHING",
+        )
         .bind(&pending.after_source.id.0)
         .bind(Json(&pending))
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_credential_mutation WHERE source_id = $1"
-        ))
+        let row = sqlx::query(
+            "SELECT data FROM credential_managed_credential_mutation WHERE source_id = $1",
+        )
         .bind(&pending.after_source.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -524,11 +505,8 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
     ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
         pending.validate()?;
         let plan = managed_credential_commit_plan(pending)?;
-        let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let durable = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_credential_mutation WHERE source_id = $1 FOR UPDATE"
-        ))
+        let durable = sqlx::query("SELECT data FROM credential_managed_credential_mutation WHERE source_id = $1 FOR UPDATE")
         .bind(&pending.after_source.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -561,35 +539,33 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         // this order, preventing a child->root/root->child deadlock. Selecting by
         // the globally unique Vault id also locks a foreign-workspace owner so a
         // colliding id is observed, never treated as an absent local root.
-        let vault = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&pending.after_credential.vault_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            row.try_get::<Json<ManagedVault>, _>("data")
-                .map(|Json(value)| value)
-                .map_err(storage)
-        })
-        .transpose()?;
-        let current_source = sqlx::query(&format!(
-            "SELECT data FROM {p}_source WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&pending.after_source.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            row.try_get::<Json<CredentialSource>, _>("data")
-                .map(|Json(value)| value)
-                .map_err(storage)
-        })
-        .transpose()?;
-        let current_child = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault_credential WHERE id = $1 FOR UPDATE"
-        ))
+        let vault =
+            sqlx::query("SELECT data FROM credential_managed_vault WHERE id = $1 FOR UPDATE")
+                .bind(&pending.after_credential.vault_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?
+                .map(|row| {
+                    row.try_get::<Json<ManagedVault>, _>("data")
+                        .map(|Json(value)| value)
+                        .map_err(storage)
+                })
+                .transpose()?;
+        let current_source =
+            sqlx::query("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+                .bind(&pending.after_source.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?
+                .map(|row| {
+                    row.try_get::<Json<CredentialSource>, _>("data")
+                        .map(|Json(value)| value)
+                        .map_err(storage)
+                })
+                .transpose()?;
+        let current_child = sqlx::query(
+            "SELECT data FROM credential_managed_vault_credential WHERE id = $1 FOR UPDATE",
+        )
         .bind(&pending.after_credential.id)
         .fetch_optional(&mut *tx)
         .await
@@ -613,10 +589,10 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         if !pending.is_unpublished_at(current_source.as_ref(), current_child.as_ref()) {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
-        let existing = sqlx::query(&format!(
-            "SELECT data FROM {p}_managed_vault_credential \
-             WHERE workspace_id = $1 AND vault_id = $2 AND id <> $3 ORDER BY id"
-        ))
+        let existing = sqlx::query(
+            "SELECT data FROM credential_managed_vault_credential \
+             WHERE workspace_id = $1 AND vault_id = $2 AND id <> $3 ORDER BY id",
+        )
         .bind(&pending.after_credential.workspace_id)
         .bind(&pending.after_credential.vault_id)
         .bind(&pending.after_credential.id)
@@ -683,10 +659,10 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             }
         }
         let source_changed = if pending.operation == ManagedCredentialOperation::Create {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_source (id, workspace_id, data) VALUES ($1, $2, $3) \
-                 ON CONFLICT (id) DO NOTHING"
-            ))
+            sqlx::query(
+                "INSERT INTO credential_source (id, workspace_id, data) VALUES ($1, $2, $3) \
+                 ON CONFLICT (id) DO NOTHING",
+            )
             .bind(&pending.after_source.id.0)
             .bind(&pending.after_source.workspace_id)
             .bind(Json(&plan.source))
@@ -699,10 +675,10 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 .before_source
                 .as_ref()
                 .ok_or(ManagedCredentialMutationError::NotFound)?;
-            sqlx::query(&format!(
-                "UPDATE {p}_source SET workspace_id = $1, data = $2 \
-                 WHERE id = $3 AND workspace_id = $4"
-            ))
+            sqlx::query(
+                "UPDATE credential_source SET workspace_id = $1, data = $2 \
+                 WHERE id = $3 AND workspace_id = $4",
+            )
             .bind(&pending.after_source.workspace_id)
             .bind(Json(&plan.source))
             .bind(&pending.after_source.id.0)
@@ -717,11 +693,11 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         }
 
         let child_changed = if pending.operation == ManagedCredentialOperation::Create {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_managed_vault_credential \
+            sqlx::query(
+                "INSERT INTO credential_managed_vault_credential \
                  (id, vault_id, workspace_id, source_id, data) VALUES ($1, $2, $3, $4, $5) \
-                 ON CONFLICT DO NOTHING"
-            ))
+                 ON CONFLICT DO NOTHING",
+            )
             .bind(&pending.after_credential.id)
             .bind(&pending.after_credential.vault_id)
             .bind(&pending.after_credential.workspace_id)
@@ -736,11 +712,11 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 .before_credential
                 .as_ref()
                 .ok_or(ManagedCredentialMutationError::NotFound)?;
-            sqlx::query(&format!(
-                "UPDATE {p}_managed_vault_credential SET vault_id = $1, workspace_id = $2, \
+            sqlx::query(
+                "UPDATE credential_managed_vault_credential SET vault_id = $1, workspace_id = $2, \
                  source_id = $3, data = $4 WHERE id = $5 AND vault_id = $6 \
-                 AND workspace_id = $7 AND source_id = $8"
-            ))
+                 AND workspace_id = $7 AND source_id = $8",
+            )
             .bind(&pending.after_credential.vault_id)
             .bind(&pending.after_credential.workspace_id)
             .bind(&pending.after_credential.source_id.0)
@@ -757,9 +733,9 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         if child_changed != 1 {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
-        sqlx::query(&format!(
-            "UPDATE {p}_managed_credential_mutation SET data = $1 WHERE source_id = $2"
-        ))
+        sqlx::query(
+            "UPDATE credential_managed_credential_mutation SET data = $1 WHERE source_id = $2",
+        )
         .bind(Json(&plan.reclaiming_mutation))
         .bind(&pending.after_source.id.0)
         .execute(&mut *tx)
@@ -778,9 +754,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
     ) -> Result<PendingManagedCredentialMutation, CredentialError> {
         pending.validate().map_err(invalid_managed_pending)?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_credential_mutation WHERE source_id = $1 FOR UPDATE"
-        ))
+        let row = sqlx::query("SELECT data FROM credential_managed_credential_mutation WHERE source_id = $1 FOR UPDATE")
         .bind(&pending.after_source.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -800,9 +774,9 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             ));
         }
         let ready = durable.with_material_ready()?;
-        sqlx::query(&format!(
-            "UPDATE {NS}_managed_credential_mutation SET data = $1 WHERE source_id = $2"
-        ))
+        sqlx::query(
+            "UPDATE credential_managed_credential_mutation SET data = $1 WHERE source_id = $2",
+        )
         .bind(Json(&ready))
         .bind(&pending.after_source.id.0)
         .execute(&mut *tx)
@@ -815,10 +789,10 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
     async fn pending_managed_mutations(
         &self,
     ) -> Result<Vec<PendingManagedCredentialMutation>, CredentialError> {
-        let rows = sqlx::query(&format!(
-            "SELECT source_id, data::text AS data FROM {NS}_managed_credential_mutation \
-             ORDER BY created_at, source_id"
-        ))
+        let rows = sqlx::query(
+            "SELECT source_id, data::text AS data FROM credential_managed_credential_mutation \
+             ORDER BY created_at, source_id",
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
@@ -847,10 +821,10 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         claimed.validate().map_err(invalid_managed_pending)?;
 
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let durable = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_credential_mutation \
-             WHERE source_id = $1 FOR UPDATE"
-        ))
+        let durable = sqlx::query(
+            "SELECT data FROM credential_managed_credential_mutation \
+             WHERE source_id = $1 FOR UPDATE",
+        )
         .bind(&pending.after_source.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -867,10 +841,10 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             tx.commit().await.map_err(storage)?;
             return Ok(None);
         }
-        let changed = sqlx::query(&format!(
-            "UPDATE {NS}_managed_credential_mutation SET data = $1 \
-             WHERE source_id = $2"
-        ))
+        let changed = sqlx::query(
+            "UPDATE credential_managed_credential_mutation SET data = $1 \
+             WHERE source_id = $2",
+        )
         .bind(Json(&claimed))
         .bind(&pending.after_source.id.0)
         .execute(&mut *tx)
@@ -891,9 +865,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
     ) -> Result<PendingManagedCredentialMutation, CredentialError> {
         pending.validate().map_err(invalid_managed_pending)?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let durable = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_credential_mutation WHERE source_id = $1 FOR UPDATE"
-        ))
+        let durable = sqlx::query("SELECT data FROM credential_managed_credential_mutation WHERE source_id = $1 FOR UPDATE")
         .bind(&pending.after_source.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -909,22 +881,21 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 "Managed credential abort has no durable pending fact".into(),
             )
         })?;
-        let current_source = sqlx::query(&format!(
-            "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&pending.after_source.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            row.try_get::<Json<CredentialSource>, _>("data")
-                .map(|Json(v)| v)
-                .map_err(storage)
-        })
-        .transpose()?;
-        let current_child = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_vault_credential WHERE id = $1 FOR UPDATE"
-        ))
+        let current_source =
+            sqlx::query("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+                .bind(&pending.after_source.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?
+                .map(|row| {
+                    row.try_get::<Json<CredentialSource>, _>("data")
+                        .map(|Json(v)| v)
+                        .map_err(storage)
+                })
+                .transpose()?;
+        let current_child = sqlx::query(
+            "SELECT data FROM credential_managed_vault_credential WHERE id = $1 FOR UPDATE",
+        )
         .bind(&pending.after_credential.id)
         .fetch_optional(&mut *tx)
         .await
@@ -937,10 +908,10 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         .transpose()?;
         let reclaiming =
             pending.admit_abort(&durable, current_source.as_ref(), current_child.as_ref())?;
-        let changed = sqlx::query(&format!(
-            "UPDATE {NS}_managed_credential_mutation SET data = $1 \
-             WHERE source_id = $2"
-        ))
+        let changed = sqlx::query(
+            "UPDATE credential_managed_credential_mutation SET data = $1 \
+             WHERE source_id = $2",
+        )
         .bind(Json(&reclaiming))
         .bind(&pending.after_source.id.0)
         .execute(&mut *tx)
@@ -962,9 +933,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
     ) -> Result<(), CredentialError> {
         pending.validate().map_err(invalid_managed_pending)?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let durable = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_credential_mutation WHERE source_id = $1 FOR UPDATE"
-        ))
+        let durable = sqlx::query("SELECT data FROM credential_managed_credential_mutation WHERE source_id = $1 FOR UPDATE")
         .bind(&pending.after_source.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -979,22 +948,21 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             tx.commit().await.map_err(storage)?;
             return Ok(());
         };
-        let current_source = sqlx::query(&format!(
-            "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&pending.after_source.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            row.try_get::<Json<CredentialSource>, _>("data")
-                .map(|Json(v)| v)
-                .map_err(storage)
-        })
-        .transpose()?;
-        let current_child = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_vault_credential WHERE id = $1 FOR UPDATE"
-        ))
+        let current_source =
+            sqlx::query("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+                .bind(&pending.after_source.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?
+                .map(|row| {
+                    row.try_get::<Json<CredentialSource>, _>("data")
+                        .map(|Json(v)| v)
+                        .map_err(storage)
+                })
+                .transpose()?;
+        let current_child = sqlx::query(
+            "SELECT data FROM credential_managed_vault_credential WHERE id = $1 FOR UPDATE",
+        )
         .bind(&pending.after_credential.id)
         .fetch_optional(&mut *tx)
         .await
@@ -1006,14 +974,13 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         })
         .transpose()?;
         pending.admit_completion(&durable, current_source.as_ref(), current_child.as_ref())?;
-        let deleted = sqlx::query(&format!(
-            "DELETE FROM {NS}_managed_credential_mutation WHERE source_id = $1"
-        ))
-        .bind(&pending.after_source.id.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?
-        .rows_affected();
+        let deleted =
+            sqlx::query("DELETE FROM credential_managed_credential_mutation WHERE source_id = $1")
+                .bind(&pending.after_source.id.0)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage)?
+                .rows_affected();
         if deleted != 1 {
             return Err(CredentialError::MutationConflict(
                 "Managed credential completion lost its exact durable cleanup fact".into(),
@@ -1026,28 +993,24 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         &self,
         event_id: &str,
     ) -> Result<Option<ManagedCredentialRollout>, CredentialError> {
-        sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_credential_rollout WHERE event_id = $1"
-        ))
-        .bind(event_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            row.try_get::<Json<ManagedCredentialRollout>, _>("data")
-                .map(|Json(value)| value)
-                .map_err(storage)
-        })
-        .transpose()
+        sqlx::query("SELECT data FROM credential_managed_credential_rollout WHERE event_id = $1")
+            .bind(event_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage)?
+            .map(|row| {
+                row.try_get::<Json<ManagedCredentialRollout>, _>("data")
+                    .map(|Json(value)| value)
+                    .map_err(storage)
+            })
+            .transpose()
     }
 
     async fn pending_managed_rollouts(
         &self,
     ) -> Result<Vec<ManagedCredentialRollout>, CredentialError> {
-        let rows = sqlx::query(&format!(
-            "SELECT event_id, data::text AS data FROM {NS}_managed_credential_rollout WHERE delivered=FALSE \
-             ORDER BY created_at, event_id"
-        ))
+        let rows = sqlx::query("SELECT event_id, data::text AS data FROM credential_managed_credential_rollout WHERE delivered=FALSE \
+             ORDER BY created_at, event_id")
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
@@ -1083,12 +1046,11 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
     }
 
     async fn pending_managed_vault_deletions(&self) -> Result<Vec<ManagedVault>, CredentialError> {
-        let rows = sqlx::query(&format!(
-            "SELECT data FROM {NS}_managed_vault ORDER BY workspace_id, id"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage)?;
+        let rows =
+            sqlx::query("SELECT data FROM credential_managed_vault ORDER BY workspace_id, id")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(storage)?;
         rows.into_iter()
             .map(|row| {
                 row.try_get::<Json<ManagedVault>, _>("data")
@@ -1107,12 +1069,11 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
 #[async_trait::async_trait]
 impl CredentialRepo for PostgresCredentialRepo {
     async fn put(&self, source: CredentialSource) -> Result<(), CredentialError> {
-        let p = NS;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_source (id, workspace_id, data) VALUES ($1, $2, $3) \
+        sqlx::query(
+            "INSERT INTO credential_source (id, workspace_id, data) VALUES ($1, $2, $3) \
              ON CONFLICT (id) DO UPDATE SET \
-             workspace_id = excluded.workspace_id, data = excluded.data"
-        ))
+             workspace_id = excluded.workspace_id, data = excluded.data",
+        )
         .bind(&source.id.0)
         .bind(&source.workspace_id)
         .bind(Json(&source))
@@ -1126,11 +1087,10 @@ impl CredentialRepo for PostgresCredentialRepo {
         &self,
         source: CredentialSource,
     ) -> Result<CredentialSource, CredentialError> {
-        let p = NS;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_source (id, workspace_id, data) VALUES ($1, $2, $3) \
-             ON CONFLICT (id) DO NOTHING"
-        ))
+        sqlx::query(
+            "INSERT INTO credential_source (id, workspace_id, data) VALUES ($1, $2, $3) \
+             ON CONFLICT (id) DO NOTHING",
+        )
         .bind(&source.id.0)
         .bind(&source.workspace_id)
         .bind(Json(&source))
@@ -1141,8 +1101,7 @@ impl CredentialRepo for PostgresCredentialRepo {
     }
 
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
-        let p = NS;
-        let row = sqlx::query(&format!("SELECT data FROM {p}_source WHERE id = $1"))
+        let row = sqlx::query("SELECT data FROM credential_source WHERE id = $1")
             .bind(&id.0)
             .fetch_optional(&self.pool)
             .await
@@ -1153,14 +1112,12 @@ impl CredentialRepo for PostgresCredentialRepo {
     }
 
     async fn list(&self, workspace_id: &str) -> Result<Vec<CredentialSource>, CredentialError> {
-        let p = NS;
-        let rows = sqlx::query(&format!(
-            "SELECT data FROM {p}_source WHERE workspace_id = $1 ORDER BY id"
-        ))
-        .bind(workspace_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage)?;
+        let rows =
+            sqlx::query("SELECT data FROM credential_source WHERE workspace_id = $1 ORDER BY id")
+                .bind(workspace_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(storage)?;
         rows.into_iter()
             .map(|row| {
                 let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
@@ -1176,9 +1133,9 @@ impl CredentialRepo for PostgresCredentialRepo {
     ) -> Result<bool, CredentialError> {
         intent.validate_for_begin(now_unix_ms)?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let durable = sqlx::query(&format!(
-            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
-        ))
+        let durable = sqlx::query(
+            "SELECT data FROM credential_creation_intent WHERE source_id = $1 FOR UPDATE",
+        )
         .bind(&intent.after.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -1199,36 +1156,36 @@ impl CredentialRepo for PostgresCredentialRepo {
             return Ok(false);
         }
 
-        let current_after = sqlx::query(&format!(
-            "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-            Ok::<_, CredentialError>(source)
-        })
-        .transpose()?;
+        let current_after =
+            sqlx::query("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+                .bind(&intent.after.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?
+                .map(|row| {
+                    let Json(source): Json<CredentialSource> =
+                        row.try_get("data").map_err(storage)?;
+                    Ok::<_, CredentialError>(source)
+                })
+                .transpose()?;
         let before_matches = if intent.is_distinct_replacement() {
             let before = intent.before.as_ref().ok_or_else(|| {
                 CredentialError::InvalidSource(
                     "distinct replacement requires an exact predecessor".into(),
                 )
             })?;
-            let current_before = sqlx::query(&format!(
-                "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&before.id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage)?
-            .map(|row| {
-                let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-                Ok::<_, CredentialError>(source)
-            })
-            .transpose()?;
+            let current_before =
+                sqlx::query("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+                    .bind(&before.id.0)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(storage)?
+                    .map(|row| {
+                        let Json(source): Json<CredentialSource> =
+                            row.try_get("data").map_err(storage)?;
+                        Ok::<_, CredentialError>(source)
+                    })
+                    .transpose()?;
             current_after.is_none() && current_before.as_ref() == Some(before)
         } else {
             current_after.as_ref() == intent.before.as_ref()
@@ -1245,7 +1202,7 @@ impl CredentialRepo for PostgresCredentialRepo {
             let predecessor = intent.before.as_ref().ok_or_else(|| {
                 CredentialError::InvalidSource("acquisition has no predecessor".into())
             })?;
-            let pending:Option<String>=sqlx::query_scalar(&format!("SELECT source_id FROM {NS}_creation_intent WHERE data->'before'->>'id' = $1 AND data->'acquisition' IS NOT NULL AND data->'acquisition' <> 'null'::jsonb LIMIT 1"))
+            let pending:Option<String>=sqlx::query_scalar("SELECT source_id FROM credential_creation_intent WHERE data->'before'->>'id' = $1 AND data->'acquisition' IS NOT NULL AND data->'acquisition' <> 'null'::jsonb LIMIT 1")
                 .bind(&predecessor.id.0).fetch_optional(&mut *tx).await.map_err(storage)?;
             if pending.is_some() {
                 return Err(CredentialError::MutationConflict(
@@ -1253,10 +1210,10 @@ impl CredentialRepo for PostgresCredentialRepo {
                 ));
             }
         }
-        let inserted = sqlx::query(&format!(
-            "INSERT INTO {NS}_creation_intent (source_id, data) VALUES ($1, $2) \
-             ON CONFLICT (source_id) DO NOTHING"
-        ))
+        let inserted = sqlx::query(
+            "INSERT INTO credential_creation_intent (source_id, data) VALUES ($1, $2) \
+             ON CONFLICT (source_id) DO NOTHING",
+        )
         .bind(&intent.after.id.0)
         .bind(Json(&intent))
         .execute(&mut *tx)
@@ -1264,9 +1221,9 @@ impl CredentialRepo for PostgresCredentialRepo {
         .map_err(storage)?
         .rows_affected();
         if inserted != 1 {
-            let row = sqlx::query(&format!(
-                "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
-            ))
+            let row = sqlx::query(
+                "SELECT data FROM credential_creation_intent WHERE source_id = $1 FOR UPDATE",
+            )
             .bind(&intent.after.id.0)
             .fetch_one(&mut *tx)
             .await
@@ -1289,7 +1246,7 @@ impl CredentialRepo for PostgresCredentialRepo {
         &self,
         id: &CredentialSourceId,
     ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
-        let rows:Vec<Json<CredentialMutationIntent>>=sqlx::query_scalar(&format!("SELECT data FROM {NS}_creation_intent WHERE data->'before'->>'id' = $1 AND data->'acquisition' IS NOT NULL AND data->'acquisition' <> 'null'::jsonb LIMIT 2"))
+        let rows:Vec<Json<CredentialMutationIntent>>=sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE data->'before'->>'id' = $1 AND data->'acquisition' IS NOT NULL AND data->'acquisition' <> 'null'::jsonb LIMIT 2")
             .bind(&id.0).fetch_all(&self.pool).await.map_err(storage)?;
         if rows.len() > 1 {
             return Err(CredentialError::Storage(
@@ -1343,9 +1300,9 @@ impl CredentialRepo for PostgresCredentialRepo {
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
-        ))
+        let row = sqlx::query(
+            "SELECT data FROM credential_creation_intent WHERE source_id = $1 FOR UPDATE",
+        )
         .bind(&intent.after.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -1356,27 +1313,8 @@ impl CredentialRepo for PostgresCredentialRepo {
             )
         })?;
         let Json(durable): Json<CredentialMutationIntent> = row.try_get("data").map_err(storage)?;
-        let current = sqlx::query(&format!(
-            "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-            Ok::<_, CredentialError>(source)
-        })
-        .transpose()?;
-        let current_before = if let Some(before) = intent
-            .before
-            .as_ref()
-            .filter(|before| before.id != intent.after.id)
-        {
-            sqlx::query(&format!(
-                "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&before.id.0)
+        let current = sqlx::query("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+            .bind(&intent.after.id.0)
             .fetch_optional(&mut *tx)
             .await
             .map_err(storage)?
@@ -1384,7 +1322,23 @@ impl CredentialRepo for PostgresCredentialRepo {
                 let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
                 Ok::<_, CredentialError>(source)
             })
-            .transpose()?
+            .transpose()?;
+        let current_before = if let Some(before) = intent
+            .before
+            .as_ref()
+            .filter(|before| before.id != intent.after.id)
+        {
+            sqlx::query("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+                .bind(&before.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?
+                .map(|row| {
+                    let Json(source): Json<CredentialSource> =
+                        row.try_get("data").map_err(storage)?;
+                    Ok::<_, CredentialError>(source)
+                })
+                .transpose()?
         } else {
             None
         };
@@ -1395,10 +1349,10 @@ impl CredentialRepo for PostgresCredentialRepo {
         }
         match plan.mode {
             CredentialMutationCommitMode::Insert => {
-                let inserted = sqlx::query(&format!(
-                    "INSERT INTO {NS}_source (id, workspace_id, data) VALUES ($1, $2, $3) \
-                 ON CONFLICT (id) DO NOTHING"
-                ))
+                let inserted = sqlx::query(
+                    "INSERT INTO credential_source (id, workspace_id, data) VALUES ($1, $2, $3) \
+                 ON CONFLICT (id) DO NOTHING",
+                )
                 .bind(&plan.source.id.0)
                 .bind(&plan.source.workspace_id)
                 .bind(Json(&plan.source))
@@ -1417,10 +1371,10 @@ impl CredentialRepo for PostgresCredentialRepo {
                     .before
                     .as_ref()
                     .expect("Replace plan has one same-id predecessor");
-                let changed = sqlx::query(&format!(
-                    "UPDATE {NS}_source SET workspace_id = $1, data = $2 \
-                     WHERE id = $3 AND workspace_id = $4"
-                ))
+                let changed = sqlx::query(
+                    "UPDATE credential_source SET workspace_id = $1, data = $2 \
+                     WHERE id = $3 AND workspace_id = $4",
+                )
                 .bind(&plan.source.workspace_id)
                 .bind(Json(&plan.source))
                 .bind(&plan.source.id.0)
@@ -1437,14 +1391,12 @@ impl CredentialRepo for PostgresCredentialRepo {
             }
             CredentialMutationCommitMode::ExactReplay => unreachable!("returned above"),
         }
-        sqlx::query(&format!(
-            "UPDATE {NS}_creation_intent SET data = $2 WHERE source_id = $1"
-        ))
-        .bind(&intent.after.id.0)
-        .bind(Json(&plan.reclaiming_mutation))
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        sqlx::query("UPDATE credential_creation_intent SET data = $2 WHERE source_id = $1")
+            .bind(&intent.after.id.0)
+            .bind(Json(&plan.reclaiming_mutation))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(plan.reclaiming_mutation)
     }
@@ -1453,13 +1405,12 @@ impl CredentialRepo for PostgresCredentialRepo {
         &self,
         id: &CredentialSourceId,
     ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
-        let data: Option<Json<CredentialMutationIntent>> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1"
-        ))
-        .bind(&id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
+        let data: Option<Json<CredentialMutationIntent>> =
+            sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE source_id = $1")
+                .bind(&id.0)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(storage)?;
         data.map(|data| {
             let Json(intent): Json<CredentialMutationIntent> = data;
             intent.validate_durable_key(&id.0)?;
@@ -1469,9 +1420,9 @@ impl CredentialRepo for PostgresCredentialRepo {
     }
 
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
-        sqlx::query(&format!(
-            "SELECT source_id, data FROM {NS}_creation_intent ORDER BY created_at, source_id"
-        ))
+        sqlx::query(
+            "SELECT source_id, data FROM credential_creation_intent ORDER BY created_at, source_id",
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?
@@ -1497,9 +1448,9 @@ impl CredentialRepo for PostgresCredentialRepo {
             return Ok(None);
         };
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let durable = sqlx::query(&format!(
-            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
-        ))
+        let durable = sqlx::query(
+            "SELECT data FROM credential_creation_intent WHERE source_id = $1 FOR UPDATE",
+        )
         .bind(&intent.after.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -1516,14 +1467,12 @@ impl CredentialRepo for PostgresCredentialRepo {
             tx.commit().await.map_err(storage)?;
             return Ok(None);
         }
-        sqlx::query(&format!(
-            "UPDATE {NS}_creation_intent SET data = $2 WHERE source_id = $1"
-        ))
-        .bind(&intent.after.id.0)
-        .bind(Json(&claimed))
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        sqlx::query("UPDATE credential_creation_intent SET data = $2 WHERE source_id = $1")
+            .bind(&intent.after.id.0)
+            .bind(Json(&claimed))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(Some(claimed))
     }
@@ -1534,9 +1483,9 @@ impl CredentialRepo for PostgresCredentialRepo {
     ) -> Result<CredentialMutationIntent, CredentialError> {
         intent.validate()?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
-        ))
+        let row = sqlx::query(
+            "SELECT data FROM credential_creation_intent WHERE source_id = $1 FOR UPDATE",
+        )
         .bind(&intent.after.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -1545,27 +1494,25 @@ impl CredentialRepo for PostgresCredentialRepo {
             CredentialError::MutationConflict("credential abort has no durable pending fact".into())
         })?;
         let Json(durable): Json<CredentialMutationIntent> = row.try_get("data").map_err(storage)?;
-        let current_after = sqlx::query(&format!(
-            "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-            Ok::<_, CredentialError>(source)
-        })
-        .transpose()?;
+        let current_after =
+            sqlx::query("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+                .bind(&intent.after.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?
+                .map(|row| {
+                    let Json(source): Json<CredentialSource> =
+                        row.try_get("data").map_err(storage)?;
+                    Ok::<_, CredentialError>(source)
+                })
+                .transpose()?;
         let abort = intent.admit_abort(&durable, current_after.as_ref())?;
-        sqlx::query(&format!(
-            "UPDATE {NS}_creation_intent SET data = $2 WHERE source_id = $1"
-        ))
-        .bind(&intent.after.id.0)
-        .bind(Json(&abort))
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        sqlx::query("UPDATE credential_creation_intent SET data = $2 WHERE source_id = $1")
+            .bind(&intent.after.id.0)
+            .bind(Json(&abort))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(abort)
     }
@@ -1576,9 +1523,9 @@ impl CredentialRepo for PostgresCredentialRepo {
     ) -> Result<(), CredentialError> {
         intent.validate()?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let durable = sqlx::query(&format!(
-            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
-        ))
+        let durable = sqlx::query(
+            "SELECT data FROM credential_creation_intent WHERE source_id = $1 FOR UPDATE",
+        )
         .bind(&intent.after.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -1592,31 +1539,29 @@ impl CredentialRepo for PostgresCredentialRepo {
         let Some(durable) = durable else {
             return tx.commit().await.map_err(storage);
         };
-        let current_after = sqlx::query(&format!(
-            "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
-        .map(|row| {
-            let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-            Ok::<_, CredentialError>(source)
-        })
-        .transpose()?;
+        let current_after =
+            sqlx::query("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+                .bind(&intent.after.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?
+                .map(|row| {
+                    let Json(source): Json<CredentialSource> =
+                        row.try_get("data").map_err(storage)?;
+                    Ok::<_, CredentialError>(source)
+                })
+                .transpose()?;
         intent.admit_completion(&durable, current_after.as_ref())?;
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_creation_intent WHERE source_id = $1"
-        ))
-        .bind(&intent.after.id.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        sqlx::query("DELETE FROM credential_creation_intent WHERE source_id = $1")
+            .bind(&intent.after.id.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         tx.commit().await.map_err(storage)
     }
 
     async fn material_refs(&self) -> Result<Vec<SecretRef>, CredentialError> {
-        let rows = sqlx::query(&format!("SELECT data FROM {NS}_source ORDER BY id"))
+        let rows = sqlx::query("SELECT data FROM credential_source ORDER BY id")
             .fetch_all(&self.pool)
             .await
             .map_err(storage)?;
@@ -1634,12 +1579,11 @@ impl CredentialRepo for PostgresCredentialRepo {
     }
 
     async fn put_pool(&self, pool: CredentialPool) -> Result<(), CredentialError> {
-        let p = NS;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_pool (id, workspace_id, data) VALUES ($1, $2, $3) \
+        sqlx::query(
+            "INSERT INTO credential_pool (id, workspace_id, data) VALUES ($1, $2, $3) \
              ON CONFLICT (id) DO UPDATE SET \
-             workspace_id = excluded.workspace_id, data = excluded.data"
-        ))
+             workspace_id = excluded.workspace_id, data = excluded.data",
+        )
         .bind(&pool.id.0)
         .bind(&pool.workspace_id)
         .bind(Json(&pool))
@@ -1650,8 +1594,7 @@ impl CredentialRepo for PostgresCredentialRepo {
     }
 
     async fn get_pool(&self, id: &CredentialPoolId) -> Result<CredentialPool, CredentialError> {
-        let p = NS;
-        let row = sqlx::query(&format!("SELECT data FROM {p}_pool WHERE id = $1"))
+        let row = sqlx::query("SELECT data FROM credential_pool WHERE id = $1")
             .bind(&id.0)
             .fetch_optional(&self.pool)
             .await
@@ -1662,14 +1605,12 @@ impl CredentialRepo for PostgresCredentialRepo {
     }
 
     async fn list_pools(&self, workspace_id: &str) -> Result<Vec<CredentialPool>, CredentialError> {
-        let p = NS;
-        let rows = sqlx::query(&format!(
-            "SELECT data FROM {p}_pool WHERE workspace_id = $1 ORDER BY id"
-        ))
-        .bind(workspace_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage)?;
+        let rows =
+            sqlx::query("SELECT data FROM credential_pool WHERE workspace_id = $1 ORDER BY id")
+                .bind(workspace_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(storage)?;
         rows.into_iter()
             .map(|row| {
                 let Json(pool): Json<CredentialPool> = row.try_get("data").map_err(storage)?;
@@ -1706,12 +1647,11 @@ impl PostgresSealedBlobStore {
 #[async_trait::async_trait]
 impl SealedBlobStore for PostgresSealedBlobStore {
     async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError> {
-        let p = NS;
-        let affected = sqlx::query(&format!(
-            "INSERT INTO {p}_secret (secret_ref, sealed) VALUES ($1, $2) \
+        let affected = sqlx::query(
+            "INSERT INTO credential_secret (secret_ref, sealed) VALUES ($1, $2) \
              ON CONFLICT (secret_ref) DO UPDATE SET sealed = excluded.sealed \
-             WHERE {p}_secret.closed = 0"
-        ))
+             WHERE credential_secret.closed = 0",
+        )
         .bind(&r.0)
         .bind(&blob)
         .execute(&self.pool)
@@ -1727,10 +1667,9 @@ impl SealedBlobStore for PostgresSealedBlobStore {
     }
 
     async fn get_blob(&self, r: &SecretRef) -> Result<Vec<u8>, CredentialError> {
-        let p = NS;
-        let row = sqlx::query(&format!(
-            "SELECT sealed FROM {p}_secret WHERE secret_ref = $1 AND closed = 0"
-        ))
+        let row = sqlx::query(
+            "SELECT sealed FROM credential_secret WHERE secret_ref = $1 AND closed = 0",
+        )
         .bind(&r.0)
         .fetch_optional(&self.pool)
         .await
@@ -1741,11 +1680,10 @@ impl SealedBlobStore for PostgresSealedBlobStore {
     }
 
     async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError> {
-        let p = NS;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_secret (secret_ref, sealed, closed) VALUES ($1, $2, 1) \
-             ON CONFLICT(secret_ref) DO UPDATE SET sealed = excluded.sealed, closed = 1"
-        ))
+        sqlx::query(
+            "INSERT INTO credential_secret (secret_ref, sealed, closed) VALUES ($1, $2, 1) \
+             ON CONFLICT(secret_ref) DO UPDATE SET sealed = excluded.sealed, closed = 1",
+        )
         .bind(&r.0)
         .bind(Vec::<u8>::new())
         .execute(&self.pool)
@@ -1755,9 +1693,9 @@ impl SealedBlobStore for PostgresSealedBlobStore {
     }
 
     async fn inventory_blobs(&self) -> Result<Vec<SecretRef>, CredentialError> {
-        sqlx::query_scalar::<_, String>(&format!(
-            "SELECT secret_ref FROM {NS}_secret WHERE closed = 0 ORDER BY secret_ref"
-        ))
+        sqlx::query_scalar::<_, String>(
+            "SELECT secret_ref FROM credential_secret WHERE closed = 0 ORDER BY secret_ref",
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(storage)
@@ -1772,9 +1710,9 @@ impl PostgresCredentialRepo {
         next: CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
-        ))
+        let row = sqlx::query(
+            "SELECT data FROM credential_creation_intent WHERE source_id = $1 FOR UPDATE",
+        )
         .bind(&intent.after.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -1791,13 +1729,12 @@ impl PostgresCredentialRepo {
             ));
         }
         if let Some(before) = next.acquisition_dispatch_predecessor() {
-            let data: Option<Json<CredentialSource>> = sqlx::query_scalar(&format!(
-                "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&before.id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage)?;
+            let data: Option<Json<CredentialSource>> =
+                sqlx::query_scalar("SELECT data FROM credential_source WHERE id = $1 FOR UPDATE")
+                    .bind(&before.id.0)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(storage)?;
             let current = data
                 .map(|data| {
                     let Json(current): Json<CredentialSource> = data;
@@ -1806,14 +1743,12 @@ impl PostgresCredentialRepo {
                 .transpose()?;
             next.validate_acquisition_dispatch_source(current.as_ref())?;
         }
-        sqlx::query(&format!(
-            "UPDATE {NS}_creation_intent SET data = $2 WHERE source_id = $1"
-        ))
-        .bind(&intent.after.id.0)
-        .bind(Json(&next))
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        sqlx::query("UPDATE credential_creation_intent SET data = $2 WHERE source_id = $1")
+            .bind(&intent.after.id.0)
+            .bind(Json(&next))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(next)
     }

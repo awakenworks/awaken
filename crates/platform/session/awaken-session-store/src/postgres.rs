@@ -130,9 +130,9 @@ impl PostgresManagedSessionRepository {
         if ledger.is_none() {
             return Ok(BTreeMap::new());
         }
-        sqlx::query_as::<_, (i64, String)>(&format!(
-            "SELECT version,checksum FROM {NS}_schema_migrations WHERE bundle_id=$1 ORDER BY version"
-        ))
+        sqlx::query_as::<_, (i64, String)>(
+            "SELECT version,checksum FROM managed_schema_migrations WHERE bundle_id=$1 ORDER BY version"
+        )
         .bind(BUNDLE_ID)
         .fetch_all(pool)
         .await
@@ -311,7 +311,9 @@ impl PostgresManagedSessionRepository {
                  WHERE {cursor} \
                  ORDER BY root.session_id LIMIT {limit}",
             );
-            let rows = sqlx::query(&sql)
+            // SQL safety: only the closed keyset producer and constant page
+            // limit enter this template. The cursor remains a bound value.
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
                 .bind(after.as_deref())
                 .fetch_all(&mut *tx)
                 .await
@@ -1102,7 +1104,9 @@ impl PostgresManagedSessionRepository {
             .map_err(|error| storage(format!("invalid recovery batch size: {error}")))?;
         let mut scan = SessionScan::default();
         let sql = reconciliation_scan_sql(preparation_only, after.is_some(), "$1::text");
-        let mut rows = sqlx::query(&sql)
+        // SQL safety: the reconciliation producer uses fixed identifiers,
+        // allowlisted placeholders and a constant limit; `after` stays bound.
+        let mut rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(after.map(|cursor| cursor.session_id().as_str()))
             .fetch_all(&mut *tx)
             .await

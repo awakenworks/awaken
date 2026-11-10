@@ -220,7 +220,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-environment-application/tests/registration_replay.rs",
-        "line": 163,
+        "line": 169,
         "file_sha256": "3803ba788b384b22fd31a5394d85ddbe318dc2dae0209658a1df1db6f5fc39a2",
         "relocated_from": "crates/control/awaken-environment-application/tests/registration_replay.rs:163"
       }
@@ -249,7 +249,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-environment-application/tests/registration_replay.rs",
-        "line": 487,
+        "line": 493,
         "file_sha256": "3803ba788b384b22fd31a5394d85ddbe318dc2dae0209658a1df1db6f5fc39a2",
         "relocated_from": "crates/control/awaken-environment-application/tests/registration_replay.rs:485"
       }
@@ -307,7 +307,7 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/session_repo_conformance.rs",
-        "line": 291,
+        "line": 306,
         "file_sha256": "cc5b9076b8ed285a8d1e8d896b8fc0840faf3a4434ad7cabf73db2813c4b8304",
         "relocated_from": "crates/stores/awaken-session-store/tests/session_repo_conformance.rs:277"
       }
@@ -352,7 +352,7 @@
     "source_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/conformance.rs",
-        "line": 476,
+        "line": 486,
         "file_sha256": "4569cea2cd95b4ce0a56bc122ec7f2917db79b355b8ca4d4476cfc09f8304cc5",
         "relocated_from": "crates/resources/awaken-memory-store/tests/conformance.rs:476"
       }
@@ -381,7 +381,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/support/work_identity_durable.rs",
-        "line": 302,
+        "line": 309,
         "file_sha256": "48349177bdfe9d4803bf7652b5bc45ee65d907fdc0f2829c0e45489af2886f79",
         "relocated_from": "crates/stores/awaken-work-store/tests/support/work_identity_durable.rs:297"
       }
@@ -410,7 +410,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-environment-application/tests/registration_replay.rs",
-        "line": 522,
+        "line": 528,
         "file_sha256": "3803ba788b384b22fd31a5394d85ddbe318dc2dae0209658a1df1db6f5fc39a2",
         "relocated_from": "crates/control/awaken-environment-application/tests/registration_replay.rs:520"
       }
@@ -683,7 +683,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-environment-application/tests/registration_replay.rs",
-        "line": 156,
+        "line": 162,
         "file_sha256": "3803ba788b384b22fd31a5394d85ddbe318dc2dae0209658a1df1db6f5fc39a2",
         "relocated_from": "crates/control/awaken-environment-application/tests/registration_replay.rs:156"
       }
@@ -712,7 +712,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-environment-application/tests/registration_replay.rs",
-        "line": 479,
+        "line": 485,
         "file_sha256": "3803ba788b384b22fd31a5394d85ddbe318dc2dae0209658a1df1db6f5fc39a2",
         "relocated_from": "crates/control/awaken-environment-application/tests/registration_replay.rs:477"
       }
@@ -770,7 +770,7 @@
     "source_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/conformance.rs",
-        "line": 468,
+        "line": 478,
         "file_sha256": "4569cea2cd95b4ce0a56bc122ec7f2917db79b355b8ca4d4476cfc09f8304cc5",
         "relocated_from": "crates/resources/awaken-memory-store/tests/conformance.rs:468"
       }
@@ -799,7 +799,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-environment-application/tests/registration_replay.rs",
-        "line": 511,
+        "line": 517,
         "file_sha256": "3803ba788b384b22fd31a5394d85ddbe318dc2dae0209658a1df1db6f5fc39a2",
         "relocated_from": "crates/control/awaken-environment-application/tests/registration_replay.rs:509"
       }

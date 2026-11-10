@@ -280,11 +280,17 @@ mod tests {
             .await
             .expect("G2 configured PostgreSQL must be reachable");
         admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .execute(
+                // The owned fixture schema consists of a fixed prefix and integer process/time coordinates.
+                sqlx::AssertSqlSafe(format!("DROP SCHEMA IF EXISTS {schema} CASCADE")),
+            )
             .await
             .expect("P1 reset schema");
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(
+                // The owned fixture schema consists of a fixed prefix and integer process/time coordinates.
+                sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+            )
             .await
             .expect("P1 create schema");
         let pool = PgPoolOptions::new()
@@ -294,8 +300,9 @@ mod tests {
                 move |connection, _| {
                     let schema = schema.clone();
                     Box::pin(async move {
-                        connection
-                            .execute(format!("SET search_path = {schema}").as_str())
+                        sqlx::query("SELECT set_config('search_path', $1, false)")
+                            .bind(schema)
+                            .execute(connection)
                             .await?;
                         Ok(())
                     })
@@ -386,7 +393,10 @@ mod tests {
         );
 
         admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .execute(
+                // The owned fixture schema consists of a fixed prefix and integer process/time coordinates.
+                sqlx::AssertSqlSafe(format!("DROP SCHEMA IF EXISTS {schema} CASCADE")),
+            )
             .await
             .expect("P5 cleanup schema");
         admin.close().await;

@@ -72,7 +72,9 @@ async fn sqlite_registration_watermark_and_queue_rollback_together() {
         } else {
             "UPDATE ON work_queue_environment_revision"
         };
-        sqlx::raw_sql(&format!("CREATE TRIGGER revision_failure BEFORE {event} BEGIN SELECT RAISE(ABORT,'injected revision rollback'); END;"))
+        sqlx::raw_sql(
+// Fault SQL is selected only by the closed revision-failure event/table matrix.
+sqlx::AssertSqlSafe(format!("CREATE TRIGGER revision_failure BEFORE {event} BEGIN SELECT RAISE(ABORT,'injected revision rollback'); END;")))
             .execute(&pool).await.unwrap();
         let operation = match row {
             "cloud_update" => Operation::Register { healthcheck: false },
@@ -222,7 +224,8 @@ async fn postgres_registration_watermark_and_queue_rollback_together() {
         } else {
             ""
         };
-        sqlx::raw_sql(&format!("CREATE FUNCTION fail_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected revision rollback'; END; $$; CREATE TRIGGER revision_failure BEFORE {event} ON {table} FOR EACH ROW {condition} EXECUTE FUNCTION fail_revision();"))
+        // All event/table/condition fragments are the literal branches above.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE FUNCTION fail_revision() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected revision rollback'; END; $$; CREATE TRIGGER revision_failure BEFORE {event} ON {table} FOR EACH ROW {condition} EXECUTE FUNCTION fail_revision();")))
             .execute(&pool).await.unwrap();
         let operation = match row {
             "cloud_update" => Operation::Register { healthcheck: false },
@@ -260,9 +263,12 @@ async fn postgres_registration_watermark_and_queue_rollback_together() {
             after_watermark, before_watermark,
             "{row} watermark rollback"
         );
-        sqlx::raw_sql(&format!(
-            "DROP TRIGGER revision_failure ON {table}; DROP FUNCTION fail_revision();"
-        ))
+        sqlx::raw_sql(
+            // Fault SQL is selected only by the closed revision-failure event/table matrix.
+            sqlx::AssertSqlSafe(format!(
+                "DROP TRIGGER revision_failure ON {table}; DROP FUNCTION fail_revision();"
+            )),
+        )
         .execute(&pool)
         .await
         .unwrap();

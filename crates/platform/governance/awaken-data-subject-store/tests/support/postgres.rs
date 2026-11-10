@@ -10,6 +10,12 @@ pub struct Fixture {
 
 impl Fixture {
     pub async fn new(tag: &str) -> Option<Self> {
+        assert!(
+            !tag.is_empty()
+                && tag
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        );
         let url = awaken_reliability_testkit::postgres_fixture_url()?;
         let admin = PgPoolOptions::new()
             .max_connections(1)
@@ -27,8 +33,10 @@ impl Fixture {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
+        // The checked tag plus integer process/time/counter coordinates form
+        // only this fixture's schema identifier; no business values enter DDL.
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .await
             .expect("create owned schema");
         admin.close().await;
@@ -44,8 +52,9 @@ impl Fixture {
             .after_connect(move |connection, _| {
                 let schema = schema.clone();
                 Box::pin(async move {
-                    connection
-                        .execute(format!("SET search_path = {schema}").as_str())
+                    sqlx::query("SELECT set_config('search_path', $1, false)")
+                        .bind(schema)
+                        .execute(connection)
                         .await?;
                     Ok(())
                 })
@@ -66,7 +75,10 @@ impl Fixture {
             .await
             .expect("cleanup connection");
         admin
-            .execute(format!("DROP SCHEMA {} CASCADE", self.schema).as_str())
+            .execute(sqlx::AssertSqlSafe(format!(
+                "DROP SCHEMA {} CASCADE",
+                self.schema
+            )))
             .await
             .expect("drop exact owned schema");
         admin.close().await;

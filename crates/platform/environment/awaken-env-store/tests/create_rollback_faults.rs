@@ -186,7 +186,10 @@ async fn postgres_failed_intent_insert_rolls_back_for_independent_pools() {
         .as_nanos();
     let schema = format!("t_env_t20_rollback_{}_{nonce:x}", std::process::id());
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(
+            // The schema is a fixed fixture prefix plus integer process/time coordinates.
+            sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+        )
         .await
         .unwrap();
     let connect = || {
@@ -263,7 +266,10 @@ async fn postgres_failed_intent_insert_rolls_back_for_independent_pools() {
     retry_commits_once(&reopened, &rejected).await;
     drop(reopened);
     admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .execute(
+            // The schema is a fixed fixture prefix plus integer process/time coordinates.
+            sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")),
+        )
         .await
         .expect("drop only this run's schema");
     admin.close().await;

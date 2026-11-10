@@ -12,7 +12,6 @@ use sqlx::Row;
 use sqlx::types::Json;
 
 use crate::postgres::PostgresResourceStore;
-use crate::schema::REGISTRY_NS;
 
 const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
@@ -36,9 +35,8 @@ impl PostgresResourceStore {
     where
         T: DeserializeOwned,
     {
-        let sql =
-            format!("SELECT revision, data FROM {REGISTRY_NS}_entry WHERE kind = $1 AND id = $2");
-        sqlx::query(&sql)
+        let sql = "SELECT revision, data FROM resource_catalog_entry WHERE kind = $1 AND id = $2";
+        sqlx::query(sql)
             .bind(kind)
             .bind(id)
             .fetch_optional(&self.pool)
@@ -64,11 +62,10 @@ impl PostgresResourceStore {
         id: &str,
         aggregate: &T,
     ) -> Result<InsertOutcome, RegistryRepositoryError> {
-        let sql = format!(
-            "INSERT INTO {REGISTRY_NS}_entry (kind, id, revision, data) VALUES ($1, $2, 1, $3)"
-        );
+        let sql =
+            "INSERT INTO resource_catalog_entry (kind, id, revision, data) VALUES ($1, $2, 1, $3)";
         let data = serde_json::to_value(aggregate).map_err(corrupt)?;
-        match sqlx::query(&sql)
+        match sqlx::query(sql)
             .bind(kind)
             .bind(id)
             .bind(Json(data))
@@ -95,12 +92,10 @@ impl PostgresResourceStore {
                 "resource `{id}` exhausted aggregate revisions"
             ))
         })?;
-        let sql = format!(
-            "UPDATE {REGISTRY_NS}_entry SET revision = $4, data = $5 \
-             WHERE kind = $1 AND id = $2 AND revision = $3"
-        );
+        let sql = "UPDATE resource_catalog_entry SET revision = $4, data = $5 \
+             WHERE kind = $1 AND id = $2 AND revision = $3";
         let data = serde_json::to_value(aggregate).map_err(corrupt)?;
-        let changed = sqlx::query(&sql)
+        let changed = sqlx::query(sql)
             .bind(kind)
             .bind(id)
             .bind(expected_revision.get() as i64)
@@ -122,10 +117,9 @@ impl PostgresResourceStore {
         kind: &'static str,
         validate: impl Fn(&T, &str) -> Result<(), RegistryRepositoryError>,
     ) -> Result<Vec<Stored<T>>, RegistryRepositoryError> {
-        let sql = format!(
-            "SELECT id, revision, data FROM {REGISTRY_NS}_entry WHERE kind = $1 ORDER BY id"
-        );
-        sqlx::query(&sql)
+        let sql =
+            "SELECT id, revision, data FROM resource_catalog_entry WHERE kind = $1 ORDER BY id";
+        sqlx::query(sql)
             .bind(kind)
             .fetch_all(&self.pool)
             .await

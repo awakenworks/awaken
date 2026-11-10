@@ -674,19 +674,28 @@ async fn claim_dispatch(
 }
 
 async fn assert_commit_rows(pool: &PgPool, expected: i64) {
-    for table in [
-        "runtime_commit",
-        "runtime_message",
-        "runtime_state_command",
-        "runtime_event",
-        "runtime_run_record",
-        "runtime_thread_version",
-        "runtime_commit_receipt",
+    for (table, statement) in [
+        ("runtime_commit", "SELECT COUNT(*) FROM runtime_commit"),
+        ("runtime_message", "SELECT COUNT(*) FROM runtime_message"),
+        (
+            "runtime_state_command",
+            "SELECT COUNT(*) FROM runtime_state_command",
+        ),
+        ("runtime_event", "SELECT COUNT(*) FROM runtime_event"),
+        (
+            "runtime_run_record",
+            "SELECT COUNT(*) FROM runtime_run_record",
+        ),
+        (
+            "runtime_thread_version",
+            "SELECT COUNT(*) FROM runtime_thread_version",
+        ),
+        (
+            "runtime_commit_receipt",
+            "SELECT COUNT(*) FROM runtime_commit_receipt",
+        ),
     ] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-            .fetch_one(pool)
-            .await
-            .unwrap();
+        let count: i64 = sqlx::query_scalar(statement).fetch_one(pool).await.unwrap();
         let expected = if table == "runtime_event" {
             expected * 2
         } else {
@@ -782,10 +791,11 @@ async fn pause_before_receipt(
         .execute(&mut *blocker)
         .await
         .unwrap();
-    sqlx::query(&format!(
+    // blocker_pid is the database-returned integer PID; no request value enters DDL.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE FUNCTION pause_receipt() RETURNS trigger LANGUAGE plpgsql AS \
          $$ BEGIN PERFORM pg_advisory_xact_lock({blocker_pid}); RETURN NEW; END $$"
-    ))
+    )))
     .execute(reader)
     .await
     .unwrap();

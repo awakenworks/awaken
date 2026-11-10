@@ -124,6 +124,23 @@ fn realization_generation_authority_requires_every_axis() {
     );
 }
 
+/// Compare a bijection of complete MCP generation fences at protocol admission.
+pub fn realization_generation_set_authorizes(
+    current: &[crate::McpGenerationRef],
+    asserted: &[crate::McpGenerationRef],
+) -> bool {
+    // A bijection is required: two expiry variants of one generation cannot
+    // stand in for the receipt of another attachment.
+    let mut matched = std::collections::BTreeSet::new();
+    current.len() == asserted.len()
+        && current.iter().all(|expected| {
+            asserted
+                .iter()
+                .position(|actual| realization_generation_authorizes(expected, actual))
+                .is_some_and(|index| matched.insert(index))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,21 +253,4 @@ mod tests {
             );
         }
     }
-}
-
-/// Compare a bijection of complete MCP generation fences at protocol admission.
-pub fn realization_generation_set_authorizes(
-    current: &[crate::McpGenerationRef],
-    asserted: &[crate::McpGenerationRef],
-) -> bool {
-    // A bijection is required: two expiry variants of one generation cannot
-    // stand in for the receipt of another attachment.
-    let mut matched = std::collections::BTreeSet::new();
-    current.len() == asserted.len()
-        && current.iter().all(|expected| {
-            asserted
-                .iter()
-                .position(|actual| realization_generation_authorizes(expected, actual))
-                .is_some_and(|index| matched.insert(index))
-        })
 }

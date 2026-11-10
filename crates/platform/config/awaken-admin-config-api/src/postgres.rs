@@ -80,40 +80,33 @@ impl PostgresAdminStore {
 
     async fn put_json<T: serde::Serialize>(
         &self,
-        table: &str,
-        key_col: &str,
+        sql: &'static str,
         key: &str,
         value: &T,
     ) -> Result<(), ConfigRepositoryError> {
         let data = serde_json::to_value(value)
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_{table} ({key_col}, data) VALUES ($1, $2) \
-             ON CONFLICT ({key_col}) DO UPDATE SET data = excluded.data"
-        ))
-        .bind(key)
-        .bind(Json(data))
-        .execute(&self.pool)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        sqlx::query(sql)
+            .bind(key)
+            .bind(Json(data))
+            .execute(&self.pool)
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         Ok(())
     }
 }
 
-/// One JSON row of `table` by primary key, deserialized; `None` when absent.
+/// One JSON row selected by static SQL, deserialized; `None` when absent.
 async fn fetch_json<T: serde::de::DeserializeOwned>(
     pool: &PgPool,
-    table: &str,
-    key_col: &str,
+    sql: &'static str,
     key: &str,
 ) -> Result<Option<T>, ConfigRepositoryError> {
-    let row = sqlx::query(&format!(
-        "SELECT data FROM {NS}_{table} WHERE {key_col} = $1"
-    ))
-    .bind(key)
-    .fetch_optional(pool)
-    .await
-    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+    let row = sqlx::query(sql)
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
     row.map(|row| {
         row.try_get::<Json<T>, _>("data")
             .map(|Json(value)| value)
@@ -122,13 +115,12 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(
     .transpose()
 }
 
-/// All JSON rows of `table` ordered by `key_col`.
+/// All JSON rows selected in the order declared by static SQL.
 async fn fetch_all_json<T: serde::de::DeserializeOwned>(
     pool: &PgPool,
-    table: &str,
-    key_col: &str,
+    sql: &'static str,
 ) -> Result<Vec<T>, ConfigRepositoryError> {
-    let rows = sqlx::query(&format!("SELECT data FROM {NS}_{table} ORDER BY {key_col}"))
+    let rows = sqlx::query(sql)
         .fetch_all(pool)
         .await
         .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
@@ -190,9 +182,9 @@ async fn selected_bundles(
         .await
         .map_err(|error| StoreError::Schema(error.to_string()))?;
     let v1_checksum: Option<String> = if ledger.is_some() {
-        sqlx::query_scalar(&format!(
-            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
-        ))
+        sqlx::query_scalar(
+            "SELECT checksum FROM admin_schema_migrations WHERE bundle_id = $1 AND version = 1",
+        )
         .bind(BUNDLE_ID)
         .fetch_optional(pool)
         .await
@@ -239,13 +231,12 @@ impl AgentInputBindingRepository for PostgresAdminStore {
         lock_aggregate_id(&mut tx, &format!("{NS}_agent_resource:{key}"))
             .await
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_agent_resource WHERE agent_id = $1 FOR UPDATE"
-        ))
-        .bind(&key)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
+        let row =
+            sqlx::query("SELECT data FROM admin_agent_resource WHERE agent_id = $1 FOR UPDATE")
+                .bind(&key)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
         let current = row
             .map(|row| {
                 let Json(value): Json<AgentInputConfig> = row
@@ -262,16 +253,16 @@ impl AgentInputBindingRepository for PostgresAdminStore {
         let data = serde_json::to_value(plan.config())
             .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
         let statement = match plan.expected_revision() {
-            None => format!(
-                "INSERT INTO {NS}_agent_resource (agent_id, data) \
+            None => {
+                "INSERT INTO admin_agent_resource (agent_id, data) \
                             SELECT $1, $2 WHERE $3::bigint IS NULL ON CONFLICT(agent_id) DO NOTHING"
-            ),
-            Some(_) => format!(
-                "UPDATE {NS}_agent_resource SET data = $2 \
+            }
+            Some(_) => {
+                "UPDATE admin_agent_resource SET data = $2 \
                                WHERE agent_id = $1 AND (data->>'revision')::bigint = $3"
-            ),
+            }
         };
-        let changed = sqlx::query(&statement)
+        let changed = sqlx::query(statement)
             .bind(plan.storage_key())
             .bind(Json(data))
             .bind(plan.expected_revision())
@@ -293,11 +284,15 @@ impl AgentInputBindingRepository for PostgresAdminStore {
         agent_id: &str,
     ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError> {
         let key = agent_input_storage_key(workspace_id, agent_id)?;
-        fetch_json(&self.pool, "agent_resource", "agent_id", &key)
-            .await
-            .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?
-            .map(|config| validate_stored_agent_inputs(workspace_id, &key, config))
-            .transpose()
+        fetch_json(
+            &self.pool,
+            "SELECT data FROM admin_agent_resource WHERE agent_id = $1",
+            &key,
+        )
+        .await
+        .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?
+        .map(|config| validate_stored_agent_inputs(workspace_id, &key, config))
+        .transpose()
     }
     async fn list_agent_inputs(
         &self,
@@ -306,9 +301,9 @@ impl AgentInputBindingRepository for PostgresAdminStore {
         let prefix = agent_input_workspace_prefix(workspace_id)?;
         let workspace_id = workspace_id.to_owned();
         let pool = &self.pool;
-        let rows = sqlx::query(&format!(
-            "SELECT agent_id, data FROM {NS}_agent_resource ORDER BY agent_id COLLATE \"C\""
-        ))
+        let rows = sqlx::query(
+            "SELECT agent_id, data FROM admin_agent_resource ORDER BY agent_id COLLATE \"C\"",
+        )
         .fetch_all(pool)
         .await
         .map_err(|error| AgentInputRepositoryError::Storage(error.to_string()))?;
@@ -337,7 +332,12 @@ impl AgentInputBindingRepository for PostgresAdminStore {
 #[async_trait::async_trait]
 impl WebhookStore for PostgresAdminStore {
     async fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
-        fetch_json(&self.pool, "webhook", "id", id).await
+        fetch_json(
+            &self.pool,
+            "SELECT data FROM admin_webhook WHERE id = $1",
+            id,
+        )
+        .await
     }
     async fn list(
         &self,
@@ -345,13 +345,14 @@ impl WebhookStore for PostgresAdminStore {
     ) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
         // Reuse the sorted list query, then fence by owner in Rust (webhook rows are
         // low-cardinality; workspace lives inside the JSON, not a column).
-        Ok(
-            fetch_all_json::<WebhookEndpointDef>(&self.pool, "webhook", "id")
-                .await?
-                .into_iter()
-                .filter(|d| d.workspace_id == workspace_id)
-                .collect(),
+        Ok(fetch_all_json::<WebhookEndpointDef>(
+            &self.pool,
+            "SELECT data FROM admin_webhook ORDER BY id",
         )
+        .await?
+        .into_iter()
+        .filter(|d| d.workspace_id == workspace_id)
+        .collect())
     }
     async fn update_authored(
         &self,
@@ -363,26 +364,22 @@ impl WebhookStore for PostgresAdminStore {
             .await
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         lock_aggregate_id(&mut tx, &patch.id).await?;
-        let pending = sqlx::query(&format!(
-            "SELECT 1 FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&patch.id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let pending = sqlx::query("SELECT 1 FROM admin_webhook_mutation WHERE id = $1 FOR UPDATE")
+            .bind(&patch.id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         if pending.is_some() {
             return Err(ConfigRepositoryError::MutationConflict(format!(
                 "webhook {} has a pending material mutation",
                 patch.id
             )));
         }
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&patch.id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let row = sqlx::query("SELECT data FROM admin_webhook WHERE id = $1 FOR UPDATE")
+            .bind(&patch.id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         let Some(row) = row else {
             return Ok(WebhookAuthoringState::Missing);
         };
@@ -402,7 +399,7 @@ impl WebhookStore for PostgresAdminStore {
         }
         let data = serde_json::to_value(&definition)
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        sqlx::query(&format!("UPDATE {NS}_webhook SET data = $2 WHERE id = $1"))
+        sqlx::query("UPDATE admin_webhook SET data = $2 WHERE id = $1")
             .bind(&patch.id)
             .bind(Json(data))
             .execute(&mut *tx)
@@ -427,13 +424,12 @@ impl WebhookStore for PostgresAdminStore {
             .await
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         lock_aggregate_id(&mut tx, &id).await?;
-        let pending = sqlx::query(&format!(
-            "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let pending =
+            sqlx::query("SELECT data FROM admin_webhook_mutation WHERE id = $1 FOR UPDATE")
+                .bind(&id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         if let Some(row) = pending {
             let Json(pending): Json<WebhookMutationIntent> = row
                 .try_get("data")
@@ -446,13 +442,11 @@ impl WebhookStore for PostgresAdminStore {
                 )))
             };
         }
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let row = sqlx::query("SELECT data FROM admin_webhook WHERE id = $1 FOR UPDATE")
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         let current = row
             .map(|row| {
                 row.try_get::<Json<WebhookEndpointDef>, _>("data")
@@ -465,14 +459,12 @@ impl WebhookStore for PostgresAdminStore {
                 "webhook {id} changed before mutation admission"
             )));
         }
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_webhook_mutation(id,data) VALUES ($1,$2)"
-        ))
-        .bind(&id)
-        .bind(Json(data))
-        .execute(&mut *tx)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        sqlx::query("INSERT INTO admin_webhook_mutation(id,data) VALUES ($1,$2)")
+            .bind(&id)
+            .bind(Json(data))
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         tx.commit()
             .await
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
@@ -489,32 +481,29 @@ impl WebhookStore for PostgresAdminStore {
             .await
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         lock_aggregate_id(&mut tx, id).await?;
-        let pending = sqlx::query(&format!(
-            "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
-        .map(|row| {
-            row.try_get::<Json<WebhookMutationIntent>, _>("data")
-                .map(|Json(value)| value)
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-        })
-        .transpose()?;
-        let current = sqlx::query(&format!(
-            "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
-        .map(|row| {
-            row.try_get::<Json<WebhookEndpointDef>, _>("data")
-                .map(|Json(value)| value)
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-        })
-        .transpose()?;
+        let pending =
+            sqlx::query("SELECT data FROM admin_webhook_mutation WHERE id = $1 FOR UPDATE")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
+                .map(|row| {
+                    row.try_get::<Json<WebhookMutationIntent>, _>("data")
+                        .map(|Json(value)| value)
+                        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+                })
+                .transpose()?;
+        let current = sqlx::query("SELECT data FROM admin_webhook WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
+            .map(|row| {
+                row.try_get::<Json<WebhookEndpointDef>, _>("data")
+                    .map(|Json(value)| value)
+                    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+            })
+            .transpose()?;
         if pending.as_ref() != Some(intent) || current != intent.before {
             return Err(ConfigRepositoryError::MutationConflict(format!(
                 "webhook {id} no longer matches its pending mutation"
@@ -524,7 +513,7 @@ impl WebhookStore for PostgresAdminStore {
             Some(after) => {
                 let data = serde_json::to_value(after)
                     .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-                sqlx::query(&format!("INSERT INTO {NS}_webhook(id,data) VALUES ($1,$2)"))
+                sqlx::query("INSERT INTO admin_webhook(id,data) VALUES ($1,$2)")
                     .bind(id)
                     .bind(Json(data))
                     .execute(&mut *tx)
@@ -532,7 +521,7 @@ impl WebhookStore for PostgresAdminStore {
                     .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
             }
             None => {
-                sqlx::query(&format!("DELETE FROM {NS}_webhook WHERE id = $1"))
+                sqlx::query("DELETE FROM admin_webhook WHERE id = $1")
                     .bind(id)
                     .execute(&mut *tx)
                     .await
@@ -545,7 +534,11 @@ impl WebhookStore for PostgresAdminStore {
     }
 
     async fn pending_mutations(&self) -> Result<Vec<WebhookMutationIntent>, ConfigRepositoryError> {
-        fetch_all_json(&self.pool, "webhook_mutation", "id").await
+        fetch_all_json(
+            &self.pool,
+            "SELECT data FROM admin_webhook_mutation ORDER BY id",
+        )
+        .await
     }
 
     async fn complete_mutation(
@@ -559,19 +552,18 @@ impl WebhookStore for PostgresAdminStore {
             .await
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         lock_aggregate_id(&mut tx, id).await?;
-        let pending = sqlx::query(&format!(
-            "SELECT data FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
-        .map(|row| {
-            row.try_get::<Json<WebhookMutationIntent>, _>("data")
-                .map(|Json(value)| value)
-                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
-        })
-        .transpose()?;
+        let pending =
+            sqlx::query("SELECT data FROM admin_webhook_mutation WHERE id = $1 FOR UPDATE")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?
+                .map(|row| {
+                    row.try_get::<Json<WebhookMutationIntent>, _>("data")
+                        .map(|Json(value)| value)
+                        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+                })
+                .transpose()?;
         match pending {
             None => return Ok(()),
             Some(pending) if &pending == intent => {}
@@ -581,7 +573,7 @@ impl WebhookStore for PostgresAdminStore {
                 )));
             }
         }
-        sqlx::query(&format!("DELETE FROM {NS}_webhook_mutation WHERE id = $1"))
+        sqlx::query("DELETE FROM admin_webhook_mutation WHERE id = $1")
             .bind(id)
             .execute(&mut *tx)
             .await
@@ -594,13 +586,14 @@ impl WebhookStore for PostgresAdminStore {
     async fn material_refs(
         &self,
     ) -> Result<Vec<awaken_credential_vault::SecretRef>, ConfigRepositoryError> {
-        Ok(
-            fetch_all_json::<WebhookEndpointDef>(&self.pool, "webhook", "id")
-                .await?
-                .into_iter()
-                .map(|definition| definition.secret_ref)
-                .collect(),
+        Ok(fetch_all_json::<WebhookEndpointDef>(
+            &self.pool,
+            "SELECT data FROM admin_webhook ORDER BY id",
         )
+        .await?
+        .into_iter()
+        .map(|definition| definition.secret_ref)
+        .collect())
     }
 
     async fn record_delivery(
@@ -615,25 +608,21 @@ impl WebhookStore for PostgresAdminStore {
             .await
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         lock_aggregate_id(&mut tx, id).await?;
-        let pending = sqlx::query(&format!(
-            "SELECT 1 FROM {NS}_webhook_mutation WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let pending = sqlx::query("SELECT 1 FROM admin_webhook_mutation WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         if pending.is_some() {
             return Err(ConfigRepositoryError::MutationConflict(format!(
                 "webhook {id} has a pending material mutation"
             )));
         }
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_webhook WHERE id = $1 FOR UPDATE"
-        ))
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+        let row = sqlx::query("SELECT data FROM admin_webhook WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
         let Some(row) = row else {
             return Ok(WebhookDeliveryState::Missing);
         };
@@ -643,7 +632,7 @@ impl WebhookStore for PostgresAdminStore {
         let state = definition.record_delivery(outcome, failure_threshold);
         let data = serde_json::to_value(&definition)
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
-        sqlx::query(&format!("UPDATE {NS}_webhook SET data = $2 WHERE id = $1"))
+        sqlx::query("UPDATE admin_webhook SET data = $2 WHERE id = $1")
             .bind(id)
             .bind(Json(data))
             .execute(&mut *tx)
@@ -663,10 +652,15 @@ impl InferenceProfileStore for PostgresAdminStore {
         id: String,
         profile: InferenceProfile,
     ) -> Result<(), ConfigRepositoryError> {
-        self.put_json("inference_profile", "id", &id, &profile)
+        self.put_json("INSERT INTO admin_inference_profile (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = excluded.data", &id, &profile)
             .await
     }
     async fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
-        fetch_json(&self.pool, "inference_profile", "id", id).await
+        fetch_json(
+            &self.pool,
+            "SELECT data FROM admin_inference_profile WHERE id = $1",
+            id,
+        )
+        .await
     }
 }

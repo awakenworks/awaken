@@ -129,10 +129,10 @@ async fn fence_owner(
     transaction: &mut Transaction<'_, Postgres>,
     target: &ResourceTarget,
 ) -> Result<Option<String>, ResourcePurgeError> {
-    sqlx::query(&format!(
-        "SELECT intent_id FROM {NS}_reclamation_fences
-         WHERE resource_kind = $1 AND resource_id = $2"
-    ))
+    sqlx::query(
+        "SELECT intent_id FROM resource_lifecycle_reclamation_fences
+         WHERE resource_kind = $1 AND resource_id = $2",
+    )
     .bind(kind_name(target.kind))
     .bind(&target.resource_id)
     .fetch_optional(&mut **transaction)
@@ -164,11 +164,11 @@ async fn references_for_identity(
     kind: ResourceKind,
     resource_id: &str,
 ) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
-    let rows = sqlx::query(&format!(
-        "SELECT workspace_id, reference_kind, reference_id FROM {NS}_references
+    let rows = sqlx::query(
+        "SELECT workspace_id, reference_kind, reference_id FROM resource_lifecycle_references
          WHERE resource_kind = $1 AND resource_id = $2
-         ORDER BY workspace_id, reference_kind, reference_id"
-    ))
+         ORDER BY workspace_id, reference_kind, reference_id",
+    )
     .bind(kind_name(kind))
     .bind(resource_id)
     .fetch_all(&mut **transaction)
@@ -213,10 +213,10 @@ impl ResourceReclamationFence for PostgresResourceStore {
             ReclamationAcquisitionPlan::Return(outcome) => return Ok(outcome),
             ReclamationAcquisitionPlan::InstallFence => {}
         }
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_reclamation_fences
-             (resource_kind, resource_id, intent_id) VALUES ($1, $2, $3)"
-        ))
+        sqlx::query(
+            "INSERT INTO resource_lifecycle_reclamation_fences
+             (resource_kind, resource_id, intent_id) VALUES ($1, $2, $3)",
+        )
         .bind(kind_name(target.kind))
         .bind(&target.resource_id)
         .bind(intent_id)
@@ -230,10 +230,10 @@ impl ResourceReclamationFence for PostgresResourceStore {
         let blockers =
             references_for_identity(&mut transaction, target.kind, &target.resource_id).await?;
         if !blockers.is_empty() {
-            sqlx::query(&format!(
-                "DELETE FROM {NS}_reclamation_fences
-                 WHERE resource_kind = $1 AND resource_id = $2 AND intent_id = $3"
-            ))
+            sqlx::query(
+                "DELETE FROM resource_lifecycle_reclamation_fences
+                 WHERE resource_kind = $1 AND resource_id = $2 AND intent_id = $3",
+            )
             .bind(kind_name(target.kind))
             .bind(&target.resource_id)
             .bind(intent_id)
@@ -267,10 +267,10 @@ impl ResourceReclamationFence for PostgresResourceStore {
         lock_identity(&mut transaction, target.kind, &target.resource_id).await?;
         let changed = match fence_owner(&mut transaction, target).await? {
             Some(owner) if owner == intent_id => {
-                sqlx::query(&format!(
-                    "DELETE FROM {NS}_reclamation_fences
-                 WHERE resource_kind = $1 AND resource_id = $2 AND intent_id = $3"
-                ))
+                sqlx::query(
+                    "DELETE FROM resource_lifecycle_reclamation_fences
+                 WHERE resource_kind = $1 AND resource_id = $2 AND intent_id = $3",
+                )
                 .bind(kind_name(target.kind))
                 .bind(&target.resource_id)
                 .bind(intent_id)
@@ -304,13 +304,13 @@ impl ResourcePurgeRepository for PostgresResourceStore {
             .begin()
             .await
             .map_err(|error| storage(error.to_string()))?;
-        let inserted = sqlx::query(&format!(
-            "INSERT INTO {NS}_purge_intents
+        let inserted = sqlx::query(
+            "INSERT INTO resource_lifecycle_purge_intents
              (intent_id, idempotency_key, revision, status, requested_at_unix_ms,
               not_before_unix_ms, lease_expires_at_unix_ms, data)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT DO NOTHING"
-        ))
+             ON CONFLICT DO NOTHING",
+        )
         .bind(&intent.intent_id)
         .bind(&intent.idempotency_key)
         .bind(to_i64(intent.revision)?)
@@ -331,10 +331,10 @@ impl ResourcePurgeRepository for PostgresResourceStore {
                 .map_err(|error| storage(error.to_string()))?;
             return Ok(PutResourcePurgeOutcome::Inserted);
         }
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_purge_intents
-             WHERE intent_id = $1 OR idempotency_key = $2 LIMIT 1"
-        ))
+        let row = sqlx::query(
+            "SELECT data FROM resource_lifecycle_purge_intents
+             WHERE intent_id = $1 OR idempotency_key = $2 LIMIT 1",
+        )
         .bind(&intent.intent_id)
         .bind(&intent.idempotency_key)
         .fetch_one(&mut *transaction)
@@ -354,18 +354,16 @@ impl ResourcePurgeRepository for PostgresResourceStore {
         &self,
         intent_id: &str,
     ) -> Result<Option<ResourcePurgeIntent>, ResourcePurgeError> {
-        sqlx::query(&format!(
-            "SELECT data FROM {NS}_purge_intents WHERE intent_id = $1"
-        ))
-        .bind(intent_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|error| storage(error.to_string()))?
-        .map(|row| {
-            let data: String = row.try_get("data").map_err(storage)?;
-            decode_intent(&data)
-        })
-        .transpose()
+        sqlx::query("SELECT data FROM resource_lifecycle_purge_intents WHERE intent_id = $1")
+            .bind(intent_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| storage(error.to_string()))?
+            .map(|row| {
+                let data: String = row.try_get("data").map_err(storage)?;
+                decode_intent(&data)
+            })
+            .transpose()
     }
 
     async fn recoverable(
@@ -373,13 +371,13 @@ impl ResourcePurgeRepository for PostgresResourceStore {
         now_unix_ms: u64,
         limit: usize,
     ) -> Result<Vec<ResourcePurgeIntent>, ResourcePurgeError> {
-        let rows = sqlx::query(&format!(
-            "SELECT data FROM {NS}_purge_intents
+        let rows = sqlx::query(
+            "SELECT data FROM resource_lifecycle_purge_intents
              WHERE status NOT IN ('completed', 'terminal_failed')
                AND not_before_unix_ms <= $1
                AND (lease_expires_at_unix_ms IS NULL OR lease_expires_at_unix_ms <= $1)
-             ORDER BY requested_at_unix_ms, intent_id LIMIT $2"
-        ))
+             ORDER BY requested_at_unix_ms, intent_id LIMIT $2",
+        )
         .bind(to_i64(now_unix_ms)?)
         .bind(to_i64(limit as u64)?)
         .fetch_all(&self.pool)
@@ -399,11 +397,11 @@ impl ResourcePurgeRepository for PostgresResourceStore {
         intent: ResourcePurgeIntent,
     ) -> Result<(), ResourcePurgeError> {
         intent.validate()?;
-        let changed = sqlx::query(&format!(
-            "UPDATE {NS}_purge_intents
+        let changed = sqlx::query(
+            "UPDATE resource_lifecycle_purge_intents
              SET revision = $3, status = $4, lease_expires_at_unix_ms = $5, data = $6
-             WHERE intent_id = $1 AND revision = $2"
-        ))
+             WHERE intent_id = $1 AND revision = $2",
+        )
         .bind(&intent.intent_id)
         .bind(to_i64(expected_revision)?)
         .bind(to_i64(intent.revision)?)
@@ -443,11 +441,11 @@ impl ResourceReferenceIndex for PostgresResourceStore {
         )
         .await?;
         ensure_unfenced(&mut transaction, &record.target).await?;
-        let changed = sqlx::query(&format!(
-            "INSERT INTO {NS}_references
+        let changed = sqlx::query(
+            "INSERT INTO resource_lifecycle_references
              (workspace_id, resource_kind, resource_id, reference_kind, reference_id)
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING"
-        ))
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+        )
         .bind(&record.target.workspace_id)
         .bind(kind_name(record.target.kind))
         .bind(&record.target.resource_id)
@@ -470,11 +468,11 @@ impl ResourceReferenceIndex for PostgresResourceStore {
         record: &ResourceReferenceRecord,
     ) -> Result<bool, ResourcePurgeError> {
         validate_reference(record)?;
-        Ok(sqlx::query(&format!(
-            "DELETE FROM {NS}_references
+        Ok(sqlx::query(
+            "DELETE FROM resource_lifecycle_references
              WHERE workspace_id = $1 AND resource_kind = $2 AND resource_id = $3
-               AND reference_kind = $4 AND reference_id = $5"
-        ))
+               AND reference_kind = $4 AND reference_id = $5",
+        )
         .bind(&record.target.workspace_id)
         .bind(kind_name(record.target.kind))
         .bind(&record.target.resource_id)
@@ -514,11 +512,11 @@ impl ResourceReferenceIndex for PostgresResourceStore {
                 .expect("identity came from records");
             ensure_unfenced(&mut transaction, target).await?;
         }
-        let existing = sqlx::query(&format!(
+        let existing = sqlx::query(
             "SELECT workspace_id, resource_kind, resource_id
-             FROM {NS}_references
-             WHERE reference_kind = $1 AND reference_id = $2"
-        ))
+             FROM resource_lifecycle_references
+             WHERE reference_kind = $1 AND reference_id = $2",
+        )
         .bind(reference_kind_name(kind))
         .bind(reference_id)
         .fetch_all(&mut *transaction)
@@ -540,20 +538,18 @@ impl ResourceReferenceIndex for PostgresResourceStore {
                 .map_err(|error| storage(error.to_string()))?;
             return Ok(());
         }
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_references WHERE reference_kind = $1 AND reference_id = $2"
-        ))
+        sqlx::query("DELETE FROM resource_lifecycle_references WHERE reference_kind = $1 AND reference_id = $2")
         .bind(reference_kind_name(kind))
         .bind(reference_id)
         .execute(&mut *transaction)
         .await
         .map_err(|error| storage(error.to_string()))?;
         for record in records {
-            sqlx::query(&format!(
-                "INSERT INTO {NS}_references
+            sqlx::query(
+                "INSERT INTO resource_lifecycle_references
                  (workspace_id, resource_kind, resource_id, reference_kind, reference_id)
-                 VALUES ($1, $2, $3, $4, $5)"
-            ))
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
             .bind(record.target.workspace_id)
             .bind(kind_name(record.target.kind))
             .bind(record.target.resource_id)
@@ -573,11 +569,11 @@ impl ResourceReferenceIndex for PostgresResourceStore {
         &self,
         target: &ResourceTarget,
     ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
-        let rows = sqlx::query(&format!(
-            "SELECT reference_kind, reference_id FROM {NS}_references
+        let rows = sqlx::query(
+            "SELECT reference_kind, reference_id FROM resource_lifecycle_references
              WHERE workspace_id = $1 AND resource_kind = $2 AND resource_id = $3
-             ORDER BY reference_kind, reference_id"
-        ))
+             ORDER BY reference_kind, reference_id",
+        )
         .bind(&target.workspace_id)
         .bind(kind_name(target.kind))
         .bind(&target.resource_id)
@@ -795,11 +791,9 @@ mod tests {
             )
             .await
             .expect("P1 initial set");
-        let identity_query = format!(
-            "SELECT xmin::text, ctid::text FROM {NS}_references
-             WHERE reference_kind = $1 AND reference_id = $2"
-        );
-        let before = sqlx::query_as::<_, (String, String)>(&identity_query)
+        let identity_query = "SELECT xmin::text, ctid::text FROM resource_lifecycle_references
+             WHERE reference_kind = $1 AND reference_id = $2";
+        let before = sqlx::query_as::<_, (String, String)>(identity_query)
             .bind(reference_kind_name(ResourceReferenceKind::SessionBinding))
             .bind(&holder)
             .fetch_one(&store.pool)
@@ -813,7 +807,7 @@ mod tests {
             )
             .await
             .expect("P1 exact repeat");
-        let after = sqlx::query_as::<_, (String, String)>(&identity_query)
+        let after = sqlx::query_as::<_, (String, String)>(identity_query)
             .bind(reference_kind_name(ResourceReferenceKind::SessionBinding))
             .bind(&holder)
             .fetch_one(&store.pool)

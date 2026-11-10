@@ -58,13 +58,23 @@ fn database_url_in_schema(schema: &str) -> String {
 /// here, via `search_path`, and never leaks into the store's API. Returns `None`
 /// for an absent optional fixture.
 async fn schema_pool(schema: &'static str) -> Option<PgPool> {
+    // Isolation names come from this test's static call sites, and are admitted
+    // as one identifier before any destructive fixture DDL.
+    assert!(
+        !schema.is_empty()
+            && schema
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
     let url = awaken_reliability_testkit::postgres_fixture_url()?;
     let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
     let _ = admin
-        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        .execute(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE"
+        )))
         .await;
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .expect("create schema");
     admin.close().await;
@@ -629,19 +639,25 @@ async fn later_bulk_chunk_failure_rolls_back_every_fact_and_reuses_sequence() {
                 .is_err(),
             "F1-F3 second {stage} chunk rejects"
         );
-        for table in [
-            "runtime_commit",
-            "runtime_message",
-            "runtime_state_command",
-            "runtime_event",
-            "runtime_run_record",
-            "runtime_waiting",
-            "runtime_commit_receipt",
+        for (table, query) in [
+            ("runtime_commit", "SELECT COUNT(*) FROM runtime_commit"),
+            ("runtime_message", "SELECT COUNT(*) FROM runtime_message"),
+            (
+                "runtime_state_command",
+                "SELECT COUNT(*) FROM runtime_state_command",
+            ),
+            ("runtime_event", "SELECT COUNT(*) FROM runtime_event"),
+            (
+                "runtime_run_record",
+                "SELECT COUNT(*) FROM runtime_run_record",
+            ),
+            ("runtime_waiting", "SELECT COUNT(*) FROM runtime_waiting"),
+            (
+                "runtime_commit_receipt",
+                "SELECT COUNT(*) FROM runtime_commit_receipt",
+            ),
         ] {
-            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+            let count: i64 = sqlx::query_scalar(query).fetch_one(&pool).await.unwrap();
             assert_eq!(count, 0, "F1-F3/E1 {stage} {table}");
         }
         let retry = coordinator

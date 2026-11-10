@@ -59,7 +59,7 @@ async fn write_published_history(path: &str, legacy: bool) {
 
 async fn ledger_and_allocator(path: &str) -> (i64, (String, i64)) {
     let pool = EmbeddedSqlite::file(path).open().await.unwrap();
-    let ledger: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {NS}_schema_migrations"))
+    let ledger: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM work_queue_schema_migrations")
         .fetch_one(pool.sqlx())
         .await
         .unwrap();

@@ -47,9 +47,7 @@ impl SqliteWorkerDirectory {
         .await
         .map_err(persist)?;
         let v1_checksum: Option<String> = if ledger_exists {
-            sqlx::query_scalar(&format!(
-                "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
-            ))
+            sqlx::query_scalar("SELECT checksum FROM worker_registry_schema_migrations WHERE bundle_id = ?1 AND version = 1")
             .bind(BUNDLE_ID)
             .fetch_optional(&pool)
             .await
@@ -74,9 +72,10 @@ impl SqliteWorkerDirectory {
         conn: &mut SqliteConnection,
         worker_id: &str,
     ) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let encoded = sqlx::query(&format!(
+        // WORKER_COLUMNS is the fixed codec column list; identity is bound.
+        let encoded = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = ?1 ORDER BY generation DESC LIMIT 1"
-        ))
+        )))
         .bind(worker_id)
         .fetch_optional(&mut *conn)
         .await
@@ -92,9 +91,10 @@ impl SqliteWorkerDirectory {
         identity: &WorkerIdentity,
     ) -> Result<Option<RegisteredWorker>, RegistryError> {
         let generation = durable_i64("generation", identity.generation)?;
-        let encoded = sqlx::query(&format!(
+        // Only the fixed codec column list is interpolated, never identity values.
+        let encoded = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = ?1 AND generation = ?2 AND incarnation_id = ?3"
-        ))
+        )))
         .bind(&identity.worker_id)
         .bind(generation)
         .bind(&identity.incarnation_id)
@@ -231,7 +231,7 @@ fn persist(error: impl std::fmt::Display) -> RegistryError {
 #[async_trait]
 impl WorkerObservationSource for SqliteWorkerDirectory {
     async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        sqlx::query(&current_workers_query())
+        sqlx::query(current_workers_query())
             .fetch_all(&self.pool)
             .await
             .map_err(persist)?

@@ -97,6 +97,8 @@ allow-git = [
     "https://github.com/awakenworks/awaken-ui",
     "https://github.com/awakenworks/awaken-foundation",
     "https://github.com/awakenworks/awaken-iam",
+    # Official SQLx security revision, shared with Foundation's SQLite driver.
+    "https://github.com/transact-rs/sqlx",
 ]
 
 # The mandatory trust-root guard limits this semver-shim false positive.

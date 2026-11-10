@@ -115,7 +115,7 @@ pub async fn open_migrated_pair(
 /// One JSON row by primary key, deserialized; `not_found` shapes the miss.
 async fn get_row<T: serde::de::DeserializeOwned>(
     conn: &mut SqliteConnection,
-    sql: &str,
+    sql: &'static str,
     key: &str,
     not_found: impl FnOnce(String) -> CredentialError,
 ) -> Result<T, CredentialError> {
@@ -131,7 +131,7 @@ async fn get_row<T: serde::de::DeserializeOwned>(
 /// All JSON rows of one workspace, in insertion order.
 async fn list_rows<T: serde::de::DeserializeOwned>(
     conn: &mut SqliteConnection,
-    sql: &str,
+    sql: &'static str,
     workspace_id: &str,
 ) -> Result<Vec<T>, CredentialError> {
     let rows: Vec<String> = sqlx::query_scalar(sql)
@@ -163,19 +163,17 @@ impl ManagedVaultRepo for SqliteCredentialRepo {
                 "Managed Vault workspace does not match its authority".into(),
             ));
         }
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        let owner: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT workspace_id FROM {p}_managed_vault WHERE id = ?1"
-        ))
-        .bind(&vault.id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?;
+        let owner: Option<String> =
+            sqlx::query_scalar("SELECT workspace_id FROM credential_managed_vault WHERE id = ?1")
+                .bind(&vault.id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?;
         if !managed_vault_workspace_admitted(
             workspace_id,
             vault.workspace_id.as_str(),
@@ -186,9 +184,7 @@ impl ManagedVaultRepo for SqliteCredentialRepo {
             ));
         }
         let data = serde_json::to_string(&vault).map_err(storage)?;
-        let changed = sqlx::query(&format!(
-            "INSERT OR IGNORE INTO {p}_managed_vault (id, workspace_id, data) VALUES (?1, ?2, ?3)"
-        ))
+        let changed = sqlx::query("INSERT OR IGNORE INTO credential_managed_vault (id, workspace_id, data) VALUES (?1, ?2, ?3)")
         .bind(&vault.id)
         .bind(&vault.workspace_id)
         .bind(data)
@@ -215,24 +211,21 @@ impl ManagedVaultRepo for SqliteCredentialRepo {
                 "Managed Vault workspace does not match its authority".into(),
             ));
         }
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        sqlx::query(&format!(
-            "INSERT OR IGNORE INTO {p}_managed_vault (id, workspace_id, data) VALUES (?1, ?2, ?3)"
-        ))
+        sqlx::query("INSERT OR IGNORE INTO credential_managed_vault (id, workspace_id, data) VALUES (?1, ?2, ?3)")
         .bind(&vault.id)
         .bind(&vault.workspace_id)
         .bind(serde_json::to_string(&vault).map_err(storage)?)
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        let (owner, data) = sqlx::query_as::<_, (String, String)>(&format!(
-            "SELECT workspace_id, data FROM {p}_managed_vault WHERE id = ?1"
-        ))
+        let (owner, data) = sqlx::query_as::<_, (String, String)>(
+            "SELECT workspace_id, data FROM credential_managed_vault WHERE id = ?1",
+        )
         .bind(&vault.id)
         .fetch_one(&mut *tx)
         .await
@@ -257,15 +250,14 @@ impl ManagedVaultRepo for SqliteCredentialRepo {
         expected_revision: u64,
         vault: ManagedVault,
     ) -> Result<(), ManagedVaultMutationError> {
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(vault_storage)?;
-        let current = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT data FROM {p}_managed_vault WHERE workspace_id = ?1 AND id = ?2"
-        ))
+        let current = sqlx::query_scalar::<_, String>(
+            "SELECT data FROM credential_managed_vault WHERE workspace_id = ?1 AND id = ?2",
+        )
         .bind(workspace_id)
         .bind(&vault.id)
         .fetch_optional(&mut *tx)
@@ -275,9 +267,9 @@ impl ManagedVaultRepo for SqliteCredentialRepo {
         .transpose()?;
         admit_managed_vault_replacement(workspace_id, current.as_ref(), expected_revision, &vault)?;
         let data = serde_json::to_string(&vault).map_err(vault_storage)?;
-        sqlx::query(&format!(
-            "UPDATE {p}_managed_vault SET data = ?1 WHERE workspace_id = ?2 AND id = ?3"
-        ))
+        sqlx::query(
+            "UPDATE credential_managed_vault SET data = ?1 WHERE workspace_id = ?2 AND id = ?3",
+        )
         .bind(data)
         .bind(workspace_id)
         .bind(&vault.id)
@@ -293,10 +285,9 @@ impl ManagedVaultRepo for SqliteCredentialRepo {
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<ManagedVault>, CredentialError> {
-        let p = NS;
-        let data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_managed_vault WHERE workspace_id = ?1 AND id = ?2"
-        ))
+        let data: Option<String> = sqlx::query_scalar(
+            "SELECT data FROM credential_managed_vault WHERE workspace_id = ?1 AND id = ?2",
+        )
         .bind(workspace_id)
         .bind(id)
         .fetch_optional(&self.pool)
@@ -307,11 +298,10 @@ impl ManagedVaultRepo for SqliteCredentialRepo {
     }
 
     async fn list_vaults(&self, workspace_id: &str) -> Result<Vec<ManagedVault>, CredentialError> {
-        let p = NS;
         let mut conn = self.pool.acquire().await.map_err(storage)?;
         list_rows(
             &mut conn,
-            &format!("SELECT data FROM {p}_managed_vault WHERE workspace_id = ?1 ORDER BY id"),
+            "SELECT data FROM credential_managed_vault WHERE workspace_id = ?1 ORDER BY id",
             workspace_id,
         )
         .await
@@ -322,10 +312,7 @@ impl ManagedVaultRepo for SqliteCredentialRepo {
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
-        let p = NS;
-        let data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_managed_vault_credential WHERE workspace_id = ?1 AND id = ?2"
-        ))
+        let data: Option<String> = sqlx::query_scalar("SELECT data FROM credential_managed_vault_credential WHERE workspace_id = ?1 AND id = ?2")
         .bind(workspace_id)
         .bind(id)
         .fetch_optional(&self.pool)
@@ -340,10 +327,7 @@ impl ManagedVaultRepo for SqliteCredentialRepo {
         workspace_id: &str,
         source_id: &CredentialSourceId,
     ) -> Result<Option<ManagedVaultCredential>, CredentialError> {
-        let p = NS;
-        let data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_managed_vault_credential WHERE workspace_id = ?1 AND source_id = ?2"
-        ))
+        let data: Option<String> = sqlx::query_scalar("SELECT data FROM credential_managed_vault_credential WHERE workspace_id = ?1 AND source_id = ?2")
         .bind(workspace_id)
         .bind(&source_id.0)
         .fetch_optional(&self.pool)
@@ -358,10 +342,7 @@ impl ManagedVaultRepo for SqliteCredentialRepo {
         workspace_id: &str,
         vault_id: &str,
     ) -> Result<Vec<ManagedVaultCredential>, CredentialError> {
-        let p = NS;
-        let rows: Vec<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_managed_vault_credential WHERE workspace_id = ?1 AND vault_id = ?2 ORDER BY id"
-        ))
+        let rows: Vec<String> = sqlx::query_scalar("SELECT data FROM credential_managed_vault_credential WHERE workspace_id = ?1 AND vault_id = ?2 ORDER BY id")
         .bind(workspace_id)
         .bind(vault_id)
         .fetch_all(&self.pool)
@@ -409,13 +390,12 @@ mod managed;
 #[async_trait::async_trait]
 impl CredentialRepo for SqliteCredentialRepo {
     async fn put(&self, source: CredentialSource) -> Result<(), CredentialError> {
-        let p = NS;
         let data = serde_json::to_string(&source).map_err(storage)?;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3) \
+        sqlx::query(
+            "INSERT INTO credential_source (id, workspace_id, data) VALUES (?1, ?2, ?3) \
              ON CONFLICT(id) DO UPDATE SET \
-             workspace_id = excluded.workspace_id, data = excluded.data"
-        ))
+             workspace_id = excluded.workspace_id, data = excluded.data",
+        )
         .bind(&source.id.0)
         .bind(&source.workspace_id)
         .bind(data)
@@ -429,12 +409,11 @@ impl CredentialRepo for SqliteCredentialRepo {
         &self,
         source: CredentialSource,
     ) -> Result<CredentialSource, CredentialError> {
-        let p = NS;
         let data = serde_json::to_string(&source).map_err(storage)?;
         let mut conn = self.pool.acquire().await.map_err(storage)?;
-        sqlx::query(&format!(
-            "INSERT OR IGNORE INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3)"
-        ))
+        sqlx::query(
+            "INSERT OR IGNORE INTO credential_source (id, workspace_id, data) VALUES (?1, ?2, ?3)",
+        )
         .bind(&source.id.0)
         .bind(&source.workspace_id)
         .bind(data)
@@ -443,7 +422,7 @@ impl CredentialRepo for SqliteCredentialRepo {
         .map_err(storage)?;
         get_row(
             &mut conn,
-            &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+            "SELECT data FROM credential_source WHERE id = ?1",
             &source.id.0,
             CredentialError::SourceNotFound,
         )
@@ -451,11 +430,10 @@ impl CredentialRepo for SqliteCredentialRepo {
     }
 
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
-        let p = NS;
         let mut conn = self.pool.acquire().await.map_err(storage)?;
         get_row(
             &mut conn,
-            &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+            "SELECT data FROM credential_source WHERE id = ?1",
             &id.0,
             CredentialError::SourceNotFound,
         )
@@ -463,11 +441,10 @@ impl CredentialRepo for SqliteCredentialRepo {
     }
 
     async fn list(&self, workspace_id: &str) -> Result<Vec<CredentialSource>, CredentialError> {
-        let p = NS;
         let mut conn = self.pool.acquire().await.map_err(storage)?;
         list_rows(
             &mut conn,
-            &format!("SELECT data FROM {p}_source WHERE workspace_id = ?1 ORDER BY rowid"),
+            "SELECT data FROM credential_source WHERE workspace_id = ?1 ORDER BY rowid",
             workspace_id,
         )
         .await
@@ -479,19 +456,17 @@ impl CredentialRepo for SqliteCredentialRepo {
         now_unix_ms: u64,
     ) -> Result<bool, CredentialError> {
         intent.validate_for_begin(now_unix_ms)?;
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        let durable_data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_creation_intent WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?;
+        let durable_data: Option<String> =
+            sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE source_id = ?1")
+                .bind(&intent.after.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?;
         if let Some(data) = durable_data {
             let durable: CredentialMutationIntent = serde_json::from_str(&data).map_err(storage)?;
             if !durable.matches_logical_command(&intent) {
@@ -504,7 +479,7 @@ impl CredentialRepo for SqliteCredentialRepo {
         }
 
         let current_after_data: Option<String> =
-            sqlx::query_scalar(&format!("SELECT data FROM {p}_source WHERE id = ?1"))
+            sqlx::query_scalar("SELECT data FROM credential_source WHERE id = ?1")
                 .bind(&intent.after.id.0)
                 .fetch_optional(&mut *tx)
                 .await
@@ -519,7 +494,7 @@ impl CredentialRepo for SqliteCredentialRepo {
                 )
             })?;
             let current_before_data: Option<String> =
-                sqlx::query_scalar(&format!("SELECT data FROM {p}_source WHERE id = ?1"))
+                sqlx::query_scalar("SELECT data FROM credential_source WHERE id = ?1")
                     .bind(&before.id.0)
                     .fetch_optional(&mut *tx)
                     .await
@@ -544,7 +519,7 @@ impl CredentialRepo for SqliteCredentialRepo {
             let predecessor = intent.before.as_ref().ok_or_else(|| {
                 CredentialError::InvalidSource("acquisition has no predecessor".into())
             })?;
-            let pending:Option<String>=sqlx::query_scalar(&format!("SELECT source_id FROM {NS}_creation_intent WHERE json_extract(data, '$.before.id') = ?1 AND json_extract(data, '$.acquisition') IS NOT NULL LIMIT 1"))
+            let pending:Option<String>=sqlx::query_scalar("SELECT source_id FROM credential_creation_intent WHERE json_extract(data, '$.before.id') = ?1 AND json_extract(data, '$.acquisition') IS NOT NULL LIMIT 1")
                 .bind(&predecessor.id.0).fetch_optional(&mut *tx).await.map_err(storage)?;
             if pending.is_some() {
                 return Err(CredentialError::MutationConflict(
@@ -552,22 +527,21 @@ impl CredentialRepo for SqliteCredentialRepo {
                 ));
             }
         }
-        let inserted = sqlx::query(&format!(
-            "INSERT OR IGNORE INTO {p}_creation_intent (source_id, data) VALUES (?1, ?2)"
-        ))
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO credential_creation_intent (source_id, data) VALUES (?1, ?2)",
+        )
         .bind(&intent.after.id.0)
         .bind(data)
         .execute(&mut *tx)
         .await
         .map_err(storage)?
         .rows_affected();
-        let durable_data: String = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_creation_intent WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(storage)?;
+        let durable_data: String =
+            sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE source_id = ?1")
+                .bind(&intent.after.id.0)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(storage)?;
         let durable: CredentialMutationIntent =
             serde_json::from_str(&durable_data).map_err(storage)?;
         if !durable.matches_logical_command(&intent) {
@@ -583,7 +557,7 @@ impl CredentialRepo for SqliteCredentialRepo {
         &self,
         id: &CredentialSourceId,
     ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
-        let rows:Vec<String>=sqlx::query_scalar(&format!("SELECT data FROM {NS}_creation_intent WHERE json_extract(data, '$.before.id') = ?1 AND json_extract(data, '$.acquisition') IS NOT NULL LIMIT 2"))
+        let rows:Vec<String>=sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE json_extract(data, '$.before.id') = ?1 AND json_extract(data, '$.acquisition') IS NOT NULL LIMIT 2")
             .bind(&id.0).fetch_all(&self.pool).await.map_err(storage)?;
         if rows.len() > 1 {
             return Err(CredentialError::Storage(
@@ -637,7 +611,6 @@ impl CredentialRepo for SqliteCredentialRepo {
         &self,
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
-        let p = NS;
         // This mutation reads its durable intent/current revision before it
         // writes. In WAL mode a deferred transaction cannot upgrade an old
         // read snapshot after a sibling adapter commits; SQLite returns BUSY
@@ -649,13 +622,12 @@ impl CredentialRepo for SqliteCredentialRepo {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        let intent_data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_creation_intent WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?;
+        let intent_data: Option<String> =
+            sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE source_id = ?1")
+                .bind(&intent.after.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?;
         let durable: CredentialMutationIntent = intent_data
             .map(|data| serde_json::from_str(&data).map_err(storage))
             .transpose()?
@@ -665,7 +637,7 @@ impl CredentialRepo for SqliteCredentialRepo {
                 )
             })?;
         let current_data: Option<String> =
-            sqlx::query_scalar(&format!("SELECT data FROM {p}_source WHERE id = ?1"))
+            sqlx::query_scalar("SELECT data FROM credential_source WHERE id = ?1")
                 .bind(&intent.after.id.0)
                 .fetch_optional(&mut *tx)
                 .await
@@ -679,7 +651,7 @@ impl CredentialRepo for SqliteCredentialRepo {
             .filter(|before| before.id != intent.after.id)
         {
             let data: Option<String> =
-                sqlx::query_scalar(&format!("SELECT data FROM {p}_source WHERE id = ?1"))
+                sqlx::query_scalar("SELECT data FROM credential_source WHERE id = ?1")
                     .bind(&before.id.0)
                     .fetch_optional(&mut *tx)
                     .await
@@ -699,9 +671,9 @@ impl CredentialRepo for SqliteCredentialRepo {
         let data = serde_json::to_string(&plan.source).map_err(storage)?;
         match plan.mode {
             CredentialMutationCommitMode::Insert => {
-                sqlx::query(&format!(
-                    "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3)"
-                ))
+                sqlx::query(
+                    "INSERT INTO credential_source (id, workspace_id, data) VALUES (?1, ?2, ?3)",
+                )
                 .bind(&id)
                 .bind(&workspace_id)
                 .bind(&data)
@@ -710,10 +682,8 @@ impl CredentialRepo for SqliteCredentialRepo {
                 .map_err(storage)?;
             }
             CredentialMutationCommitMode::Replace => {
-                sqlx::query(&format!(
-                    "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3) \
-                     ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"
-                ))
+                sqlx::query("INSERT INTO credential_source (id, workspace_id, data) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data")
                 .bind(&id)
                 .bind(&workspace_id)
                 .bind(&data)
@@ -724,14 +694,12 @@ impl CredentialRepo for SqliteCredentialRepo {
             CredentialMutationCommitMode::ExactReplay => unreachable!("returned above"),
         }
         let reclaiming_data = serde_json::to_string(&plan.reclaiming_mutation).map_err(storage)?;
-        sqlx::query(&format!(
-            "UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .bind(reclaiming_data)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        sqlx::query("UPDATE credential_creation_intent SET data = ?2 WHERE source_id = ?1")
+            .bind(&intent.after.id.0)
+            .bind(reclaiming_data)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(plan.reclaiming_mutation)
     }
@@ -740,13 +708,12 @@ impl CredentialRepo for SqliteCredentialRepo {
         &self,
         id: &CredentialSourceId,
     ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
-        let data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {NS}_creation_intent WHERE source_id = ?1"
-        ))
-        .bind(&id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
+        let data: Option<String> =
+            sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE source_id = ?1")
+                .bind(&id.0)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(storage)?;
         data.map(|data| {
             let intent: CredentialMutationIntent = serde_json::from_str(&data).map_err(storage)?;
             intent.validate_durable_key(&id.0)?;
@@ -756,10 +723,9 @@ impl CredentialRepo for SqliteCredentialRepo {
     }
 
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
-        let p = NS;
-        let rows = sqlx::query_as::<_, (String, String)>(&format!(
-            "SELECT source_id, data FROM {p}_creation_intent ORDER BY created_at, source_id"
-        ))
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT source_id, data FROM credential_creation_intent ORDER BY created_at, source_id",
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
@@ -784,19 +750,17 @@ impl CredentialRepo for SqliteCredentialRepo {
             return Ok(None);
         };
         let claimed_for_store = claimed.clone();
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        let durable_data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_creation_intent WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?;
+        let durable_data: Option<String> =
+            sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE source_id = ?1")
+                .bind(&intent.after.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?;
         let Some(data) = durable_data else {
             tx.commit().await.map_err(storage)?;
             return Ok(None);
@@ -809,14 +773,12 @@ impl CredentialRepo for SqliteCredentialRepo {
             return Ok(None);
         }
         let data = serde_json::to_string(&claimed_for_store).map_err(storage)?;
-        sqlx::query(&format!(
-            "UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .bind(data)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        sqlx::query("UPDATE credential_creation_intent SET data = ?2 WHERE source_id = ?1")
+            .bind(&intent.after.id.0)
+            .bind(data)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(Some(claimed_for_store))
     }
@@ -826,19 +788,17 @@ impl CredentialRepo for SqliteCredentialRepo {
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
         intent.validate()?;
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        let durable_data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_creation_intent WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?;
+        let durable_data: Option<String> =
+            sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE source_id = ?1")
+                .bind(&intent.after.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?;
         let durable: CredentialMutationIntent = durable_data
             .map(|data| serde_json::from_str(&data).map_err(storage))
             .transpose()?
@@ -848,7 +808,7 @@ impl CredentialRepo for SqliteCredentialRepo {
                 )
             })?;
         let current_after_data: Option<String> =
-            sqlx::query_scalar(&format!("SELECT data FROM {p}_source WHERE id = ?1"))
+            sqlx::query_scalar("SELECT data FROM credential_source WHERE id = ?1")
                 .bind(&intent.after.id.0)
                 .fetch_optional(&mut *tx)
                 .await
@@ -858,14 +818,12 @@ impl CredentialRepo for SqliteCredentialRepo {
             .transpose()?;
         let abort_for_store = intent.admit_abort(&durable, current_after.as_ref())?;
         let data = serde_json::to_string(&abort_for_store).map_err(storage)?;
-        sqlx::query(&format!(
-            "UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .bind(data)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        sqlx::query("UPDATE credential_creation_intent SET data = ?2 WHERE source_id = ?1")
+            .bind(&intent.after.id.0)
+            .bind(data)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(abort_for_store)
     }
@@ -875,26 +833,24 @@ impl CredentialRepo for SqliteCredentialRepo {
         intent: &CredentialMutationIntent,
     ) -> Result<(), CredentialError> {
         intent.validate()?;
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        let durable_data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_creation_intent WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?;
+        let durable_data: Option<String> =
+            sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE source_id = ?1")
+                .bind(&intent.after.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?;
         let Some(data) = durable_data else {
             tx.commit().await.map_err(storage)?;
             return Ok(());
         };
         let durable: CredentialMutationIntent = serde_json::from_str(&data).map_err(storage)?;
         let current_after_data: Option<String> =
-            sqlx::query_scalar(&format!("SELECT data FROM {p}_source WHERE id = ?1"))
+            sqlx::query_scalar("SELECT data FROM credential_source WHERE id = ?1")
                 .bind(&intent.after.id.0)
                 .fetch_optional(&mut *tx)
                 .await
@@ -903,20 +859,17 @@ impl CredentialRepo for SqliteCredentialRepo {
             .map(|data| serde_json::from_str(&data).map_err(storage))
             .transpose()?;
         intent.admit_completion(&durable, current_after.as_ref())?;
-        sqlx::query(&format!(
-            "DELETE FROM {p}_creation_intent WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        sqlx::query("DELETE FROM credential_creation_intent WHERE source_id = ?1")
+            .bind(&intent.after.id.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         tx.commit().await.map_err(storage)
     }
 
     async fn material_refs(&self) -> Result<Vec<SecretRef>, CredentialError> {
-        let p = NS;
         let rows: Vec<String> =
-            sqlx::query_scalar(&format!("SELECT data FROM {p}_source ORDER BY id"))
+            sqlx::query_scalar("SELECT data FROM credential_source ORDER BY id")
                 .fetch_all(&self.pool)
                 .await
                 .map_err(storage)?;
@@ -936,13 +889,12 @@ impl CredentialRepo for SqliteCredentialRepo {
     }
 
     async fn put_pool(&self, pool: CredentialPool) -> Result<(), CredentialError> {
-        let p = NS;
         let data = serde_json::to_string(&pool).map_err(storage)?;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_pool (id, workspace_id, data) VALUES (?1, ?2, ?3) \
+        sqlx::query(
+            "INSERT INTO credential_pool (id, workspace_id, data) VALUES (?1, ?2, ?3) \
              ON CONFLICT(id) DO UPDATE SET \
-             workspace_id = excluded.workspace_id, data = excluded.data"
-        ))
+             workspace_id = excluded.workspace_id, data = excluded.data",
+        )
         .bind(&pool.id.0)
         .bind(&pool.workspace_id)
         .bind(data)
@@ -953,11 +905,10 @@ impl CredentialRepo for SqliteCredentialRepo {
     }
 
     async fn get_pool(&self, id: &CredentialPoolId) -> Result<CredentialPool, CredentialError> {
-        let p = NS;
         let mut conn = self.pool.acquire().await.map_err(storage)?;
         get_row(
             &mut conn,
-            &format!("SELECT data FROM {p}_pool WHERE id = ?1"),
+            "SELECT data FROM credential_pool WHERE id = ?1",
             &id.0,
             CredentialError::PoolNotFound,
         )
@@ -965,11 +916,10 @@ impl CredentialRepo for SqliteCredentialRepo {
     }
 
     async fn list_pools(&self, workspace_id: &str) -> Result<Vec<CredentialPool>, CredentialError> {
-        let p = NS;
         let mut conn = self.pool.acquire().await.map_err(storage)?;
         list_rows(
             &mut conn,
-            &format!("SELECT data FROM {p}_pool WHERE workspace_id = ?1 ORDER BY rowid"),
+            "SELECT data FROM credential_pool WHERE workspace_id = ?1 ORDER BY rowid",
             workspace_id,
         )
         .await
@@ -1017,12 +967,11 @@ impl SqliteSealedBlobStore {
 #[async_trait::async_trait]
 impl SealedBlobStore for SqliteSealedBlobStore {
     async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError> {
-        let p = NS;
-        let affected = sqlx::query(&format!(
-            "INSERT INTO {p}_secret (secret_ref, sealed) VALUES (?1, ?2) \
+        let affected = sqlx::query(
+            "INSERT INTO credential_secret (secret_ref, sealed) VALUES (?1, ?2) \
              ON CONFLICT(secret_ref) DO UPDATE SET sealed = excluded.sealed \
-             WHERE {p}_secret.closed = 0"
-        ))
+             WHERE credential_secret.closed = 0",
+        )
         .bind(&r.0)
         .bind(blob)
         .execute(&self.pool)
@@ -1038,10 +987,9 @@ impl SealedBlobStore for SqliteSealedBlobStore {
     }
 
     async fn get_blob(&self, r: &SecretRef) -> Result<Vec<u8>, CredentialError> {
-        let p = NS;
-        let blob: Option<Vec<u8>> = sqlx::query_scalar(&format!(
-            "SELECT sealed FROM {p}_secret WHERE secret_ref = ?1 AND closed = 0"
-        ))
+        let blob: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT sealed FROM credential_secret WHERE secret_ref = ?1 AND closed = 0",
+        )
         .bind(&r.0)
         .fetch_optional(&self.pool)
         .await
@@ -1050,11 +998,10 @@ impl SealedBlobStore for SqliteSealedBlobStore {
     }
 
     async fn delete_blob(&self, r: &SecretRef) -> Result<(), CredentialError> {
-        let p = NS;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_secret (secret_ref, sealed, closed) VALUES (?1, ?2, 1) \
-             ON CONFLICT(secret_ref) DO UPDATE SET sealed = excluded.sealed, closed = 1"
-        ))
+        sqlx::query(
+            "INSERT INTO credential_secret (secret_ref, sealed, closed) VALUES (?1, ?2, 1) \
+             ON CONFLICT(secret_ref) DO UPDATE SET sealed = excluded.sealed, closed = 1",
+        )
         .bind(&r.0)
         .bind(Vec::<u8>::new())
         .execute(&self.pool)
@@ -1064,10 +1011,9 @@ impl SealedBlobStore for SqliteSealedBlobStore {
     }
 
     async fn inventory_blobs(&self) -> Result<Vec<SecretRef>, CredentialError> {
-        let p = NS;
-        let rows: Vec<String> = sqlx::query_scalar(&format!(
-            "SELECT secret_ref FROM {p}_secret WHERE closed = 0 ORDER BY secret_ref"
-        ))
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT secret_ref FROM credential_secret WHERE closed = 0 ORDER BY secret_ref",
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
@@ -1081,19 +1027,17 @@ impl SqliteCredentialRepo {
         intent: &CredentialMutationIntent,
         next: CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        let durable_data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_creation_intent WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?;
+        let durable_data: Option<String> =
+            sqlx::query_scalar("SELECT data FROM credential_creation_intent WHERE source_id = ?1")
+                .bind(&intent.after.id.0)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage)?;
         let durable: CredentialMutationIntent = durable_data
             .map(|data| serde_json::from_str(&data).map_err(storage))
             .transpose()?
@@ -1109,7 +1053,7 @@ impl SqliteCredentialRepo {
         }
         if let Some(before) = next.acquisition_dispatch_predecessor() {
             let data: Option<String> =
-                sqlx::query_scalar(&format!("SELECT data FROM {NS}_source WHERE id = ?1"))
+                sqlx::query_scalar("SELECT data FROM credential_source WHERE id = ?1")
                     .bind(&before.id.0)
                     .fetch_optional(&mut *tx)
                     .await
@@ -1123,14 +1067,12 @@ impl SqliteCredentialRepo {
             next.validate_acquisition_dispatch_source(current.as_ref())?;
         }
         let data = serde_json::to_string(&next).map_err(storage)?;
-        sqlx::query(&format!(
-            "UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"
-        ))
-        .bind(&intent.after.id.0)
-        .bind(data)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
+        sqlx::query("UPDATE credential_creation_intent SET data = ?2 WHERE source_id = ?1")
+            .bind(&intent.after.id.0)
+            .bind(data)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         Ok(next)
     }

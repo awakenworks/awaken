@@ -76,6 +76,8 @@ ISOLATED_DEPENDENCIES: dict[str, str] = {
     "awaken-provider-genai": "provider SDK",
     "chacha20poly1305": "AEAD cipher",
     "sqlx": "database driver",
+    # SQLx 0.9's facade does not export the transaction/depth manager trait.
+    "sqlx-core": "database driver transaction/depth management",
     "axum": "HTTP server",
     "reqwest": "HTTP client",
     "ureq": "HTTP client",
@@ -308,13 +310,15 @@ def selftest() -> None:
     assert "no crate outside" in errors(port, crate("u", "sole-in-layer", deps=["p"]))[0], "C1 same context"
     assert "its layer is" in errors(crate("p", "contract"))[0], "C1 layer"
 
-    store = crate("st", "isolation", deps=["sqlx"], isolates=("sqlx",))
-    assert errors(store, crate("app", "sole-in-layer", layer="application")) == [], "I1"
+    for driver in ("sqlx", "sqlx-core"):
+        store = crate("st", "isolation", deps=[driver], isolates=(driver,))
+        assert errors(store, crate("app", "sole-in-layer", layer="application")) == [], f"I1 {driver}"
+        assert "does not depend" in errors(crate("st", "isolation", isolates=(driver,)))[0], f"I2 missing {driver}"
+        assert "kept free" in errors(store, crate("app", "sole-in-layer", layer="application",
+                                                  deps=[driver]))[0], f"I2 sibling {driver}"
     assert "lists nothing" in errors(crate("st", "isolation"))[0], "I2 empty"
-    assert "not in ISOLATED" in errors(crate("st", "isolation", deps=["serde"], isolates=("serde",)))[0], "I2"
-    assert "does not depend" in errors(crate("st", "isolation", isolates=("sqlx",)))[0], "I2 missing"
-    assert "kept free" in errors(store, crate("app", "sole-in-layer", layer="application",
-                                              deps=["sqlx"]))[0], "I2 sibling"
+    for unlisted in ("serde", "sqlx-unregistered"):
+        assert "not in ISOLATED" in errors(crate("st", "isolation", deps=[unlisted], isolates=(unlisted,)))[0], "I2 unlisted"
 
     # I3: the concrete last-mile provider/crypto adapter is an isolation edge,
     # under the same I1/I2 dependency and sibling checks, never a name-only waiver.

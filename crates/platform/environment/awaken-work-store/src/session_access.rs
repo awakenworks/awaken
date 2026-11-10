@@ -686,9 +686,12 @@ impl PostgresWorkQueue {
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        let row = sqlx::query(&format!(
-            "SELECT {COLS} FROM work_queue_item WHERE work_id = $1 AND environment_id = $2"
-        ))
+        let row = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM work_queue_item WHERE work_id = $1 AND environment_id = $2"
+            )),
+        )
         .bind(&wid)
         .bind(env_id)
         .fetch_one(&mut *tx)
@@ -710,10 +713,11 @@ impl PostgresWorkQueue {
         fence: LeaseFence,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(// Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+sqlx::AssertSqlSafe(format!(
             "SELECT {COLS}, lease_owner, lease_epoch, lease_expires_ms, ack_lease_epoch FROM work_queue_item \
              WHERE work_id = $1 AND environment_id = $2 FOR UPDATE"
-        ))
+        )))
         .bind(wid)
         .bind(env_id)
         .fetch_optional(&mut *tx)
@@ -743,10 +747,13 @@ impl PostgresWorkQueue {
         if expires.is_none_or(|expires| expires <= db_millis(now.as_epoch_ms())) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
-        let row = sqlx::query(&format!(
-            "UPDATE work_queue_item SET acknowledged_at = $1, state = $2, ack_lease_epoch = $5 \
+        let row = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "UPDATE work_queue_item SET acknowledged_at = $1, state = $2, ack_lease_epoch = $5 \
              WHERE work_id = $3 AND environment_id = $4 RETURNING {COLS}"
-        ))
+            )),
+        )
         .bind(now.to_rfc3339())
         .bind(ack_next_state(&current))
         .bind(wid)
@@ -770,10 +777,11 @@ impl PostgresWorkQueue {
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(// Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+sqlx::AssertSqlSafe(format!(
             "SELECT {COLS}, lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms FROM work_queue_item \
              WHERE work_id = $1 AND environment_id = $2 FOR UPDATE"
-        ))
+        )))
         .bind(wid)
         .bind(env_id)
         .fetch_optional(&mut *tx)
@@ -855,11 +863,14 @@ impl PostgresWorkQueue {
         fence: LeaseFence,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let row = sqlx::query(&format!(
-            "SELECT {COLS}, lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms, \
+        let row = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS}, lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms, \
              stop_lease_owner, stop_lease_epoch FROM work_queue_item WHERE work_id = $1 \
              AND environment_id = $2 FOR UPDATE"
-        ))
+            )),
+        )
         .bind(wid)
         .bind(env_id)
         .fetch_optional(&mut *tx)
@@ -907,13 +918,16 @@ impl PostgresWorkQueue {
         ) else {
             return Ok(WorkMutationResult::PreconditionFailed);
         };
-        let row = sqlx::query(&format!(
-            "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
+        let row = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
              state = 'stopped', lease_owner = $2, lease_expires_ms = $3, \
              lease_refreshed_ms = $4, session_token_sha256 = NULL, \
              stop_lease_owner = $7, stop_lease_epoch = $8 \
              WHERE work_id = $5 AND environment_id = $6 RETURNING {COLS}"
-        ))
+            )),
+        )
         .bind(self.clock.observed_at())
         .bind(next_authority.owner)
         .bind(next_authority.expires_at)

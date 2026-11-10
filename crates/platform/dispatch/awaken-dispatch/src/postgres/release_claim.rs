@@ -10,7 +10,6 @@ async fn release_claim_transaction(
     retry_after_ms: Option<u64>,
     attempt: awaken_dispatch_contract::ReleasedAttempt,
 ) -> Result<SettleOutcome, DispatchError> {
-    let p = NS;
     let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
     let mut tx = pool.begin().await.map_err(store_error)?;
     let retry_not_before = if let Some(retry_after_ms) = retry_after_ms {
@@ -22,11 +21,11 @@ async fn release_claim_transaction(
     } else {
         None
     };
-    let current = sqlx::query(&format!(
+    let current = sqlx::query(
         "SELECT status, lease_owner, lease_epoch, cancel_requested, attempt_count, \
          active_attempt_owner, active_attempt_epoch \
-         FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
-    ))
+         FROM runtime_dispatch WHERE run_id = $1 FOR UPDATE",
+    )
     .bind(&claim.run_id.0)
     .fetch_optional(&mut *tx)
     .await
@@ -90,13 +89,13 @@ async fn release_claim_transaction(
         }
     };
     let attempt_count = durable_i64("dispatch attempt count", attempt_count)?;
-    let changed = sqlx::query(&format!(
-        "UPDATE {p}_dispatch SET status = $4, \
+    let changed = sqlx::query(
+        "UPDATE runtime_dispatch SET status = $4, \
          lease_owner = CASE WHEN $5 IS NULL THEN NULL ELSE lease_owner END, \
          lease_until = $5, attempt_count = $6, retry_not_before = $7, \
          created_at = clock_timestamp() WHERE run_id = $1 AND status = 'running' \
-         AND lease_owner = $2 AND lease_epoch = $3"
-    ))
+         AND lease_owner = $2 AND lease_epoch = $3",
+    )
     .bind(&claim.run_id.0)
     .bind(&claim.owner)
     .bind(epoch)

@@ -583,6 +583,13 @@ mod postgres {
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
     async fn schema_pool(schema: &'static str) -> Option<PgPool> {
+        assert!(
+            !schema.is_empty()
+                && !schema.as_bytes()[0].is_ascii_digit()
+                && schema
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        );
         // G1 unconfigured local run => explicit skip. G2 configured but
         // unreachable/invalid => failure. G3 connected => schema creation and
         // scoped connection must succeed; no `.ok()` may erase their failure.
@@ -593,11 +600,14 @@ mod postgres {
             .connect(&url)
             .await
             .expect("G2 configured PostgreSQL must be reachable");
+        // The schema is a checked ASCII fixture identifier, never SQL text.
         let _ = admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .execute(sqlx::AssertSqlSafe(format!(
+                "DROP SCHEMA IF EXISTS {schema} CASCADE"
+            )))
             .await;
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .await
             .expect("create schema");
         admin.close().await;
@@ -606,7 +616,9 @@ mod postgres {
                 .max_connections(4)
                 .after_connect(move |conn, _meta| {
                     Box::pin(async move {
-                        conn.execute(format!("SET search_path = {schema}").as_str())
+                        sqlx::query("SELECT set_config('search_path', $1, false)")
+                            .bind(schema)
+                            .execute(conn)
                             .await?;
                         Ok(())
                     })

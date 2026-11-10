@@ -13,7 +13,6 @@
 //! includes the moment sqlx spends returning the previous caller's connection on
 //! its own thread, which a hold taken per lent-out connection would leave open.
 
-use std::borrow::Cow;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -26,7 +25,7 @@ use sqlx::sqlite::{
     Sqlite, SqliteConnection, SqlitePool, SqliteQueryResult, SqliteRow, SqliteStatement,
     SqliteTypeInfo,
 };
-use sqlx::{Describe, Either, Execute, Executor, Transaction};
+use sqlx::{Describe, Either, Execute, Executor, SqlSafeStr, SqlStr, Transaction};
 
 use crate::clock_hold::{ClockHold, held};
 use crate::settle::LiveFile;
@@ -88,9 +87,16 @@ impl EmbeddedPool {
     }
 
     /// Start a transaction with an explicit statement, such as `BEGIN IMMEDIATE`.
+    /// Dynamic SQL must first pass the caller's explicit SQLx safety assertion.
+    ///
+    /// ```compile_fail,E0277
+    /// async fn unreviewed(pool: &awaken_sqlite_pool::EmbeddedPool, sql: String) {
+    ///     let _ = pool.begin_with(sql).await;
+    /// }
+    /// ```
     pub async fn begin_with(
         &self,
-        statement: impl Into<Cow<'static, str>>,
+        statement: impl SqlSafeStr,
     ) -> Result<EmbeddedTransaction, sqlx::Error> {
         let hold = ClockHold::take();
         let transaction = self.inner.pool.begin_with(statement).await?;
@@ -157,11 +163,11 @@ impl<'c> Executor<'c> for &'c EmbeddedPool {
         })
     }
 
-    fn prepare_with<'e, 'q: 'e>(
+    fn prepare_with<'e>(
         self,
-        sql: &'q str,
+        sql: SqlStr,
         parameters: &'e [SqliteTypeInfo],
-    ) -> BoxFuture<'e, Result<SqliteStatement<'q>, sqlx::Error>>
+    ) -> BoxFuture<'e, Result<SqliteStatement, sqlx::Error>>
     where
         'c: 'e,
     {
@@ -173,10 +179,7 @@ impl<'c> Executor<'c> for &'c EmbeddedPool {
         })
     }
 
-    fn describe<'e, 'q: 'e>(
-        self,
-        sql: &'q str,
-    ) -> BoxFuture<'e, Result<Describe<Sqlite>, sqlx::Error>>
+    fn describe<'e>(self, sql: SqlStr) -> BoxFuture<'e, Result<Describe<Sqlite>, sqlx::Error>>
     where
         'c: 'e,
     {

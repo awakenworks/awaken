@@ -23,10 +23,10 @@ async fn release_claim_transaction(
 ) -> Result<SettleOutcome, DispatchError> {
     let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
     let mut tx = immediate(conn).await?;
-    let current: Option<ReleaseClaimRow> = sqlx::query_as(&format!(
+    let current: Option<ReleaseClaimRow> = sqlx::query_as(
         "SELECT status, lease_owner, lease_epoch, cancel_requested, attempt_count, \
-         active_attempt_owner, active_attempt_epoch FROM {p}_dispatch WHERE run_id = ?1"
-    ))
+         active_attempt_owner, active_attempt_epoch FROM runtime_dispatch WHERE run_id = ?1",
+    )
     .bind(&claim.run_id.0)
     .fetch_optional(&mut *tx)
     .await
@@ -87,14 +87,14 @@ async fn release_claim_transaction(
         }
     };
     let attempt_count = durable_i64("dispatch attempt count", attempt_count)?;
-    let changed = sqlx::query(&format!(
-        "UPDATE {p}_dispatch SET status = ?4, \
+    let changed = sqlx::query(
+        "UPDATE runtime_dispatch SET status = ?4, \
          lease_owner = CASE WHEN ?5 IS NULL THEN NULL ELSE lease_owner END, \
          lease_until = ?5, attempt_count = ?6, retry_not_before = ?7, \
          created_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
          WHERE run_id = ?1 AND status = 'running' \
-         AND lease_owner = ?2 AND lease_epoch = ?3"
-    ))
+         AND lease_owner = ?2 AND lease_epoch = ?3",
+    )
     .bind(&claim.run_id.0)
     .bind(&claim.owner)
     .bind(epoch)

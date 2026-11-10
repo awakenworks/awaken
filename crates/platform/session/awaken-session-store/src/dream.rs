@@ -402,7 +402,8 @@ mod tests {
             return;
         };
         let schema = format!("t_dream_conformance_{}", std::process::id());
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        // SQL safety: this fixture identifier contains a fixed prefix and PID.
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin)
             .await
             .unwrap();
@@ -420,7 +421,8 @@ mod tests {
         assert_eq!(reopened.dream_processes().await.unwrap(), jobs);
         assert_eq!(reopened.dream_policies().await.unwrap(), policies);
         drop(reopened);
-        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        // SQL safety: drop exactly the PID-derived schema created above.
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin)
             .await
             .unwrap();

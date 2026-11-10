@@ -232,9 +232,9 @@ async fn selected_bundles(pool: &PgPool) -> Result<(MigrationBundle, MigrationBu
         .await
         .map_err(|error| error.to_string())?;
     let v1_checksum: Option<String> = if ledger.is_some() {
-        sqlx::query_scalar(&format!(
-            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
-        ))
+        sqlx::query_scalar(
+            "SELECT checksum FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = $1 AND version = 1"
+        )
         .bind(BUNDLE_ID)
         .fetch_optional(pool)
         .await
@@ -348,9 +348,9 @@ impl SqliteSandboxExecutionPolicyStore {
         .await
         .map_err(|error| error.to_string())?;
         let v1_checksum: Option<String> = if ledger_exists {
-            sqlx::query_scalar(&format!(
-                "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
-            ))
+            sqlx::query_scalar(
+                "SELECT checksum FROM sandbox_execution_policy_schema_migrations WHERE bundle_id = ?1 AND version = 1"
+            )
             .bind(BUNDLE_ID)
             .fetch_optional(&pool)
             .await

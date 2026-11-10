@@ -160,7 +160,9 @@ fn create_namespace(url: &str, namespace: &str) {
             .expect("PostgreSQL fixture namespace runtime")
             .block_on(async move {
                 let admin = postgres_fixture_pool(&url).await;
-                sqlx::query(&statement)
+                // The private caller supplies only fresh_namespace output
+                // (fixed prefix, PID, hexadecimal time and process counter).
+                sqlx::query(sqlx::AssertSqlSafe(statement))
                     .execute(&admin)
                     .await
                     .expect("configured PostgreSQL fixture must create its namespace");

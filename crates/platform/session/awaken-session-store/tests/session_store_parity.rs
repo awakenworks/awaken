@@ -359,7 +359,8 @@ fn postgres_reopen_preserves_authority_through_an_independent_pool() {
             .expect("configured Session PostgreSQL fixture must connect");
         let schema = format!("t_session_t34_reopen_{}", uuid::Uuid::new_v4().simple());
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+            .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .await
             .expect("create owned T34 schema");
         let connect = {
@@ -393,7 +394,8 @@ fn postgres_reopen_preserves_authority_through_an_independent_pool() {
         })
         .await;
         admin
-            .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+            // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+            .execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .await
             .expect("drop owned T34 schema");
         admin.close().await;

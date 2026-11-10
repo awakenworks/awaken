@@ -613,7 +613,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/src/lib.rs",
-        "line": 1069,
+        "line": 1090,
         "file_sha256": "baee1f3824d93f9d2c77b3ffa88ad0e69bdf0e61dfa0d5faead6c774c5dfdb3c",
         "relocated_from": "crates/stores/awaken-env-store/src/lib.rs:1069"
       }
@@ -828,7 +828,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/src/lib.rs",
-        "line": 1174,
+        "line": 1198,
         "file_sha256": "baee1f3824d93f9d2c77b3ffa88ad0e69bdf0e61dfa0d5faead6c774c5dfdb3c",
         "relocated_from": "crates/stores/awaken-env-store/src/lib.rs:1174"
       }
@@ -960,7 +960,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/src/lib.rs",
-        "line": 999,
+        "line": 1017,
         "file_sha256": "baee1f3824d93f9d2c77b3ffa88ad0e69bdf0e61dfa0d5faead6c774c5dfdb3c",
         "relocated_from": "crates/stores/awaken-env-store/src/lib.rs:999"
       }

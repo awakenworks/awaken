@@ -20,6 +20,7 @@ pub struct FakeWorkerUpstream {
     initial_heartbeat_blocked: Arc<AtomicBool>,
     heartbeat_sequences: Arc<Mutex<Vec<u64>>>,
     applied_heartbeat_sequence: Arc<AtomicU64>,
+    registration_lease_ttl_ms: Arc<AtomicU64>,
     next_lease_ttl_ms: Arc<AtomicU64>,
     accepted_connections: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
@@ -154,6 +155,8 @@ impl FakeWorkerUpstream {
         let heartbeat_sequences = Arc::new(Mutex::new(Vec::new()));
         let initial_heartbeat_blocked = Arc::new(AtomicBool::new(false));
         let applied_heartbeat_sequence = Arc::new(AtomicU64::new(0));
+        let registration_lease_ttl_ms = Arc::new(AtomicU64::new(registry_ttl_ms));
+        let thread_registration_lease_ttl_ms = registration_lease_ttl_ms.clone();
         let next_lease_ttl_ms = Arc::new(AtomicU64::new(registry_ttl_ms));
         let thread_next_lease_ttl_ms = next_lease_ttl_ms.clone();
         let accepted_connections = Arc::new(AtomicUsize::new(0));
@@ -200,6 +203,8 @@ impl FakeWorkerUpstream {
                                 drain_release: thread_drain_release.as_deref(),
                                 applied_heartbeat_budget,
                                 heartbeat_fault,
+                                registration_lease_ttl_ms: thread_registration_lease_ttl_ms
+                                    .load(Ordering::Acquire),
                                 registry_ttl_ms: thread_next_lease_ttl_ms.load(Ordering::Acquire),
                                 recovery_release: thread_recovery_release.as_deref(),
                                 heartbeat_count: &heartbeat_count,
@@ -248,6 +253,7 @@ impl FakeWorkerUpstream {
             heartbeat_sequences,
             initial_heartbeat_blocked,
             applied_heartbeat_sequence,
+            registration_lease_ttl_ms,
             next_lease_ttl_ms,
             accepted_connections,
             thread: Some(thread),
@@ -255,7 +261,16 @@ impl FakeWorkerUpstream {
     }
 
     pub fn set_lease_ttl_ms(&self, ttl: u64) {
+        self.registration_lease_ttl_ms.store(ttl, Ordering::Release);
         self.next_lease_ttl_ms.store(ttl, Ordering::Release);
+    }
+
+    /// Startup assembly and an applied Ready heartbeat have separate receipts.
+    /// Only phase-specific lifecycle tests override the former; ordinary tests
+    /// retain the original shared TTL through `set_lease_ttl_ms`.
+    #[allow(dead_code)] // Shared fixture also compiles in other integration binaries.
+    pub fn set_registration_lease_ttl_ms(&self, ttl: u64) {
+        self.registration_lease_ttl_ms.store(ttl, Ordering::Release);
     }
 
     pub fn url(&self) -> &str {
@@ -327,6 +342,7 @@ struct HandleContext<'a> {
     drain_release: Option<&'a AtomicBool>,
     applied_heartbeat_budget: Option<usize>,
     heartbeat_fault: HeartbeatFault,
+    registration_lease_ttl_ms: u64,
     registry_ttl_ms: u64,
     recovery_release: Option<&'a AtomicBool>,
     heartbeat_count: &'a AtomicUsize,
@@ -347,6 +363,7 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
         drain_release,
         applied_heartbeat_budget,
         heartbeat_fault,
+        registration_lease_ttl_ms,
         registry_ttl_ms,
         recovery_release,
         heartbeat_count,
@@ -383,6 +400,7 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
     let body = std::str::from_utf8(&request[header_end..]).unwrap();
     let response = match path {
         "/v1/worker/register" => {
+            let registry_ttl_ms = registration_lease_ttl_ms;
             let worker_id = json_string_field(body, "worker_id");
             let incarnation_id = json_string_field(body, "incarnation_id");
             let manifest = json_object_field(body, "manifest");

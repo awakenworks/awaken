@@ -73,11 +73,14 @@ async fn harvest_records_for_update(
     workspace_id: &str,
     harvest_key: &str,
 ) -> Result<Vec<FileRecord>, FileCatalogError> {
-    sqlx::query(&format!(
-        "SELECT {FILE_COLUMNS} FROM file_store_file \
+    sqlx::query(
+        // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+        sqlx::AssertSqlSafe(format!(
+            "SELECT {FILE_COLUMNS} FROM file_store_file \
          WHERE workspace_id=$1 AND harvest_key=$2 \
          ORDER BY deleted ASC, created_at DESC, id DESC FOR UPDATE"
-    ))
+        )),
+    )
     .bind(workspace_id)
     .bind(harvest_key)
     .fetch_all(&mut **transaction)
@@ -104,11 +107,14 @@ async fn persist_artifact_association(
             Ok(Some(CreateFileRecordOutcome::Existing(existing)))
         }
         Some(ArtifactAssociationDecision::Associate(target)) => {
-            let updated = sqlx::query(&format!(
-                "UPDATE file_store_file SET artifact_idempotency_scope=$1 \
+            let updated = sqlx::query(
+                // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+                sqlx::AssertSqlSafe(format!(
+                    "UPDATE file_store_file SET artifact_idempotency_scope=$1 \
                  WHERE id=$2 AND artifact_idempotency_scope IS NULL \
                  RETURNING {FILE_COLUMNS}"
-            ))
+                )),
+            )
             .bind(requested_scope)
             .bind(&target.id)
             .fetch_optional(&mut **transaction)
@@ -293,9 +299,12 @@ impl FileCatalog for PgFileStore {
             let mut records = Vec::new();
             // Canonical id order also gives competing captures one File lock order.
             for id in &capture.file_ids {
-                if let Some(row) = sqlx::query(&format!(
-                    "SELECT {FILE_COLUMNS} FROM file_store_file WHERE id=$1 FOR SHARE"
-                ))
+                if let Some(row) = sqlx::query(
+                    // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+                    sqlx::AssertSqlSafe(format!(
+                        "SELECT {FILE_COLUMNS} FROM file_store_file WHERE id=$1 FOR SHARE"
+                    )),
+                )
                 .bind(id)
                 .fetch_optional(&mut *transaction)
                 .await
@@ -367,12 +376,13 @@ impl FileCatalog for PgFileStore {
                 return Ok(CreateFileRecordOutcome::Existing(existing));
             }
         }
-        let inserted = sqlx::query(&format!(
+        let inserted = sqlx::query(// Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+sqlx::AssertSqlSafe(format!(
             "INSERT INTO file_store_file \
              (id,workspace_id,blob_id,filename,mime_type,size_bytes,created_at,expires_at,downloadable,scope_id,logical_path,harvest_key,artifact_idempotency_scope,deleted,private_binding_json) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) \
              ON CONFLICT DO NOTHING RETURNING {FILE_COLUMNS}"
-        ))
+        )))
         .bind(&record.id)
         .bind(&record.workspace_id)
         .bind(&record.blob_id)
@@ -433,10 +443,13 @@ impl FileCatalog for PgFileStore {
         file_id: &str,
         include_deleted: bool,
     ) -> Result<Option<FileRecord>, FileCatalogError> {
-        sqlx::query(&format!(
-            "SELECT {FILE_COLUMNS} FROM file_store_file \
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {FILE_COLUMNS} FROM file_store_file \
              WHERE id=$1 AND workspace_id=$2 AND ($3 OR deleted=0)"
-        ))
+            )),
+        )
         .bind(file_id)
         .bind(workspace_id)
         .bind(include_deleted)
@@ -453,11 +466,14 @@ impl FileCatalog for PgFileStore {
         workspace_id: &str,
         scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, FileCatalogError> {
-        let rows = sqlx::query(&format!(
-            "SELECT {FILE_COLUMNS} FROM file_store_file \
+        let rows = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {FILE_COLUMNS} FROM file_store_file \
              WHERE workspace_id=$1 AND deleted=0 AND ($2::TEXT IS NULL OR scope_id=$2) \
              ORDER BY created_at DESC, id DESC"
-        ))
+            )),
+        )
         .bind(workspace_id)
         .bind(scope_id)
         .fetch_all(&self.pool)
@@ -471,11 +487,14 @@ impl FileCatalog for PgFileStore {
         workspace_id: &str,
         scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, FileCatalogError> {
-        let rows = sqlx::query(&format!(
-            "SELECT {FILE_COLUMNS} FROM file_store_file \
+        let rows = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {FILE_COLUMNS} FROM file_store_file \
              WHERE workspace_id=$1 AND ($2::TEXT IS NULL OR scope_id=$2) \
              ORDER BY created_at DESC, id DESC"
-        ))
+            )),
+        )
         .bind(workspace_id)
         .bind(scope_id)
         .fetch_all(&self.pool)
@@ -489,10 +508,13 @@ impl FileCatalog for PgFileStore {
         workspace_id: &str,
         file_id: &str,
     ) -> Result<Option<FileRecord>, FileCatalogError> {
-        sqlx::query(&format!(
-            "UPDATE file_store_file SET deleted=1 WHERE id=$1 AND workspace_id=$2 \
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "UPDATE file_store_file SET deleted=1 WHERE id=$1 AND workspace_id=$2 \
              RETURNING {FILE_COLUMNS}"
-        ))
+            )),
+        )
         .bind(file_id)
         .bind(workspace_id)
         .fetch_optional(&self.pool)

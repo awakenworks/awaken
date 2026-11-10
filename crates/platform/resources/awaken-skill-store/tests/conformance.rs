@@ -719,7 +719,10 @@ mod postgres {
             .as_nanos();
         let schema = format!("t_skill_{}_{nonce:x}", std::process::id());
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(
+                // The schema is a fixed fixture prefix plus integer process/time coordinates.
+                sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+            )
             .await
             .expect("create owned test schema");
         admin.close().await;
@@ -729,8 +732,9 @@ mod postgres {
                 .after_connect(move |connection, _| {
                     let schema = schema.clone();
                     Box::pin(async move {
-                        connection
-                            .execute(format!("SET search_path = {schema}").as_str())
+                        sqlx::query("SELECT set_config('search_path', $1, false)")
+                            .bind(schema)
+                            .execute(connection)
                             .await?;
                         Ok(())
                     })

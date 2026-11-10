@@ -16,7 +16,6 @@ async fn dead_letter_expired_lease(
     reason: LeaseLossReason,
     dead_lettered_at_ms: u64,
 ) -> Result<bool, DispatchError> {
-    let p = NS;
     let owner = row
         .try_get::<Option<String>, _>("lease_owner")
         .map_err(store_error)?
@@ -55,11 +54,11 @@ async fn dead_letter_expired_lease(
         return Ok(false);
     };
     let run_id: String = row.try_get("run_id").map_err(store_error)?;
-    let changed = sqlx::query(&format!(
-        "UPDATE {p}_dispatch SET status = $4, lease_owner = NULL, \
+    let changed = sqlx::query(
+        "UPDATE runtime_dispatch SET status = $4, lease_owner = NULL, \
          lease_until = NULL, dead_lettered_at = $1 WHERE run_id = $2 \
-         AND status = 'running' AND lease_epoch = $3"
-    ))
+         AND status = 'running' AND lease_epoch = $3",
+    )
     .bind(crate::clock::db_millis(dead_lettered_at_ms))
     .bind(&run_id)
     .bind(epoch)
@@ -102,17 +101,16 @@ async fn dead_letter_expired_lease(
 /// scan. The signed column's last value is the one exhausted generation
 /// ([`crate::sql_claim_generation_violation`]).
 async fn refuse_untrustworthy_expired_leases(pool: &PgPool) -> Result<usize, DispatchError> {
-    let p = NS;
     let mut tx = pool.begin().await.map_err(store_error)?;
     let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
-    let rows = sqlx::query(&format!(
+    let rows = sqlx::query(
         "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested, \
              active_attempt_owner, active_attempt_epoch \
-             FROM {p}_dispatch WHERE status = 'running' \
+             FROM runtime_dispatch WHERE status = 'running' \
              AND lease_until IS NOT NULL AND lease_until <= $1 AND lease_epoch = $2 \
              AND (active_attempt_epoch IS NULL OR cancel_requested <> 0) \
-             ORDER BY created_at FOR UPDATE SKIP LOCKED"
-    ))
+             ORDER BY created_at FOR UPDATE SKIP LOCKED",
+    )
     .bind(crate::clock::db_millis(now_ms))
     .bind(i64::MAX)
     .fetch_all(&mut *tx)
@@ -153,12 +151,11 @@ async fn observe_pruned_claim_generations(
     pool: &PgPool,
     reported: &crate::ReportedClaimGenerations,
 ) -> Result<(), DispatchError> {
-    let p = NS;
     let limit = i64::try_from(reported.capacity.saturating_add(1)).unwrap_or(i64::MAX);
-    let run_ids: Vec<String> = sqlx::query_scalar(&format!(
-        "SELECT run_id FROM {p}_dispatch WHERE status IN ('pending', 'awaiting') \
-         AND lease_epoch = $1 ORDER BY created_at, run_id LIMIT $2"
-    ))
+    let run_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT run_id FROM runtime_dispatch WHERE status IN ('pending', 'awaiting') \
+         AND lease_epoch = $1 ORDER BY created_at, run_id LIMIT $2",
+    )
     .bind(i64::MAX)
     .bind(limit)
     .fetch_all(pool)

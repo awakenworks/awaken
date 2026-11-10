@@ -99,10 +99,10 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
         let revision = i64::try_from(subject.revision)
             .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
         let data = serde_json::to_string(&subject).map_err(storage)?;
-        let inserted = sqlx::query(&format!(
-            "INSERT OR IGNORE INTO {NS}_subject (id, org, data, revision) \
-             VALUES (?1, ?2, ?3, ?4)"
-        ))
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO control_data_subject_subject (id, org, data, revision) \
+             VALUES (?1, ?2, ?3, ?4)",
+        )
         .bind(&id)
         .bind(&subject.org)
         .bind(&data)
@@ -137,9 +137,9 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        let current = sqlx::query_as::<_, (String, i64)>(&format!(
-            "SELECT data, revision FROM {NS}_subject WHERE id = ?1"
-        ))
+        let current = sqlx::query_as::<_, (String, i64)>(
+            "SELECT data, revision FROM control_data_subject_subject WHERE id = ?1",
+        )
         .bind(&id)
         .fetch_optional(&mut *tx)
         .await
@@ -154,10 +154,10 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
         if !subject.follows_revision(expected_revision, current.revision) {
             return Err(DataSubjectError::Conflict(id));
         }
-        let updated = sqlx::query(&format!(
-            "UPDATE {NS}_subject SET org = ?1, data = ?2, revision = ?3 \
-             WHERE id = ?4 AND revision = ?5"
-        ))
+        let updated = sqlx::query(
+            "UPDATE control_data_subject_subject SET org = ?1, data = ?2, revision = ?3 \
+             WHERE id = ?4 AND revision = ?5",
+        )
         .bind(&subject.org)
         .bind(&data)
         .bind(stored_revision)
@@ -175,9 +175,9 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
     }
 
     async fn get(&self, id: &DataSubjectId) -> Result<DataSubject, DataSubjectError> {
-        let data = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT data FROM {NS}_subject WHERE id = ?1"
-        ))
+        let data = sqlx::query_scalar::<_, String>(
+            "SELECT data FROM control_data_subject_subject WHERE id = ?1",
+        )
         .bind(&id.0)
         .fetch_optional(&self.pool)
         .await
@@ -187,9 +187,9 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
     }
 
     async fn list(&self, org: &str) -> Result<Vec<DataSubject>, DataSubjectError> {
-        let rows = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT data FROM {NS}_subject WHERE org = ?1 ORDER BY rowid"
-        ))
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT data FROM control_data_subject_subject WHERE org = ?1 ORDER BY rowid",
+        )
         .bind(org)
         .fetch_all(&self.pool)
         .await
@@ -203,9 +203,9 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
 #[async_trait::async_trait]
 impl ErasureJobRepo for SqliteDataSubjectRepo {
     async fn load(&self, id: &DataSubjectId) -> Result<Option<ErasureProgress>, DataSubjectError> {
-        let data = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT data FROM {NS}_erasure_job WHERE subject_id = ?1"
-        ))
+        let data = sqlx::query_scalar::<_, String>(
+            "SELECT data FROM control_data_subject_erasure_job WHERE subject_id = ?1",
+        )
         .bind(&id.0)
         .fetch_optional(&self.pool)
         .await
@@ -230,9 +230,9 @@ impl ErasureJobRepo for SqliteDataSubjectRepo {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        let current = sqlx::query_as::<_, (String, i64)>(&format!(
-            "SELECT data, revision FROM {NS}_erasure_job WHERE subject_id = ?1"
-        ))
+        let current = sqlx::query_as::<_, (String, i64)>(
+            "SELECT data, revision FROM control_data_subject_erasure_job WHERE subject_id = ?1",
+        )
         .bind(&id)
         .fetch_optional(&mut *tx)
         .await
@@ -258,10 +258,8 @@ impl ErasureJobRepo for SqliteDataSubjectRepo {
         let data = serde_json::to_string(progress).map_err(storage)?;
         let changed = match expected {
             None => {
-                sqlx::query(&format!(
-                    "INSERT OR IGNORE INTO {NS}_erasure_job (subject_id, data, revision) \
-                     VALUES (?1, ?2, ?3)"
-                ))
+                sqlx::query("INSERT OR IGNORE INTO control_data_subject_erasure_job (subject_id, data, revision) \
+                     VALUES (?1, ?2, ?3)")
                 .bind(&id)
                 .bind(&data)
                 .bind(revision)
@@ -269,10 +267,8 @@ impl ErasureJobRepo for SqliteDataSubjectRepo {
                 .await
             }
             Some(expected) => {
-                sqlx::query(&format!(
-                    "UPDATE {NS}_erasure_job SET data = ?2, revision = ?3, \
-                     updated_at = CURRENT_TIMESTAMP WHERE subject_id = ?1 AND revision = ?4"
-                ))
+                sqlx::query("UPDATE control_data_subject_erasure_job SET data = ?2, revision = ?3, \
+                     updated_at = CURRENT_TIMESTAMP WHERE subject_id = ?1 AND revision = ?4")
                 .bind(&id)
                 .bind(&data)
                 .bind(revision)
@@ -330,9 +326,7 @@ mod tests {
             ("not json".to_string(), 0_i64),
         ] {
             let repo = SqliteDataSubjectRepo::open_in_memory().await.unwrap();
-            sqlx::query(&format!(
-                "INSERT INTO {NS}_subject(id,org,data,revision) VALUES (?1,?2,?3,?4)"
-            ))
+            sqlx::query("INSERT INTO control_data_subject_subject(id,org,data,revision) VALUES (?1,?2,?3,?4)")
             .bind(&old.id.0)
             .bind(&old.org)
             .bind(&data)
@@ -347,9 +341,9 @@ mod tests {
                 repo.compare_and_swap(0, candidate).await,
                 Err(DataSubjectError::Storage(_))
             ));
-            let raw: (String, i64) = sqlx::query_as(&format!(
-                "SELECT data,revision FROM {NS}_subject WHERE id=?1"
-            ))
+            let raw: (String, i64) = sqlx::query_as(
+                "SELECT data,revision FROM control_data_subject_subject WHERE id=?1",
+            )
             .bind(&old.id.0)
             .fetch_one(&repo.pool)
             .await
@@ -389,9 +383,7 @@ mod tests {
         ] {
             let repo = SqliteDataSubjectRepo::open_in_memory().await.unwrap();
             let id = DataSubjectId("corrupt-erasure".into());
-            sqlx::query(&format!(
-                "INSERT INTO {NS}_erasure_job(subject_id,data,revision) VALUES (?1,?2,?3)"
-            ))
+            sqlx::query("INSERT INTO control_data_subject_erasure_job(subject_id,data,revision) VALUES (?1,?2,?3)")
             .bind(&id.0)
             .bind(&data)
             .bind(stored_revision)
@@ -416,9 +408,9 @@ mod tests {
             } else {
                 assert!(matches!(error, DataSubjectError::Storage(_)));
             }
-            let raw: (String, i64) = sqlx::query_as(&format!(
-                "SELECT data,revision FROM {NS}_erasure_job WHERE subject_id=?1"
-            ))
+            let raw: (String, i64) = sqlx::query_as(
+                "SELECT data,revision FROM control_data_subject_erasure_job WHERE subject_id=?1",
+            )
             .bind(&id.0)
             .fetch_one(&repo.pool)
             .await

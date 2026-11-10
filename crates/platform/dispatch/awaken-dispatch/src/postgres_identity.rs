@@ -16,16 +16,14 @@ use crate::dispatch::{DispatchError, RunIdentityDecision, StoredRunIdentity, dec
 
 pub(crate) async fn load_run_identity_evidence(
     connection: &mut PgConnection,
-    prefix: &str,
+    _prefix: &str,
     run_id: &RunId,
 ) -> Result<PgRow, DispatchError> {
-    sqlx::query(&format!(
-        "SELECT d.run_id AS live_run_id, d.thread_id AS live_thread_id, \
+    sqlx::query("SELECT d.run_id AS live_run_id, d.thread_id AS live_thread_id, \
          d.status, d.request, c.sequence, c.run_id, c.request_fingerprint, \
          c.thread_id, c.session_thread_id, c.cancel_requested, c.retained_request::TEXT AS retained_request_json FROM (SELECT $1::TEXT AS run_id) k \
-         LEFT JOIN {prefix}_dispatch d ON d.run_id = k.run_id \
-         LEFT JOIN {prefix}_dispatch_completion c ON c.run_id = k.run_id"
-    ))
+         LEFT JOIN runtime_dispatch d ON d.run_id = k.run_id \
+         LEFT JOIN runtime_dispatch_completion c ON c.run_id = k.run_id")
     .bind(&run_id.0)
     .fetch_one(connection)
     .await
@@ -130,7 +128,7 @@ pub(crate) async fn lock_session_child_admission(
 
 pub(crate) async fn load_completion_events(
     pool: &PgPool,
-    prefix: &str,
+    _prefix: &str,
     after_sequence: u64,
     limit: usize,
 ) -> Result<Vec<DispatchCompletion>, DispatchError> {
@@ -141,11 +139,11 @@ pub(crate) async fn load_completion_events(
         DispatchError::Rejected("completion cursor exceeds BIGINT range".to_string())
     })?;
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let rows = sqlx::query(&format!(
+    let rows = sqlx::query(
         "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id, \
-         cancel_requested FROM {prefix}_dispatch_completion \
-         WHERE sequence > $1 ORDER BY sequence LIMIT $2"
-    ))
+         cancel_requested FROM runtime_dispatch_completion \
+         WHERE sequence > $1 ORDER BY sequence LIMIT $2",
+    )
     .bind(after_sequence)
     .bind(limit)
     .fetch_all(pool)

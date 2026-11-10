@@ -19,7 +19,7 @@ awaken-model-catalog.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"], optional = true }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio"], optional = true }
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 awaken-sqlite-pool = { workspace = true, optional = true }
 
@@ -28,7 +28,7 @@ awaken-reliability-testkit = { workspace = true, features = ["postgres"] }
 tokio.workspace = true
 tempfile = "3"
 serde_json.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "postgres"] }
 
 [features]
 default = []

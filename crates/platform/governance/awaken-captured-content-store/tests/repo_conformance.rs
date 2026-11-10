@@ -194,8 +194,10 @@ mod postgres {
             .await
             .expect("explicit PostgreSQL fixture is unavailable");
         let schema = format!("t_captured_content_{}", uuid::Uuid::new_v4().simple());
+        // Only this fixed fixture prefix and a UUID's simple hexadecimal form
+        // enter schema DDL; runtime values stay bound parameters.
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .await
             .expect("create owned schema");
         admin.close().await;
@@ -205,8 +207,9 @@ mod postgres {
             .after_connect(move |connection, _metadata| {
                 let schema = owned_schema.clone();
                 Box::pin(async move {
-                    connection
-                        .execute(format!("SET search_path = {schema}").as_str())
+                    sqlx::query("SELECT set_config('search_path', $1, false)")
+                        .bind(schema)
+                        .execute(connection)
                         .await?;
                     Ok(())
                 })
@@ -264,7 +267,7 @@ mod postgres {
         )
         .await
         .unwrap();
-        pool.execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        pool.execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .await
             .expect("drop owned schema");
         pool.close().await;
@@ -274,7 +277,9 @@ mod postgres {
             "F3 first cleanup cannot destroy the other schema"
         );
         other_pool
-            .execute(format!("DROP SCHEMA {other_schema} CASCADE").as_str())
+            .execute(sqlx::AssertSqlSafe(format!(
+                "DROP SCHEMA {other_schema} CASCADE"
+            )))
             .await
             .expect("drop second owned schema");
         other_pool.close().await;

@@ -216,6 +216,10 @@ pub use source_retention::{
     SourceRetentionSubject, WORKER_SOURCE_RETENTION_SUBJECTS_PATH, WorkerSourceRetentionSubjects,
 };
 
+pub use session::continuation::execute_environment_provider_continuation;
+
+pub use session_realization::realization_generation_set_authorizes;
+
 #[cfg(test)]
 mod mcp_attachment {
     pub(crate) fn test_generation(
@@ -230,7 +234,3 @@ mod mcp_attachment {
         )
     }
 }
-
-pub use session::continuation::execute_environment_provider_continuation;
-
-pub use session_realization::realization_generation_set_authorizes;

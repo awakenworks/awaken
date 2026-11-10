@@ -62,15 +62,29 @@ async fn current_request_rejects_the_old_strict_server_before_its_effect_handler
     server.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn successful_control_response_requires_its_exact_endpoint_capture_marker() {
     // V4/R4: 2xx with missing/unknown/wrong-family marker rejects before
     // JSON parsing and never falls back to legacy. Non2xx still follows
     // the original auth/permanent/retry table in the unchanged tests.
-    for marker in [None, Some("unknown"), Some("bounded-join-v1")] {
+    for (path, marker) in [
+        (PATH, None),
+        (PATH, Some("unknown")),
+        (PATH, Some(CreateReplyProfile::WholeJoin.header_value())),
+        (SEAL_PATH, None),
+        (SEAL_PATH, Some("unknown")),
+        (
+            SEAL_PATH,
+            Some(CreateReplyProfile::FreshCreate.header_value()),
+        ),
+        (
+            SEAL_PATH,
+            Some(CreateReplyProfile::LegacyRetainedCreate.header_value()),
+        ),
+    ] {
         let calls = Arc::new(AtomicUsize::new(0));
         let router = Router::new().route(
-            PATH,
+            path,
             post({
                 let calls = calls.clone();
                 move || {
@@ -91,10 +105,24 @@ async fn successful_control_response_requires_its_exact_endpoint_capture_marker(
             }),
         );
         let (client, server) = fixture(router).await;
-        assert!(matches!(
-            client.create(request()).await,
-            Err(RuntimeError::MayHaveCommitted(_))
-        ));
+        let result = with_frozen_http_clock(async {
+            if path == PATH {
+                client.create(request()).await.map(drop)
+            } else {
+                let predecessor =
+                    SandboxEffectFence::new("old", "worker", "boot", 1, u64::MAX).unwrap();
+                client
+                    .seal_predecessor("scope", &predecessor, "pod")
+                    .await
+                    .map(drop)
+            }
+        })
+        .await;
+        let error = result.expect_err("an endpoint must reject a missing or foreign profile");
+        assert!(
+            matches!(error, RuntimeError::MayHaveCommitted(ref reason) if reason == "Create control response lacks its exact current capture profile"),
+            "{path} with {marker:?} must fail on the response marker, not on its deadline or decoder: {error:?}"
+        );
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,

@@ -143,11 +143,9 @@ async fn insert_publication<'e, E>(
 where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,
 {
-    sqlx::query(&format!(
-        "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id, created_at, order_verified) \
+    sqlx::query("INSERT INTO config_publication (fingerprint, agent_id, state, record, scope_id, created_at, order_verified) \
          VALUES ($1, $2, $3, $4, $5, clock_timestamp(), $6) \
-         ON CONFLICT (scope_id, fingerprint) DO NOTHING"
-    ))
+         ON CONFLICT (scope_id, fingerprint) DO NOTHING")
     .bind(&publication.fingerprint)
     .bind(&publication.agent_id)
     .bind(publication.state.as_str())
@@ -170,14 +168,14 @@ async fn selected_bundles(
     StoreError,
 > {
     let ledger: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
-        .bind(format!("{NS}_schema_migrations"))
+        .bind("config_schema_migrations")
         .fetch_one(pool)
         .await
         .map_err(|error| StoreError::Schema(error.to_string()))?;
     let v1_checksum: Option<String> = if ledger.is_some() {
-        sqlx::query_scalar(&format!(
-            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
-        ))
+        sqlx::query_scalar(
+            "SELECT checksum FROM config_schema_migrations WHERE bundle_id = $1 AND version = 1",
+        )
         .bind(BUNDLE_ID)
         .fetch_optional(pool)
         .await
@@ -257,18 +255,14 @@ async fn write_config_revision(
     plan: crate::ConfigRevisionWritePlan,
 ) -> Result<Option<u64>, ConfigStoreError> {
     let statement = if plan.kind == crate::ConfigRevisionWriteKind::Insert {
-        format!(
-            "INSERT INTO {NS}_agent (id, data, scope_id, generation) \
+        "INSERT INTO config_agent (id, data, scope_id, generation) \
                  SELECT $1, $2, $3, $4 WHERE $5 = 0 \
                  ON CONFLICT(scope_id, id) DO NOTHING RETURNING generation"
-        )
     } else {
-        format!(
-            "UPDATE {NS}_agent SET data = $2, generation = $4 \
+        "UPDATE config_agent SET data = $2, generation = $4 \
                  WHERE id = $1 AND scope_id = $3 AND generation = $5 RETURNING generation"
-        )
     };
-    sqlx::query_scalar::<_, i64>(&statement)
+    sqlx::query_scalar::<_, i64>(statement)
         .bind(&config.id)
         .bind(Json(config))
         .bind(&scope.0)
@@ -284,12 +278,10 @@ async fn write_config_revision(
 #[async_trait::async_trait]
 impl ScopedConfigRegistry for PostgresConfigStore {
     async fn list_config_scopes(&self) -> Result<Vec<ScopeId>, ConfigStoreError> {
-        let rows = sqlx::query(&format!(
-            "SELECT DISTINCT scope_id FROM {NS}_agent ORDER BY scope_id ASC"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(reject)?;
+        let rows = sqlx::query("SELECT DISTINCT scope_id FROM config_agent ORDER BY scope_id ASC")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(reject)?;
         rows.into_iter()
             .map(|row| {
                 row.try_get::<String, _>("scope_id")
@@ -308,9 +300,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         // across scopes without allowing either owner to clobber the other.
         let mut tx = self.pool.begin().await.map_err(reject)?;
         lock_config_revision(&mut tx, scope, &config.id).await?;
-        let current_revision = sqlx::query_scalar::<_, i64>(&format!(
-            "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
-        ))
+        let current_revision = sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM config_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE",
+        )
         .bind(&config.id)
         .bind(&scope.0)
         .fetch_optional(&mut *tx)
@@ -362,10 +354,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         let (audit_tool, audit_key) = audit.identity();
         let mut tx = self.pool.begin().await.map_err(reject)?;
         lock_config_revision(&mut tx, scope, &config.id).await?;
-        let existing = sqlx::query(&format!(
-            "SELECT record, business_committed FROM {NS}_management_audit \
-             WHERE scope_id = $1 AND call_id = $2 AND tool = $3 FOR UPDATE"
-        ))
+        let existing = sqlx::query(
+            "SELECT record, business_committed FROM config_management_audit \
+             WHERE scope_id = $1 AND call_id = $2 AND tool = $3 FOR UPDATE",
+        )
         .bind(&scope.0)
         .bind(audit_key)
         .bind(audit_tool)
@@ -385,9 +377,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         {
             return Ok(AuditedConfigWrite::Replayed);
         }
-        let current = sqlx::query(&format!(
-            "SELECT data, generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
-        ))
+        let current = sqlx::query(
+            "SELECT data, generation FROM config_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE",
+        )
         .bind(&config.id)
         .bind(&scope.0)
         .fetch_optional(&mut *tx)
@@ -418,10 +410,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             .canonicalize_mutable_authoring_against(current_config.as_ref())
             .map_err(reject)?;
         if let Some(effect) = effect {
-            let existing = sqlx::query(&format!(
-                "SELECT payload FROM {NS}_management_effect \
-                 WHERE scope_id = $1 AND kind = $2 AND effect_key = $3 FOR UPDATE"
-            ))
+            let existing = sqlx::query(
+                "SELECT payload FROM config_management_effect \
+                 WHERE scope_id = $1 AND kind = $2 AND effect_key = $3 FOR UPDATE",
+            )
             .bind(&scope.0)
             .bind(effect.kind())
             .bind(effect.key())
@@ -436,10 +428,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
                 })
                 .transpose()?;
             if effect.requires_enqueue(pending.as_ref())? {
-                sqlx::query(&format!(
-                    "INSERT INTO {NS}_management_effect \
-                     (scope_id, kind, effect_key, payload) VALUES ($1, $2, $3, $4)"
-                ))
+                sqlx::query(
+                    "INSERT INTO config_management_effect \
+                     (scope_id, kind, effect_key, payload) VALUES ($1, $2, $3, $4)",
+                )
                 .bind(&scope.0)
                 .bind(effect.kind())
                 .bind(effect.key())
@@ -451,9 +443,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         }
         let applied = write_config_revision(&mut tx, scope, &config, plan).await?;
         if applied.is_none() {
-            let current_revision = sqlx::query_scalar::<_, i64>(&format!(
-                "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
-            ))
+            let current_revision = sqlx::query_scalar::<_, i64>(
+                "SELECT generation FROM config_agent WHERE id = $1 AND scope_id = $2",
+            )
             .bind(&config.id)
             .bind(&scope.0)
             .fetch_optional(&mut *tx)
@@ -463,10 +455,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             .transpose()?;
             return Ok(AuditedConfigWrite::Conflict { current_revision });
         }
-        sqlx::query(&format!(
-            "UPDATE {NS}_management_audit SET business_committed = 1 \
-             WHERE scope_id = $1 AND call_id = $2 AND tool = $3"
-        ))
+        sqlx::query(
+            "UPDATE config_management_audit SET business_committed = 1 \
+             WHERE scope_id = $1 AND call_id = $2 AND tool = $3",
+        )
         .bind(&scope.0)
         .bind(audit_key)
         .bind(audit_tool)
@@ -481,10 +473,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<ManagementEffect>, ConfigStoreError> {
-        sqlx::query(&format!(
-            "SELECT kind, effect_key, payload FROM {NS}_management_effect \
-             WHERE scope_id = $1 ORDER BY created_at, kind, effect_key"
-        ))
+        sqlx::query(
+            "SELECT kind, effect_key, payload FROM config_management_effect \
+             WHERE scope_id = $1 ORDER BY created_at, kind, effect_key",
+        )
         .bind(&scope.0)
         .fetch_all(&self.pool)
         .await
@@ -506,10 +498,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
     ) -> Result<bool, ConfigStoreError> {
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let effect = receipt.effect();
-        let row = sqlx::query(&format!(
-            "SELECT payload FROM {NS}_management_effect \
-             WHERE scope_id = $1 AND kind = $2 AND effect_key = $3 FOR UPDATE"
-        ))
+        let row = sqlx::query(
+            "SELECT payload FROM config_management_effect \
+             WHERE scope_id = $1 AND kind = $2 AND effect_key = $3 FOR UPDATE",
+        )
         .bind(&receipt.scope().0)
         .bind(effect.kind())
         .bind(effect.key())
@@ -529,10 +521,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         if !management_effect_retirement_is_admitted(receipt, pending.as_ref()) {
             return Ok(false);
         }
-        let removed = sqlx::query(&format!(
-            "DELETE FROM {NS}_management_effect \
-             WHERE scope_id = $1 AND kind = $2 AND effect_key = $3"
-        ))
+        let removed = sqlx::query(
+            "DELETE FROM config_management_effect \
+             WHERE scope_id = $1 AND kind = $2 AND effect_key = $3",
+        )
         .bind(&receipt.scope().0)
         .bind(effect.kind())
         .bind(effect.key())
@@ -549,10 +541,8 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
         let (audit_tool, audit_key) = audit.identity();
-        let inserted = sqlx::query(&format!(
-            "INSERT INTO {NS}_management_audit (scope_id, call_id, tool, record) VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (scope_id, tool, call_id) DO NOTHING RETURNING call_id"
-        ))
+        let inserted = sqlx::query("INSERT INTO config_management_audit (scope_id, call_id, tool, record) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (scope_id, tool, call_id) DO NOTHING RETURNING call_id")
         .bind(&scope.0)
         .bind(audit_key)
         .bind(audit_tool)
@@ -563,9 +553,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         if inserted.is_some() {
             return Ok(AuditedConfigWrite::Applied);
         }
-        let row = sqlx::query(&format!(
-            "SELECT record FROM {NS}_management_audit WHERE scope_id = $1 AND call_id = $2 AND tool = $3"
-        ))
+        let row = sqlx::query("SELECT record FROM config_management_audit WHERE scope_id = $1 AND call_id = $2 AND tool = $3")
         .bind(&scope.0)
         .bind(audit_key)
         .bind(audit_tool)
@@ -584,10 +572,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         call_id: &str,
     ) -> Result<Option<ManagementAuditEntry>, ConfigStoreError> {
         let audit_key = call_id;
-        let row = sqlx::query(&format!(
-            "SELECT record, business_committed FROM {NS}_management_audit \
-             WHERE scope_id = $1 AND call_id = $2 AND tool = $3"
-        ))
+        let row = sqlx::query(
+            "SELECT record, business_committed FROM config_management_audit \
+             WHERE scope_id = $1 AND call_id = $2 AND tool = $3",
+        )
         .bind(&scope.0)
         .bind(audit_key)
         .bind(tool)
@@ -610,10 +598,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         call_id: &str,
     ) -> Result<(), ConfigStoreError> {
         let audit_key = call_id;
-        let changed = sqlx::query(&format!(
-            "UPDATE {NS}_management_audit SET business_committed = 1 \
-             WHERE scope_id = $1 AND call_id = $2 AND tool = $3"
-        ))
+        let changed = sqlx::query(
+            "UPDATE config_management_audit SET business_committed = 1 \
+             WHERE scope_id = $1 AND call_id = $2 AND tool = $3",
+        )
         .bind(&scope.0)
         .bind(audit_key)
         .bind(tool)
@@ -636,9 +624,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
     ) -> Result<ConfigWrite, ConfigStoreError> {
         let mut tx = self.pool.begin().await.map_err(reject)?;
         lock_config_revision(&mut tx, scope, &config.id).await?;
-        let current_revision = sqlx::query_scalar::<_, i64>(&format!(
-            "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
-        ))
+        let current_revision = sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM config_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE",
+        )
         .bind(&config.id)
         .bind(&scope.0)
         .fetch_optional(&mut *tx)
@@ -659,9 +647,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             tx.commit().await.map_err(reject)?;
             return Ok(ConfigWrite::Applied { revision });
         }
-        let current_revision = sqlx::query_scalar::<_, i64>(&format!(
-            "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
-        ))
+        let current_revision = sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM config_agent WHERE id = $1 AND scope_id = $2",
+        )
         .bind(&config.id)
         .bind(&scope.0)
         .fetch_optional(&mut *tx)
@@ -677,14 +665,12 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Option<AgentConfig>, ConfigStoreError> {
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
-        ))
-        .bind(id)
-        .bind(&scope.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(reject)?;
+        let row = sqlx::query("SELECT data FROM config_agent WHERE id = $1 AND scope_id = $2")
+            .bind(id)
+            .bind(&scope.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(reject)?;
         match row {
             Some(row) => {
                 let Json(config): Json<AgentConfig> = row.try_get("data").map_err(reject)?;
@@ -699,17 +685,17 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(
             "SELECT a.data, a.generation, \
              (EXTRACT(EPOCH FROM first.created_at) * 1000)::BIGINT AS created_at_unix_ms, \
              (EXTRACT(EPOCH FROM current.created_at) * 1000)::BIGINT AS updated_at_unix_ms \
-             FROM {NS}_agent a \
-             JOIN {NS}_agent_revision first ON first.scope_id = a.scope_id \
+             FROM config_agent a \
+             JOIN config_agent_revision first ON first.scope_id = a.scope_id \
                AND first.id = a.id AND first.generation = 1 \
-             JOIN {NS}_agent_revision current ON current.scope_id = a.scope_id \
+             JOIN config_agent_revision current ON current.scope_id = a.scope_id \
                AND current.id = a.id AND current.generation = a.generation \
-             WHERE a.id = $1 AND a.scope_id = $2"
-        ))
+             WHERE a.id = $1 AND a.scope_id = $2",
+        )
         .bind(id)
         .bind(&scope.0)
         .fetch_optional(&self.pool)
@@ -737,13 +723,13 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Vec<AgentConfigRevision>, ConfigStoreError> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(
             "SELECT data, generation, \
              (EXTRACT(EPOCH FROM MIN(created_at) OVER ()) * 1000)::BIGINT AS created_at_unix_ms, \
              (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS updated_at_unix_ms \
-             FROM {NS}_agent_revision \
-             WHERE scope_id = $1 AND id = $2 ORDER BY generation ASC"
-        ))
+             FROM config_agent_revision \
+             WHERE scope_id = $1 AND id = $2 ORDER BY generation ASC",
+        )
         .bind(&scope.0)
         .bind(id)
         .fetch_all(&self.pool)
@@ -769,13 +755,11 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<AgentConfig>, ConfigStoreError> {
-        let rows = sqlx::query(&format!(
-            "SELECT data FROM {NS}_agent WHERE scope_id = $1 ORDER BY id ASC"
-        ))
-        .bind(&scope.0)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(reject)?;
+        let rows = sqlx::query("SELECT data FROM config_agent WHERE scope_id = $1 ORDER BY id ASC")
+            .bind(&scope.0)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(reject)?;
         let mut configs = Vec::with_capacity(rows.len());
         for row in rows {
             let Json(config): Json<AgentConfig> = row.try_get("data").map_err(reject)?;
@@ -791,9 +775,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
     ) -> Result<PublicationWrite, ConfigStoreError> {
         let mut tx = self.pool.begin().await.map_err(reject)?;
         lock_publication_commit_order(&mut tx, publication.execution_workspace.as_str()).await?;
-        let current_revision = sqlx::query_scalar::<_, i64>(&format!(
-            "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
-        ))
+        let current_revision = sqlx::query_scalar::<_, i64>(
+            "SELECT generation FROM config_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE",
+        )
         .bind(&publication.agent_id)
         .bind(&scope.0)
         .fetch_optional(&mut *tx)
@@ -807,9 +791,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             tx.rollback().await.map_err(reject)?;
             return Ok(PublicationWrite::Conflict { current_revision });
         }
-        let existing = sqlx::query(&format!(
-            "SELECT record FROM {NS}_publication WHERE scope_id = $1 AND agent_id = $2 FOR UPDATE"
-        ))
+        let existing = sqlx::query("SELECT record FROM config_publication WHERE scope_id = $1 AND agent_id = $2 FOR UPDATE")
         .bind(&scope.0)
         .bind(&publication.agent_id)
         .fetch_all(&mut *tx)
@@ -852,10 +834,8 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         scope: &ScopeId,
         fingerprint: &str,
     ) -> Result<Option<StoredPublication>, ConfigStoreError> {
-        let row = sqlx::query(&format!(
-            "SELECT record, seq, order_verified, (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS published_at_unix_ms \
-             FROM {NS}_publication WHERE fingerprint = $1 AND scope_id = $2"
-        ))
+        let row = sqlx::query("SELECT record, seq, order_verified, (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS published_at_unix_ms \
+             FROM config_publication WHERE fingerprint = $1 AND scope_id = $2")
         .bind(fingerprint)
         .bind(&scope.0)
         .fetch_optional(&self.pool)
@@ -888,11 +868,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         // the in-memory store). The monotonic `seq` identity column (migration
         // V0005) is the Postgres analogue of SQLite's `rowid`: wall-clock
         // rollback must not reorder publication recovery.
-        let rows = sqlx::query(&format!(
-            "SELECT record, seq, order_verified, (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS published_at_unix_ms \
-             FROM {NS}_publication \
-             WHERE scope_id = $1 AND state = 'published' ORDER BY seq ASC"
-        ))
+        let rows = sqlx::query("SELECT record, seq, order_verified, (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS published_at_unix_ms \
+             FROM config_publication \
+             WHERE scope_id = $1 AND state = 'published' ORDER BY seq ASC")
         .bind(&scope.0)
         .fetch_all(&self.pool)
         .await

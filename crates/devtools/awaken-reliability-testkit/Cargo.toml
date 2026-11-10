@@ -22,7 +22,7 @@ awaken-sync.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, optional = true, features = ["time"] }
 tracing = { version = "0.1", optional = true }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 awaken-sql-storage = { workspace = true, features = ["postgres"], optional = true }
 
 [dev-dependencies]

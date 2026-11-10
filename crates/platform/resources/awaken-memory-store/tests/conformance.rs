@@ -280,6 +280,13 @@ mod postgres {
     use sqlx::postgres::{PgConnectOptions, PgPool};
 
     async fn schema_pool(schema: &'static str) -> Option<PgPool> {
+        assert!(
+            !schema.is_empty()
+                && !schema.as_bytes()[0].is_ascii_digit()
+                && schema
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        );
         let url = awaken_reliability_testkit::postgres_fixture_url()?;
         let admin = awaken_sql_storage::postgres_pool_options()
             .max_connections(1)
@@ -296,7 +303,10 @@ mod postgres {
             .as_nanos();
         let schema = format!("{schema}_{}_{nonce:x}", std::process::id());
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(
+                // The schema prefix is a checked fixture identifier and its remaining coordinates are integers.
+                sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+            )
             .await
             .expect("create schema");
         admin.close().await;

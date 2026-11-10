@@ -240,7 +240,9 @@ mod tests {
                 .await
                 .unwrap();
             if let Some(event) = trigger {
-                sqlx::raw_sql(&format!("CREATE TRIGGER deletion_fault {event} BEGIN SELECT RAISE(ABORT, 'injected deletion failure'); END;")).execute(&sql).await.unwrap();
+                sqlx::raw_sql(
+// The deletion fault matrix supplies only literal trigger event/table fragments.
+sqlx::AssertSqlSafe(format!("CREATE TRIGGER deletion_fault {event} BEGIN SELECT RAISE(ABORT, 'injected deletion failure'); END;"))).execute(&sql).await.unwrap();
             }
             let first = app.delete("workspace-a", &file.id, 7).await;
             if trigger.is_some() {

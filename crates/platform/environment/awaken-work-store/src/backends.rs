@@ -158,9 +158,12 @@ impl SqliteWorkQueue {
         env_id: &str,
         wid: &str,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM work_queue_item WHERE work_id = ?1 AND environment_id = ?2"
-        ))
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM work_queue_item WHERE work_id = ?1 AND environment_id = ?2"
+            )),
+        )
         .bind(wid)
         .bind(env_id)
         .fetch_optional(&mut *tx)
@@ -277,9 +280,12 @@ impl PostgresWorkQueue {
         env_id: &str,
         wid: &str,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM work_queue_item WHERE work_id = $1 AND environment_id = $2"
-        ))
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM work_queue_item WHERE work_id = $1 AND environment_id = $2"
+            )),
+        )
         .bind(wid)
         .bind(env_id)
         .fetch_optional(&self.pool)
@@ -364,25 +370,27 @@ async fn sqlite_remove_work(
     env_id: &str,
     healthchecks_only: bool,
 ) -> Result<Vec<String>, WorkQueueError> {
-    let suffix = if healthchecks_only {
-        " AND data_type = 'healthcheck'"
+    let (select_sql, delete_sql) = if healthchecks_only {
+        (
+            "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'healthcheck'",
+            "DELETE FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'healthcheck'",
+        )
     } else {
-        ""
+        (
+            "SELECT work_id FROM work_queue_item WHERE environment_id = ?1",
+            "DELETE FROM work_queue_item WHERE environment_id = ?1",
+        )
     };
-    let ids = sqlx::query_scalar::<_, String>(&format!(
-        "SELECT work_id FROM work_queue_item WHERE environment_id = ?1{suffix}"
-    ))
-    .bind(env_id)
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(storage)?;
-    sqlx::query(&format!(
-        "DELETE FROM work_queue_item WHERE environment_id = ?1{suffix}"
-    ))
-    .bind(env_id)
-    .execute(&mut *connection)
-    .await
-    .map_err(storage)?;
+    let ids = sqlx::query_scalar::<_, String>(select_sql)
+        .bind(env_id)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(storage)?;
+    sqlx::query(delete_sql)
+        .bind(env_id)
+        .execute(&mut *connection)
+        .await
+        .map_err(storage)?;
     Ok(ids)
 }
 
@@ -486,25 +494,27 @@ async fn postgres_remove_work(
     env_id: &str,
     healthchecks_only: bool,
 ) -> Result<Vec<String>, WorkQueueError> {
-    let suffix = if healthchecks_only {
-        " AND data_type = 'healthcheck'"
+    let (select_sql, delete_sql) = if healthchecks_only {
+        (
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND data_type = 'healthcheck'",
+            "DELETE FROM work_queue_item WHERE environment_id = $1 AND data_type = 'healthcheck'",
+        )
     } else {
-        ""
+        (
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1",
+            "DELETE FROM work_queue_item WHERE environment_id = $1",
+        )
     };
-    let ids = sqlx::query_scalar::<_, String>(&format!(
-        "SELECT work_id FROM work_queue_item WHERE environment_id = $1{suffix}"
-    ))
-    .bind(env_id)
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(storage)?;
-    sqlx::query(&format!(
-        "DELETE FROM work_queue_item WHERE environment_id = $1{suffix}"
-    ))
-    .bind(env_id)
-    .execute(&mut *connection)
-    .await
-    .map_err(storage)?;
+    let ids = sqlx::query_scalar::<_, String>(select_sql)
+        .bind(env_id)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(storage)?;
+    sqlx::query(delete_sql)
+        .bind(env_id)
+        .execute(&mut *connection)
+        .await
+        .map_err(storage)?;
     Ok(ids)
 }
 

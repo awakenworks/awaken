@@ -147,7 +147,9 @@ async fn sqlite_allocator_work_and_watermark_roll_back_as_one_transaction() {
         } else {
             "INSERT"
         };
-        sqlx::raw_sql(&format!("CREATE TRIGGER identity_failure BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'identity rollback witness'); END;")).execute(&pool).await.unwrap();
+        sqlx::raw_sql(
+// Fault SQL is selected only by the closed allocator/item/watermark event/table matrix.
+sqlx::AssertSqlSafe(format!("CREATE TRIGGER identity_failure BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'identity rollback witness'); END;"))).execute(&pool).await.unwrap();
         let failure = queue
             .apply_environment_revision(
                 "atomic",
@@ -233,7 +235,9 @@ async fn postgres_allocator_work_and_watermark_roll_back_as_one_transaction() {
         } else {
             "INSERT"
         };
-        sqlx::raw_sql(&format!("CREATE FUNCTION fail_identity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'identity rollback witness'; END; $$; CREATE TRIGGER identity_failure BEFORE {event} ON {table} FOR EACH ROW EXECUTE FUNCTION fail_identity();")).execute(&fixture.pool).await.unwrap();
+        sqlx::raw_sql(
+// Fault SQL is selected only by the closed allocator/item/watermark event/table matrix.
+sqlx::AssertSqlSafe(format!("CREATE FUNCTION fail_identity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'identity rollback witness'; END; $$; CREATE TRIGGER identity_failure BEFORE {event} ON {table} FOR EACH ROW EXECUTE FUNCTION fail_identity();"))).execute(&fixture.pool).await.unwrap();
         let failure = queue
             .apply_environment_revision(
                 "atomic",
@@ -256,9 +260,12 @@ async fn postgres_allocator_work_and_watermark_roll_back_as_one_transaction() {
                 .unwrap(),
             0
         );
-        sqlx::raw_sql(&format!(
-            "DROP TRIGGER identity_failure ON {table}; DROP FUNCTION fail_identity()"
-        ))
+        sqlx::raw_sql(
+            // Fault SQL is selected only by the closed allocator/item/watermark event/table matrix.
+            sqlx::AssertSqlSafe(format!(
+                "DROP TRIGGER identity_failure ON {table}; DROP FUNCTION fail_identity()"
+            )),
+        )
         .execute(&fixture.pool)
         .await
         .unwrap();

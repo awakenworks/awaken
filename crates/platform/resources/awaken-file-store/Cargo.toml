@@ -29,7 +29,7 @@ tokio = { workspace = true, features = ["fs", "io-util"] }
 # default product build retains only the durable filesystem backend.
 # Feature `sqlite` uses the same driver for the embedded BLOB backend over the
 # same `file_store` migration scope.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"], optional = true }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "postgres", "sqlite"], optional = true }
 # Versioned schema via the foundation's scoped migration (never a raw CREATE TABLE):
 # the `file_store_blob` table is migration 1 of the `awaken.file_store` bundle. The
 # core migrator (schema) is shared; each backend pulls its own runner.

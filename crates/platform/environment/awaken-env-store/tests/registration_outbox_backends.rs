@@ -110,7 +110,10 @@ async fn postgres_outbox_pairs_survive_independent_pools() {
         .as_nanos();
     let schema = format!("t_env_t20_outbox_{}_{nonce:x}", std::process::id());
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(
+            // The schema is a fixed fixture prefix plus integer process/time coordinates.
+            sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+        )
         .await
         .unwrap();
     let connect = || {
@@ -156,7 +159,10 @@ async fn postgres_outbox_pairs_survive_independent_pools() {
     assert_eq!(durable_image(&reopened).await, written, "R2 reopen");
     drop(reopened);
     admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .execute(
+            // The schema is a fixed fixture prefix plus integer process/time coordinates.
+            sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")),
+        )
         .await
         .expect("drop only this run's schema");
     admin.close().await;

@@ -196,14 +196,24 @@ fn database_url_in_schema(base: &str, schema: &str) -> String {
 }
 
 async fn schema_pool(schema: &str) -> Option<(PgPool, String)> {
+    assert!(
+        !schema.is_empty()
+            && !schema.as_bytes()[0].is_ascii_digit()
+            && schema
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
     let url = postgres_support::database_url()?;
     let admin = postgres_support::connect(PgPool::connect(&url)).await;
+    // Only the checked active-active fixture identifier enters schema DDL.
     admin
-        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        .execute(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE"
+        )))
         .await
         .expect("drop owned active-active schema");
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .expect("create active-active schema");
     admin.close().await;
@@ -213,8 +223,9 @@ async fn schema_pool(schema: &str) -> Option<(PgPool, String)> {
             .after_connect(move |connection, _metadata| {
                 let schema = schema.clone();
                 Box::pin(async move {
-                    connection
-                        .execute(format!("SET search_path = {schema}").as_str())
+                    sqlx::query("SELECT set_config('search_path', $1, false)")
+                        .bind(schema)
+                        .execute(connection)
                         .await?;
                     Ok(())
                 })

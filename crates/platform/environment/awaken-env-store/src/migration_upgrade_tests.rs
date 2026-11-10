@@ -172,7 +172,10 @@ async fn postgres_v8_upgrade_seeds_history_once_across_independent_pools() {
         .as_nanos();
     let schema = format!("t_env_v8_upgrade_{}_{nonce:x}", std::process::id());
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(
+            // The schema is a fixed fixture prefix plus integer process/time coordinates.
+            sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+        )
         .await
         .unwrap();
     let connect = || {
@@ -247,7 +250,10 @@ async fn postgres_v8_upgrade_seeds_history_once_across_independent_pools() {
     );
     reopened.pool.close().await;
     admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .execute(
+            // The schema is a fixed fixture prefix plus integer process/time coordinates.
+            sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")),
+        )
         .await
         .expect("drop only this run's schema");
     admin.close().await;

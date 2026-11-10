@@ -535,12 +535,14 @@ impl Backend for Sqlite {
     }
 
     async fn arm(&self, id: &SessionId) {
-        sqlx::raw_sql(&format!(
+        // SQL safety: DDL cannot bind trigger literals. Quote the literal's
+        // apostrophes; every SQL identifier and the trigger body are static.
+        let literal_id = id.as_str().replace('\'', "''");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "CREATE TRIGGER t12_reject_idempotency BEFORE INSERT ON managed_session_idempotency \
-             WHEN NEW.session_id = '{}' \
-             BEGIN SELECT RAISE(ABORT, 't12 injected mid-write failure'); END;",
-            id.as_str()
-        ))
+             WHEN NEW.session_id = '{literal_id}' \
+             BEGIN SELECT RAISE(ABORT, 't12 injected mid-write failure'); END;"
+        )))
         .execute(&self.pool)
         .await
         .expect("install SQLite T12 trigger");
@@ -663,13 +665,15 @@ impl Backend for Postgres {
     }
 
     async fn arm(&self, id: &SessionId) {
-        sqlx::raw_sql(&format!(
+        // SQL safety: the interpolated trigger value is a quoted SQL literal;
+        // identifiers and the separate PL/pgSQL function body stay static.
+        let literal_id = id.as_str().replace('\'', "''");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "CREATE FUNCTION t12_reject_idempotency() RETURNS trigger LANGUAGE plpgsql AS \
              $$ BEGIN RAISE EXCEPTION 't12 injected mid-write failure'; END $$; \
              CREATE TRIGGER t12_reject_idempotency BEFORE INSERT ON managed_session_idempotency \
-             FOR EACH ROW WHEN (NEW.session_id = '{}') EXECUTE FUNCTION t12_reject_idempotency();",
-            id.as_str()
-        ))
+             FOR EACH ROW WHEN (NEW.session_id = '{literal_id}') EXECUTE FUNCTION t12_reject_idempotency();"
+        )))
         .execute(&self.pool)
         .await
         .expect("install PostgreSQL T12 trigger");
@@ -710,7 +714,8 @@ async fn postgres_mid_write_failure_rolls_back_the_whole_batch_transaction() {
         .expect("explicit T12 PostgreSQL fixture must connect");
     let schema = format!("t_session_t12_{}", uuid::Uuid::new_v4().simple());
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .expect("create owned T12 schema");
     let owned = schema.clone();
@@ -720,11 +725,13 @@ async fn postgres_mid_write_failure_rolls_back_the_whole_batch_transaction() {
         .after_connect(move |connection, _| {
             let schema = owned.clone();
             Box::pin(async move {
-                connection
-                    .execute(format!("SET search_path = {schema}").as_str())
+                sqlx::query("SELECT set_config('search_path', $1, false)")
+                    .bind(&schema)
+                    .execute(&mut *connection)
                     .await?;
-                connection
-                    .execute(format!("SET application_name = '{schema}'").as_str())
+                sqlx::query("SELECT set_config('application_name', $1, false)")
+                    .bind(&schema)
+                    .execute(&mut *connection)
                     .await?;
                 Ok(())
             })
@@ -747,7 +754,8 @@ async fn postgres_mid_write_failure_rolls_back_the_whole_batch_transaction() {
     drop(store);
     pool.close().await;
     admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .await
         .expect("drop owned T12 schema");
     admin.close().await;

@@ -23,11 +23,14 @@ pub async fn isolated_postgres_url(tag: &'static str) -> Option<String> {
         .connect_with(options)
         .await
         .expect("configured PostgreSQL test database must be reachable");
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
-        .execute(&admin)
-        .await
-        .expect("reset the exact owned test schema");
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+    // The identifier contains only the checked fixture tag and integer PID.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP SCHEMA IF EXISTS {schema} CASCADE"
+    )))
+    .execute(&admin)
+    .await
+    .expect("reset the exact owned test schema");
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .execute(&admin)
         .await
         .expect("create isolated test schema");

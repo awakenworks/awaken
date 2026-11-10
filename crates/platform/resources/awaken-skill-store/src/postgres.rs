@@ -79,9 +79,7 @@ async fn selected_bundles(
         .await
         .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
     let v1_checksum: Option<String> = if ledger.is_some() {
-        sqlx::query_scalar(&format!(
-            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
-        ))
+        sqlx::query_scalar("SELECT checksum FROM skill_store_schema_migrations WHERE bundle_id = $1 AND version = 1")
         .bind(BUNDLE_ID)
         .fetch_optional(pool)
         .await
@@ -152,9 +150,7 @@ impl PgSkillStore {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<SkillAggregate>, SkillStoreError> {
-        let rows = sqlx::query(&format!(
-            "SELECT id, data FROM {NS}_aggregate WHERE workspace_id = $1 ORDER BY id COLLATE \"C\""
-        ))
+        let rows = sqlx::query("SELECT id, data FROM skill_store_aggregate WHERE workspace_id = $1 ORDER BY id COLLATE \"C\"")
         .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
@@ -175,9 +171,9 @@ impl PgSkillStore {
 #[async_trait::async_trait]
 impl SkillStore for PgSkillStore {
     async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
-        sqlx::query_scalar::<_, String>(&format!(
-            "SELECT DISTINCT workspace_id FROM {NS}_aggregate ORDER BY workspace_id"
-        ))
+        sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT workspace_id FROM skill_store_aggregate ORDER BY workspace_id",
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(storage)
@@ -199,9 +195,9 @@ impl SkillStore for PgSkillStore {
             deleted: false,
         };
         let data = encode_aggregate(&aggregate)?;
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_aggregate (workspace_id, id, data) VALUES ($1, $2, $3)"
-        ))
+        sqlx::query(
+            "INSERT INTO skill_store_aggregate (workspace_id, id, data) VALUES ($1, $2, $3)",
+        )
         .bind(aggregate.definition.workspace_id.as_str())
         .bind(aggregate.definition.id.as_str())
         .bind(data)
@@ -229,9 +225,9 @@ impl SkillStore for PgSkillStore {
         version: SkillVersion,
     ) -> Result<(), SkillStoreError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2 FOR UPDATE"
-        ))
+        let row = sqlx::query(
+            "SELECT data FROM skill_store_aggregate WHERE workspace_id = $1 AND id = $2 FOR UPDATE",
+        )
         .bind(workspace_id)
         .bind(skill_id)
         .fetch_optional(&mut *transaction)
@@ -242,9 +238,9 @@ impl SkillStore for PgSkillStore {
         let mut aggregate = decode_aggregate(data.as_bytes(), workspace_id, skill_id)?;
         append_to(&mut aggregate, version)?;
         let data = encode_aggregate(&aggregate)?;
-        sqlx::query(&format!(
-            "UPDATE {NS}_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2"
-        ))
+        sqlx::query(
+            "UPDATE skill_store_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2",
+        )
         .bind(workspace_id)
         .bind(skill_id)
         .bind(data)
@@ -334,9 +330,9 @@ impl SkillStore for PgSkillStore {
         version: u64,
     ) -> Result<bool, SkillStoreError> {
         let mut transaction = self.pool.begin().await.map_err(storage)?;
-        let Some(row) = sqlx::query(&format!(
-            "SELECT data FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2 FOR UPDATE"
-        ))
+        let Some(row) = sqlx::query(
+            "SELECT data FROM skill_store_aggregate WHERE workspace_id = $1 AND id = $2 FOR UPDATE",
+        )
         .bind(workspace_id)
         .bind(skill_id)
         .fetch_optional(&mut *transaction)
@@ -356,9 +352,9 @@ impl SkillStore for PgSkillStore {
         )?;
         if removed {
             let data = encode_aggregate(&aggregate)?;
-            sqlx::query(&format!(
-                "UPDATE {NS}_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2"
-            ))
+            sqlx::query(
+                "UPDATE skill_store_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2",
+            )
             .bind(workspace_id)
             .bind(skill_id)
             .bind(data)
@@ -383,9 +379,9 @@ impl SkillStore for PgSkillStore {
         }
         aggregate.deleted = true;
         let data = encode_aggregate(&aggregate)?;
-        sqlx::query(&format!(
-            "UPDATE {NS}_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2"
-        ))
+        sqlx::query(
+            "UPDATE skill_store_aggregate SET data = $3 WHERE workspace_id = $1 AND id = $2",
+        )
         .bind(workspace_id)
         .bind(skill_id)
         .bind(data)
@@ -408,14 +404,12 @@ impl SkillStore for PgSkillStore {
                 detail: "an active Skill cannot be physically reclaimed".into(),
             });
         }
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2"
-        ))
-        .bind(workspace_id)
-        .bind(skill_id)
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?;
+        sqlx::query("DELETE FROM skill_store_aggregate WHERE workspace_id = $1 AND id = $2")
+            .bind(workspace_id)
+            .bind(skill_id)
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
         u64::try_from(aggregate.versions.len()).map_err(storage)
     }
 }
@@ -426,9 +420,9 @@ impl PgSkillStore {
         workspace_id: &str,
         skill_id: &str,
     ) -> Result<Option<SkillAggregate>, SkillStoreError> {
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {NS}_aggregate WHERE workspace_id = $1 AND id = $2"
-        ))
+        let row = sqlx::query(
+            "SELECT data FROM skill_store_aggregate WHERE workspace_id = $1 AND id = $2",
+        )
         .bind(workspace_id)
         .bind(skill_id)
         .fetch_optional(&self.pool)

@@ -21,7 +21,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json", "sqlite"] }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "postgres", "json", "sqlite"] }
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 awaken-sqlite-pool.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }

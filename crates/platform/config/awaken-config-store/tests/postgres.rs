@@ -540,11 +540,19 @@ async fn postgres_audit_begin_serializes_concurrent_exact_and_conflicting_reques
 async fn schema_pool(schema: &'static str) -> Option<PgPool> {
     let url = awaken_reliability_testkit::postgres_fixture_url()?;
     let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
+    // All callers name a dedicated fixture schema. Quote it as an identifier;
+    // authorization data and other values never enter this DDL.
     let _ = admin
-        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        .execute(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS \"{}\" CASCADE",
+            schema.replace('"', "\"\"")
+        )))
         .await;
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(sqlx::AssertSqlSafe(format!(
+            "CREATE SCHEMA \"{}\"",
+            schema.replace('"', "\"\"")
+        )))
         .await
         .expect("create schema");
     admin.close().await;
@@ -552,7 +560,9 @@ async fn schema_pool(schema: &'static str) -> Option<PgPool> {
         PgPoolOptions::new()
             .after_connect(move |conn, _meta| {
                 Box::pin(async move {
-                    conn.execute(format!("SET search_path = {schema}").as_str())
+                    sqlx::query("SELECT set_config('search_path',$1,false)")
+                        .bind(schema)
+                        .execute(conn)
                         .await?;
                     Ok(())
                 })

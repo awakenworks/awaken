@@ -14,12 +14,14 @@ pub(crate) const WORKER_COLUMNS: &str = "worker_id, incarnation_id, generation, 
     heartbeat_sequence, observation_sequence, registered_at_ms, heartbeat_at_ms, \
     drain_deadline_ms, process_exit_json, create_ledger_json, source_retention_json";
 
-pub(crate) fn current_workers_query() -> String {
-    format!(
+pub(crate) fn current_workers_query() -> sqlx::AssertSqlSafe<String> {
+    // Only the repository-owned column list is composed; there are no inputs
+    // or product values in this query's SQL text.
+    sqlx::AssertSqlSafe(format!(
         "SELECT {WORKER_COLUMNS} FROM worker_registry_worker AS current \
         WHERE generation = (SELECT MAX(generation) FROM worker_registry_worker AS history \
         WHERE history.worker_id = current.worker_id) ORDER BY worker_id"
-    )
+    ))
 }
 
 pub(crate) struct EncodedWorkerRow {

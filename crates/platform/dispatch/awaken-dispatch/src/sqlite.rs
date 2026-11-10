@@ -121,9 +121,9 @@ async fn published_checksum(
     if !ledger_exists {
         return Ok(None);
     }
-    sqlx::query_scalar(&format!(
-        "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = ?2"
-    ))
+    sqlx::query_scalar(
+        "SELECT checksum FROM runtime_schema_migrations WHERE bundle_id = ?1 AND version = ?2",
+    )
     .bind(bundle)
     .bind(version)
     .fetch_optional(pool)
@@ -133,16 +133,14 @@ async fn published_checksum(
 
 async fn load_run_identity_evidence(
     connection: &mut SqliteConnection,
-    prefix: &str,
+    _prefix: &str,
     run_id: &RunId,
 ) -> Result<SqliteRow, DispatchError> {
-    sqlx::query(&format!(
-        "SELECT d.run_id AS live_run_id, d.thread_id AS live_thread_id, \
+    sqlx::query("SELECT d.run_id AS live_run_id, d.thread_id AS live_thread_id, \
          d.status, d.request, c.sequence, c.run_id, c.request_fingerprint, \
          c.thread_id, c.session_thread_id, c.cancel_requested, c.retained_request AS retained_request_json FROM (SELECT ?1 AS run_id) k \
-         LEFT JOIN {prefix}_dispatch d ON d.run_id = k.run_id \
-         LEFT JOIN {prefix}_dispatch_completion c ON c.run_id = k.run_id"
-    ))
+         LEFT JOIN runtime_dispatch d ON d.run_id = k.run_id \
+         LEFT JOIN runtime_dispatch_completion c ON c.run_id = k.run_id")
     .bind(&run_id.0)
     .fetch_one(connection)
     .await
@@ -227,7 +225,7 @@ async fn insert_new_dispatch(
 /// shared with ordinary enqueue.
 async fn insert_dispatch_with_state(
     tx: &mut SqliteConnection,
-    prefix: &str,
+    _prefix: &str,
     request: &RunDispatch,
     options: &SubmitOptions,
     initial_status: &'static str,
@@ -236,18 +234,18 @@ async fn insert_dispatch_with_state(
     let mut epoch = 0i64;
     if options.supersede {
         epoch = crate::next_supersession_epoch(
-            sqlx::query_scalar::<_, i64>(&format!(
-                "SELECT COALESCE(MAX(epoch), 0) FROM {prefix}_dispatch WHERE thread_id = ?1"
-            ))
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE(MAX(epoch), 0) FROM runtime_dispatch WHERE thread_id = ?1",
+            )
             .bind(&request.thread_id().0)
             .fetch_one(&mut *tx)
             .await
             .map_err(store_error)?,
         )?;
-        let candidates = sqlx::query_as::<_, (String, String, i64, i64)>(&format!(
+        let candidates = sqlx::query_as::<_, (String, String, i64, i64)>(
             "SELECT run_id, status, lease_epoch, cancel_requested \
-             FROM {prefix}_dispatch WHERE thread_id = ?1"
-        ))
+             FROM runtime_dispatch WHERE thread_id = ?1",
+        )
         .bind(&request.thread_id().0)
         .fetch_all(&mut *tx)
         .await
@@ -274,10 +272,10 @@ async fn insert_dispatch_with_state(
             .supersede() else {
                 continue;
             };
-            sqlx::query(&format!(
-                "UPDATE {prefix}_dispatch SET status = ?2, lease_owner = NULL, \
-                 lease_until = NULL WHERE run_id = ?1"
-            ))
+            sqlx::query(
+                "UPDATE runtime_dispatch SET status = ?2, lease_owner = NULL, \
+                 lease_until = NULL WHERE run_id = ?1",
+            )
             .bind(run_id)
             .bind(crate::dispatch_state_db(next.state))
             .execute(&mut *tx)
@@ -286,16 +284,16 @@ async fn insert_dispatch_with_state(
         }
     }
 
-    sqlx::query(&format!(
-        "INSERT INTO {prefix}_dispatch \
+    sqlx::query(
+        "INSERT INTO runtime_dispatch \
          (run_id, thread_id, request, status, priority, epoch, dedupe_key, lease_until) \
          SELECT ?1,?2,?3,?7,?4,?5,?6,?8 \
          WHERE NOT EXISTS ( \
-             SELECT 1 FROM {prefix}_dispatch \
+             SELECT 1 FROM runtime_dispatch \
              WHERE dedupe_key = ?6 AND status <> 'dead_letter') \
-         AND NOT EXISTS (SELECT 1 FROM {prefix}_dispatch_completion WHERE run_id = ?1) \
-         ON CONFLICT(run_id) DO NOTHING"
-    ))
+         AND NOT EXISTS (SELECT 1 FROM runtime_dispatch_completion WHERE run_id = ?1) \
+         ON CONFLICT(run_id) DO NOTHING",
+    )
     .bind(&request.run_id().0)
     .bind(&request.thread_id().0)
     .bind(json(request)?)
@@ -312,14 +310,13 @@ async fn insert_dispatch_with_state(
 
 async fn known_session_child_threads(
     tx: &mut SqliteConnection,
-    prefix: &str,
+    _prefix: &str,
     parent: &ThreadId,
 ) -> Result<Vec<ThreadId>, DispatchError> {
-    let live_requests =
-        sqlx::query_scalar::<_, String>(&format!("SELECT request FROM {prefix}_dispatch"))
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(store_error)?;
+    let live_requests = sqlx::query_scalar::<_, String>("SELECT request FROM runtime_dispatch")
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
     let mut known = Vec::new();
     for stored in live_requests {
         let stored = serde_json::from_str::<RunDispatch>(&stored).map_err(json_err)?;
@@ -327,11 +324,11 @@ async fn known_session_child_threads(
             known.push(thread.clone());
         }
     }
-    let rows = sqlx::query_scalar::<_, String>(&format!(
-        "SELECT thread_id FROM {prefix}_dispatch_completion \
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT thread_id FROM runtime_dispatch_completion \
          WHERE session_thread_id = ?1 AND thread_id IS NOT NULL \
-         AND thread_id <> session_thread_id"
-    ))
+         AND thread_id <> session_thread_id",
+    )
     .bind(&parent.0)
     .fetch_all(&mut *tx)
     .await
@@ -441,10 +438,9 @@ impl SqliteDispatchStore {
     /// enqueue order — backs the operational `dead_letters`/`superseded` queries.
     async fn run_ids_by_status(&self, status: &'static str) -> Result<Vec<RunId>, DispatchError> {
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let ids = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT run_id FROM {p}_dispatch WHERE status = ?1 ORDER BY created_at"
-        ))
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT run_id FROM runtime_dispatch WHERE status = ?1 ORDER BY created_at",
+        )
         .bind(status)
         .fetch_all(&mut *conn)
         .await
@@ -461,11 +457,8 @@ impl SqliteDispatchStore {
         let run = claim.run_id.0.clone();
         let current: Option<ClaimEpochStorageRow<String>> = {
             let mut conn = self.with_conn_unlocked().await?;
-            let p = NS;
-            sqlx::query_as(&format!(
-                "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
-                 FROM {p}_dispatch WHERE run_id = ?1 AND status = ?2"
-            ))
+            sqlx::query_as("SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
+                 FROM runtime_dispatch WHERE run_id = ?1 AND status = ?2")
             .bind(run)
             .bind(required_status)
             .fetch_optional(&mut *conn)
@@ -576,8 +569,9 @@ mod migration_history_tests {
         // index; C2 restart after applying V8. Effects: E1 retain exact V7
         // checksum; E2 both effects exist once; E3 reopen creates no receipts.
         // R1=C1 closure -> append index@8; R2=C1 index -> append closure@8;
-        // R3=R1/R2+C2 -> same 10 receipts: V9 records completion cancellation,
-        // V10 adds nullable retained Task source. The task-source upgrade tests
+        // R3=R1/R2+C2 -> same 11 receipts: V9 records completion cancellation,
+        // V10 adds nullable retained Task source, V11 seals its SQLite no-op.
+        // The task-source upgrade tests
         // own legacy-row/checksum preservation. Unknown V7 is tested separately.
         for index_first in [false, true] {
             let pool = EmbeddedSqlite::memory().open().await.unwrap();
@@ -611,7 +605,10 @@ mod migration_history_tests {
             let pool = store.pool.clone();
             let runner = SqliteMigrationRunner::with_prefix(pool.sqlx().clone(), NS).unwrap();
             let selected = selected_converged_dispatch_bundle(Some(&checksum)).unwrap();
-            runner.run_bundle(&selected).await.unwrap();
+            assert!(
+                runner.run_bundle(&selected).await.unwrap().is_empty(),
+                "E3 store startup has already applied the exact selected stream"
+            );
             let retained: String = sqlx::query_scalar(
                 "SELECT checksum FROM runtime_schema_migrations WHERE bundle_id=?1 AND version=7",
             )
@@ -627,7 +624,7 @@ mod migration_history_tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-            assert_eq!(receipts, 10, "E3 exact replay");
+            assert_eq!(receipts, 11, "E3 exact replay");
             let closed_columns: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM pragma_table_info('runtime_dispatch') WHERE name='active_attempt_closing'",
             )
@@ -684,9 +681,10 @@ mod migration_history_tests {
     async fn store_open_selects_and_converges_the_durable_expanded_history() {
         /* Adapter-selection cause/effect table:
          * Q1 no ledger -> fresh compact history; Q2 exact expanded V15 receipt
-         * with V1..V24 -> finish expanded V25..V29 then apply converged V1..V10;
+         * with V1..V24 -> finish expanded V25..V29 then apply converged V1..V11;
          * Q3 reopen Q2 -> no duplicate columns/triggers or receipts, including
-         * V9 completion cancellation and V10 nullable retained Task source.
+         * V9 completion cancellation, V10 nullable retained Task source and
+         * V11's SQLite no-op receipt.
          * This test owns Q2/Q3; ordinary open-in-memory tests own Q1.
          */
         let directory = tempfile::tempdir().expect("migration database directory");
@@ -729,8 +727,8 @@ mod migration_history_tests {
         .expect("Q2 convergence receipt");
         assert_eq!(published_max, 29, "Q2 expanded terminal");
         assert_eq!(
-            converged_count, 10,
-            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline, entry closure, completion cancel fact"
+            converged_count, 11,
+            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline, entry closure, operation index, completion cancel fact, retained Task source and SQLite membership no-op receipt"
         );
     }
 }

@@ -456,7 +456,7 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 367,
+        "line": 374,
         "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
         "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:367"
       }
@@ -464,11 +464,11 @@
     "assertion_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 374
+        "line": 381
       },
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 378
+        "line": 385
       }
     ],
     "execution_witnesses": [
@@ -504,7 +504,7 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 389,
+        "line": 396,
         "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
         "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:389"
       }
@@ -512,11 +512,11 @@
     "assertion_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 400
+        "line": 407
       },
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 404
+        "line": 411
       }
     ],
     "execution_witnesses": [
@@ -697,7 +697,7 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 596,
+        "line": 598,
         "file_sha256": "0da9d07ed53363251ee5a121e1f174913093021276403fb15629a88e5bea7be5",
         "relocated_from": "crates/stores/awaken-session-store/tests/pause_transaction.rs:596"
       }
@@ -705,15 +705,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 597
+        "line": 599
       },
       {
         "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 602
+        "line": 604
       },
       {
         "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 611
+        "line": 613
       }
     ],
     "execution_witnesses": [

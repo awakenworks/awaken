@@ -1120,18 +1120,19 @@ mod tests {
             .await
             .expect("configured executable Agent PostgreSQL fixture must connect");
         admin
-            .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
+            .execute("DROP SCHEMA IF EXISTS t_executable_agent_catalog CASCADE")
             .await
             .unwrap();
         admin
-            .execute(format!("CREATE SCHEMA {SCHEMA}").as_str())
+            .execute("CREATE SCHEMA t_executable_agent_catalog")
             .await
             .unwrap();
         let pool = PgPoolOptions::new()
             .after_connect(|connection, _| {
                 Box::pin(async move {
-                    connection
-                        .execute(format!("SET search_path = {SCHEMA}").as_str())
+                    sqlx::query("SELECT set_config('search_path', $1, false)")
+                        .bind(SCHEMA)
+                        .execute(connection)
                         .await?;
                     Ok(())
                 })
@@ -1198,7 +1199,7 @@ mod tests {
 
         pool.close().await;
         admin
-            .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
+            .execute("DROP SCHEMA IF EXISTS t_executable_agent_catalog CASCADE")
             .await
             .unwrap();
         admin.close().await;

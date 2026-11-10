@@ -22,7 +22,7 @@ awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true
 serde_json.workspace = true
 serde.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "postgres", "json"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing = "0.1"

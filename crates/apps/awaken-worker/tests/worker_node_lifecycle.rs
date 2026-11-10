@@ -52,6 +52,57 @@ fn lifecycle_worker(upstream: WorkerUpstream) -> WorkerNodeBuilder {
         .with_hand_executor_factory(Arc::new(NoHandFactory))
 }
 
+fn post_ready_fault_worker(upstream: &FakeWorkerUpstream, id: &str) -> WorkerNodeBuilder {
+    // Registration permits dependency construction; the first applied Ready
+    // heartbeat installs the independently authored 600/900ms receipt. A
+    // deterministic 750ms factory delay exceeds BOTH short proof windows, so
+    // these rows cannot accidentally test registration expiry instead of their
+    // post-Ready fault. Their original outer test deadlines remain unchanged.
+    upstream.set_registration_lease_ttl_ms(30_000);
+    lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id(id))
+        .with_attempt_decorator_factory(Arc::new(|_| {
+            std::thread::sleep(Duration::from_millis(750));
+            let decorator: awaken_session_executor::AttemptExecutorDecorator =
+                Arc::new(|inner| inner);
+            Ok(decorator)
+        }))
+}
+
+fn assert_exact_withdrawal(upstream: &FakeWorkerUpstream, admitted: bool) {
+    let paths = upstream.requests();
+    for path in ["/v1/worker/register", "/v1/worker/deregister"] {
+        assert_eq!(
+            paths.iter().filter(|value| value.as_str() == path).count(),
+            1,
+            "one incarnation, one withdrawal: {paths:?}"
+        );
+    }
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|path| *path == "/v1/worker/drain")
+            .count(),
+        usize::from(admitted),
+        "only an admitted incarnation drains: {paths:?}"
+    );
+    assert_eq!(
+        paths.iter().any(|path| path == "/v1/worker/dispatch/claim"),
+        admitted,
+        "claims prove initial Ready was admitted: {paths:?}"
+    );
+    if admitted {
+        let drain = paths
+            .iter()
+            .position(|path| path == "/v1/worker/drain")
+            .unwrap();
+        let withdrawal = paths
+            .iter()
+            .position(|path| path == "/v1/worker/deregister")
+            .unwrap();
+        assert!(drain < withdrawal, "drain precedes withdrawal: {paths:?}");
+    }
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind an ephemeral admin port")
@@ -112,6 +163,7 @@ struct ExternalSessionProvider {
     probe_fault: Option<(usize, ProbeFault)>,
     probe_calls: AtomicUsize,
     active_probes: AtomicUsize,
+    initial_proven_at: Mutex<Option<awaken_lease_contract::authority::AuthorityProofStarted>>,
     repository_control: bool,
 }
 
@@ -266,6 +318,12 @@ impl awaken_provisioning_contract::SandboxReadiness for ExternalSessionProvider 
             .as_ref()
             .is_none_or(|ready| ready.load(Ordering::SeqCst))
         {
+            if ordinal == 0 {
+                *self.initial_proven_at.lock().unwrap() = Some(
+                    awaken_authority_clock::authority_proof_started()
+                        .expect("the same authority clock used by Worker startup"),
+                );
+            }
             Ok(())
         } else {
             Err(awaken_provisioning_contract::SandboxError::conflict(
@@ -1878,17 +1936,15 @@ async fn panicking_heartbeat_probe_uses_authority_loss_and_requires_replacement(
     // barrier test proves exact-once revocation before task completion; Host
     // revocation tests own active Session/physical cleanup evidence separately.
     let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
+    let provider = Arc::new(ExternalSessionProvider {
+        probe_fault: Some((1, ProbeFault::Panic)),
+        ..ExternalSessionProvider::default()
+    });
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id("worker-probe-panic"))
+        post_ready_fault_worker(&upstream, "worker-probe-panic")
             .with_deployment_config(local_coordinator_deployment(), false)
-            .with_session_container_provider(
-                "external-secure",
-                Arc::new(ExternalSessionProvider {
-                    probe_fault: Some((1, ProbeFault::Panic)),
-                    ..ExternalSessionProvider::default()
-                }),
-            )
+            .with_session_container_provider("external-secure", provider.clone())
             .with_manifest(manifest())
             .with_graceful_drain(Duration::ZERO)
             .without_admin_surface()
@@ -1901,19 +1957,27 @@ async fn panicking_heartbeat_probe_uses_authority_loss_and_requires_replacement(
     .unwrap_err();
     assert!(
         result.to_string().contains("supervisor restart required"),
-        "E3"
+        "E3 replacement required, got {result}; requests={:?}; heartbeats={:?}",
+        upstream.requests(),
+        upstream.heartbeat_sequences()
+    );
+    assert_eq!(
+        provider.probe_calls.load(Ordering::SeqCst),
+        2,
+        "P5 the periodic probe actually panicked and was not restarted"
+    );
+    assert_eq!(
+        provider.active_probes.load(Ordering::SeqCst),
+        0,
+        "P5 the unwound probe was dropped before withdrawal"
     );
     assert_eq!(upstream.heartbeat_sequences(), vec![1], "E1");
-    let requests = upstream.requests();
-    let drain = requests
-        .iter()
-        .position(|path| path == "/v1/worker/drain")
-        .unwrap();
-    let deregister = requests
-        .iter()
-        .position(|path| path == "/v1/worker/deregister")
-        .unwrap();
-    assert!(drain < deregister, "E2");
+    assert_eq!(
+        upstream.applied_heartbeat_sequence(),
+        1,
+        "initial Ready was applied"
+    );
+    assert_exact_withdrawal(&upstream, true);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2052,29 +2116,59 @@ async fn repeated_transport_failure_drains_only_after_the_proof_deadline() {
     // | P1 | unavailable | remaining | retry; do not terminate immediately |
     // | P2 | unavailable | exhausted | drain/cancel and require supervisor restart |
     let upstream = FakeWorkerUpstream::start_unavailable_after_initial_heartbeat();
+    let provider = Arc::new(ExternalSessionProvider::default());
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        lifecycle_worker(
-            WorkerUpstream::new(upstream.url()).with_worker_id("worker-proof-deadline-test"),
-        )
-        .with_deployment_config(local_coordinator_deployment(), false)
-        .with_manifest(manifest())
-        .without_admin_surface()
-        .build()
-        .expect("valid Worker topology")
-        .run_until(std::future::pending()),
+        post_ready_fault_worker(&upstream, "worker-proof-deadline-test")
+            .with_deployment_config(local_coordinator_deployment(), false)
+            .with_session_container_provider("external-secure", provider.clone())
+            .with_manifest(manifest())
+            .with_graceful_drain(Duration::ZERO)
+            .without_admin_surface()
+            .build()
+            .expect("valid Worker topology")
+            .run_until(std::future::pending()),
     )
     .await
     .expect("P2 proof exhaustion terminates")
     .expect_err("P2 supervisor restart is required");
     assert!(
         result.to_string().contains("supervisor restart required"),
-        "P2"
+        "P2 replacement required, got {result}; requests={:?}; heartbeats={:?}",
+        upstream.requests(),
+        upstream.heartbeat_sequences()
     );
     assert!(
         upstream.heartbeat_sequences().len() > 2,
         "P1 retries before P2"
     );
+    assert_eq!(
+        upstream.applied_heartbeat_sequence(),
+        1,
+        "only initial Ready applied; all periodic replies were injected 503s"
+    );
+    assert!(
+        provider.probe_calls.load(Ordering::SeqCst) >= 2,
+        "healthy Environment evidence was renewed after startup"
+    );
+    assert_eq!(provider.active_probes.load(Ordering::SeqCst), 0);
+    // This lower bound starts AFTER the deliberately slow construction, at
+    // successful initial provider evidence, before the first Ready request.
+    // Exact renewal arithmetic remains in the authority owner's clock tables.
+    let initial = provider
+        .initial_proven_at
+        .lock()
+        .unwrap()
+        .expect("initial provider proof");
+    let age = initial
+        .elapsed_at(awaken_authority_clock::authority_proof_started().unwrap())
+        .expect("authority elapsed clock did not regress");
+    assert!(
+        age >= awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(600)
+            .proof_window(),
+        "P1 transport failure cannot terminate an unexhausted proof: {age:?}"
+    );
+    assert_exact_withdrawal(&upstream, true);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2173,13 +2267,17 @@ async fn incompatible_observation_publication_budget_withdraws_or_drains() {
         if initial_incompatible {
             upstream.set_lease_ttl_ms(900);
         }
-        let worker = lifecycle_worker(WorkerUpstream::new(upstream.url()))
+        let provider = Arc::new(ExternalSessionProvider::default());
+        let worker = post_ready_fault_worker(&upstream, "worker-observation-budget")
             .with_manifest(manifest())
             .with_deployment_config(local_coordinator_deployment(), false)
+            .with_session_container_provider("external-secure", provider.clone())
             .with_credential_observation_window(
                 Duration::from_millis(10),
                 Duration::from_millis(400),
             )
+            .with_graceful_drain(Duration::ZERO)
+            .without_admin_surface()
             .build()
             .unwrap();
         let task = tokio::spawn(worker.run_until(std::future::pending()));
@@ -2202,29 +2300,37 @@ async fn incompatible_observation_publication_budget_withdraws_or_drains() {
             .expect("bounded termination")
             .unwrap();
         if initial_incompatible {
+            let error = result.expect_err("B1 incompatible publication budget rejects startup");
             assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("heartbeat interval"),
-                "B1 diagnostic"
+                error.to_string().contains("heartbeat interval"),
+                "B1 expected publication-budget refusal, got {error}; requests={:?}; heartbeats={:?}",
+                upstream.requests(),
+                upstream.heartbeat_sequences()
+            );
+            assert_eq!(
+                upstream.heartbeat_sequences(),
+                vec![1],
+                "B1 initial Ready receipt exposes the incompatible publication budget before claims"
+            );
+            assert_eq!(upstream.applied_heartbeat_sequence(), 1);
+            assert_eq!(
+                provider.probe_calls.load(Ordering::SeqCst),
+                1,
+                "B1 reached valid initial provider evidence, not another startup fault"
+            );
+        } else {
+            let error = result.expect_err("B2 incompatible renewal terminates this incarnation");
+            assert!(
+                error.to_string().contains("supervisor restart required"),
+                "B2 {error}; requests={:?}",
+                upstream.requests()
+            );
+            assert!(
+                upstream.applied_heartbeat_sequence() >= 2,
+                "B2 a real periodic receipt negotiated the new 900ms lease"
             );
         }
-        let paths = upstream.requests();
-        assert_eq!(
-            paths
-                .iter()
-                .filter(|p| p.as_str() == "/v1/worker/deregister")
-                .count(),
-            1
-        );
-        assert_eq!(
-            paths.iter().any(|p| p.contains("/dispatch/claim")),
-            !initial_incompatible
-        );
-        assert_eq!(
-            paths.iter().any(|p| p == "/v1/worker/drain"),
-            !initial_incompatible
-        );
+        assert_eq!(provider.active_probes.load(Ordering::SeqCst), 0);
+        assert_exact_withdrawal(&upstream, !initial_incompatible);
     }
 }

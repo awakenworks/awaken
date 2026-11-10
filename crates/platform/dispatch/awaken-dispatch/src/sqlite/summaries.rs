@@ -26,7 +26,9 @@ impl SqliteDispatchStore {
         let (_authority, mut conn) = self.with_conn().await?;
         let p = NS;
         let thread_available = thread_available_for_claim(p);
-        let (runnable, leased): (i64, i64) = sqlx::query_as(&format!(
+        // Fixed runtime namespace and closed thread/peer predicates only;
+        // the current clock value remains a bind parameter.
+        let (runnable, leased): (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT (SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
              (d.status IN ('reserved', 'reservation_running') \
                AND d.lease_until IS NOT NULL AND d.lease_until <= ?1 AND {}) OR \
@@ -42,7 +44,7 @@ impl SqliteDispatchStore {
               WHERE d.status IN ('reservation_running', 'running') \
                 AND d.lease_until > ?1)",
             no_running_peer(p)
-        ))
+        )))
         .bind(crate::clock::db_millis(now_ms))
         .fetch_one(&mut *conn)
         .await
@@ -68,7 +70,9 @@ impl SqliteDispatchStore {
             "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until, active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing FROM {p}_dispatch \
              {suffix}"
         );
-        let mut query = sqlx::query_as::<_, DispatchSummaryRow>(&sql);
+        // suffix is one of two literal selection/order clauses; p is built in.
+        // The optional run id remains a bind parameter.
+        let mut query = sqlx::query_as::<_, DispatchSummaryRow>(sqlx::AssertSqlSafe(sql));
         if let Some(run_id) = run_id {
             query = query.bind(run_id);
         }

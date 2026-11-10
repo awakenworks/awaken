@@ -67,11 +67,11 @@
       },
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 253
+        "line": 256
       },
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 257
+        "line": 260
       }
     ],
     "execution_witnesses": [
@@ -358,11 +358,11 @@
     "assertion_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 309
+        "line": 312
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 310
+        "line": 313
       }
     ],
     "execution_witnesses": [
@@ -399,7 +399,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 332,
+        "line": 335,
         "file_sha256": "b1a81ee31fb5a8e7f8d59cf15ed1575c55c658cd1493a2a13e72107e6a2f656f",
         "relocated_from": "crates/stores/awaken-env-store/tests/update_archive_faults.rs:332"
       }
@@ -407,15 +407,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 341
+        "line": 344
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 418
+        "line": 427
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 419
+        "line": 428
       }
     ],
     "execution_witnesses": [
@@ -452,7 +452,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 594,
+        "line": 597,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
         "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:594"
       }
@@ -460,15 +460,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 524
+        "line": 527
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 536
+        "line": 539
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 541
+        "line": 544
       }
     ],
     "execution_witnesses": [
@@ -503,7 +503,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 603,
+        "line": 606,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
         "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:603"
       }
@@ -511,15 +511,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 524
+        "line": 527
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 536
+        "line": 539
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 541
+        "line": 544
       }
     ],
     "execution_witnesses": [
@@ -555,7 +555,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 437,
+        "line": 440,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
         "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:437"
       }
@@ -563,15 +563,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 334
+        "line": 337
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 339
+        "line": 342
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 365
+        "line": 368
       }
     ],
     "execution_witnesses": [
@@ -607,7 +607,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 261,
+        "line": 264,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
         "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:261"
       }
@@ -615,15 +615,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 290
+        "line": 293
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 301
+        "line": 304
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 307
+        "line": 310
       }
     ],
     "execution_witnesses": [
@@ -657,7 +657,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 428,
+        "line": 431,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
         "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:428"
       }
@@ -665,15 +665,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 334
+        "line": 337
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 339
+        "line": 342
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 365
+        "line": 368
       }
     ],
     "execution_witnesses": [
@@ -707,7 +707,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 437,
+        "line": 440,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
         "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:437"
       }
@@ -715,15 +715,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 334
+        "line": 337
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 339
+        "line": 342
       },
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 365
+        "line": 368
       }
     ],
     "execution_witnesses": [

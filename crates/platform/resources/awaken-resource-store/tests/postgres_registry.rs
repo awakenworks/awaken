@@ -12,6 +12,13 @@ use sqlx::Executor;
 use sqlx::postgres::PgPool;
 
 async fn isolated_url(prefix: &str) -> Option<String> {
+    assert!(
+        !prefix.is_empty()
+            && !prefix.as_bytes()[0].is_ascii_digit()
+            && prefix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
     let base_url = awaken_reliability_testkit::postgres_fixture_url()?;
     let admin = PgPool::connect(&base_url)
         .await
@@ -21,8 +28,9 @@ async fn isolated_url(prefix: &str) -> Option<String> {
         .expect("clock after epoch")
         .as_nanos();
     let schema = format!("{prefix}_{}_{}", std::process::id(), nonce);
+    // Only the checked ASCII fixture prefix and integer coordinates form DDL.
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .expect("create isolated schema");
     admin.close().await;

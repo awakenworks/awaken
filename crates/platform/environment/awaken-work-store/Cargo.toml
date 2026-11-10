@@ -35,7 +35,7 @@ awaken-time.workspace = true
 awaken-lease-contract.workspace = true
 serde_json.workspace = true
 tracing = "0.1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 # The portable scoped-migration bundle (one `work_queue` schema, both backends).
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 

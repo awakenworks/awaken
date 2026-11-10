@@ -35,9 +35,7 @@ async fn selected_bundles(
         .await
         .map_err(persist)?;
     let v1_checksum: Option<String> = if ledger.is_some() {
-        sqlx::query_scalar(&format!(
-            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
-        ))
+        sqlx::query_scalar("SELECT checksum FROM worker_registry_schema_migrations WHERE bundle_id = $1 AND version = 1")
         .bind(BUNDLE_ID)
         .fetch_optional(pool)
         .await
@@ -137,9 +135,10 @@ impl PostgresWorkerDirectory {
         conn: &mut PgConnection,
         worker_id: &str,
     ) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let row = sqlx::query(&format!(
+        // WORKER_COLUMNS is the fixed codec column list; worker identity is bound.
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 ORDER BY generation DESC LIMIT 1 FOR UPDATE"
-        ))
+        )))
         .bind(worker_id)
         .fetch_optional(conn)
         .await
@@ -154,9 +153,11 @@ impl PostgresWorkerDirectory {
     ) -> Result<Option<RegisteredWorker>, RegistryError> {
         let generation = durable_i64("generation", identity.generation)?;
         let suffix = if for_update { " FOR UPDATE" } else { "" };
-        let row = sqlx::query(&format!(
+        // The only fragments are fixed codec columns and the two literal lock
+        // suffixes above. Every identity coordinate is a bind parameter.
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 AND generation = $2 AND incarnation_id = $3{suffix}"
-        ))
+        )))
         .bind(&identity.worker_id)
         .bind(generation)
         .bind(&identity.incarnation_id)
@@ -296,7 +297,7 @@ fn persist(error: impl std::fmt::Display) -> RegistryError {
 #[async_trait]
 impl WorkerObservationSource for PostgresWorkerDirectory {
     async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        let rows = sqlx::query(&current_workers_query())
+        let rows = sqlx::query(current_workers_query())
             .fetch_all(&self.pool)
             .await
             .map_err(persist)?;
@@ -309,9 +310,10 @@ impl WorkerObservationSource for PostgresWorkerDirectory {
 #[async_trait::async_trait]
 impl awaken_worker_contract::WorkerCurrentSource for PostgresWorkerDirectory {
     async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let row = sqlx::query(&format!(
+        // WORKER_COLUMNS is repository-owned; worker_id remains a bound value.
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 ORDER BY generation DESC LIMIT 1"
-        ))
+        )))
         .bind(worker_id)
         .fetch_optional(&self.pool)
         .await
