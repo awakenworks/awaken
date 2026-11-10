@@ -7,7 +7,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SecretField } from "@awaken/ui";
 import { MARKETING_STORIES, PRODUCT_PROOFS, TARGET_MARKETING_STORIES } from "./catalog.mjs";
-
 const here = dirname(fileURLToPath(import.meta.url));
 const flowsDir = resolve(here, "flows");
 const proofsDir = resolve(here, "proofs");
@@ -540,11 +539,11 @@ test("the controlled-action story binds real source, approval, and artifact caus
   assert.match(source, /name: "read", type: "read", enabled: true, permission_policy: \{ type: "always_allow" \}/);
   assert.match(source, /name: "write", type: "write", enabled: true, permission_policy: \{ type: "always_ask" \}/);
   assert.doesNotMatch(source, /plugin_config:[\s\S]*?permission:/);
-  assert.match(source, /const SOURCE_RELATIVE = "web\/src\/surfaces\/protocols\.tsx"/);
+  assert.match(source, /const SOURCE_RELATIVE = REVIEW_SOURCE\.path/);
   assert.match(source, /const ARTIFACT_PATH = `\/mnt\/session\/outputs\/\$\{ARTIFACT_NAME\}`/);
   assert.match(source, /execFileSync\("git", \["rev-parse", "--short=12", "HEAD"\]/);
   assert.match(source, /sourceSha256 = sha256\(source\)/);
-  assert.match(source, /source\.includes\("CopyButton"\)/);
+  assert.match(source, /source\.includes\("beta\.sessions\.create"\)/);
   assert.match(source, /mount_path: SOURCE_MOUNT, access: "read_only"/);
   assert.match(source, /call write exactly once now/);
   assert.match(source, /Awaken will pause that tool call before execution so a person can review it/);

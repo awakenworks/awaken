@@ -29,10 +29,10 @@ fn tui_public_entry_points_keep_their_signatures() {
     // example launches. Held as a fn pointer; naming it type-checks the module.
     let _run: fn(tokio::runtime::Runtime, CodingSession, &str) -> std::io::Result<()> = tui::run;
 
-    // `model::build_executor() -> anyhow::Result<Arc<dyn LlmExecutor>>` — the
+    // `model::build_executor() -> anyhow::Result<(Arc<dyn LlmExecutor>, String)>` — the
     // real genai-backed model port the TUI drives.
-    let _build: fn() -> anyhow::Result<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>> =
-        build_executor;
+    type ModelExecutor = (Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, String);
+    let _build: fn() -> anyhow::Result<ModelExecutor> = build_executor;
 }
 
 /// Exercise the non-render session pieces the TUI's `run` loop drives — config,

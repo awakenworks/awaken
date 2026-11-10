@@ -1,3 +1,4 @@
+import { REVIEW_SOURCE } from "./review-source.mjs";
 import http from "node:http";
 import os from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -89,12 +90,12 @@ function controlledToolResponse(response, payloadText) {
       const digest = payloadText.match(/source SHA-256 ([0-9a-f]{64})/i)?.[1] ?? "unknown";
       sendAnthropicToolUse(response, writeId, "write", {
         file_path: "/mnt/session/outputs/protocol-onboarding-review.md",
-        content: `# Protocol onboarding verification\n\n## Source checked\nRepository revision ${revision}; source path web/src/surfaces/protocols.tsx; source SHA-256 ${digest}.\n\n## Verified path\nThe page links to awakenworks.com protocol documentation and shows an @anthropic-ai/sdk example.\n\n## Copy affordance\nThe code example includes CopyButton.\n\n## Approval boundary\nThis artifact is written only after approval; the mounted source remains read-only.\n\n## Result\nprotocol-onboarding-review.md records the verified onboarding path.\n`,
+        content: `# Protocol onboarding verification\n\n## Source checked\nRepository revision ${revision}; source path ${REVIEW_SOURCE.path}; source SHA-256 ${digest}.\n\n## Verified path\nThe runnable backend uses @anthropic-ai/sdk to create a Session, send an Event and read committed history.\n\n## Application handoff\nThe backend prints an Open in Console Session link and the accepted input receipt.\n\n## Approval boundary\nThis artifact is written only after approval; the mounted source remains read-only.\n\n## Result\nprotocol-onboarding-review.md records the verified onboarding path.\n`,
       });
       return true;
     }
     sendAnthropicToolUse(response, readId, "read", {
-      file_path: "/mnt/session/uploads/mnt/files/protocols.tsx",
+      file_path: `/mnt/session/uploads${REVIEW_SOURCE.mount}`,
     });
     return true;
   }

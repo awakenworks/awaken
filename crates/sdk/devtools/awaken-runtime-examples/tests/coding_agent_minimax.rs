@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
+use awaken_ext_builtin_tools::HandToolContext;
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_examples::coding_agent::model::build_executor;
@@ -28,8 +29,7 @@ use awaken_runtime_examples::coding_agent::{
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and network"]
 async fn minimax_endpoint_authenticates_and_reaches_the_model() {
-    let model = std::env::var("AWAKEN_MODEL").unwrap_or_else(|_| "MiniMax-M3".to_string());
-    let executor = build_executor().expect("build executor");
+    let (executor, model) = build_executor().expect("build executor");
     let request = ChatRequest {
         model_binding: ModelBinding::new("default", model, "default"),
         inference: Default::default(),
@@ -62,26 +62,38 @@ async fn minimax_endpoint_authenticates_and_reaches_the_model() {
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and network"]
 async fn minimax_agent_edits_a_real_file() {
-    let model = std::env::var("AWAKEN_MODEL").unwrap_or_else(|_| "MiniMax-M3".to_string());
-    let llm = build_executor().expect("build executor");
-    let session = CodingSession::new(
-        build_runtime(llm),
-        coding_config(&model).expect("model reference is an executable binding"),
-        awaken_time::system_clock(),
-    );
-
+    let (llm, model) = build_executor().expect("build executor");
     let dir = std::env::temp_dir().join(format!("awaken_minimax_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("greeting.txt");
     std::fs::write(&file, "Hello, world.\n").unwrap();
     let path = file.to_str().unwrap().to_string();
+    // Live cause/effect: the file is inside the explicit Hand root; the model
+    // reads it and requests edit; Allow mutates and Deny preserves bytes. An
+    // outside-root refusal cannot count as successful edit/permission evidence.
+    let session = CodingSession::new_with_hand_context(
+        build_runtime(llm),
+        coding_config(&model).expect("model reference is an executable binding"),
+        HandToolContext::new(&dir),
+        awaken_time::system_clock(),
+    );
 
     let prompt = format!(
         "Edit the file at {path}: change its greeting to say 'Hello, awaken!'. \
-         Read it first, then use the edit tool."
+         Read it first, then use the edit tool. If that edit is denied, report the denial and stop; do not use a fallback mutation."
     );
+    let asked = Arc::new(AtomicUsize::new(0));
+    let asked_for = asked.clone();
     let messages = session
-        .turn(&prompt, |_ticket| Approval::Allow)
+        .turn(&prompt, move |ticket| {
+            if ticket
+                .pending_tool()
+                .is_some_and(|tool| tool.tool_id.rsplit(':').next() == Some("edit"))
+            {
+                asked_for.fetch_add(1, Ordering::SeqCst);
+            }
+            Approval::Allow
+        })
         .await
         .expect("the live turn completes");
 
@@ -90,6 +102,10 @@ async fn minimax_agent_edits_a_real_file() {
     }
     let after = std::fs::read_to_string(&file).unwrap();
     println!("--- {path} after ---\n{after}");
+    assert!(
+        asked.load(Ordering::SeqCst) >= 1,
+        "the edit itself required approval"
+    );
     assert!(
         after.contains("awaken"),
         "the model edited the file to mention awaken (got: {after:?})"
@@ -104,30 +120,37 @@ async fn minimax_agent_edits_a_real_file() {
 #[tokio::test]
 #[ignore = "requires MINIMAX_API_KEY and network"]
 async fn minimax_agent_denied_edit_leaves_the_file_unchanged() {
-    let model = std::env::var("AWAKEN_MODEL").unwrap_or_else(|_| "MiniMax-M3".to_string());
-    let llm = build_executor().expect("build executor");
-    let session = CodingSession::new(
-        build_runtime(llm),
-        coding_config(&model).expect("model reference is an executable binding"),
-        awaken_time::system_clock(),
-    );
-
+    let (llm, model) = build_executor().expect("build executor");
     let dir = std::env::temp_dir().join(format!("awaken_deny_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("greeting.txt");
     std::fs::write(&file, "Hello, world.\n").unwrap();
     let path = file.to_str().unwrap().to_string();
+    // Live cause/effect: the file is inside the explicit Hand root; the model
+    // reads it and requests edit; Allow mutates and Deny preserves bytes. An
+    // outside-root refusal cannot count as successful edit/permission evidence.
+    let session = CodingSession::new_with_hand_context(
+        build_runtime(llm),
+        coding_config(&model).expect("model reference is an executable binding"),
+        HandToolContext::new(&dir),
+        awaken_time::system_clock(),
+    );
 
     // Deny every mutation and count that the gate actually asked.
     let asked = Arc::new(AtomicUsize::new(0));
     let asked_for = asked.clone();
     let prompt = format!(
         "Edit the file at {path}: change its greeting to say 'Hello, awaken!'. \
-         Read it first, then use the edit tool."
+         Read it first, then use the edit tool. If that edit is denied, report the denial and stop; do not use a fallback mutation."
     );
     let messages = session
         .turn(&prompt, move |ticket| {
-            asked_for.fetch_add(1, Ordering::SeqCst);
+            if ticket
+                .pending_tool()
+                .is_some_and(|tool| tool.tool_id.rsplit(':').next() == Some("edit"))
+            {
+                asked_for.fetch_add(1, Ordering::SeqCst);
+            }
             assert_eq!(ticket.reason(), AwaitReason::ToolPermission);
             Approval::Deny
         })

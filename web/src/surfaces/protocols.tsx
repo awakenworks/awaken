@@ -1,5 +1,6 @@
 // @formal surface requirement=protocol.adapters.adapter_projection
 // @formal reason: Protocol capability presentation is a UI projection and cannot prove peer conformance.
+import frontendExample from "@awaken/application-example/Chat.tsx?raw";
 import { ArrowRight, ExternalLink } from "@awaken/ui/icons";
 import { Card, CopyButton as IconCopyButton } from "@awaken/ui";
 // Built-in connection guide for every execution/protocol adapter mounted by the
@@ -89,20 +90,7 @@ export const APPLICATION_TOKEN_CURL = `curl "$AWAKEN_URL/v1/application-access-t
     "expires_in_seconds": 300
   }'`;
 
-export const FRONTEND_AI_SDK = `import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
-
-// Implement this against YOUR backend. Never put AWAKEN_API_KEY in browser code.
-// The backend returns the external id that it bound to an existing Managed Session.
-const { access_token, thread_id: threadId } = await getApplicationToken();
-
-const chat = useChat({
-  id: threadId,
-  transport: new DefaultChatTransport({
-    api: \`\${AWAKEN_URL}/v1/ai-sdk/threads/\${threadId}/runs\`,
-    headers: { Authorization: \`Bearer \${access_token}\` },
-  }),
-});`;
+export const FRONTEND_AI_SDK = frontendExample;
 
 export { managedSdkExample, type ManagedSdkContext } from "../lib/sdk-examples";
 
@@ -114,7 +102,7 @@ export const PROTOCOL_HELP: Record<ProtocolId, ProtocolHelp> = {
     steps: [
       "Under Access, create a dedicated Workspace administrator service API key so this client can create Sessions, then copy its one-time secret.",
       "Point the official Anthropic SDK at Awaken from your trusted backend. Never expose this key to browser or mobile code.",
-      "Send events and inspect the same Session in Awaken.",
+      "Run the example in examples/application with its support.mjs helper; send events and inspect the same Session in Awaken.",
     ],
     example: MANAGED_SDK,
     href: "access",

@@ -1,0 +1,6 @@
+# Run commands from the repository root. This is a loopback, single-user demo.
+data_dir = "./target/application-data"
+bind = "127.0.0.1:8080"
+mode = "local"
+identity_mode = "no-login"
+acp_clis = []

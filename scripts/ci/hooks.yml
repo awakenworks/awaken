@@ -321,7 +321,7 @@ commit-checks:
     # 5. Frontend checks are active as soon as package.json exists. The frontend
     #    project must expose lint/typecheck/build scripts.
     - name: frontend-quick
-      glob: "{package.json,pnpm-lock.yaml,package-lock.json,yarn.lock,bun.lockb,apps/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},packages/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},web/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
+      glob: "{package.json,pnpm-lock.yaml,package-lock.json,yarn.lock,bun.lockb,examples/application/**/*,scripts/generate-example-docs.mjs,apps/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},packages/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},web/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},scripts/ci/_native_shell.py,scripts/ci/_native_shell_tests.py,scripts/ci/_windows_job.py}"
       run: python3 scripts/ci/_native_shell.py scripts/ci/check-frontend.sh --quick
 
     # The oracle's check reads the E2E manifest and the workspace lockfile as
