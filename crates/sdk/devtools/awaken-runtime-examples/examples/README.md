@@ -13,9 +13,11 @@ swaps the stub model for a real one by changing a single line.
 | Example | Teaches | Run |
 |---|---|---|
 | `direct_runtime` | Build the catalog and executable snapshot **by hand** (no config store), wire the ports, execute one run, read the committed transcript. | `cargo run -p awaken-runtime-examples --example direct_runtime` |
+| `hello_agent` | Compile one authored Agent configuration into an executable snapshot and inspect its committed reply. | `cargo run -p awaken-runtime-examples --example hello_agent` |
+| `coding_agent` | Use the same tools and permission gate in an interactive terminal. | See [Coding agent](coding_agent/README.md) |
 
-(More to come — e.g. producing the snapshot through `awaken-config-store` instead
-of building it by hand.)
+For an application using only public SDK imports, start with the repository's
+[independent consumer](../../../../../examples/sdk-consumer/README.md).
 
 ## Notes
 

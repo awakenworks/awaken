@@ -1,3 +1,4 @@
+import { REVIEW_SOURCE } from "../support/review-source.mjs";
 // Review a real source file from the current checkout, stop at the write
 // permission boundary, then let a person approve one downloadable artifact.
 
@@ -20,9 +21,9 @@ import {
 } from "../support/control-plane.mjs";
 
 const REPOSITORY = resolve(import.meta.dirname, "../../..");
-const SOURCE_RELATIVE = "web/src/surfaces/protocols.tsx";
+const SOURCE_RELATIVE = REVIEW_SOURCE.path;
 const SOURCE_FILE = resolve(REPOSITORY, SOURCE_RELATIVE);
-const SOURCE_MOUNT = "/mnt/files/protocols.tsx";
+const SOURCE_MOUNT = REVIEW_SOURCE.mount;
 const TOOL_SOURCE = `/mnt/session/uploads${SOURCE_MOUNT}`;
 const ARTIFACT_NAME = "protocol-onboarding-review.md";
 const ARTIFACT_PATH = `/mnt/session/outputs/${ARTIFACT_NAME}`;
@@ -57,9 +58,9 @@ export async function prepare({ page }) {
   await configureSyntheticModel(page, MODEL_ID);
   const source = readFileSync(SOURCE_FILE, "utf8");
   if (!source.includes('@anthropic-ai/sdk')
-    || !source.includes("Create or manage service API keys")
-    || !source.includes("awakenworks.com")
-    || !source.includes("CopyButton")) {
+    || !source.includes("beta.sessions.create")
+    || !source.includes("beta.sessions.events.send")
+    || !source.includes("events.list")) {
     throw new Error("the real protocol source no longer matches this review's verified premise");
   }
   const revision = execFileSync("git", ["rev-parse", "--short=12", "HEAD"], {
@@ -68,14 +69,14 @@ export async function prepare({ page }) {
     timeout: 10_000,
   }).trim();
   const sourceSha256 = sha256(source);
-  const file = await uploadAgentFile(page, { name: "protocols.tsx", content: source, mimeType: "text/typescript" });
+  const file = await uploadAgentFile(page, { name: REVIEW_SOURCE.file, content: source, mimeType: "text/javascript" });
 
   await putAgent(page, AGENT_ID, {
     id: AGENT_ID,
     name: "Repository change reviewer",
     description: "Reads a pinned source snapshot and prepares a verification artifact behind an explicit write approval.",
     model: { id: MODEL_ID },
-    system: `First call read exactly once on ${TOOL_SOURCE}. Confirm from the source that it contains an @anthropic-ai/sdk example, a service-key management link, an awakenworks.com protocol documentation link, and a CopyButton for the code example. If any premise is false, stop without writing. Otherwise call write exactly once at ${ARTIFACT_PATH}. The file must use these headings: Protocol onboarding verification, Source checked, Verified path, Copy affordance, Approval boundary, Result. Include repository revision ${revision}, source path ${SOURCE_RELATIVE}, source SHA-256 ${sourceSha256}, and the exact filename ${ARTIFACT_NAME}. State that the review artifact was written only after approval and the mounted source remained read-only. After write succeeds, reply with exactly these headings: Repository checked, Approval, Artifact. Never modify the mounted source.`,
+    system: `First call read exactly once on ${TOOL_SOURCE}. Confirm from the source that it contains an @anthropic-ai/sdk backend example, Session creation, Event send, committed history readback, and a Console Session link. If any premise is false, stop without writing. Otherwise call write exactly once at ${ARTIFACT_PATH}. The file must use these headings: Protocol onboarding verification, Source checked, Verified path, Application handoff, Approval boundary, Result. Include repository revision ${revision}, source path ${SOURCE_RELATIVE}, source SHA-256 ${sourceSha256}, and the exact filename ${ARTIFACT_NAME}. State that the review artifact was written only after approval and the mounted source remained read-only. After write succeeds, reply with exactly these headings: Repository checked, Approval, Artifact. Never modify the mounted source.`,
     tools: [{
       type: "agent_toolset_20260401",
       configs: [
@@ -203,11 +204,11 @@ export async function run({ page, goto, intro, beat, say, clearCaption, checkpoi
     const content = await page.request.get(`${BACKEND}/v1/files/${artifact.id}/content`, { headers: FILES_HEADERS });
     await requireOk(content, "repository review Artifact download");
     const text = await content.text();
-    expect(text).toMatch(/Protocol onboarding verification[\s\S]*Source checked[\s\S]*Verified path[\s\S]*Copy affordance[\s\S]*Approval boundary[\s\S]*Result/i);
+    expect(text).toMatch(/Protocol onboarding verification[\s\S]*Source checked[\s\S]*Verified path[\s\S]*Application handoff[\s\S]*Approval boundary[\s\S]*Result/i);
     expect(text).toContain(revision);
     expect(text).toContain(SOURCE_RELATIVE);
     expect(text).toContain(sourceSha256);
-    expect(text).toMatch(/CopyButton|copy example/i);
+    expect(text).toMatch(/Open in Console|Session link/i);
   });
   await beat("The deliverable stays beside its source, trace, and approval receipt.", artifactRow, 3200);
 

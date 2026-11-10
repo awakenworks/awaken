@@ -92,11 +92,11 @@ describe("built-in protocol guide", () => {
     expect(FRONTEND_AI_SDK).toContain("DefaultChatTransport");
     expect(FRONTEND_AI_SDK).toContain("Bearer ${access_token}");
     expect(FRONTEND_AI_SDK).toContain("thread_id: threadId");
-    expect(MANAGED_SDK).toContain('from "@anthropic-ai/sdk"');
+    expect(MANAGED_SDK).toMatch(/from ['"]@anthropic-ai\/sdk['"]/);
     expect(MANAGED_SDK).toContain("npm install @anthropic-ai/sdk");
     expect(MANAGED_SDK).toContain("baseURL: process.env.AWAKEN_BASE_URL");
     expect(MANAGED_SDK).toContain("apiKey: process.env.AWAKEN_API_KEY");
-    expect(MANAGED_SDK).toContain('"managed-agents-2026-04-01"');
+    expect(MANAGED_SDK).toContain('managed-agents-2026-04-01');
     expect(MANAGED_SDK).toContain("beta.sessions.create");
     expect(MANAGED_SDK).toContain("beta.sessions.events.send");
     expect(MANAGED_SDK).toContain("AWAKEN_AGENT_ID");
@@ -115,13 +115,16 @@ describe("built-in protocol guide", () => {
       environmentId: "env/one",
       workspaceId: "team space",
     });
-    expect(contextual).toContain('agent: "reviewer \\"one\\""');
+    expect(contextual).toContain(JSON.stringify('reviewer "one"'));
     expect(contextual).toContain('environment_id: "env/one"');
-    expect(contextual).toContain("/w/team%20space/sessions/${session.id}");
+    expect(contextual).toContain('encodeURIComponent("team space"');
     expect(contextual).toContain("apiKey: process.env.AWAKEN_API_KEY");
     expect(contextual).toContain("baseURL: process.env.AWAKEN_BASE_URL");
-    expect(contextual).not.toContain("AWAKEN_AGENT_ID");
-    expect(contextual).not.toContain("AWAKEN_ENVIRONMENT_ID");
+    expect(contextual).not.toContain("process.env.AWAKEN_AGENT_ID");
+    expect(contextual).not.toContain("process.env.AWAKEN_ENVIRONMENT_ID");
+    expect(contextual).toContain("receiptId");
+    expect(contextual).toContain("await observe(client, session.id, receiptId");
+    expect(contextual).toContain("./support.mjs");
   });
 
 });

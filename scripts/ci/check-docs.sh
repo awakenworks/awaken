@@ -25,6 +25,7 @@ run() { echo "→ $1"; if ! "${@:2}"; then fail=1; fi; }
 # The link checker owns the full input set, including product/SDK READMEs.
 run "check-doc-links self-test"   python3 scripts/ci/check_doc_links.py --self-test
 run "check-doc-links"             python3 scripts/ci/check_doc_links.py
+run "example projection"          node scripts/generate-example-docs.mjs --check
 run "check-wiki-okf"              python3 scripts/ci/check_wiki_okf.py $docs
 run "check-wiki-no-invariant-copy" python3 scripts/ci/check_wiki_no_invariant_copy.py $docs
 run "check-invariants self-test"  python3 scripts/ci/check_invariants.py --self-test

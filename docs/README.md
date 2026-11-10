@@ -10,6 +10,10 @@ application without first learning the Runtime's internal architecture.
 | Operate a deployment | [Deployment guide](../deploy/README.md) | An explicit configuration, data location and execution boundary |
 | Change Awaken itself | [Contributing](../CONTRIBUTING.md), then the design reading path below | The owning component, invariant and relevant checks |
 
+For complete runnable backend/browser examples and the Rust paths, use the
+[example index](../examples/README.md). Source code, Console snippets and the
+README projection share the same example implementation.
+
 ## Architecture maps
 
 [Architecture overview](design/architecture-overview.md#1-context-map) explains

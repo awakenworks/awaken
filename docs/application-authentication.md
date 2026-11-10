@@ -154,23 +154,14 @@ durable backlog `Q`, new eligible rows `E`, and deletions `D`, each tick follows
 
 ## Frontend AI SDK
 
-Return the external thread id and only `access_token`/`expires_at` to the browser:
-
-```ts
-import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
-
-const { access_token, thread_id } = await fetch("/api/awaken-token")
-  .then((response) => response.json());
-
-const chat = useChat({
-  id: thread_id,
-  transport: new DefaultChatTransport({
-    api: `${AWAKEN_URL}/v1/ai-sdk/threads/${thread_id}/runs`,
-    headers: { Authorization: `Bearer ${access_token}` },
-  }),
-});
-```
+The runnable [React application](../examples/application/src/Chat.tsx) receives
+only the external thread id, short-lived `access_token` and `expires_at` from
+its [example backend](../examples/application/server.mjs). That backend fixes
+one existing Session binding and calls the canonical token issuer. Its narrow
+same-origin proxy forwards only the application's token to the AI SDK run,
+history and Stop endpoints. Follow the [application guide](../examples/application/README.md)
+for installation, execution and refresh/readback checks; the Console shows this
+same frontend source instead of another handwritten snippet.
 
 Keep the application token in memory. Never put a service API key in browser
 source, browser storage, a mobile bundle, or a public environment variable.

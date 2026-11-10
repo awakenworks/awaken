@@ -1,0 +1,9 @@
+:root { font-family: system-ui, sans-serif; color-scheme: light dark; }
+body { margin: 0; }
+main { max-width: 48rem; padding: 2rem 1rem; margin: auto; }
+li { margin-block: 1rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+form { display: flex; flex-wrap: wrap; gap: .5rem; }
+label { flex: 1; }
+input { width: 80%; padding: .6rem; }
+button { padding: .6rem 1rem; margin: .4rem .4rem .4rem 0; }
+[role=alert] { color: #c0392b; }

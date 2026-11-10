@@ -5,12 +5,14 @@
   "scripts": {
     "check": "pnpm check:managed-sdk && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "check:managed-sdk": "pnpm --filter @awaken/managed-sdk-oracle test && pnpm --filter @awaken/managed-sdk-oracle check",
-    "lint": "node web/scripts/lint.mjs",
-    "typecheck": "pnpm --filter @awaken/managed-session-projection typecheck && pnpm -C web typecheck",
-    "build": "pnpm --filter @awaken/managed-sdk-oracle build && pnpm --filter @awaken/managed-session-projection build && pnpm -C web build",
+    "lint": "node web/scripts/lint.mjs && node scripts/generate-example-docs.mjs --check",
+    "typecheck": "pnpm --filter @awaken/application-example typecheck && pnpm --filter @awaken/managed-session-projection typecheck && pnpm -C web typecheck",
+    "build": "pnpm --filter @awaken/managed-sdk-oracle build && pnpm --filter @awaken/managed-session-projection build && pnpm --filter @awaken/application-example build && pnpm -C web build",
     "dev": "pnpm -C web dev",
     "test:e2e-process-policy": "node --test e2e/awaken_cli_args.test.mjs",
-    "test": "pnpm --filter @awaken/managed-session-projection test && pnpm -C web test && pnpm test:e2e-process-policy && pnpm -C web test:e2e:runner"
+    "test": "pnpm --filter @awaken/managed-session-projection test && pnpm -C web test && pnpm test:e2e-process-policy && pnpm -C web test:e2e:runner && node scripts/generate-example-docs.mjs --check && pnpm --filter @awaken/application-example test",
+    "examples:docs": "node scripts/generate-example-docs.mjs",
+    "examples:check": "node scripts/generate-example-docs.mjs --check && pnpm --filter @awaken/application-example test && pnpm --filter @awaken/application-example build"
   },
   "devDependencies": {
     "json-schema-to-typescript": "15.0.4",
