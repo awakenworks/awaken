@@ -8,6 +8,20 @@ use axum::{Router, handler::Handler, routing::get};
 pub struct ThreadMessagePageQuery {
     pub page: Option<String>,
     pub limit: Option<usize>,
+    pub direction: Option<HistoryDirection>,
+}
+
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryDirection {
+    Backward,
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ThreadHistoryAttachment {
+    Image { file_id: String },
+    Document { file_id: String },
 }
 
 #[derive(serde::Serialize)]
@@ -15,6 +29,8 @@ pub struct ThreadHistoryMessage {
     pub id: String,
     pub role: &'static str,
     pub text: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<ThreadHistoryAttachment>,
 }
 
 /// Mount the Session-scoped, read-only message history projection.

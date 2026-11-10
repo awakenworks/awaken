@@ -72,6 +72,26 @@ where
     Router::new().route("/v1/awaken/sessions/{id}/execution-evidence", get(handler))
 }
 
+/// Mount the frozen timeline and Run evidence reads on the Managed adapter.
+pub fn session_diagnostics_router<H1, T1, H2, T2, S>(timeline: H1, run: H2) -> Router<S>
+where
+    H1: Handler<T1, S>,
+    H2: Handler<T2, S>,
+    T1: 'static,
+    T2: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new()
+        .route(
+            "/v1/awaken/sessions/{id}/execution-evidence/timeline",
+            get(timeline),
+        )
+        .route(
+            "/v1/awaken/sessions/{id}/execution-evidence/runs/{run_id}",
+            get(run),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

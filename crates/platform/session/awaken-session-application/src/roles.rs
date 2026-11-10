@@ -475,6 +475,41 @@ pub trait SessionResourceCommands: Send + Sync {
 /// usage read.
 #[async_trait]
 pub trait SessionObservation: Send + Sync {
+    async fn timeline(
+        &self,
+        access: &crate::SessionAccess,
+        query: &crate::replay::TimelineQuery,
+        cursor: Option<&crate::replay::TimelineCursor>,
+    ) -> Result<crate::replay::TimelinePage, crate::replay::SessionReplayError> {
+        let _ = (access, query, cursor);
+        Err(crate::replay::SessionReplayError::Unavailable(
+            "Session diagnostics are unavailable".into(),
+        ))
+    }
+
+    async fn run_evidence_at(
+        &self,
+        access: &crate::SessionAccess,
+        run: &awaken_agent_contract::RunId,
+        snapshot: &crate::replay::TimelineSnapshot,
+    ) -> Result<crate::replay::RunEvidence, crate::replay::SessionReplayError> {
+        let _ = (access, run, snapshot);
+        Err(crate::replay::SessionReplayError::Unavailable(
+            "Session diagnostics are unavailable".into(),
+        ))
+    }
+
+    async fn transcript_seek_page(
+        &self,
+        _access: &crate::SessionAccess,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, RunError> {
+        let _ = request;
+        Err(RunError::unavailable(
+            "Thread history range reads are unavailable",
+        ))
+    }
+
     async fn transcript_page(
         &self,
         access: &crate::SessionAccess,

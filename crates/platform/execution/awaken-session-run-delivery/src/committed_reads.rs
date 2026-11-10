@@ -30,6 +30,7 @@ pub use committed_runs::{
 
 use std::sync::Arc;
 
+use awaken_agent_contract::RunId;
 use awaken_agent_contract::agent::awaiting::{AwaitReason, AwaitTarget, ResumeTicket};
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -66,6 +67,33 @@ pub fn application_error(error: RunError) -> ApplicationError {
 /// and the co-located executor's resident-context-aware source.
 #[async_trait::async_trait]
 pub trait SessionCommitSource: Send + Sync {
+    fn shared_recovery_source(
+        &self,
+    ) -> Option<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>> {
+        None
+    }
+
+    async fn transcript_seek_page(
+        &self,
+        _session: &str,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, RunError> {
+        let _ = request;
+        Err(RunError::unavailable(
+            "Thread history range reads are unavailable",
+        ))
+    }
+
+    async fn archived_run_activation(
+        &self,
+        _session: &str,
+        _thread: &ThreadId,
+        _run: &RunId,
+    ) -> Result<Option<awaken_dispatch_contract::run_dispatch::ArchivedRunActivation>, RunError>
+    {
+        Ok(None)
+    }
+
     /// The commit boundary of `session`'s physical partition.
     async fn open_for_read(&self, session: &str) -> Result<Arc<SessionCommit>, RunError>;
 
@@ -104,6 +132,18 @@ pub struct CommittedReads {
 }
 
 impl CommittedReads {
+    pub(crate) async fn archived_run_activation(
+        &self,
+        session: &str,
+        thread: &ThreadId,
+        run: &RunId,
+    ) -> Result<Option<awaken_dispatch_contract::run_dispatch::ArchivedRunActivation>, RunError>
+    {
+        self.source
+            .archived_run_activation(session, thread, run)
+            .await
+    }
+
     /// Reads over `source`, labelling advisor links from `advisor_models`.
     #[must_use]
     pub fn new(
@@ -396,6 +436,22 @@ pub async fn visible_pending_tool(
 /// parent Session partition the guarded dispatch selects.
 #[async_trait::async_trait]
 impl RunRecoverySource for CommittedReads {
+    async fn load_recovery(
+        &self,
+        session: &ThreadId,
+        thread: &ThreadId,
+        run: &RunId,
+        cached: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, RecoveryError>
+    {
+        if let Some(source) = self.source.shared_recovery_source() {
+            return source.load_recovery(session, thread, run, cached).await;
+        }
+        self.recovery_snapshot_in_session(session, thread, run)
+            .await
+            .map(awaken_agent_contract::thread::read::recovery::LoadedRunRecovery::full)
+    }
+
     async fn recovery_snapshot(
         &self,
         thread_id: &ThreadId,

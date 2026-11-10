@@ -350,7 +350,69 @@ async function settledAdvisorEvidence(client, sessionId) {
   );
 }
 
+async function mixedBackendCoordination() {
+  await withScenarioServer('delegate', 'delegating', PORT + 3, async (baseUrl) => {
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+    const cases = [
+      ['assistant', 'use the acp agent', 'acp-worker', /acp-runtime reply/u],
+      ['acp-coordinator', 'coordinate-native-child', 'researcher', /researched: 42/u],
+    ];
+    for (const [agent, prompt, child, report] of cases) {
+      const session = await client.beta.sessions.create({ agent, environment_id: 'env_local', betas: BETAS });
+      const events = await runSession(client, session.id, prompt);
+      const sends = events.filter((event) => event.type === 'agent.tool_use' && event.name === 'send_message');
+      assert.equal(sends.length, 1);
+      const receipts = events.filter((event) =>
+        event.type === 'agent.tool_result' && event.tool_use_id === sends[0].id
+      );
+      assert.equal(receipts.length, 1);
+      assert.equal(receipts[0].is_error, false);
+      assert.match(JSON.stringify(receipts[0].content), /accepted/u);
+      assert.equal(events.filter((event) =>
+        event.type === 'agent.thread_message_received' && event.from_agent_name === child
+      ).length, 1);
+      assert.match(receivedText(events, child), report);
+      if (agent === 'acp-coordinator') {
+        assert.ok(messages(events).includes('ACP received the Native child report'), JSON.stringify(messages(events)));
+      }
+      const threads = await listThreads(client, session.id);
+      const primary = threads.find((thread) => thread.parent_thread_id === null);
+      const children = threads.filter((thread) => thread.parent_thread_id === primary.id);
+      assert.equal(children.length, 1);
+      assert.equal(children[0].agent.id, child);
+      if (process.env.SESSION_DEPLOYMENT_STORE === 'postgres') {
+        const history = new URL(
+          `/v1/awaken/sessions/${session.id}/threads/${primary.id}/messages`,
+          baseUrl,
+        );
+        history.search = 'direction=backward&limit=1';
+        const readPage = async () => {
+          const response = await fetch(history, { headers: { 'x-api-key': 'e2e-dummy' } });
+          const body = await response.json();
+          assert.equal(response.status, 200, JSON.stringify(body));
+          assert.equal(body.data.length, 1);
+          assert.ok(['user', 'assistant'].includes(body.data[0].role));
+          return body;
+        };
+        const newest = await readPage();
+        assert.equal(typeof newest.next_page, 'string');
+        history.searchParams.set('page', newest.next_page);
+        const older = await readPage();
+        assert.notEqual(older.data[0].id, newest.data[0].id);
+      }
+    }
+    console.log('E2E PASS: Native and sandbox ACP each send one coordinated message and receive the child report.');
+  }, {
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
+    AWAKEN_SCENARIO_ACP_COORDINATION: '1',
+  }, { modelUpstream: { profiles: ADVISOR_PROFILES } });
+}
+
 async function main() {
+  if (process.argv.includes('--mixed-backends')) {
+    await mixedBackendCoordination();
+    return;
+  }
   await withScenarioServer('delegate', 'delegating', PORT, async (baseUrl, upstream) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
@@ -1120,6 +1182,8 @@ async function main() {
 
     console.log('E2E PASS: fixed Managed multi-Agent coordination via TS SDK.');
   }, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' }, { modelUpstream: { profiles: ADVISOR_PROFILES } });
+
+  await mixedBackendCoordination();
 
   await withScenarioServer(
     'delegate',

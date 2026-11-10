@@ -153,6 +153,7 @@ impl SessionApplicationBuilder {
             persistence,
             execution,
             assembly: SessionAssembly {
+                diagnostics: None,
                 runtime: runtime.into(),
                 tool_configuration_compiler,
                 environments: environments.into(),
@@ -170,6 +171,12 @@ impl SessionApplicationBuilder {
             },
         }
     }
+    #[must_use]
+    pub fn diagnostics(mut self, reads: Arc<dyn crate::replay::SessionReplayReads>) -> Self {
+        self.assembly.diagnostics = Some(reads);
+        self
+    }
+
     #[must_use]
     pub fn configuration(mut self, configuration: SessionApplicationConfiguration) -> Self {
         self.assembly.configuration = configuration;
@@ -275,6 +282,7 @@ pub(crate) struct SessionKernel {
 /// keeps a port another one no longer sees.
 #[derive(Clone)]
 pub(crate) struct SessionAssembly {
+    diagnostics: Option<Arc<dyn crate::replay::SessionReplayReads>>,
     pub(crate) runtime: SessionExecutionRoles,
     pub(crate) tool_configuration_compiler: Arc<dyn ToolConfigurationCompiler>,
     pub(crate) environments: SessionEnvironments,
@@ -554,6 +562,7 @@ impl SessionAssembly {
                 queries.clone(),
                 self.resource_files.clone(),
                 &self.runtime,
+                self.diagnostics.clone(),
             )),
             queries,
             inputs: Arc::new(crate::SessionInputs::new(

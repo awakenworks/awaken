@@ -220,6 +220,9 @@ impl ChildWorkerFactory {
         {
             worker = worker.with_claimed_model_request_gate_factory(factory.clone());
         }
+        if let Some(cache) = &scheduler.recovery_history {
+            worker = cache.clone().bind(worker);
+        }
         worker.install_attempt_executor(executor);
         if let Some(projection) = child_projection {
             worker = worker
@@ -319,6 +322,7 @@ mod tests {
         let runtime = Arc::new(Runtime::new());
         let executor: Arc<dyn RunAttemptExecutor> = runtime.clone();
         let scheduler = |binding, reader| RunScheduler {
+            recovery_history: None,
             clock: clock.clone(),
             binding,
             commit: Arc::new(SessionCommit::Local(Arc::new(

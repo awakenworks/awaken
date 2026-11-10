@@ -911,13 +911,6 @@ impl SessionAgentCoordination for SessionCoordination {
                 )
             }
             SessionAgentTarget::ExistingThread { thread_id } => {
-                if thread_reads
-                    .session_thread_disposition(&command.session_id, &thread_id.0)
-                    .await?
-                    == awaken_agent_contract::ThreadDisposition::Archived
-                {
-                    return Err(RunError::bad_request("Agent Thread is archived"));
-                }
                 let link = existing_links
                     .iter()
                     .find(|link| {
@@ -938,24 +931,6 @@ impl SessionAgentCoordination for SessionCoordination {
                             "only ordinary Agent Threads accept send_message follow-ups",
                         )
                     })?;
-                if let Some(snapshot) = thread_reads
-                    .session_thread_recovery_snapshot(&command.session_id, &thread_id.0)
-                    .await?
-                {
-                    let latest = snapshot
-                        .current_run()
-                        .map_err(|error| RunError::internal(error.to_string()))?
-                        .ok_or_else(|| {
-                            RunError::internal(
-                                "coordinated Thread recovery omitted its latest committed Run",
-                            )
-                        })?;
-                    if coordinated_thread_closed(link.target.kind(), &latest.state) {
-                        return Err(RunError::bad_request(
-                            "Agent Thread terminated after a failed Run",
-                        ));
-                    }
-                }
                 (thread_id.clone(), member, CoordinatedRunIntent::FollowUp)
             }
         };
@@ -986,6 +961,36 @@ impl SessionAgentCoordination for SessionCoordination {
             .await?
         {
             return Ok(receipt);
+        }
+        if intent == CoordinatedRunIntent::FollowUp {
+            if thread_reads
+                .session_thread_disposition(&admission.session_id, &thread_id.0)
+                .await?
+                == awaken_agent_contract::ThreadDisposition::Archived
+            {
+                return Err(RunError::bad_request("Agent Thread is archived"));
+            }
+            if let Some(snapshot) = thread_reads
+                .session_thread_recovery_snapshot(&admission.session_id, &thread_id.0)
+                .await?
+            {
+                let latest = snapshot
+                    .current_run()
+                    .map_err(|error| RunError::internal(error.to_string()))?
+                    .ok_or_else(|| {
+                        RunError::internal(
+                            "coordinated Thread recovery omitted its latest committed Run",
+                        )
+                    })?;
+                if coordinated_thread_closed(
+                    awaken_session_execution_contract::CoordinatedThreadKind::Agent,
+                    &latest.state,
+                ) {
+                    return Err(RunError::bad_request(
+                        "Agent Thread terminated after a failed Run",
+                    ));
+                }
+            }
         }
         // A new child is authored after the committed source call, so its
         // Resource envelope must use the Session's current desired generation.

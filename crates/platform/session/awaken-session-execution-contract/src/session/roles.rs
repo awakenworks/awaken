@@ -608,6 +608,17 @@ pub trait EnvironmentRuntime: Send + Sync {
 /// use awaken_session_execution_contract::ThreadReadRuntime;
 /// ```
 pub trait ThreadReads: Send + Sync {
+    async fn transcript_seek_page(
+        &self,
+        _session: &crate::SessionId,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, RunError> {
+        let _ = request;
+        Err(RunError::unavailable(
+            "Thread history range reads are unavailable",
+        ))
+    }
+
     /// Page one authorized logical Thread through its parent Session partition.
     async fn transcript_page(
         &self,

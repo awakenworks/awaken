@@ -21,6 +21,7 @@ pub struct ChildRunLauncher {
     execution: crate::ExecutionTopology,
     realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
     background: Arc<awaken_session_run_delivery::BackgroundRuns>,
+    recovery_history: Arc<awaken_dispatch_execution::RecoveryHistoryCache>,
 }
 
 impl ChildRunLauncher {
@@ -31,6 +32,7 @@ impl ChildRunLauncher {
         execution: crate::ExecutionTopology,
         realization_executor: Arc<crate::realization_executor::RealizationExecutor>,
         background: Arc<awaken_session_run_delivery::BackgroundRuns>,
+        recovery_history: Arc<awaken_dispatch_execution::RecoveryHistoryCache>,
     ) -> Self {
         Self {
             capabilities,
@@ -39,6 +41,7 @@ impl ChildRunLauncher {
             execution,
             realization_executor,
             background,
+            recovery_history,
         }
     }
 
@@ -69,6 +72,7 @@ impl ChildRunLauncher {
         // parent's checkpoint/commit projection instead of a child claim.
         let scheduler = if self.execution.claim_pool.runs_local_pool() {
             Some(crate::agent_runner::RunScheduler {
+                recovery_history: Some(self.recovery_history.clone()),
                 clock: self.clock.clone(),
                 binding: self.authority.dispatch_binding().ok_or_else(|| {
                     SessionExecutionError::internal("child scheduling requires a dispatch binding")

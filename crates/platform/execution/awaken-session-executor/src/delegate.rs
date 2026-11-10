@@ -1222,6 +1222,7 @@ mod durable_cancel_tests {
         );
         let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let scheduler = RunScheduler {
+            recovery_history: None,
             clock: clock.clone(),
             binding: awaken_dispatch_erasure::DispatchBinding::local(store.clone()),
             commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(
@@ -1487,6 +1488,7 @@ mod durable_cancel_tests {
         );
         let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let scheduler = RunScheduler {
+            recovery_history: None,
             clock: clock.clone(),
             binding: awaken_dispatch_erasure::DispatchBinding::local(store.clone()),
             commit: Arc::new(awaken_session_run_delivery::SessionCommit::Local(Arc::new(

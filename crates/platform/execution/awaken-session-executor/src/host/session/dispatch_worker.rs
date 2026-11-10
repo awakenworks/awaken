@@ -81,7 +81,10 @@ impl crate::RunAssembly {
         if let Some(materializer) = inference_materializer {
             worker = worker.with_inference_materializer(materializer);
         }
-        worker = worker
+        worker = self
+            .recovery_history
+            .clone()
+            .bind(worker)
             .with_context(run_context)
             .with_claimed_terminal_reads(claimed_terminal_reads);
         if let Some(factory) = claimed_model_gate {

@@ -359,6 +359,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
         identity.local_browser_auth,
         model_supply,
         ProcessStartup {
+            session_diagnostics: None,
             credential_material_resolver: None,
             service_lifecycle: service_lifecycle.clone(),
             deployment: None,

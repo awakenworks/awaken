@@ -656,6 +656,7 @@ impl awaken_dispatch_contract::DispatchClaimOwnership for HttpDispatchQueue {
                     claim: claim.clone(),
                     identity: Some(self.worker_identity.clone()),
                     session_work_authority: None,
+                    cached_prefix: None,
                 },
                 self.worker_id(),
             )
@@ -974,13 +975,14 @@ impl awaken_dispatch_contract::ClaimedCheckpointTransport for HttpDispatchQueue 
         )
     }
 
-    async fn load_recovery_snapshot(
+    async fn load_recovery(
         &self,
         claim: &RunClaim,
         session_work_authority: Option<
             &awaken_session_application_contract::SessionWorkAuthorityReceipt,
         >,
-    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
+        cached: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, DispatchError>
     {
         let value = self
             .post_idempotent(
@@ -989,12 +991,13 @@ impl awaken_dispatch_contract::ClaimedCheckpointTransport for HttpDispatchQueue 
                     claim: claim.clone(),
                     identity: Some(self.worker_identity.clone()),
                     session_work_authority: session_work_authority.cloned(),
+                    cached_prefix: cached,
                 },
                 self.worker_id(),
             )
             .await?;
-        serde_json::from_value(value.get("snapshot").cloned().unwrap_or_default())
-            .map_err(|error| DispatchError::Rejected(format!("decode recovery snapshot: {error}")))
+        serde_json::from_value(value)
+            .map_err(|error| DispatchError::Rejected(format!("decode recovery response: {error}")))
     }
 }
 

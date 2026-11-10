@@ -11,7 +11,8 @@ use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind;
 use awaken_agent_contract::thread::read::transcript::TranscriptView;
 use awaken_dispatch_contract::{
-    DispatchClaims, DispatchEnqueue, DispatchExecution, RunDispatch, SettleOutcome,
+    DispatchClaims, DispatchEnqueue, DispatchExecution, DispatchSettlement, RunDispatch,
+    SettleOutcome,
 };
 use awaken_dispatch_erasure::DispatchBinding;
 use awaken_runtime_contract::runs::RunErrorKind;
@@ -52,6 +53,584 @@ async fn initial_claim(authority: &DurableRuntimeAuthority) -> ClaimedCommitComm
         )),
     )
     .await
+}
+
+#[tokio::test]
+async fn postgres_session_replay_keeps_a_child_before_the_parent_receipt_across_takeover() {
+    use awaken_agent_contract::{ExecutionScopeRef, ScopeId};
+    use awaken_session_configuration_contract::{SessionBaseline, SessionBaselineInputs};
+    use awaken_session_contract::{PersistedSession, SessionMutationPayload, SessionRepository};
+    use awaken_session_execution_contract::{
+        coordinated_activation_input, coordinated_run_id, coordinated_thread_id,
+    };
+    use awaken_session_types::SessionId;
+    use awaken_tool_contract::tool::{ToolCall, ToolOutput};
+    use awaken_tool_contract::tool_batch::ToolBatch;
+
+    let Some((url, authority, pool)) = fixture().await else {
+        return;
+    };
+    let store = awaken_session_store::PostgresManagedSessionRepository::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let scope = "workspace-replay";
+    let session = SessionId::from("session-replay");
+    let root = ThreadId(session.to_string());
+    let baseline = SessionBaseline::compile(SessionBaselineInputs {
+        environment: awaken_session_configuration_contract::EnvironmentSnapshot {
+            environment_id: "replay-environment".into(),
+            revision: awaken_environment_contract::EnvironmentRevision(1),
+            self_hosted: false,
+            config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+                "replay".into(),
+            ),
+            sandbox: Default::default(),
+            sandbox_provisioning: Default::default(),
+            idle_retention: Default::default(),
+            packages: Default::default(),
+            prepared_image: None,
+            network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+            credential_realization:
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
+        },
+        runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
+        mcp_authoring: Default::default(),
+        agent_id: "agent-parent".into(),
+        agent_revision: None,
+        model_override: None,
+        toolsets: Vec::new(),
+        model: "test".into(),
+        runtime: None,
+        delegate_ids: Vec::new(),
+        mounts: Vec::new(),
+        env: Vec::new(),
+        prompts: Vec::new(),
+        transcript_prefix: None,
+    });
+    let state = PersistedSession::frozen_with_budget(
+        session.clone(),
+        baseline,
+        Default::default(),
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
+    let idempotency = SessionMutationPayload::default_create_idempotency(&state);
+    store
+        .create(scope, state, idempotency, Vec::new())
+        .await
+        .unwrap();
+
+    let mut parent = awaken_dispatch_testkit::worker_http::activation("parent");
+    parent.thread_id = root.clone();
+    let parent_run = parent.run_id.clone();
+    let parent = claim_dispatch(
+        &authority,
+        RunDispatch::new(parent)
+            .for_session(root.clone())
+            .with_session_activity_epoch(1)
+            .with_execution_scope(ExecutionScopeRef(ScopeId::from(scope))),
+    )
+    .await;
+    let mut batch = ToolBatch::for_step(
+        parent_run.clone(),
+        0,
+        [(
+            ToolCall {
+                call_id: "send".into(),
+                tool_id: "send_message".into(),
+                arguments: serde_json::json!({"agent_id": "agent-child", "message": "investigate"}),
+            },
+            Default::default(),
+        )],
+    )
+    .unwrap();
+    batch.mark_executing("send").unwrap();
+    let operation_id = batch.operation_id("send");
+    let child_thread = coordinated_thread_id(&session, &parent_run, &operation_id);
+    let child_run = coordinated_run_id(&session, &child_thread, &parent_run, &operation_id);
+    let writer = authority.clone().run_commits();
+    writer
+        .commit_operation(replay_batch_commit(&parent.claim, &root, 0, 0, &batch))
+        .await
+        .unwrap();
+
+    let service = crate::session_replay::PostgresSessionReplay::new(pool.clone());
+    let before_child = service.capture_for(scope, &session).await.unwrap();
+    let before = service
+        .load_for(scope, &session, &before_child.id)
+        .await
+        .unwrap();
+    assert_eq!(before.threads.len(), 1);
+    assert_eq!(before.messages[0].target_first_commit, None);
+
+    let mut child = awaken_dispatch_testkit::worker_http::activation("child");
+    child.thread_id = child_thread.clone();
+    child.run_id = child_run.clone();
+    child.input = coordinated_activation_input(
+        session.as_str(),
+        &child_thread,
+        &child_run,
+        &operation_id,
+        "investigate".into(),
+    );
+    child.delegation_origin = Some(awaken_dispatch_execution::coordinated_run_origin(
+        session.as_str(),
+        &operation_id,
+        parent_run.clone(),
+        "send".into(),
+        "agent-parent".into(),
+    ));
+    let child = claim_dispatch(
+        &authority,
+        RunDispatch::new(child)
+            .for_session(root.clone())
+            .with_session_activity_epoch(2)
+            .with_execution_scope(ExecutionScopeRef(ScopeId::from(scope))),
+    )
+    .await;
+    use crate::session_replay::timeline::{run_evidence_at, timeline};
+    let page_query = awaken_session_application::replay::TimelineQuery {
+        from_ms: None,
+        to_ms: None,
+        thread_id: None,
+        run_id: None,
+        operation_id: None,
+        source: None,
+        limit: 1,
+    };
+    let queued = timeline(&service, scope, &session, &page_query, None)
+        .await
+        .unwrap();
+    let child_evidence = run_evidence_at(&service, scope, &session, &child_run, &queued.snapshot)
+        .await
+        .unwrap();
+    assert!(child_evidence.admission.is_some());
+    assert!(child_evidence.activation.is_none());
+    assert!(child_evidence.runtime.is_none());
+    assert!(child_evidence.dispatch.is_some());
+    assert_eq!(child_evidence.parent_run_id.as_ref(), Some(&parent_run));
+    assert_eq!(child_evidence.messages.len(), 1);
+
+    let mut child = child;
+    child.operation.commit.messages.clear();
+    child.operation.payload_hash = commit_payload_hash(&child.operation.commit).unwrap();
+    sqlx::query("ALTER TABLE runtime_commit_receipt ADD CONSTRAINT reject_child_replay CHECK (false) NOT VALID")
+        .execute(&pool).await.unwrap();
+    assert!(
+        writer
+            .commit_operation(child.clone())
+            .await
+            .unwrap_err()
+            .message
+            .contains("reject_child_replay")
+    );
+    let uncommitted = service.capture_for(scope, &session).await.unwrap();
+    let uncommitted = service
+        .load_for(scope, &session, &uncommitted.id)
+        .await
+        .unwrap();
+    assert_eq!(uncommitted.threads.len(), 1);
+    assert_eq!(uncommitted.activations.len(), 1);
+    sqlx::query("ALTER TABLE runtime_commit_receipt DROP CONSTRAINT reject_child_replay")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let first = writer.commit_operation(child.clone()).await.unwrap();
+
+    let gap = service.capture_for(scope, &session).await.unwrap();
+    let frozen = service.load_for(scope, &session, &gap.id).await.unwrap();
+    assert_eq!(frozen.threads.len(), 2);
+    assert_eq!(frozen.messages.len(), 1);
+    assert_eq!(
+        frozen.messages[0].target_first_commit,
+        Some(first.commit_sequence)
+    );
+    assert_eq!(frozen.messages[0].target_input_commit, None);
+    assert!(matches!(
+        frozen.messages[0].source,
+        awaken_session_application::replay::ReplayAgentMessageSource::Send {
+            receipt_at: None,
+            ..
+        }
+    ));
+
+    let dispatch = authority.dispatch_store();
+    assert_eq!(
+        dispatch.relinquish_claim(&child.claim).await.unwrap(),
+        SettleOutcome::Applied
+    );
+    let successor = dispatch
+        .claim("replay-successor", 60_000, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let successor = RunClaim::from(&successor.lease);
+    assert_eq!(
+        writer
+            .commit_operation(child.clone())
+            .await
+            .unwrap_err()
+            .code,
+        awaken_dispatch_contract::COMMIT_FENCED
+    );
+    let duplicate = writer
+        .commit_operation(ClaimedCommitCommand {
+            claim: successor.clone(),
+            operation: child.operation,
+        })
+        .await
+        .unwrap();
+    assert!(duplicate.duplicate);
+    assert_eq!(duplicate.commit_sequence, first.commit_sequence);
+
+    // A terminal child keeps the original activation after Dispatch deletes
+    // the active row. Its input and the root report use distinct commits.
+    let mut child_input = coordinated_activation_input(
+        session.as_str(),
+        &child_thread,
+        &child_run,
+        &operation_id,
+        "investigate".into(),
+    );
+    child_input.push(Message::text(
+        MessageId::assistant(&child_run, 1),
+        Role::Assistant,
+        "done",
+    ));
+    let child_terminal = writer
+        .commit_operation(replay_terminal_commit(
+            &successor,
+            &child_thread,
+            1,
+            1,
+            child_input,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        dispatch
+            .settle(
+                &child_run,
+                successor.epoch,
+                awaken_dispatch_contract::DispatchOutcome::Done,
+                &[]
+            )
+            .await
+            .unwrap(),
+        SettleOutcome::Applied
+    );
+    use awaken_dispatch_contract::{SessionRunAdmissionObservation, SessionRunAdmissionReads};
+    let SessionRunAdmissionObservation::Completed { completion, .. } = dispatch
+        .observe_session_run_admission(&child_run)
+        .await
+        .unwrap()
+    else {
+        panic!("settled child retains completion evidence")
+    };
+    let activation = authority
+        .archived_run_activation(session.as_str(), &child_thread, &child_run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        completion.request_fingerprint,
+        Some(activation.admission_fingerprint)
+    );
+    let after_child = service.capture_for(scope, &session).await.unwrap();
+    let before_receipt = service
+        .load_for(scope, &session, &after_child.id)
+        .await
+        .unwrap();
+    assert!(matches!(
+        before_receipt.messages[0].source,
+        awaken_session_application::replay::ReplayAgentMessageSource::Send {
+            receipt_at: None,
+            ..
+        }
+    ));
+    assert_eq!(
+        before_receipt.messages[0].target_input_commit,
+        Some(child_terminal.commit_sequence)
+    );
+
+    let diagnostic_before = timeline(&service, scope, &session, &page_query, None)
+        .await
+        .unwrap();
+    let old_child = run_evidence_at(
+        &service,
+        scope,
+        &session,
+        &child_run,
+        &diagnostic_before.snapshot,
+    )
+    .await
+    .unwrap();
+    assert!(old_child.runtime.is_some());
+    assert!(old_child.activation.is_some());
+    assert_eq!(old_child.messages, before_receipt.messages);
+
+    let receipt = serde_json::to_string(&awaken_ext_builtin_tools::AgentMessageReceipt {
+        accepted: true,
+        session_thread_id: child_thread.0.clone(),
+    })
+    .unwrap();
+    batch.complete(ToolOutput::ok("send", receipt)).unwrap();
+    let parent_receipt = writer
+        .commit_operation(replay_batch_commit(&parent.claim, &root, 1, 1, &batch))
+        .await
+        .unwrap();
+    let after_receipt = service.capture_for(scope, &session).await.unwrap();
+    let reopened =
+        crate::session_replay::PostgresSessionReplay::new(PgPool::connect(&url).await.unwrap());
+    let mut diagnostic_page = diagnostic_before.clone();
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        assert_eq!(diagnostic_page.snapshot, diagnostic_before.snapshot);
+        for row in &diagnostic_page.entries {
+            assert!(seen.insert((format!("{:?}", row.evidence.source), row.evidence.position)));
+            assert!(
+                !(row.evidence.source
+                    == awaken_session_application::replay::EvidenceSource::Runtime
+                    && row.evidence.position
+                        == i64::try_from(parent_receipt.commit_sequence).unwrap())
+            );
+        }
+        let Some(cursor) = diagnostic_page.next_cursor else {
+            break;
+        };
+        diagnostic_page = timeline(&reopened, scope, &session, &page_query, Some(&cursor))
+            .await
+            .unwrap();
+    }
+    assert!(seen.len() > 3);
+    assert_eq!(
+        run_evidence_at(
+            &reopened,
+            scope,
+            &session,
+            &child_run,
+            &diagnostic_before.snapshot
+        )
+        .await
+        .unwrap(),
+        old_child,
+    );
+    let diagnostic_after = timeline(&reopened, scope, &session, &page_query, None)
+        .await
+        .unwrap();
+    let new_child = run_evidence_at(
+        &reopened,
+        scope,
+        &session,
+        &child_run,
+        &diagnostic_after.snapshot,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        new_child.messages[0].source,
+        awaken_session_application::replay::ReplayAgentMessageSource::Send { receipt_at: Some(sequence), .. }
+            if sequence == parent_receipt.commit_sequence
+    ));
+    assert!(matches!(
+        run_evidence_at(
+            &reopened,
+            "foreign",
+            &session,
+            &child_run,
+            &diagnostic_after.snapshot
+        )
+        .await,
+        Err(awaken_session_application::replay::SessionReplayError::NotFound)
+    ));
+    let latest = reopened
+        .load_for(scope, &session, &after_receipt.id)
+        .await
+        .unwrap();
+    assert_eq!(latest.messages.len(), 1);
+    assert!(
+        matches!(latest.messages[0].source, awaken_session_application::replay::ReplayAgentMessageSource::Send { receipt_at: Some(sequence), .. } if sequence == parent_receipt.commit_sequence)
+    );
+    assert_eq!(latest.activations.len(), 2);
+
+    writer
+        .commit_operation(replay_terminal_commit(
+            &parent.claim,
+            &root,
+            2,
+            2,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        dispatch
+            .settle(
+                &parent_run,
+                parent.claim.epoch,
+                awaken_dispatch_contract::DispatchOutcome::Done,
+                &[]
+            )
+            .await
+            .unwrap(),
+        SettleOutcome::Applied
+    );
+    let mut report = awaken_dispatch_testkit::worker_http::activation("report");
+    report.thread_id = root.clone();
+    report.run_id = awaken_session_execution_contract::agent_report_run_id(&session, &child_run);
+    let report_input = Message::text(
+        MessageId::agent_thread_report(&child_run),
+        Role::User,
+        format!(
+            "Message from agent child (thread {}):\ndone",
+            child_thread.0
+        ),
+    );
+    report.input = vec![report_input.clone()];
+    let mut report = claim_dispatch(
+        &authority,
+        RunDispatch::new(report)
+            .for_session(root.clone())
+            .with_session_activity_epoch(2)
+            .with_execution_scope(ExecutionScopeRef(ScopeId::from(scope))),
+    )
+    .await;
+    report.operation.expected_thread_version = 3;
+    report.operation.commit.messages.clear();
+    report.operation.payload_hash = commit_payload_hash(&report.operation.commit).unwrap();
+    let report_started = writer.commit_operation(report.clone()).await.unwrap();
+    let before_report_input = timeline(&service, scope, &session, &page_query, None)
+        .await
+        .unwrap();
+    let parent_evidence = run_evidence_at(
+        &service,
+        scope,
+        &session,
+        &parent_run,
+        &before_report_input.snapshot,
+    )
+    .await
+    .unwrap();
+    assert_eq!(parent_evidence.messages.len(), 2);
+    assert_eq!(
+        parent_evidence.messages[1].target_first_commit,
+        Some(report_started.commit_sequence)
+    );
+    assert_eq!(parent_evidence.messages[1].target_input_commit, None);
+    let report_commit = writer
+        .commit_operation(replay_terminal_commit(
+            &report.claim,
+            &root,
+            1,
+            4,
+            vec![report_input],
+        ))
+        .await
+        .unwrap();
+    let with_report = service.capture_for(scope, &session).await.unwrap();
+    let with_report = service
+        .load_for(scope, &session, &with_report.id)
+        .await
+        .unwrap();
+    assert_eq!(with_report.messages.len(), 2);
+    assert_eq!(
+        with_report.messages[0].target_input_commit,
+        Some(child_terminal.commit_sequence)
+    );
+    assert_eq!(
+        with_report.messages[1].target_input_commit,
+        Some(report_commit.commit_sequence)
+    );
+    assert_eq!(with_report.messages[1].source_run, child_run);
+    assert_eq!(
+        reopened.load_for(scope, &session, &gap.id).await.unwrap(),
+        frozen
+    );
+    assert_eq!(
+        reopened
+            .load_for(scope, &session, &after_child.id)
+            .await
+            .unwrap(),
+        before_receipt
+    );
+    assert_eq!(
+        reopened
+            .load_for(scope, &session, &before_child.id)
+            .await
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        reopened
+            .load_for("foreign", &session, &gap.id)
+            .await
+            .unwrap_err(),
+        awaken_session_application::replay::SessionReplayError::NotFound
+    );
+}
+
+fn replay_terminal_commit(
+    claim: &RunClaim,
+    thread: &ThreadId,
+    ordinal: u64,
+    version: u64,
+    messages: Vec<Message>,
+) -> ClaimedCommitCommand {
+    let commit = ThreadCommit::assemble(
+        thread.clone(),
+        RunDisposition::ended(claim.run_id.clone(), EndCause::NaturalEnd),
+        true,
+        messages,
+        Vec::new(),
+        Vec::new(),
+    );
+    ClaimedCommitCommand {
+        claim: claim.clone(),
+        operation: CommitOperation {
+            operation_id: CommitOperationId {
+                run_id: claim.run_id.clone(),
+                ordinal,
+            },
+            expected_thread_version: version,
+            payload_hash: commit_payload_hash(&commit).unwrap(),
+            commit,
+        },
+    }
+}
+
+fn replay_batch_commit(
+    claim: &RunClaim,
+    thread: &ThreadId,
+    ordinal: u64,
+    version: u64,
+    batch: &awaken_tool_contract::tool_batch::ToolBatch,
+) -> ClaimedCommitCommand {
+    use awaken_agent_contract::agent::state::StateKey as _;
+    let commit = ThreadCommit::assemble(
+        thread.clone(),
+        RunDisposition::running(claim.run_id.clone()),
+        ordinal == 0,
+        Vec::new(),
+        vec![awaken_tool_contract::tool_batch::ActiveToolBatch::write(
+            &Some(batch.clone()),
+        )],
+        Vec::new(),
+    );
+    ClaimedCommitCommand {
+        claim: claim.clone(),
+        operation: CommitOperation {
+            operation_id: CommitOperationId {
+                run_id: claim.run_id.clone(),
+                ordinal,
+            },
+            expected_thread_version: version,
+            payload_hash: commit_payload_hash(&commit).unwrap(),
+            commit,
+        },
+    }
 }
 
 async fn claim_dispatch(

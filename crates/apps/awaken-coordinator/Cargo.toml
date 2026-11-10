@@ -106,6 +106,7 @@ serde_json.workspace = true
 tracing = "0.1"
 thiserror.workspace = true
 base64 = "0.22"
+blake3 = "1.8"
 uuid = { version = "1", features = ["v7"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "process", "time"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }

@@ -1320,6 +1320,14 @@ pub enum awaken_agent_contract::thread::read::recovery::CurrentRunError
 pub awaken_agent_contract::thread::read::recovery::CurrentRunError::LatestOmitted
 pub awaken_agent_contract::thread::read::recovery::CurrentRunError::LatestStateMissing(awaken_agent_contract::agent::run::Id)
 pub awaken_agent_contract::thread::read::recovery::CurrentRunError::RunRecordSelection(awaken_agent_contract::thread::read::recovery::RunRecordSelectionError)
+pub enum awaken_agent_contract::thread::read::recovery::LoadedRunRecovery
+pub awaken_agent_contract::thread::read::recovery::LoadedRunRecovery::Full
+pub awaken_agent_contract::thread::read::recovery::LoadedRunRecovery::Full::prefix: core::option::Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>
+pub awaken_agent_contract::thread::read::recovery::LoadedRunRecovery::Full::snapshot: alloc::boxed::Box<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>
+pub awaken_agent_contract::thread::read::recovery::LoadedRunRecovery::Reuse
+pub awaken_agent_contract::thread::read::recovery::LoadedRunRecovery::Reuse::reused: awaken_agent_contract::thread::read::recovery::ReusedRunRecovery
+impl awaken_agent_contract::thread::read::recovery::LoadedRunRecovery
+pub fn awaken_agent_contract::thread::read::recovery::LoadedRunRecovery::full(awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot) -> Self
 pub enum awaken_agent_contract::thread::read::recovery::RecoveryError
 pub awaken_agent_contract::thread::read::recovery::RecoveryError::Rejected(alloc::string::String)
 pub enum awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError
@@ -1338,6 +1346,13 @@ pub enum awaken_agent_contract::thread::read::recovery::RunTicketSelection<'a>
 pub awaken_agent_contract::thread::read::recovery::RunTicketSelection::Absent
 pub awaken_agent_contract::thread::read::recovery::RunTicketSelection::Multiple
 pub awaken_agent_contract::thread::read::recovery::RunTicketSelection::One(&'a awaken_agent_contract::thread::read::recovery::RunResumeTicket)
+pub struct awaken_agent_contract::thread::read::recovery::ReusedRunRecovery
+pub awaken_agent_contract::thread::read::recovery::ReusedRunRecovery::next_commit_ordinal: u64
+pub awaken_agent_contract::thread::read::recovery::ReusedRunRecovery::prefix: awaken_agent_contract::thread::read::recovery::ThreadPrefixRef
+pub awaken_agent_contract::thread::read::recovery::ReusedRunRecovery::resume_tickets: alloc::vec::Vec<awaken_agent_contract::thread::read::recovery::RunResumeTicket>
+pub awaken_agent_contract::thread::read::recovery::ReusedRunRecovery::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_agent_contract::thread::read::recovery::ReusedRunRecovery::store_cursor: u64
+pub awaken_agent_contract::thread::read::recovery::ReusedRunRecovery::thread_id: awaken_agent_contract::agent::thread::Id
 pub struct awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::claimed_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::commit_timestamps: alloc::collections::btree::map::BTreeMap<u64, u64>
@@ -1375,13 +1390,24 @@ pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot::verif
 pub struct awaken_agent_contract::thread::read::recovery::RunResumeTicket
 pub awaken_agent_contract::thread::read::recovery::RunResumeTicket::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_agent_contract::thread::read::recovery::RunResumeTicket::ticket: awaken_agent_contract::agent::awaiting::ResumeTicket
+pub struct awaken_agent_contract::thread::read::recovery::ThreadPrefixRef
+pub awaken_agent_contract::thread::read::recovery::ThreadPrefixRef::last_commit: u64
+pub awaken_agent_contract::thread::read::recovery::ThreadPrefixRef::thread_version: u64
 pub trait awaken_agent_contract::thread::read::recovery::RunRecoverySource: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySource::load_recovery<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, &'life2 awaken_agent_contract::agent::thread::Id, &'life3 awaken_agent_contract::agent::run::Id, core::option::Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, awaken_agent_contract::thread::read::recovery::RecoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySource::recovery_snapshot<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, &'life2 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_agent_contract::thread::read::recovery::RecoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySource::recovery_snapshot_in_session<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, &'life2 awaken_agent_contract::agent::thread::Id, &'life3 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_agent_contract::thread::read::recovery::RecoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_agent_contract::thread::read::recovery::decode_resume_ticket_json_for_owner(&str, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<awaken_agent_contract::agent::awaiting::ResumeTicket, awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError>
 pub fn awaken_agent_contract::thread::read::recovery::decode_resume_ticket_value_for_owner(serde_json::value::Value, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<awaken_agent_contract::agent::awaiting::ResumeTicket, awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError>
 pub fn awaken_agent_contract::thread::read::recovery::project_committed_run_records<E>(&awaken_agent_contract::agent::thread::Id, impl core::iter::traits::collect::IntoIterator<Item = core::result::Result<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState), E>>) -> core::result::Result<(alloc::vec::Vec<awaken_agent_contract::agent::run::Record>, core::option::Option<awaken_agent_contract::agent::run::Id>), E>
 pub fn awaken_agent_contract::thread::read::recovery::validate_resume_ticket_owner(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<(), awaken_agent_contract::thread::read::recovery::ResumeTicketRecoveryError>
+pub mod awaken_agent_contract::thread::read::replay
+pub struct awaken_agent_contract::thread::read::replay::CommittedThreadPrefix
+pub awaken_agent_contract::thread::read::replay::CommittedThreadPrefix::events: alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
+pub awaken_agent_contract::thread::read::replay::CommittedThreadPrefix::messages: alloc::vec::Vec<(u64, awaken_agent_contract::agent::message::Message)>
+pub awaken_agent_contract::thread::read::replay::CommittedThreadPrefix::runs: alloc::vec::Vec<(u64, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>
+pub awaken_agent_contract::thread::read::replay::CommittedThreadPrefix::state: alloc::vec::Vec<(u64, awaken_agent_contract::agent::state::Command)>
+pub awaken_agent_contract::thread::read::replay::CommittedThreadPrefix::thread_id: awaken_agent_contract::agent::thread::Id
 pub mod awaken_agent_contract::thread::read::transcript
 pub enum awaken_agent_contract::thread::read::transcript::TranscriptError
 pub awaken_agent_contract::thread::read::transcript::TranscriptError::InvalidRange
@@ -1417,6 +1443,16 @@ pub awaken_agent_contract::thread::read::transcript::TranscriptRange::end: u64
 pub awaken_agent_contract::thread::read::transcript::TranscriptRange::start: u64
 impl awaken_agent_contract::thread::read::transcript::TranscriptRange
 pub const fn awaken_agent_contract::thread::read::transcript::TranscriptRange::new(u64, u64) -> Self
+pub struct awaken_agent_contract::thread::read::transcript::TranscriptSeek
+pub awaken_agent_contract::thread::read::transcript::TranscriptSeek::before: u64
+pub awaken_agent_contract::thread::read::transcript::TranscriptSeek::through: u64
+pub struct awaken_agent_contract::thread::read::transcript::TranscriptSeekPage
+pub awaken_agent_contract::thread::read::transcript::TranscriptSeekPage::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_agent_contract::thread::read::transcript::TranscriptSeekPage::next: core::option::Option<awaken_agent_contract::thread::read::transcript::TranscriptSeek>
+pub struct awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest
+pub awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest::limit: core::num::nonzero::NonZeroUsize
+pub awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest::seek: core::option::Option<awaken_agent_contract::thread::read::transcript::TranscriptSeek>
+pub awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest::thread_id: awaken_agent_contract::agent::thread::Id
 pub struct awaken_agent_contract::thread::read::transcript::TranscriptSlice
 pub awaken_agent_contract::thread::read::transcript::TranscriptSlice::messages: alloc::sync::Arc<[awaken_agent_contract::agent::message::Message]>
 pub awaken_agent_contract::thread::read::transcript::TranscriptSlice::ranges: alloc::vec::Vec<awaken_agent_contract::thread::read::transcript::TranscriptRange>

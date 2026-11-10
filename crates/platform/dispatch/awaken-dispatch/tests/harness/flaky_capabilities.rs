@@ -64,11 +64,13 @@ impl ClaimedCheckpointTransport for FlakyDispatchStore {
     async fn delete_stream_checkpoint(&self, _: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         unreachable!("empty scheduler fixture must not delete remote checkpoints")
     }
-    async fn load_recovery_snapshot(
+    async fn load_recovery(
         &self,
         _: &RunClaim,
         _: Option<&awaken_session_application_contract::SessionWorkAuthorityReceipt>,
-    ) -> Result<RunRecoverySnapshot, DispatchError> {
+        _: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, DispatchError>
+    {
         unreachable!("empty scheduler fixture must not read remote recovery")
     }
 }

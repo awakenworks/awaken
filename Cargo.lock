@@ -835,6 +835,7 @@ dependencies = [
  "awaken-worker-transport-security",
  "axum",
  "base64 0.22.1",
+ "blake3",
  "http-body-util",
  "kube",
  "serde",

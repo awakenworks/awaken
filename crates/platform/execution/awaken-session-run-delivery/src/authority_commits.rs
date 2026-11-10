@@ -1,3 +1,5 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: Forwards committed-history reads through the selected Runtime authority.
 //! [`AuthorityCommits`]: committed Session reads straight from the process's
 //! Runtime authority, for a process that holds no resident execution context.
 
@@ -37,6 +39,30 @@ impl AuthorityCommits {
 
 #[async_trait::async_trait]
 impl SessionCommitSource for AuthorityCommits {
+    fn shared_recovery_source(
+        &self,
+    ) -> Option<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>> {
+        self.0.shared_recovery_source()
+    }
+
+    async fn transcript_seek_page(
+        &self,
+        session: &str,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, RunError> {
+        self.0.transcript_seek_page(session, request).await
+    }
+
+    async fn archived_run_activation(
+        &self,
+        session: &str,
+        thread: &awaken_agent_contract::ThreadId,
+        run: &awaken_agent_contract::RunId,
+    ) -> Result<Option<awaken_dispatch_contract::run_dispatch::ArchivedRunActivation>, RunError>
+    {
+        self.0.archived_run_activation(session, thread, run).await
+    }
+
     async fn open_for_read(&self, session: &str) -> Result<Arc<SessionCommit>, RunError> {
         Ok(Arc::new(SessionCommit::Local(
             self.0

@@ -24,7 +24,7 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_agent_contract::thread::read::lifecycle::encode_run_lifecycle_cursor;
 use awaken_agent_contract::thread::read::recovery::{
     AnswerableTicketError, CurrentRunError, RunRecordSelectionError, RunRecoverySnapshot,
-    RunResumeTicket,
+    RunResumeTicket, ThreadPrefixRef,
 };
 use awaken_sync::InvariantRwLock;
 
@@ -71,7 +71,22 @@ const fn classify_recovery_snapshot_admission(
 /// Non-authoritative committed-read cache for one remote Worker session.
 #[derive(Debug, Default)]
 pub struct RecoveryProjection {
-    snapshot: InvariantRwLock<Option<RunRecoverySnapshot>>,
+    snapshot: InvariantRwLock<Option<InstalledRecovery>>,
+}
+
+#[derive(Debug)]
+struct InstalledRecovery {
+    snapshot: RunRecoverySnapshot,
+    claim: Option<awaken_worker_contract::RunClaim>,
+    reusable: Option<ThreadPrefixRef>,
+}
+
+impl std::ops::Deref for InstalledRecovery {
+    type Target = RunRecoverySnapshot;
+
+    fn deref(&self) -> &Self::Target {
+        &self.snapshot
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +170,54 @@ impl RecoveryProjection {
         claimed_thread_id: &ThreadId,
         snapshot: RunRecoverySnapshot,
     ) -> Result<(), RecoveryProjectionError> {
+        self.install_inner(claimed_run_id, claimed_thread_id, snapshot, None, None)
+    }
+
+    pub(crate) fn install_cached(
+        &self,
+        claim: &awaken_worker_contract::RunClaim,
+        thread: &ThreadId,
+        snapshot: RunRecoverySnapshot,
+        prefix: Option<ThreadPrefixRef>,
+    ) -> Result<(), RecoveryProjectionError> {
+        let reusable = prefix.filter(|prefix| {
+            prefix.thread_version == snapshot.thread_version
+                && prefix.last_commit <= snapshot.store_cursor
+                && snapshot.message_commit_cursors.len() == snapshot.messages.len()
+                && snapshot.state_commit_cursors.len() == snapshot.state.len()
+        });
+        self.install_inner(
+            &claim.run_id,
+            thread,
+            snapshot,
+            Some(claim.clone()),
+            reusable,
+        )
+    }
+
+    pub(crate) fn cache_snapshot(
+        &self,
+        claim: &awaken_worker_contract::RunClaim,
+    ) -> Option<(ThreadPrefixRef, RunRecoverySnapshot)> {
+        let installed = self.snapshot.read().ok()?;
+        let installed = installed.as_ref()?;
+        let prefix = installed.reusable?;
+        if installed.claim.as_ref() != Some(claim) {
+            return None;
+        }
+        let mut snapshot = installed.snapshot.clone();
+        snapshot.resume_tickets.clear();
+        Some((prefix, snapshot))
+    }
+
+    fn install_inner(
+        &self,
+        claimed_run_id: &RunId,
+        claimed_thread_id: &ThreadId,
+        snapshot: RunRecoverySnapshot,
+        claim: Option<awaken_worker_contract::RunClaim>,
+        reusable: Option<ThreadPrefixRef>,
+    ) -> Result<(), RecoveryProjectionError> {
         match classify_recovery_snapshot_admission(
             &snapshot.claimed_run_id == claimed_run_id,
             &snapshot.thread_id == claimed_thread_id,
@@ -178,7 +241,11 @@ impl RecoveryProjection {
                 *self
                     .snapshot
                     .write()
-                    .map_err(|_| RecoveryProjectionError::Poisoned)? = Some(snapshot);
+                    .map_err(|_| RecoveryProjectionError::Poisoned)? = Some(InstalledRecovery {
+                    snapshot,
+                    claim,
+                    reusable,
+                });
                 Ok(())
             }
         }
@@ -192,15 +259,44 @@ impl RecoveryProjection {
         operation: CommitOperation,
         receipt: &CommitReceipt,
     ) -> Result<(), CommitError> {
+        self.apply_receipt_inner(None, operation, receipt)
+    }
+
+    pub(crate) fn apply_claim_receipt(
+        &self,
+        claim: &awaken_worker_contract::RunClaim,
+        operation: CommitOperation,
+        receipt: &CommitReceipt,
+    ) -> Result<(), CommitError> {
+        self.apply_receipt_inner(Some(claim), operation, receipt)
+    }
+
+    fn apply_receipt_inner(
+        &self,
+        claim: Option<&awaken_worker_contract::RunClaim>,
+        operation: CommitOperation,
+        receipt: &CommitReceipt,
+    ) -> Result<(), CommitError> {
         require_commit_operation_receipt(&operation, receipt)
             .map_err(|error| CommitError::Rejected(error.to_string()))?;
         let mut guard = self
             .snapshot
             .write()
             .map_err(|_| CommitError::Rejected("recovery projection poisoned".to_string()))?;
-        let snapshot = guard.as_mut().ok_or_else(|| {
+        let InstalledRecovery {
+            snapshot,
+            claim: installed,
+            reusable,
+        } = guard.as_mut().ok_or_else(|| {
             CommitError::Rejected("remote commit has no installed recovery snapshot".to_string())
         })?;
+        if let (Some(incoming), Some(current)) = (claim, installed.as_ref())
+            && incoming != current
+        {
+            return Err(CommitError::Rejected(
+                "receipt belongs to a replaced recovery claim".into(),
+            ));
+        }
         let disposition = classify_receipt_projection(ReceiptProjectionFacts {
             projection_identity_matches: snapshot.thread_id == operation.commit.thread_id
                 && snapshot.claimed_run_id == *operation.commit.run_id(),
@@ -230,7 +326,14 @@ impl RecoveryProjection {
         match disposition {
             ReceiptProjectionDisposition::Replay => Ok(()),
             ReceiptProjectionDisposition::Apply(advance) => {
-                apply_to_snapshot(snapshot, operation.commit, receipt.commit_sequence, advance)
+                apply_to_snapshot(snapshot, operation.commit, receipt.commit_sequence, advance)?;
+                if let Some(prefix) = reusable {
+                    *prefix = ThreadPrefixRef {
+                        last_commit: receipt.commit_sequence,
+                        thread_version: receipt.thread_version,
+                    };
+                }
+                Ok(())
             }
         }
     }
@@ -240,7 +343,7 @@ impl RecoveryProjection {
         self.snapshot
             .read()
             .ok()
-            .and_then(|snapshot| snapshot.clone())
+            .and_then(|snapshot| snapshot.as_ref().map(|entry| entry.snapshot.clone()))
     }
 
     pub fn clear(&self) {
@@ -277,6 +380,16 @@ fn apply_to_snapshot(
             })
         })
         .collect::<Result<Vec<_>, CommitError>>()?;
+    if snapshot.message_commit_cursors.len() == snapshot.messages.len() {
+        snapshot
+            .message_commit_cursors
+            .extend(std::iter::repeat_n(commit_sequence, commit.messages.len()));
+    }
+    if snapshot.state_commit_cursors.len() == snapshot.state.len() {
+        snapshot
+            .state_commit_cursors
+            .extend(std::iter::repeat_n(commit_sequence, commit.state.len()));
+    }
     snapshot.messages.extend(commit.messages);
     snapshot.state.extend(commit.state);
     snapshot.events.extend(committed_events);
@@ -462,6 +575,100 @@ mod install_tests {
             store_cursor: 0,
             next_commit_ordinal: 0,
         }
+    }
+
+    #[test]
+    fn recovery_projection_retains_coordinates_and_fences_late_epoch_receipts() {
+        use awaken_agent_contract::agent::message::{Id as MessageId, Role};
+        use awaken_agent_contract::agent::state::{MergePolicy, Scope};
+        use awaken_agent_contract::thread::commit::operation::{
+            CommitOperationId, applied_commit_receipt, commit_payload_hash,
+        };
+        use awaken_agent_contract::thread::commit::staged::RunDisposition;
+        use awaken_worker_contract::RunClaim;
+
+        let thread = ThreadId("thread".into());
+        let run = RunId("run".into());
+        let original = RunClaim {
+            run_id: run.clone(),
+            owner: "first".into(),
+            epoch: 1,
+        };
+        let replacement = RunClaim {
+            run_id: run.clone(),
+            owner: "replacement".into(),
+            epoch: 2,
+        };
+        let projection = RecoveryProjection::new();
+        projection
+            .install_cached(
+                &original,
+                &thread,
+                snapshot(run.clone(), thread.clone(), 0),
+                Some(ThreadPrefixRef {
+                    last_commit: 0,
+                    thread_version: 0,
+                }),
+            )
+            .unwrap();
+        let commit = ThreadCommit::assemble(
+            thread.clone(),
+            RunDisposition::running(run.clone()),
+            true,
+            vec![Message::text(
+                MessageId("input".into()),
+                Role::User,
+                "hello",
+            )],
+            vec![StateCommand::set(
+                Scope::Run,
+                MergePolicy::Disjoint,
+                "test",
+                1.into(),
+            )],
+            vec![],
+        );
+        let operation = CommitOperation {
+            operation_id: CommitOperationId::new(run, 0),
+            expected_thread_version: 0,
+            payload_hash: commit_payload_hash(&commit).unwrap(),
+            commit,
+        };
+        let receipt = applied_commit_receipt(
+            operation.operation_id.clone(),
+            operation.payload_hash.clone(),
+            7,
+            1,
+        );
+        projection
+            .apply_claim_receipt(&original, operation.clone(), &receipt)
+            .unwrap();
+        let (prefix, warm) = projection.cache_snapshot(&original).unwrap();
+        assert_eq!(
+            prefix,
+            ThreadPrefixRef {
+                last_commit: 7,
+                thread_version: 1
+            }
+        );
+        assert_eq!(warm.message_commit_cursors, [7]);
+        assert_eq!(warm.state_commit_cursors, [7]);
+        assert_eq!(warm.next_commit_ordinal, 1);
+        projection
+            .apply_claim_receipt(&original, operation.clone(), &receipt)
+            .unwrap();
+        assert_eq!(projection.current(), Some(warm.clone()));
+
+        projection
+            .install_cached(&replacement, &thread, warm.clone(), Some(prefix))
+            .unwrap();
+        assert!(
+            projection
+                .apply_claim_receipt(&original, operation, &receipt)
+                .is_err()
+        );
+        assert!(projection.cache_snapshot(&original).is_none());
+        assert_eq!(projection.current(), Some(warm));
     }
 
     #[test]

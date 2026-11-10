@@ -20,6 +20,13 @@ struct ThreadMessageCursor {
     start: u64,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BackwardMessageCursor {
+    session: String,
+    thread: awaken_agent_contract::ThreadId,
+    seek: awaken_agent_contract::thread::read::transcript::TranscriptSeek,
+}
+
 fn invalid_message_page() -> WireErr {
     error_response(StateError::Run(RunError::bad_request(
         "invalid transcript page or limit",
@@ -33,7 +40,7 @@ pub async fn list_thread_messages(
     Path((id, tid)): Path<(String, String)>,
     query: Result<Query<ThreadMessagePageQuery>, QueryRejection>,
 ) -> Result<Json<PageCursor<ThreadHistoryMessage>>, WireErr> {
-    use awaken_agent_contract::agent::{message::Role, thread::Id as ThreadId};
+    use awaken_agent_contract::ThreadId;
     use awaken_agent_contract::thread::read::transcript::{TranscriptPageRequest, TranscriptView};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
@@ -49,6 +56,65 @@ pub async fn list_thread_messages(
     let limit = std::num::NonZeroUsize::new(query.limit.unwrap_or(50))
         .filter(|limit| limit.get() <= 100)
         .ok_or_else(invalid_message_page)?;
+    let decoded = query
+        .page
+        .as_deref()
+        .map(|token| {
+            if token.len() > 4096 {
+                return Err(invalid_message_page());
+            }
+            URL_SAFE_NO_PAD
+                .decode(token)
+                .map_err(|_| invalid_message_page())
+        })
+        .transpose()?;
+    let backward = decoded
+        .as_deref()
+        .and_then(|bytes| serde_json::from_slice::<BackwardMessageCursor>(bytes).ok());
+    if query.direction.is_some() || backward.is_some() {
+        let seek = match (decoded, backward) {
+            (None, _) => None,
+            (Some(_), Some(cursor)) if cursor.session == id && cursor.thread == thread => {
+                Some(cursor.seek)
+            }
+            _ => return Err(invalid_message_page()),
+        };
+        let page = state
+            .roles
+            .observation
+            .transcript_seek_page(
+                &access,
+                &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest {
+                    thread_id: thread.clone(),
+                    seek,
+                    limit,
+                },
+            )
+            .await
+            .map_err(transcript_error)?;
+        let next_page = page
+            .next
+            .map(|seek| {
+                serde_json::to_vec(&BackwardMessageCursor {
+                    session: id,
+                    thread,
+                    seek,
+                })
+                .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+            })
+            .transpose()
+            .map_err(|error| {
+                error_response(StateError::Run(RunError::internal(error.to_string())))
+            })?;
+        return Ok(Json(PageCursor {
+            data: page
+                .messages
+                .into_iter()
+                .filter_map(|message| present_message(message, true))
+                .collect(),
+            next_page,
+        }));
+    }
     let mut request = TranscriptPageRequest {
         thread_id: thread,
         view: TranscriptView::RawCommitted,
@@ -56,13 +122,7 @@ pub async fn list_thread_messages(
         start: 0,
         limit,
     };
-    if let Some(token) = query.page {
-        if token.len() > 4096 {
-            return Err(invalid_message_page());
-        }
-        let decoded = URL_SAFE_NO_PAD
-            .decode(token)
-            .map_err(|_| invalid_message_page())?;
+    if let Some(decoded) = decoded {
         let cursor: ThreadMessageCursor =
             serde_json::from_slice(&decoded).map_err(|_| invalid_message_page())?;
         if cursor.session != id
@@ -80,16 +140,7 @@ pub async fn list_thread_messages(
         .observation
         .transcript_page(&access, &request)
         .await
-        .map_err(|error| {
-            if error.code == "not_found" {
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse::new("not_found_error", error.message)),
-                )
-            } else {
-                error_response(StateError::Run(error))
-            }
-        })?;
+        .map_err(transcript_error)?;
     let next_page = page
         .next_start()
         .map(|start| {
@@ -105,19 +156,60 @@ pub async fn list_thread_messages(
     let data = page
         .messages
         .into_iter()
-        .filter_map(|message| {
-            let role = match message.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::System | Role::Tool => return None,
-            };
-            let text = message.text_content();
-            Some(ThreadHistoryMessage {
-                id: message.id.0,
-                role,
-                text,
-            })
-        })
+        .filter_map(|message| present_message(message, false))
         .collect();
     Ok(Json(PageCursor { data, next_page }))
+}
+
+fn transcript_error(error: RunError) -> WireErr {
+    if error.code == "not_found" {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new("not_found_error", error.message)),
+        )
+    } else {
+        error_response(StateError::Run(error))
+    }
+}
+
+fn present_message(
+    message: awaken_agent_contract::Message,
+    include_attachments: bool,
+) -> Option<ThreadHistoryMessage> {
+    use crate::awaken_extensions::ThreadHistoryAttachment;
+    use awaken_agent_contract::agent::{
+        content::{ContentBlock, DocumentSource, ImageSource},
+        message::Role,
+    };
+
+    let role = match message.role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::System | Role::Tool => return None,
+    };
+    let text = message.text_content();
+    let attachments = if include_attachments {
+        message
+            .content
+            .into_iter()
+            .filter_map(|block| match block {
+                ContentBlock::Image {
+                    source: ImageSource::File { file_id },
+                } => Some(ThreadHistoryAttachment::Image { file_id }),
+                ContentBlock::Document {
+                    source: DocumentSource::File { file_id },
+                    ..
+                } => Some(ThreadHistoryAttachment::Document { file_id }),
+                _ => None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Some(ThreadHistoryMessage {
+        id: message.id.0,
+        role,
+        text,
+        attachments,
+    })
 }

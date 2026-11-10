@@ -16,6 +16,10 @@
 use super::*;
 use awaken_sql_storage::postgres_pool_options as pool_options;
 
+mod replay;
+use replay::{insert_session_revision, replay_bundle};
+pub use replay::{lock_session_for_run_archive, session_revision_at};
+
 /// A Postgres-backed [`SessionRepository`] — the network-DB sibling over
 /// the same `managed` migration scope.
 pub struct PostgresManagedSessionRepository {
@@ -66,6 +70,10 @@ impl PostgresManagedSessionRepository {
             .run_bundle(&converged)
             .await
             .map_err(|error| error.to_string())?;
+        runner
+            .run_bundle(&replay_bundle()?)
+            .await
+            .map_err(|error| error.to_string())?;
         Self::normalize_session_aggregates(&pool, true)
             .await
             .map_err(|error| error.to_string())?;
@@ -101,6 +109,10 @@ impl PostgresManagedSessionRepository {
             .map_err(|error| error.to_string())?;
         runner
             .verify_bundle(&converged)
+            .await
+            .map_err(|error| error.to_string())?;
+        runner
+            .verify_bundle(&replay_bundle()?)
             .await
             .map_err(|error| error.to_string())?;
         Self::verify_session_state(&pool)
@@ -680,6 +692,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SessionCreateResult, SessionRepositoryError> {
+        let mut commit_outcome_unknown = false;
         async {
             validate_session_create_command(owner_scope, &session, &idempotency, &lifecycle_facts)?;
             let mut tx = self.pool.begin().await.map_err(storage)?;
@@ -736,6 +749,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
             }
             Self::adopt_creation_intent(&mut tx, session.session_id.as_str()).await?;
             Self::sync_session_indexes(&mut tx, &session).await?;
+            insert_session_revision(&mut tx, owner_scope, &session).await?;
             sqlx::query(
                 "INSERT INTO managed_session_idempotency
                 (session_id, idempotency_key, payload_hash, committed_revision)
@@ -759,11 +773,19 @@ impl SessionRepository for PostgresManagedSessionRepository {
                 .await
                 .map_err(storage)?;
             }
-            tx.commit().await.map_err(storage)?;
+            let committed = tx.commit().await;
+            commit_outcome_unknown = !matches!(&committed, Ok(()) | Err(sqlx::Error::Database(_)));
+            committed.map_err(storage)?;
             Ok(SessionCreateResult::Applied(session))
         }
         .await
-        .map_err(write_not_committed)
+        .map_err(|error| {
+            if commit_outcome_unknown {
+                error
+            } else {
+                write_not_committed(error)
+            }
+        })
     }
 
     async fn replay_create(
@@ -799,6 +821,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
         owner_scope: &str,
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionRepositoryError> {
+        let mut commit_outcome_unknown = false;
         async {
             let receipt_kind = mutation.receipt_kind();
             let next = mutation
@@ -897,6 +920,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
                         return Ok(SessionMutationResult::Conflict { current_revision });
                     }
                     Self::sync_session_indexes(&mut tx, &replacement).await?;
+                    insert_session_revision(&mut tx, owner_scope, &replacement).await?;
                 }
                 SessionMutationPayload::Delete(tombstone) => {
                     let affected = sqlx::query(
@@ -913,6 +937,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
                     if affected != 1 {
                         return Ok(SessionMutationResult::Conflict { current_revision });
                     }
+                    replay::delete_run_archives(&mut tx, owner_scope, &session_id).await?;
                     sqlx::query(
                         "INSERT INTO managed_session_tombstone
                         (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json, private_content)
@@ -954,7 +979,9 @@ impl SessionRepository for PostgresManagedSessionRepository {
                 .await
                 .map_err(storage)?;
             }
-            tx.commit().await.map_err(storage)?;
+            let committed = tx.commit().await;
+            commit_outcome_unknown = !matches!(&committed, Ok(()) | Err(sqlx::Error::Database(_)));
+            committed.map_err(storage)?;
             Ok(if receipt_kind == SessionCommandReceiptKind::EventNoOp {
                 SessionMutationResult::AcknowledgedNoOp {
                     observed_revision: next,
@@ -964,7 +991,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
             })
         }
         .await
-        .map_err(write_not_committed)
+        .map_err(|error| if commit_outcome_unknown { error } else { write_not_committed(error) })
     }
 
     async fn preparation_candidates(

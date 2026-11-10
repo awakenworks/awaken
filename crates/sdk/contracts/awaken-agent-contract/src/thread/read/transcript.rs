@@ -134,6 +134,27 @@ impl TranscriptPage {
     }
 }
 
+/// Position within a frozen, user-visible Thread history. Positions are
+/// assigned by the backend and only compared within the same Thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptSeek {
+    pub through: u64,
+    pub before: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptSeekRequest {
+    pub thread_id: ThreadId,
+    pub seek: Option<TranscriptSeek>,
+    pub limit: NonZeroUsize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TranscriptSeekPage {
+    pub messages: Vec<Message>,
+    pub next: Option<TranscriptSeek>,
+}
+
 /// An immutable in-process snapshot. Clones share the message allocation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptSnapshot {

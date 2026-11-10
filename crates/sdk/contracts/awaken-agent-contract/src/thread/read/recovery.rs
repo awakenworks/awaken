@@ -156,6 +156,68 @@ pub struct RunRecoverySnapshot {
     pub next_commit_ordinal: u64,
 }
 
+/// The version of a reusable, committed logical Thread prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadPrefixRef {
+    pub last_commit: u64,
+    pub thread_version: u64,
+}
+
+/// A successful claim-authorized read. The full response keeps the original
+/// snapshot envelope for Workers that do not supply a prefix.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged, try_from = "RunRecoveryWire")]
+pub enum LoadedRunRecovery {
+    Full {
+        snapshot: Box<RunRecoverySnapshot>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prefix: Option<ThreadPrefixRef>,
+    },
+    Reuse {
+        reused: ReusedRunRecovery,
+    },
+}
+
+// Decode the named fields directly so the JSON decoder handles the numeric
+// keys in commit_timestamps before validating the response variant.
+#[derive(Deserialize)]
+struct RunRecoveryWire {
+    snapshot: Option<Box<RunRecoverySnapshot>>,
+    prefix: Option<ThreadPrefixRef>,
+    reused: Option<ReusedRunRecovery>,
+}
+
+impl TryFrom<RunRecoveryWire> for LoadedRunRecovery {
+    type Error = &'static str;
+
+    fn try_from(wire: RunRecoveryWire) -> Result<Self, Self::Error> {
+        match (wire.snapshot, wire.prefix, wire.reused) {
+            (Some(snapshot), prefix, None) => Ok(Self::Full { snapshot, prefix }),
+            (None, None, Some(reused)) => Ok(Self::Reuse { reused }),
+            _ => Err("expected one full or reusable Run recovery response"),
+        }
+    }
+}
+
+impl LoadedRunRecovery {
+    pub fn full(snapshot: RunRecoverySnapshot) -> Self {
+        Self::Full {
+            snapshot: Box::new(snapshot),
+            prefix: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReusedRunRecovery {
+    pub prefix: ThreadPrefixRef,
+    pub thread_id: ThreadId,
+    pub run_id: RunId,
+    pub store_cursor: u64,
+    pub next_commit_ordinal: u64,
+    pub resume_tickets: Vec<RunResumeTicket>,
+}
+
 /// Why an exact Run record cannot be selected from a committed prefix.
 /// Equal duplicate rows are ambiguous too: selection never repairs the value
 /// by taking the first row or deduplicating a malformed published snapshot.
@@ -347,6 +409,18 @@ pub enum RecoveryError {
 /// database in one repeatable-read (or stronger) transaction.
 #[async_trait]
 pub trait RunRecoverySource: Send + Sync {
+    async fn load_recovery(
+        &self,
+        session: &ThreadId,
+        thread: &ThreadId,
+        run: &RunId,
+        _cached: Option<ThreadPrefixRef>,
+    ) -> Result<LoadedRunRecovery, RecoveryError> {
+        self.recovery_snapshot_in_session(session, thread, run)
+            .await
+            .map(LoadedRunRecovery::full)
+    }
+
     async fn recovery_snapshot(
         &self,
         thread_id: &ThreadId,

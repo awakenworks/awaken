@@ -114,6 +114,7 @@ mod owned_task_tests {
 /// and child Runs; creation is the only difference.
 #[derive(Clone)]
 pub(crate) struct RunScheduler {
+    pub(crate) recovery_history: Option<Arc<awaken_dispatch_execution::RecoveryHistoryCache>>,
     /// The Host's clock: the foreground child scheduler and every later
     /// ownership operation retain this one edge clock.
     pub(crate) clock: Arc<dyn WallClock>,
@@ -1287,6 +1288,7 @@ mod tests {
             let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
             let scheduler = if durable {
                 Some(RunScheduler {
+                    recovery_history: None,
                     clock: clock.clone(),
                     binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
                         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
@@ -1422,6 +1424,7 @@ mod tests {
             ))
         };
         let scheduler = RunScheduler {
+            recovery_history: None,
             clock: clock.clone(),
             binding: bind_dispatch(Arc::new(
                 awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
@@ -1502,6 +1505,7 @@ mod tests {
         // A replacement process reopens the durable queue and rebuilds every live
         // runtime object from committed truth; no child handle crosses this seam.
         let replacement = RunScheduler {
+            recovery_history: None,
             clock: clock.clone(),
             binding: bind_dispatch(Arc::new(
                 awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
@@ -1573,6 +1577,7 @@ mod tests {
             Arc::new(PermissionModel),
             clock.clone(),
             execution(RunScheduler {
+                recovery_history: None,
                 clock: clock.clone(),
                 binding: bind_dispatch(Arc::new(
                     awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())

@@ -2005,6 +2005,7 @@ mod tests {
         )
         .unwrap();
         let scheduler = crate::agent_runner::RunScheduler {
+            recovery_history: None,
             clock: clock.clone(),
             // Erase the SAME selected queue; enqueue/claim/asserts below keep
             // their original Memory handle and its original injected Clock.

@@ -61,6 +61,7 @@ pub use managed_lifecycle::{
     prepare_managed_lifecycle_delivery,
 };
 mod runtime_authority;
+pub mod session_replay;
 pub mod webhooks;
 #[cfg(feature = "container-k8s")]
 pub mod worker_create_broker;
@@ -1060,6 +1061,10 @@ fn session_read_extensions() -> Router<Arc<ManagedState>> {
     awaken_extensions::session_execution_evidence_router(
         awaken_protocol_managed::get_session_execution_evidence,
     )
+    .merge(awaken_extensions::session_diagnostics_router(
+        awaken_protocol_managed::session_timeline,
+        awaken_protocol_managed::run_evidence_at,
+    ))
     .merge(awaken_extensions::session_content_capture_router(
         awaken_protocol_managed::get_session_content_capture,
     ))

@@ -88,8 +88,33 @@ impl ClaimedRunCommit<RunError> for PostgresClaimedRunCommit {
                 )
             })?;
         awaken_dispatch_erasure::validate_claimed_operation(&dispatch, &command)?;
+        let mut archive = None;
+        if command.operation.operation_id.ordinal == 0
+            && let Some(scope) = dispatch.execution_scope.as_ref()
+        {
+            let session = &dispatch.session_thread_id().0;
+            if awaken_session_store::lock_session_for_run_archive(
+                &mut tx,
+                scope.0.as_str(),
+                session,
+            )
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?
+            {
+                archive = Some(awaken_store_postgres::RunArchive {
+                    scope_id: scope.0.as_str().to_owned(),
+                    session_id: session.clone(),
+                    data: serde_json::to_value(
+                        awaken_dispatch_contract::run_dispatch::ArchivedRunActivation::from(
+                            &dispatch,
+                        ),
+                    )
+                    .map_err(|error| RunError::internal(error.to_string()))?,
+                });
+            }
+        }
         self.commit
-            .commit_operation_in_transaction(tx, command.operation)
+            .commit_operation_in_transaction(tx, command.operation, archive)
             .await
             .map_err(|error| {
                 use awaken_dispatch_contract::{
@@ -509,6 +534,35 @@ async fn open_nats_dispatch(
 
 #[async_trait::async_trait]
 impl RuntimeAuthority for DurableRuntimeAuthority {
+    async fn transcript_seek_page(
+        &self,
+        _session: &str,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, RunError> {
+        let store = self.postgres_commit.as_ref().ok_or_else(|| {
+            RunError::unavailable("Thread history range reads require PostgreSQL")
+        })?;
+        store
+            .transcript_seek_page(request)
+            .await
+            .map_err(postgres_transcript_read_error)
+    }
+
+    async fn archived_run_activation(
+        &self,
+        session: &str,
+        thread: &ThreadId,
+        run: &RunId,
+    ) -> Result<Option<awaken_dispatch_contract::run_dispatch::ArchivedRunActivation>, RunError>
+    {
+        let Some(writer) = &self.postgres_run_commits else {
+            return Ok(None);
+        };
+        crate::session_replay::archived_admission(&writer.pool, session, thread, run)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))
+    }
+
     async fn open_commit(
         &self,
         thread: &str,
@@ -814,7 +868,7 @@ impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
 }
 
 #[cfg(test)]
-#[path = "runtime_authority_claimed_commit_tests.rs"]
+#[path = "runtime_authority/tests/claimed_commit.rs"]
 mod claimed_commit_tests;
 
 #[cfg(test)]

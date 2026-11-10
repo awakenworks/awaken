@@ -62,13 +62,15 @@ pub(super) async fn assemble(
             "remote-only execution cannot host local delegate targets",
         ));
     }
+    let mut coordination_tools = Vec::new();
     if managed_coordination {
         let coordinator = coordination_endpoint
             .clone()
             .map(|endpoint| Arc::new(crate::coordination::HostAgentCoordinator::new(endpoint)));
         if let Some(coordinator) = coordinator {
-            for tool in awaken_ext_builtin_tools::coordination_tools(coordinator) {
-                runtime = runtime.with_tool(tool);
+            coordination_tools = awaken_ext_builtin_tools::coordination_tools(coordinator);
+            for tool in &coordination_tools {
+                runtime = runtime.with_tool(tool.clone());
             }
         }
     }
@@ -237,6 +239,7 @@ pub(super) async fn assemble(
         &config,
         runtime,
         execution::AcpTools {
+            coordination: &coordination_tools,
             skills: semantic_skill_tools.as_ref(),
             memory: semantic_memory_tools.as_ref(),
             search: web_search,

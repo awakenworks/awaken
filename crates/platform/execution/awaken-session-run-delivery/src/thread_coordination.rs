@@ -1334,6 +1334,36 @@ impl awaken_session_execution_contract::SessionCoordinationReads for Coordinated
             .observe_session_run_admission(&run)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
+        if let SessionRunAdmissionObservation::Completed { completion, .. } = &observed {
+            let session = command.session_id();
+            let thread = command.thread_id();
+            if completion.run_id == run
+                && completion.thread_id.as_ref() == Some(&thread)
+                && completion
+                    .session_thread_id
+                    .as_ref()
+                    .is_some_and(|id| id.0 == session.as_str())
+                && let Some(archive) = self
+                    .reads
+                    .archived_run_activation(session.as_str(), &thread, &run)
+                    .await?
+                && archive.full_dispatch
+                && command.activity_epoch().is_some()
+                && archive.activity_epoch == command.activity_epoch()
+                && completion.request_fingerprint.as_deref()
+                    == Some(archive.admission_fingerprint.as_str())
+                && awaken_dispatch_execution::coordinated_activation_matches(
+                    &command,
+                    &archive.activation,
+                )
+            {
+                return Ok(Some(
+                    awaken_session_execution_contract::SessionAgentMessageReceipt {
+                        thread_id: thread,
+                    },
+                ));
+            }
+        }
         match observed {
             SessionRunAdmissionObservation::Missing => Ok(None),
             SessionRunAdmissionObservation::Live(request)

@@ -71,6 +71,8 @@ pub struct RecoveryRequest {
     #[serde(default)]
     pub session_work_authority:
         Option<awaken_session_application_contract::SessionWorkAuthorityReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_prefix: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

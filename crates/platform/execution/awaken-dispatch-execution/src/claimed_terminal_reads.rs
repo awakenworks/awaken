@@ -137,7 +137,9 @@ impl ClaimedTerminalReads {
 mod tests {
     use super::*;
     use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
-    use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
+    use awaken_agent_contract::thread::read::recovery::{
+        LoadedRunRecovery, RunRecoverySnapshot, ThreadPrefixRef,
+    };
     use awaken_dispatch::MemoryDispatchStore;
     use awaken_dispatch_contract::{DispatchClaims, DispatchEnqueue, DispatchError, SettleOutcome};
     use awaken_runtime_contract::ExecutableAgentSnapshot;
@@ -174,15 +176,19 @@ mod tests {
             unreachable!("committed reads never write")
         }
 
-        async fn load_recovery_snapshot(
+        async fn load_recovery(
             &self,
             claim: &RunClaim,
             _session_work_authority: Option<
                 &awaken_session_application_contract::SessionWorkAuthorityReceipt,
             >,
-        ) -> Result<RunRecoverySnapshot, DispatchError> {
+            _cached: Option<ThreadPrefixRef>,
+        ) -> Result<LoadedRunRecovery, DispatchError> {
             self.claims.lock().unwrap().push(claim.clone());
-            self.answer.clone().map_err(DispatchError::Rejected)
+            self.answer
+                .clone()
+                .map(LoadedRunRecovery::full)
+                .map_err(DispatchError::Rejected)
         }
     }
 

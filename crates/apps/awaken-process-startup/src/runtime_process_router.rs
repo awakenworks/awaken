@@ -766,6 +766,9 @@ fn assemble_session_plane(
     if let Some(provider) = base.process.managed_services.list_price_provider.clone() {
         builder = builder.managed_prices(provider);
     }
+    if let Some(diagnostics) = base.process.session_diagnostics.clone() {
+        builder = builder.diagnostics(diagnostics);
+    }
     let session_application = builder.build().map_err(|error| error.to_string())?;
     let session_application = Arc::new(session_application);
     let coordinator_execution = match selected {

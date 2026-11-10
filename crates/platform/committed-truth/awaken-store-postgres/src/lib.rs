@@ -71,6 +71,11 @@ use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 use sqlx::{Postgres, Transaction};
 
+mod replay;
+pub use replay::{
+    RunArchive, read_run_archives, replay_head, replay_run_prefix, replay_thread_prefix,
+};
+
 pub use awaken_store_schema::{COMMIT_BUNDLE_ID as BUNDLE_ID, commit_bundle};
 
 fn encode_authority(value: u64) -> Result<i64, Error> {
@@ -132,6 +137,14 @@ const COMMIT_PG_FILES: &[(&str, &str)] = &[
     (
         "V0002__transactional_dense_commit_order.sql",
         include_str!("migrations/V0002__transactional_dense_commit_order.sql"),
+    ),
+    (
+        "V0003__run_activation_archive.sql",
+        include_str!("migrations/V0003__run_activation_archive.sql"),
+    ),
+    (
+        "V0004__history_query_ranges.sql",
+        include_str!("migrations/V0004__history_query_ranges.sql"),
     ),
 ];
 
@@ -569,6 +582,15 @@ impl PostgresCommitCoordinator {
         })
     }
 
+    /// Read visible messages backwards within one committed Thread prefix.
+    pub async fn transcript_seek_page(
+        &self,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, StoreError>
+    {
+        replay::transcript_seek_page(&self.pool, request).await
+    }
+
     /// Read a thread's complete state-command log from committed PostgreSQL
     /// truth. Active-active peers use this for usage and state-derived policy;
     /// their process-local projections advance only for commits they applied.
@@ -641,13 +663,12 @@ impl OperationCoordinator for PostgresCommitCoordinator {
     async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
         self.require_projection_thread(&operation.commit.thread_id)?;
         let tx = self.pool.begin().await.map_err(reject)?;
-        let (receipt, events) =
-            persist_commit_operation(tx, &operation)
-                .await
-                .map_err(|error| match error {
-                    PostgresCommitFailure::Rejected(error) => error,
-                    other => Error::Rejected(other.to_string()),
-                })?;
+        let (receipt, events) = persist_commit_operation(tx, &operation, None)
+            .await
+            .map_err(|error| match error {
+                PostgresCommitFailure::Rejected(error) => error,
+                other => Error::Rejected(other.to_string()),
+            })?;
         if let Some(events) = events {
             let mut projection = lock(&self.projection)?;
             advance_projection(
@@ -681,9 +702,10 @@ impl PostgresCommitCoordinator {
         &self,
         tx: Transaction<'_, Postgres>,
         operation: CommitOperation,
+        archive: Option<RunArchive>,
     ) -> Result<CommitReceipt, PostgresCommitFailure> {
         self.require_projection_thread(&operation.commit.thread_id)?;
-        persist_commit_operation(tx, &operation)
+        persist_commit_operation(tx, &operation, archive)
             .await
             .map(|(receipt, _)| receipt)
     }
@@ -692,6 +714,7 @@ impl PostgresCommitCoordinator {
 async fn persist_commit_operation(
     mut tx: Transaction<'_, Postgres>,
     operation: &CommitOperation,
+    archive: Option<RunArchive>,
 ) -> Result<(CommitReceipt, Option<Vec<EventRecord>>), PostgresCommitFailure> {
     operation
         .commit
@@ -725,6 +748,9 @@ async fn persist_commit_operation(
     let thread_version =
         admit_commit_operation_append(operation, current_version, current_ordinal)?;
     let (next, committed_events) = append_commit(&mut tx, &operation.commit).await?;
+    if let Some(archive) = archive.filter(|_| current_ordinal == 0) {
+        replay::insert_archive(&mut tx, &operation.commit, next, archive).await?;
+    }
     set_thread_version(&mut tx, &operation.commit.thread_id, thread_version).await?;
     sqlx::query(&format!(
         "INSERT INTO {NS}_commit_receipt \
@@ -1173,11 +1199,82 @@ impl CheckpointReader for PostgresCommitCoordinator {
 
 #[async_trait]
 impl RunRecoverySource for PostgresCommitCoordinator {
+    async fn load_recovery(
+        &self,
+        _session: &ThreadId,
+        thread: &ThreadId,
+        run: &RunId,
+        cached: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, RecoveryError>
+    {
+        self.load_postgres_recovery(thread, run, cached).await
+    }
+
     async fn recovery_snapshot(
         &self,
         thread_id: &ThreadId,
         claimed_run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        use awaken_agent_contract::thread::read::recovery::LoadedRunRecovery;
+        match self
+            .load_postgres_recovery(thread_id, claimed_run_id, None)
+            .await?
+        {
+            LoadedRunRecovery::Full { snapshot, .. } => Ok(*snapshot),
+            LoadedRunRecovery::Reuse { .. } => Err(RecoveryError::Rejected(
+                "missing requested full snapshot".into(),
+            )),
+        }
+    }
+}
+
+async fn recovery_tickets(
+    tx: &mut Transaction<'_, Postgres>,
+    thread_id: &ThreadId,
+) -> Result<Vec<RunResumeTicket>, RecoveryError> {
+    let rows = sqlx::query(
+        "SELECT w.run_id, w.ticket, head.phase FROM runtime_waiting w
+         JOIN LATERAL (
+             SELECT thread_id, phase FROM runtime_commit c WHERE c.run_id = w.run_id
+             ORDER BY sequence DESC LIMIT 1
+         ) head ON head.thread_id = $1
+         ORDER BY w.run_id",
+    )
+    .bind(&thread_id.0)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(recovery_reject)?;
+    let mut tickets = Vec::with_capacity(rows.len());
+    for row in rows {
+        let run_id = RunId(
+            row.try_get::<String, _>("run_id")
+                .map_err(recovery_reject)?,
+        );
+        let Json(phase): Json<RunState> = row.try_get("phase").map_err(recovery_reject)?;
+        if phase != RunState::Awaiting {
+            tracing::error!(awaken.run.id = %run_id.0, "quarantining a stale waiting row whose Run is not Awaiting");
+            continue;
+        }
+        let Json(ticket): Json<serde_json::Value> =
+            row.try_get("ticket").map_err(recovery_reject)?;
+        if let Some(ticket) = decode_resume_ticket(&run_id, thread_id, ticket) {
+            tickets.push(RunResumeTicket { run_id, ticket });
+        }
+    }
+    Ok(tickets)
+}
+
+impl PostgresCommitCoordinator {
+    async fn load_postgres_recovery(
+        &self,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+        cached: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, RecoveryError>
+    {
+        use awaken_agent_contract::thread::read::recovery::{
+            LoadedRunRecovery, ReusedRunRecovery, ThreadPrefixRef,
+        };
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(recovery_reject)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -1191,13 +1288,17 @@ impl RunRecoverySource for PostgresCommitCoordinator {
         .fetch_one(&mut *tx)
         .await
         .map_err(recovery_reject)?;
-        let thread_version: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {p}_commit WHERE thread_id = $1"
+        let last_commit: i64 = sqlx::query_scalar(&format!(
+            "SELECT COALESCE(MAX(sequence), 0) FROM {p}_commit WHERE thread_id = $1"
         ))
         .bind(&thread_id.0)
         .fetch_one(&mut *tx)
         .await
         .map_err(recovery_reject)?;
+        let last_commit = decode_authority(last_commit)
+            .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
+        let store_cursor = decode_authority(store_cursor)
+            .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
         let next_commit_ordinal: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM {p}_commit WHERE run_id = $1"
         ))
@@ -1205,6 +1306,44 @@ impl RunRecoverySource for PostgresCommitCoordinator {
         .fetch_one(&mut *tx)
         .await
         .map_err(recovery_reject)?;
+
+        let next_commit_ordinal = decode_authority(next_commit_ordinal)
+            .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
+        if let Some(prefix) = cached.filter(|prefix| prefix.last_commit == last_commit) {
+            let version: Option<i64> = sqlx::query_scalar(&format!(
+                "SELECT version FROM {p}_thread_version WHERE thread_id = $1"
+            ))
+            .bind(&thread_id.0)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(recovery_reject)?;
+            let version = version
+                .or_else(|| (last_commit == 0).then_some(0))
+                .and_then(|value| u64::try_from(value).ok());
+            if version == Some(prefix.thread_version) {
+                let resume_tickets = recovery_tickets(&mut tx, thread_id).await?;
+                tx.commit().await.map_err(recovery_reject)?;
+                return Ok(LoadedRunRecovery::Reuse {
+                    reused: ReusedRunRecovery {
+                        prefix,
+                        thread_id: thread_id.clone(),
+                        run_id: claimed_run_id.clone(),
+                        store_cursor,
+                        next_commit_ordinal,
+                        resume_tickets,
+                    },
+                });
+            }
+        }
+        let thread_version: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {p}_commit WHERE thread_id = $1"
+        ))
+        .bind(&thread_id.0)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(recovery_reject)?;
+        let thread_version = decode_authority(thread_version)
+            .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
 
         let commit_rows = sqlx::query(&format!(
             "SELECT run_id, phase FROM {p}_commit WHERE thread_id = $1 ORDER BY sequence"
@@ -1301,37 +1440,7 @@ impl RunRecoverySource for PostgresCommitCoordinator {
             });
         }
 
-        let ticket_rows = sqlx::query(&format!(
-            "SELECT run_id, ticket FROM {p}_waiting \
-             WHERE run_id = ANY($1) ORDER BY run_id"
-        ))
-        .bind(&committed_run_ids)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(recovery_reject)?;
-        let mut resume_tickets = Vec::with_capacity(ticket_rows.len());
-        for row in ticket_rows {
-            let run_id = RunId(
-                row.try_get::<String, _>("run_id")
-                    .map_err(recovery_reject)?,
-            );
-            let is_awaiting = runs
-                .iter()
-                .any(|run| run.id == run_id && matches!(&run.state, RunState::Awaiting));
-            if !is_awaiting {
-                tracing::error!(
-                    awaken.run.id = %run_id.0,
-                    awaken.thread.id = %thread_id.0,
-                    "quarantining a stale waiting row whose Run is not Awaiting"
-                );
-                continue;
-            }
-            let Json(ticket): Json<serde_json::Value> =
-                row.try_get("ticket").map_err(recovery_reject)?;
-            if let Some(ticket) = decode_resume_ticket(&run_id, thread_id, ticket) {
-                resume_tickets.push(RunResumeTicket { run_id, ticket });
-            }
-        }
+        let resume_tickets = recovery_tickets(&mut tx, thread_id).await?;
 
         let timestamp_rows = sqlx::query(&format!(
             "SELECT sequence, FLOOR(EXTRACT(EPOCH FROM committed_at) * 1000)::BIGINT AS millis FROM {p}_commit WHERE thread_id = $1 ORDER BY sequence"
@@ -1348,24 +1457,27 @@ impl RunRecoverySource for PostgresCommitCoordinator {
             );
         }
         tx.commit().await.map_err(recovery_reject)?;
-        Ok(RunRecoverySnapshot {
-            commit_timestamps,
-            thread_id: thread_id.clone(),
-            claimed_run_id: claimed_run_id.clone(),
-            runs,
-            latest_run_id,
-            messages,
-            message_commit_cursors,
-            state: committed_state,
-            state_commit_cursors,
-            events,
-            resume_tickets,
-            thread_version: decode_authority(thread_version)
-                .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
-            store_cursor: decode_authority(store_cursor)
-                .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
-            next_commit_ordinal: decode_authority(next_commit_ordinal)
-                .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+        Ok(LoadedRunRecovery::Full {
+            prefix: Some(ThreadPrefixRef {
+                last_commit,
+                thread_version,
+            }),
+            snapshot: Box::new(RunRecoverySnapshot {
+                commit_timestamps,
+                thread_id: thread_id.clone(),
+                claimed_run_id: claimed_run_id.clone(),
+                runs,
+                latest_run_id,
+                messages,
+                message_commit_cursors,
+                state: committed_state,
+                state_commit_cursors,
+                events,
+                resume_tickets,
+                thread_version,
+                store_cursor,
+                next_commit_ordinal,
+            }),
         })
     }
 }
@@ -1529,9 +1641,12 @@ mod migration_tests {
         // fail closed. The published constructor remains the only compatibility
         // owner, so adapters never rewrite the migration ledger.
         let bundle = commit_pg_bundle().expect("deterministic Postgres bundle");
-        assert_eq!(bundle.migrations().len(), 2);
-        assert_eq!(bundle.migrations()[0].version(), 1);
-        assert_eq!(bundle.migrations()[1].version(), 2);
+        let versions: Vec<_> = bundle
+            .migrations()
+            .iter()
+            .map(|migration| migration.version())
+            .collect();
+        assert_eq!(versions, [1, 2, 3, 4]);
         assert!(COMMIT_PG_FILES[1].1.contains("ROW_NUMBER()"));
         assert!(COMMIT_PG_FILES[1].1.contains("DROP SEQUENCE"));
     }

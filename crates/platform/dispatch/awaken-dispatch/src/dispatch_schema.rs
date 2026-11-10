@@ -405,6 +405,12 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 "V0010__dispatch_completion_task_source.sql",
                 include_str!("migrations/V0010__dispatch_completion_task_source.sql"),
             )?,
+            Migration::per_dialect(
+                11,
+                "retain admitted Session Run membership for diagnostic reads",
+                include_str!("migrations/V0011__dispatch_session_membership.postgres.sql").trim(),
+                include_str!("migrations/V0011__dispatch_session_membership.sqlite.sql").trim(),
+            )?,
         ],
     )
 }

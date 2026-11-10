@@ -620,12 +620,76 @@ async fn session_update_history_survives_postgres_pool_reconnect() {
         .await
         .unwrap();
     let expected = retained_cold_fixtures(&repo, "pg-cold-history").await;
+    let initial = create_fixture(&repo, "ws_a", fresh("pg-replay-versions"), Vec::new()).await;
+    let mut candidate = authoring_candidate(&initial, "title");
+    candidate.updated_at_unix_ms = Some(101);
+    let update = mutation(
+        record_update(&initial, candidate, 101).into_snapshot(),
+        "replay-title",
+    );
+    let latest_revision = SessionRevision(initial.revision.0 + 1);
+    assert_eq!(
+        repo.commit("ws_a", update.clone()).await.unwrap(),
+        SessionMutationResult::Applied {
+            new_revision: latest_revision
+        }
+    );
+    repo.commit("ws_a", update).await.unwrap();
     repo.pool.close().await;
     let pool = sqlx::postgres::PgPool::connect(&scoped_url).await.unwrap();
     let reopened = PostgresManagedSessionRepository::with_pool(pool)
         .await
         .unwrap();
     assert_retained_cold_fixtures(&reopened, expected).await;
+    let mut connection =
+        tokio::time::timeout(std::time::Duration::from_secs(10), reopened.pool.acquire())
+            .await
+            .expect("reopened Session history connection did not become available")
+            .unwrap();
+    let history = crate::session_revision_at(
+        &mut connection,
+        "ws_a",
+        initial.session_id.as_str(),
+        db_revision(initial.revision).unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(history, initial);
+    let latest = crate::session_revision_at(
+        &mut connection,
+        "ws_a",
+        initial.session_id.as_str(),
+        db_revision(latest_revision).unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(latest.title, None);
+    let (recorded_at, sqlx::types::Json(changes)): (i64, sqlx::types::Json<serde_json::Value>) =
+        sqlx::query_as(
+            "SELECT recorded_at_ms, configuration_changes FROM managed_session_revision
+             WHERE scope_id = $1 AND session_id = $2 AND revision = $3",
+        )
+        .bind("ws_a")
+        .bind(initial.session_id.as_str())
+        .bind(db_revision(latest_revision).unwrap())
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
+    assert_eq!(recorded_at, 101);
+    let update = SessionUpdateHistory::for_session(&latest)
+        .and_then(|history| history.facts().last())
+        .unwrap();
+    assert_eq!(changes, serde_json::to_value(update.changes()).unwrap());
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM managed_session_revision WHERE session_id = 'pg-replay-versions'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(count, 2);
+    drop(connection);
     reopened.pool.close().await;
     admin
         .execute("DROP SCHEMA t_session_update_history CASCADE")

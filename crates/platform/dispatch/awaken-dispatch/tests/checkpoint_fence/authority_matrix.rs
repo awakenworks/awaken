@@ -78,11 +78,12 @@ impl ClaimedCheckpointTransport for Authority {
     ) -> Result<SettleOutcome, DispatchError> {
         self.remote_answer(claim)
     }
-    async fn load_recovery_snapshot(
+    async fn load_recovery(
         &self,
         _: &RunClaim,
         _: Option<&awaken_session_application_contract::SessionWorkAuthorityReceipt>,
-    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
+        _: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, DispatchError>
     {
         panic!("checkpoint operations cannot select committed recovery")
     }

@@ -228,7 +228,14 @@ fn is_bounded_session_authority_read(request: &Request) -> bool {
         _ => return false,
     };
     matches!(tail, ["sessions", session] if !session.is_empty())
-        || matches!(tail, ["awaken", "sessions", session, "execution-evidence"] if !session.is_empty())
+        || matches!(tail,
+            ["awaken", "sessions", session, "execution-evidence"]
+            | ["awaken", "sessions", session, "execution-evidence", "timeline"]
+            if !session.is_empty()
+        )
+        || matches!(tail, ["awaken", "sessions", session, "execution-evidence", "runs", run]
+            if !session.is_empty() && !run.is_empty()
+        )
 }
 
 /// Count every request while it is in flight. A normal request increments then
@@ -491,6 +498,14 @@ mod tests {
                 "/v1/awaken/sessions/{id}/execution-evidence",
                 axum::routing::get(authority),
             )
+            .route(
+                "/v1/awaken/sessions/{id}/execution-evidence/timeline",
+                axum::routing::get(authority),
+            )
+            .route(
+                "/v1/awaken/sessions/{id}/execution-evidence/runs/{run_id}",
+                axum::routing::get(authority),
+            )
             .fallback(|| async { StatusCode::OK });
         let app = with_connection_metric(
             awaken_coordinator::workspace_path::with_workspace_path_addressing(flat),
@@ -501,6 +516,8 @@ mod tests {
             for suffix in [
                 "/sessions/session",
                 "/awaken/sessions/session/execution-evidence",
+                "/awaken/sessions/session/execution-evidence/timeline?limit=1",
+                "/awaken/sessions/session/execution-evidence/runs/run?snapshot=frozen",
             ] {
                 for method in [axum::http::Method::GET, axum::http::Method::HEAD] {
                     for authorized in [false, true] {

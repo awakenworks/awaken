@@ -42,6 +42,7 @@ use crate::types::{Event, StreamFrame};
 use awaken_runtime_contract::runs::{RunError, RunErrorKind};
 
 mod content_capture;
+mod diagnostics;
 mod event_admission;
 mod execution_evidence;
 pub(crate) mod pagination;
@@ -54,6 +55,7 @@ use stream::replay_is_terminal_after;
 use stream::{LiveSseSource, SseTerminalScope, live_sse_stream, private_stream_deadline};
 
 pub use content_capture::get_session_content_capture;
+pub use diagnostics::{run_evidence_at, session_timeline};
 pub use event_admission::close_event_admission;
 pub use execution_evidence::get_session_execution_evidence;
 use pagination::{parse_session_list, session_list_page};
