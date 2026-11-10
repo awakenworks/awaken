@@ -51,15 +51,35 @@ protocol fixture. Real-provider success does not turn those fixture results
 into provider execution evidence. Product recordings have not been rerun for
 this change.
 
-Separately owned reference applications were checked from committed source
-snapshots; existing work in their original checkouts was preserved:
+The separately owned applications were repaired and checked against Native
+`a95f392e0243899fab673defb38c5366dadd0bc0` on Linux, using real DeepSeek
+`deepseek-flash` for the provider journeys below. Each repair stays in its own
+`fix/current-native-examples-20261110` branch. Original checkout work was preserved;
+these branches and public case/source archives have not been published.
 
-| Application | Source revision | Checks run | Remaining Native integration check |
+| Application | Repair revision | Source and controlled checks | Real-provider check |
 |---|---|---|---|
-| Cowork | `396f8051112f` | 214 unit tests, build, 52 oracle tests; 9 service journeys against this Native with a deterministic model | Real-provider application journey; a cancelled cleanup case intentionally retained fenced evidence |
-| Pilot | `973dc96aa204` | Typecheck, 126 unit tests, build | Full live runner needs IAM and provider setup; its pinned model needs reconciliation with current discovery |
-| DeepSeek Harness | `3faa59acc126` | Typecheck, 42 unit tests, build, 10 fixture browser journeys | Real-provider journey against this Native |
-| Design | `42b47097162a` | Typecheck, 464 unit tests, build; 40 PostgreSQL/MinIO/browser integration tests | Optional Native publication gate was skipped (1 test) |
+| Cowork | `b378ede` | 214 unit, 54 oracle/helper tests, 62 browser journeys and build | Short and explicit headcount input both deliver verified Files on Namespace; independent arithmetic/status and approval limits retained |
+| Pilot | `14d831e` | 137 unit/runner tests, typecheck and build | Complete schedule/resources, desktop/mobile browser, both research children, Plan, satisfied Outcome, artifact and real IAM share/revoke journey on Namespace |
+| DeepSeek Harness | `c670e1f` | 46 unit tests, typecheck/build and 12 browser/video journeys | Complete preset/Skill/reconnect/plan/question/creator journey; approved child Bash, cross-Thread reply and later parent report on Namespace |
+| Design | `665e410` | 465 source tests and build; 43 PostgreSQL/MinIO/controlled-browser tests (live case explicitly skipped in that lane) | Separate real Docker initial/child generation, verified Preview, acceptance and ZIP export; missing-browser negative fails promptly |
 
-These checks establish the stated layers only. Follow each application's own
-setup and acceptance instructions before treating it as a deployment template.
+The application READMEs own preparation, the first useful result and verification
+commands; detailed records retain exact runtime and failure boundaries. Repair
+coverage includes refused child confirmation/retry, wrong output keys before
+publication, Native initialization refusal, missing model selection, invalid
+Project event order, SDK capability-header conflicts and unsuccessful Web tools.
+Tests keep their cause/effect design beside the assertions.
+
+When changing a Managed contract, Skill, model selection or Sandbox toolchain,
+rerun the affected application's source checks and its real boundary journey;
+record its application/runtime revisions and environment before updating this
+table. A fixture pass or historical public archive cannot substitute for that
+journey. Native's existing documentation gate checks the local links and generated
+example documentation.
+
+These are bounded local checks. The full office matrix, all deployment platforms,
+Design's 100-case semantic quality and customer acceptance remain separate scopes.
+The Native cancellation negative retains its existing fenced evidence; it is not
+claimed as confirmed physical cleanup. Follow each application's own setup and
+acceptance guide before treating it as a deployment template.
