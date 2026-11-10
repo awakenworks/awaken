@@ -22,9 +22,9 @@ use awaken_session_contract::{
 use awaken_session_execution_contract::RealizationRuntime;
 use awaken_session_execution_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
-    FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
-    SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-    SessionRealizationDriveError,
+    FailSessionRealization, RenewSessionRealization, SessionContinuationReceipt,
+    SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
+    SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationEffectFailure,
 };
 
 use super::SessionMutationError;
@@ -37,7 +37,9 @@ mod publication;
 
 use publication::{draining_generations, publication_action, publication_generations};
 
-use authority::{exact_generation_key, generation_set_authorizes, verify_lease};
+use authority::exact_generation_key;
+pub(crate) use authority::verify_lease;
+use awaken_session_execution_contract::realization_generation_set_authorizes as generation_set_authorizes;
 use control::RefreshedSessionRealizationControl;
 pub(crate) use local_lock::LocalRealizationLocks;
 
@@ -168,6 +170,18 @@ struct LocalProjectionSynchronizer<'a> {
 impl awaken_session_execution_contract::SessionProjectionSynchronizer
     for LocalProjectionSynchronizer<'_>
 {
+    async fn execute_environment_continuation(
+        &self,
+        _: &awaken_session_execution_contract::SessionRealizationPermit,
+        _: &awaken_session_execution_contract::FrozenSessionProjection,
+        _: &SessionRealizationLease,
+        _: awaken_session_contract::SessionEnvironmentInstruction,
+    ) -> Result<SessionContinuationReceipt, SessionRealizationEffectFailure> {
+        // Co-located continuation uses SessionContinuations, which brackets
+        // these effects with its aggregate mutation. Never run them twice.
+        Err(RunError::bad_request("co-located continuation requires SessionContinuations").into())
+    }
+
     fn observe_realization_request(
         &self,
     ) -> Result<
@@ -222,7 +236,7 @@ impl awaken_session_execution_contract::SessionProjectionSynchronizer
 /// realization contract's; this component orders reads, decisions and commits.
 pub struct SessionRealizations {
     mutations: Arc<crate::SessionMutations>,
-    clock: Arc<dyn awaken_time::WallClock>,
+    pub(super) clock: Arc<dyn awaken_time::WallClock>,
     queries: Arc<crate::SessionQueries>,
     credentials: Arc<crate::SessionCredentials>,
     lifecycle: Arc<crate::SessionLifecycle>,
@@ -657,7 +671,7 @@ impl SessionRealizations {
             .collect()
     }
 
-    async fn realization_directive(
+    pub(crate) async fn realization_directive(
         &self,
         owner_scope: String,
         session: &PersistedSession,
@@ -693,6 +707,12 @@ impl SessionRealizations {
         prepare_projection: bool,
         activate_pending_resources: bool,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        if let Some(action) = crate::continuation::realization_action(session, self.clock.now_ms())?
+        {
+            return self
+                .realization_directive(owner_scope, session, action, false)
+                .await;
+        }
         let stages = Self::realization_stage_requests(&owner_scope, session)?;
         // A new runtime incarnation has no process-local baseline even when the
         // Session has zero Resources/MCP. Synchronize the complete frozen
@@ -748,6 +768,7 @@ impl SessionRealizations {
     fn session_for_realization<'a>(
         &'a self,
         session_id: &'a awaken_session_types::SessionId,
+        allow_continuation_begin: bool,
     ) -> futures_util::future::BoxFuture<
         'a,
         Result<(String, crate::SessionAggregate), SessionRealizationControlFailure>,
@@ -760,21 +781,55 @@ impl SessionRealizations {
             if session.is_terminal() {
                 return Err(SessionRealizationControlFailure::Terminal);
             }
-            if session.frozen_baseline().is_none()
-                || !session.environment.admits_realization_effects()
-            {
+            if session.frozen_baseline().is_none() {
                 return Err(SessionRealizationControlFailure::NotReady);
             }
 
-            let session = self
-                .credentials
-                .ensure_repository_credentials_pinned(&owner_scope, session)
-                .await
-                .map_err(unavailable)?;
+            let ordinary = session.environment.admits_realization_effects();
+            if !ordinary && !allow_continuation_begin {
+                return Err(SessionRealizationControlFailure::NotReady);
+            }
+            // Only Begin may read a continuation for the assignment law. It
+            // performs no Repo credential refresh while the Environment is
+            // closed; ordinary Stage/Publish callbacks retain their old gate.
+            let session = if ordinary {
+                self.credentials
+                    .ensure_repository_credentials_pinned(&owner_scope, session)
+                    .await
+                    .map_err(unavailable)?
+            } else {
+                session
+            };
             Ok((
                 owner_scope,
                 crate::mutation::aggregate_from_snapshot(session).map_err(repository_control)?,
             ))
         })
     }
+}
+
+#[cfg(test)]
+pub(crate) async fn drive_test_directive(
+    realizations: &SessionRealizations,
+    session_id: &awaken_session_types::SessionId,
+    projection: &dyn awaken_session_execution_contract::SessionProjectionSynchronizer,
+    directive: SessionRealizationDirective,
+    mcp: &dyn awaken_session_execution_contract::McpAttachmentRealizer,
+) -> Result<(), awaken_session_execution_contract::SessionRealizationDriveError> {
+    // Tests use the same retained co-located Session exclusion as this file's
+    // production entry; no throwaway registry or alternate permit is minted.
+    let permit = realizations
+        .local_realization_locks
+        .acquire(session_id.as_str())
+        .await;
+    crate::drive_session_realization(
+        &permit,
+        None,
+        realizations,
+        projection,
+        mcp,
+        directive,
+        projection.observe_realization_request()?,
+    )
+    .await
 }

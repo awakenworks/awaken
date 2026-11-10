@@ -8,7 +8,7 @@
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
-pub(super) fn verify_lease(
+pub(crate) fn verify_lease(
     session: &PersistedSession,
     asserted: &SessionRealizationLease,
     now_ms: u64,
@@ -25,24 +25,4 @@ pub(super) fn verify_lease(
 
 pub(super) fn exact_generation_key(generation: &McpGenerationRef) -> String {
     awaken_agent_contract::stable_fingerprint(generation)
-}
-
-pub(super) fn generation_set_authorizes(
-    current: &[McpGenerationRef],
-    asserted: &[McpGenerationRef],
-) -> bool {
-    // A bijection is required: two expiry variants of one generation cannot
-    // stand in for the receipt of another attachment.
-    let mut matched = BTreeSet::new();
-    current.len() == asserted.len()
-        && current.iter().all(|expected| {
-            asserted
-                .iter()
-                .position(|actual| {
-                    awaken_session_execution_contract::realization_generation_authorizes(
-                        expected, actual,
-                    )
-                })
-                .is_some_and(|index| matched.insert(index))
-        })
 }

@@ -519,8 +519,12 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
     // Session revoke/replacement/renewal/cancellation. Only unchanged/renewal
     // may return a receipt; every failed/cancelled attempt retains the exact
     // Restoring owner. TR5 absent/repeated deletion still crosses both current
-    // authorities. These are Host composition checks, not remote rollback.
+    // authorities. TR6 modern write-ahead marker + no pending target proves
+    // target absence: checkpoint deletion and both disposal replays perform
+    // zero provider I/O. Legacy unknown keeps TR1/TR2. This is not the archive
+    // no-Create witness and does not erase an older materialization origin.
     for change in [
+        "unadmitted",
         "unchanged",
         "worker-revoke",
         "worker-expire",
@@ -616,9 +620,23 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
 
         let managed = host.clone();
         install_test_session_application(&host);
-        let projection =
+        let mut projection =
             install_terminal_recovery_projection(&host, &managed, thread, lease.clone(), restoring)
                 .await;
+        if change == "unadmitted" {
+            let facts = serde_json::from_value::<
+                awaken_session_contract::SessionEnvironmentMaterialization,
+            >(serde_json::json!({"restore_admission_version": 1}))
+            .unwrap();
+            projection.environment_materialization = Some(Box::new(facts));
+            host.run_assembly
+                .installed_sessions
+                .realizations()
+                .modify_realization(thread, |r| {
+                    r.effects_mut().assignment.as_mut().unwrap().projection = projection.clone();
+                })
+                .unwrap();
+        }
 
         let preparation = managed
             .run_assembly
@@ -642,6 +660,25 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         ));
 
         let disposal_effect = terminal_disposal_effect(preparation, lease.clone(), &projection);
+        if change == "unadmitted" {
+            for _ in 0..2 {
+                managed
+                    .realization_executor
+                    .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
+                    .await
+                    .expect("TR6 exact absence replay");
+            }
+            assert!(
+                provider.restored_disposals.lock().unwrap().is_empty(),
+                "TR6 zero provider target I/O"
+            );
+            assert_eq!(
+                events.lock().unwrap().as_slice(),
+                &["delete-checkpoint"],
+                "TR6 only checkpoint bytes deleted"
+            );
+            continue;
+        }
         let expected_authorization = host
             .realization_executor
             .effects()

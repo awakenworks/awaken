@@ -153,11 +153,15 @@ impl SessionAssignmentOperations<'_> {
     /// | B4   | expected generation absent / not active       | activate pending Resources                 |
     /// | B5   | expected generation is the active one         | keep the active Resources                  |
     /// | B6   | assignment `StaleOwnership` / `LeaseIntegrity`| the same refusal                           |
-    /// | B7   | `Reuse` and no Requested MCP generation       | `Unchanged`                                |
+    /// | B7   | `Reuse` and no Requested/stale MCP claim       | `Unchanged`                                |
     /// | B8   | `Reuse` with Requested MCP generations        | claim them (realization law), same lease   |
     /// | B9   | `Assign { epoch }`                            | new lease; claim Requested, Realizing and Active (recovery law) |
     /// | B10  | B8/B9 with pending Resources selected (B4)    | start the pending Resource attempt         |
     /// | B11  | B9 while Preparing / Activating               | the claim counts an initial attempt        |
+    ///
+    /// A restore can already own its new lease before its bytes land. On
+    /// Resident, rebind an older MCP claim to that current grant even though
+    /// the Session lease itself is reused; unchanged claims are not restaged.
     ///
     /// Each claim's realization id and stage key derive only from the Session,
     /// the generation and the lease, so a retried attempt claims identically.
@@ -168,10 +172,29 @@ impl SessionAssignmentOperations<'_> {
     ) -> Result<SessionRealizationBegin, SessionRealizationBeginRejection> {
         let state = &self.aggregate.state;
         transition_environment(
-            SessionEnvironmentFacts::project(state, now_unix_ms, None),
+            SessionEnvironmentFacts::project_continuation(state, now_unix_ms),
             SessionEnvironmentEvent::BeginRealization,
         )
         .map_err(SessionRealizationBeginRejection::Environment)?;
+        if let super::super::SessionEnvironmentState::Suspending {
+            operation,
+            suspend_phase:
+                super::super::SuspendPhase::Quiescing | super::super::SuspendPhase::Uploading,
+            ..
+        } = &state.environment
+        {
+            let source_is_target = operation.realization().is_some_and(|source| {
+                source.owner == request.owner
+                    && source.runtime_incarnation == request.runtime_incarnation
+            });
+            if !source_is_target || request.reassign_existing_lease {
+                // Source capture cannot change incarnation/epoch. Refuse the
+                // target before a claim can fence and strand its predecessor.
+                return Err(SessionRealizationBeginRejection::Environment(
+                    SessionEnvironmentRejection::LeaseNotCurrent,
+                ));
+            }
+        }
         // Retained execution carries its original generation even when a
         // later replacement is pending. Choose under this same root CAS;
         // never stage a different generation and rely on Worker rejection.
@@ -197,7 +220,14 @@ impl SessionAssignmentOperations<'_> {
             }),
             current.is_some_and(|lease| lease.owner == request.owner),
             current.is_some_and(|lease| lease.runtime_incarnation == request.runtime_incarnation),
-            request.reassign_existing_lease,
+            request.reassign_existing_lease
+                || state
+                    .environment_materialization()
+                    .is_some_and(|facts| facts.target_not_admitted(&state.environment))
+                || matches!(
+                    state.environment,
+                    super::super::SessionEnvironmentState::Hibernated { .. }
+                ),
         );
         // One authenticated logical owner may immediately fence its prior
         // process incarnation after restart. A different owner can do so
@@ -225,16 +255,44 @@ impl SessionAssignmentOperations<'_> {
                 return Err(SessionRealizationBeginRejection::StaleOwnership);
             }
         };
+        if matches!(
+            state.environment,
+            super::super::SessionEnvironmentState::Suspending { .. }
+                | super::super::SessionEnvironmentState::Restoring { .. }
+                | super::super::SessionEnvironmentState::Hibernated { .. }
+        ) {
+            if assigned {
+                self.claim(lease, false)?;
+                return Ok(SessionRealizationBegin::Claimed {
+                    assigned: true,
+                    activate_pending_resources: false,
+                });
+            }
+            return Ok(SessionRealizationBegin::Unchanged {
+                activate_pending_resources: false,
+            });
+        }
         let to_claim = state
             .mcp
             .attachments
             .iter()
-            .filter(|attachment| match attachment.state {
-                McpAttachmentState::Requested => true,
-                McpAttachmentState::Realizing | McpAttachmentState::Active => assigned,
-                _ => false,
+            .filter_map(|attachment| {
+                let stale_claim = attachment.realization.as_ref().is_some_and(|claim| {
+                    claim.runtime_incarnation != lease.runtime_incarnation
+                        || claim.lease_epoch != lease.epoch
+                });
+                match attachment.state {
+                    McpAttachmentState::Requested => {
+                        Some((attachment.generation.clone(), assigned))
+                    }
+                    McpAttachmentState::Realizing | McpAttachmentState::Active
+                        if assigned || stale_claim =>
+                    {
+                        Some((attachment.generation.clone(), true))
+                    }
+                    _ => None,
+                }
             })
-            .map(|attachment| attachment.generation.clone())
             .collect::<Vec<_>>();
         if !assigned && to_claim.is_empty() {
             return Ok(SessionRealizationBegin::Unchanged {
@@ -253,7 +311,7 @@ impl SessionAssignmentOperations<'_> {
                 .start_attempt()
                 .map_err(SessionRealizationBeginRejection::Resources)?;
         }
-        for generation in to_claim {
+        for (generation, recovery) in to_claim {
             let claim = McpRealizationClaim {
                 realization_id: stable_fingerprint(&(
                     &session_id,
@@ -273,7 +331,7 @@ impl SessionAssignmentOperations<'_> {
                 ),
             };
             let mut mcp = self.aggregate.mcp();
-            if assigned {
+            if recovery {
                 mcp.claim_recovery(&generation, claim)
             } else {
                 mcp.claim_realization(&generation, claim)

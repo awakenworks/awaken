@@ -361,9 +361,19 @@ impl SessionRealizations {
         Box::pin(async move {
             validate_target(&command, self.clock.now_ms())?;
             for attempt in 0..ROOT_CAS_ATTEMPTS {
-                let (owner_scope, mut session) =
-                    self.session_for_realization(&command.session_id).await?;
+                let (owner_scope, mut session) = self
+                    .session_for_realization(&command.session_id, true)
+                    .await?;
                 let target = &command.target;
+                if !session.environment.admits_realization_effects() {
+                    crate::continuation::verify_registered_target(
+                        &self.execution_admission,
+                        target,
+                        &session,
+                        self.clock.now_ms(),
+                    )
+                    .await?;
+                }
                 let decision = session
                     .assignment()
                     .begin(
@@ -393,6 +403,15 @@ impl SessionRealizations {
                         activate_pending_resources,
                     } => (assigned, activate_pending_resources),
                 };
+                if matches!(
+                    session.environment,
+                    awaken_session_contract::SessionEnvironmentState::Restoring { .. }
+                ) {
+                    session
+                        .environment()
+                        .admit_restore_materialization(&owner_scope, self.clock.now_ms())
+                        .map_err(unavailable)?;
+                }
                 match self
                     .mutations
                     .commit_session_snapshot_with_outcome(
@@ -434,8 +453,9 @@ impl SessionRealizations {
         Result<SessionRealizationDirective, SessionRealizationControlFailure>,
     > {
         Box::pin(async move {
-            let (owner_scope, mut session) =
-                self.session_for_realization(&command.session_id).await?;
+            let (owner_scope, mut session) = self
+                .session_for_realization(&command.session_id, false)
+                .await?;
             verify_lease(&session, &command.lease, self.clock.now_ms())?;
             let mut expected = Self::realization_stage_requests(&owner_scope, &session)?;
             let receipt_generations = command
@@ -580,8 +600,25 @@ impl SessionRealizations {
         Result<SessionRealizationDirective, SessionRealizationControlFailure>,
     > {
         Box::pin(async move {
-            let (owner_scope, mut session) =
-                self.session_for_realization(&command.session_id).await?;
+            if let Some(receipt) = command.continuation.as_ref() {
+                let (owner, root) = crate::continuation::commit_worker_receipt(
+                    &self.mutations,
+                    &command,
+                    self.clock.as_ref(),
+                )
+                .await?;
+                if matches!(receipt, awaken_session_execution_contract::SessionContinuationReceipt::ExpiredCheckpointDeleted { .. }) {
+                    return self.realization_directive(owner, &root, SessionRealizationAction::Released, false).await;
+                }
+                let restored = matches!(
+                    receipt,
+                    awaken_session_execution_contract::SessionContinuationReceipt::Restored(_)
+                );
+                return self.next_action(owner, &root, restored, restored).await;
+            }
+            let (owner_scope, mut session) = self
+                .session_for_realization(&command.session_id, false)
+                .await?;
             verify_lease(&session, &command.lease, self.clock.now_ms())?;
             let expected_publish =
                 publication_generations(&session.session_id, &session.mcp.attachments)?;
@@ -725,8 +762,9 @@ impl SessionRealizations {
                 Ok(_) | Err(SessionRepositoryError::NotFound) => {}
                 Err(error) => return Err(repository_control(error)),
             }
-            let (owner_scope, mut session) =
-                self.session_for_realization(&command.session_id).await?;
+            let (owner_scope, mut session) = self
+                .session_for_realization(&command.session_id, false)
+                .await?;
             verify_lease(&session, &command.lease, self.clock.now_ms())?;
             if command
                 .prepared_resource_revision
@@ -850,20 +888,6 @@ impl SessionRealizations {
             }
             Ok(())
         })
-    }
-
-    /// Resolve the exact current registry incarnation that may participate in
-    /// an external cleanup claim. HTTP authentication is an adapter boundary;
-    /// the root-CAS owner repeats this read so direct callers and a stale
-    /// transport snapshot cannot mint a durable Session lease.
-    pub(crate) async fn worker_for_target(
-        &self,
-        target: &awaken_session_execution_contract::SessionRealizationTarget,
-    ) -> Result<Option<awaken_worker_contract::WorkerSnapshot>, SessionRealizationControlFailure>
-    {
-        let observations = &self.execution_admission.workers;
-        let workers = observations.list().await.map_err(unavailable)?;
-        target.worker_from_registry_observation(workers, self.clock.now_ms())
     }
 }
 
@@ -1009,7 +1033,11 @@ impl awaken_session_execution_contract::SessionPreparationControl for SessionRea
             .map_err(unavailable)?;
         admission
             .enter(|| async {
-                let Some(worker) = self.worker_for_target(&target).await? else {
+                let Some(worker) = self
+                    .execution_admission
+                    .worker_for_target(&target, self.clock.now_ms())
+                    .await?
+                else {
                     return Ok(None);
                 };
                 if worker.state != awaken_worker_contract::WorkerState::Ready {
@@ -1096,7 +1124,11 @@ impl awaken_session_execution_contract::SessionPreparationControl for SessionRea
                         .get(&session_id)
                         .await
                         .map_err(repository_control)?;
-                    let admitted = match self.worker_for_target(&target).await? {
+                    let admitted = match self
+                        .execution_admission
+                        .worker_for_target(&target, self.clock.now_ms())
+                        .await?
+                    {
                         Some(worker) => {
                             worker.state == awaken_worker_contract::WorkerState::Ready
                                 && current_root.revision == directive.projection.revision
@@ -1110,9 +1142,13 @@ impl awaken_session_execution_contract::SessionPreparationControl for SessionRea
                         None => false,
                     };
                     if !admitted {
-                        self.mutations
-                            .expire_exact_assignment(&session_id, &directive.authority.lease)
-                            .await?;
+                        if current_root.environment.admits_realization_effects() {
+                            self.mutations
+                                .expire_exact_assignment(&session_id, &directive.authority.lease)
+                                .await?;
+                        }
+                        // A continuation retains its source generation for retry;
+                        // withholding a directive is not physical closure.
                         return Ok(None);
                     }
                     return Ok(Some(

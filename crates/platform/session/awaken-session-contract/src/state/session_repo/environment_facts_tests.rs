@@ -306,10 +306,10 @@ fn placed(
 #[test]
 fn continuation_topology_follows_the_frozen_placement_and_retention() {
     // P1 Coordinator-local placement + checkpoint-and-release => supported;
-    // P2 external Worker + checkpoint-and-release => unsupported (no
-    // claim-fenced continuation transport); P3 external Worker + default
-    // retention => supported; P4 no frozen baseline => supported (the guard
-    // reads only a frozen topology).
+    // P2 registered cloud Worker + checkpoint-and-release => supported by
+    // claim-fenced continuation; P3 external Worker + default retention =>
+    // supported; P4 no frozen baseline => supported; P5 self-hosted Worker
+    // + checkpoint-and-release => refused (WorkQueue has no continuation claim).
     let local = placed(
         crate::state::SessionRuntimePlacement::Local,
         checkpoint_and_release(),
@@ -322,12 +322,18 @@ fn continuation_topology_follows_the_frozen_placement_and_retention() {
         crate::state::SessionRuntimePlacement::Worker,
         crate::state::SandboxIdleRetentionPolicy::default(),
     );
+    let mut self_hosted = external.clone();
+    let crate::state::SessionBaselineState::Frozen(baseline) = &mut self_hosted.baseline else {
+        unreachable!("fixture baseline is frozen")
+    };
+    baseline.environment.self_hosted = true;
     let preparing = mutation_tests::session("facts", SessionRevision(1));
     for (rule, session, expected) in [
         ("P1", &local, true),
-        ("P2", &external, false),
+        ("P2", &external, true),
         ("P3", &external_default, true),
         ("P4", &preparing, true),
+        ("P5", &self_hosted, false),
     ] {
         assert_eq!(
             facts(session, NOW, None).continuation_topology_supported,

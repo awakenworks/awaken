@@ -77,12 +77,25 @@ mod tests {
         // removed and recreated while it waits; C4 the first permit is dropped.
         // E1 C2 waits; E2 after C3+C4 it is admitted only against the *current*
         // allocation. Rules: R1=C1+C2=>E1; R2=C1+C2+C3+C4=>E2.
+        // R3 a borrowed held permit is valid only for its current allocation
+        // and Session. The synchronous check cannot reacquire its held lock;
+        // removed/recreated or wrong Session identities are refused.
         let installed_sessions = Arc::new(InstalledSessions::default());
         let held = installed_sessions
             .acquire_realization_with("session-a", |_| ())
             .await
             .expect("installed Sessions")
             .0;
+        assert!(
+            crate::host::borrowed_permit_is_current(&installed_sessions, "session-a", &held)
+                .unwrap(),
+            "R3 current held permit"
+        );
+        assert!(
+            !crate::host::borrowed_permit_is_current(&installed_sessions, "session-b", &held)
+                .unwrap(),
+            "R3 another Session"
+        );
         let waiting = installed_sessions.acquire_realization_with("session-a", |installed| {
             installed.realization.execution().phase.clone()
         });
@@ -91,12 +104,22 @@ mod tests {
         installed_sessions.remove("session-a");
         let recreated =
             installed_sessions.install_realization("session-a", |r| r.execution().phase.clone());
+        assert!(
+            !crate::host::borrowed_permit_is_current(&installed_sessions, "session-a", &held)
+                .unwrap(),
+            "R3 removed allocation cannot authorize replacement"
+        );
         drop(held);
-        let (_permit, admitted) = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+        let (permit, admitted) = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
             .await
             .expect("R2/E2 the waiter was never admitted")
             .expect("installed Sessions");
         assert!(Arc::ptr_eq(&admitted, &recreated), "R2/E2");
+        assert!(
+            crate::host::borrowed_permit_is_current(&installed_sessions, "session-a", &permit)
+                .unwrap(),
+            "R3 replacement permit"
+        );
     }
 
     #[tokio::test]

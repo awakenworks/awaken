@@ -120,12 +120,12 @@ fn t1_every_step_and_event_under_ready_facts() {
         (
             "begin",
             E::BeginRealization,
-            [Stay, Stay, CONT, CONT, CONT, CONT, CONT, CONT],
+            [Stay, Stay, Stay, Stay, Stay, Stay, CONT, Stay],
         ),
         (
             "renew",
             E::RenewRealization,
-            [Stay, Stay, CONT, CONT, CONT, CONT, CONT, CONT],
+            [Stay, Stay, Stay, Stay, Stay, Stay, CONT, Stay],
         ),
         (
             "admit create",
@@ -1303,6 +1303,49 @@ fn t13_rebuild_admission_reads_source_closure_and_access() {
                     transition_environment(ready(step), event),
                     "RB8 {step:?} {event:?}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn worker_continuation_assignment_retains_source_fence_and_idle_boundary() {
+    // C1 continuation phase; C2 Idle; C3 no open activities; C4 original
+    // source fence current. B1 Quiescing/Uploading need all C2/C3/C4;
+    // B2 later disposal/restore may acquire successor but still need C2/C3;
+    // B3 Hibernated never grants effects. Renew preserves exact generation;
+    // missing/stale fences cannot become source capture authority.
+    for step in [SQ, SU, SR, SD, H, RS] {
+        for idle in [false, true] {
+            for activities in [false, true] {
+                for lease in [
+                    RealizationLeaseStanding::Unfenced,
+                    RealizationLeaseStanding::Fenced,
+                    RealizationLeaseStanding::Stale,
+                ] {
+                    for (checkpoint_live, generation_live) in
+                        [(true, true), (true, false), (false, true), (false, false)]
+                    {
+                        let facts = SessionEnvironmentFacts {
+                            checkpoint_live,
+                            generation_live,
+                            execution_idle: idle,
+                            activities_open: activities,
+                            lease,
+                            ..ready(step)
+                        };
+                        let requires_original = matches!(step, SQ | SU);
+                        let allowed = (step != H || !(checkpoint_live && generation_live))
+                            && idle
+                            && !activities
+                            && (!requires_original || lease == RealizationLeaseStanding::Fenced);
+                        assert_eq!(
+                            transition_environment(facts, E::BeginRealization).is_ok(),
+                            allowed,
+                            "step={step:?} idle={idle} activities={activities} lease={lease:?}"
+                        );
+                    }
+                }
             }
         }
     }

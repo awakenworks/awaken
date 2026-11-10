@@ -14,7 +14,6 @@
 //! receipt algebra stay in `awaken-session-execution-contract`.
 
 use awaken_runtime_contract::runs::RunError;
-use awaken_session_configuration_contract::mcp::{McpGenerationRef, McpProjectionEffectKind};
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_execution_contract::McpAttachmentRealizer;
 use awaken_session_execution_contract::{
@@ -24,40 +23,6 @@ use awaken_session_execution_contract::{
     SessionRealizationPermit,
 };
 use awaken_session_types::SessionId;
-
-async fn publish_mcp_projection(
-    mcp: &dyn McpAttachmentRealizer,
-    generation: &McpGenerationRef,
-) -> Result<(), RunError> {
-    let receipt =
-        awaken_session_execution_contract::publish_mcp_generation_receipt(mcp, generation.clone())
-            .await?;
-    receipt
-        .verify(generation, McpProjectionEffectKind::Publish)
-        .map_err(|_| {
-            RunError::classified(
-                "mcp_receipt_mismatch",
-                "Runtime returned a receipt for another MCP publication",
-            )
-        })
-}
-
-async fn drain_mcp_projection(
-    mcp: &dyn McpAttachmentRealizer,
-    generation: &McpGenerationRef,
-) -> Result<(), RunError> {
-    let receipt =
-        awaken_session_execution_contract::drain_mcp_generation_receipt(mcp, generation.clone())
-            .await?;
-    receipt
-        .verify(generation, McpProjectionEffectKind::Drain)
-        .map_err(|_| {
-            RunError::classified(
-                "mcp_receipt_mismatch",
-                "Runtime returned a receipt for another MCP drain",
-            )
-        })
-}
 
 /// Close the one repeated effect-failure path. Control owns the durable failure
 /// transition; the synchronizer owns only invalidation of its disposable lease
@@ -108,6 +73,15 @@ pub async fn drive_session_realization(
     // beside it: a permit for another Session cannot drive this one.
     let session_id = permit.session_id();
     loop {
+        if matches!(directive.action, SessionRealizationAction::Released) {
+            // A released predecessor is only a disposable local cache fence.
+            // Do not reinstall it, re-adopt a source or call a provider.
+            synchronizer
+                .invalidate_session_realization_lease(session_id, &directive.authority.lease)
+                .await
+                .map_err(SessionRealizationDriveError::Effect)?;
+            return Ok(());
+        }
         let previous = directive.clone();
         let prepare_session = directive.action.prepares_session();
         match awaken_session_execution_contract::synchronize_or_supersede(
@@ -122,6 +96,11 @@ pub async fn drive_session_realization(
             Ok(false) => {}
             Ok(true) => return Ok(()),
             Err(error) => {
+                if matches!(directive.action, SessionRealizationAction::Continue { .. }) {
+                    // Projection failure grants no physical closure of the
+                    // original source. Reload root truth on the next poll.
+                    return Err(SessionRealizationDriveError::Effect(error));
+                }
                 return Err(fail_realization_effect(
                     session_id,
                     source_run_id.as_ref(),
@@ -135,27 +114,38 @@ pub async fn drive_session_realization(
             }
         }
         #[cfg(feature = "test-support")]
-        {
-            // Observe the existing directive's complete generation coordinates;
-            // policy/credential payloads are outside this trace contract.
-            let action = match &directive.action {
-                SessionRealizationAction::Stage { mcp_stages, .. } => serde_json::json!({
-                    "phase": "stage",
-                    "generations": mcp_stages.iter().map(|r| awaken_session_execution_contract::realization_observation::observed_generation(&r.generation)).collect::<Vec<_>>() }),
-                SessionRealizationAction::Publish { publish, drain } => serde_json::json!({
-                    "phase": "publish",
-                    "publish": publish.iter().map(awaken_session_execution_contract::realization_observation::observed_generation).collect::<Vec<_>>(),
-                    "drain": drain.iter().map(awaken_session_execution_contract::realization_observation::observed_generation).collect::<Vec<_>>() }),
-                SessionRealizationAction::Complete => serde_json::json!({"phase": "complete"}),
-            };
-            awaken_session_execution_contract::realization_observation::checkpoint(
-                "projection",
-                session_id,
-                serde_json::json!({"lease": directive.authority.lease, "action": action}),
-            )
-            .await;
-        }
+        awaken_session_execution_contract::realization_observation::observe_directive(
+            session_id, &directive,
+        )
+        .await;
         match directive.action.clone() {
+            SessionRealizationAction::Continue { instruction } => {
+                // An interrupted continuation keeps its root phase and grant:
+                // expiring it through ordinary Stage failure would strand the
+                // original-generation source before a verified checkpoint.
+                let receipt = synchronizer
+                    .execute_environment_continuation(
+                        permit,
+                        &directive.projection,
+                        &directive.authority.lease,
+                        instruction,
+                    )
+                    .await
+                    .map_err(SessionRealizationDriveError::Effect)?;
+                request_started = synchronizer.observe_realization_request()?;
+                directive = control
+                    .acknowledge_session_realization(AcknowledgeSessionRealization {
+                        session_id: session_id.clone(),
+                        lease: directive.authority.lease,
+                        published: Vec::new(),
+                        drained: Vec::new(),
+                        continuation: Some(receipt),
+                    })
+                    .await?;
+            }
+            SessionRealizationAction::Released => {
+                unreachable!("released directives end before installation")
+            }
             SessionRealizationAction::Stage {
                 prepare_session,
                 mcp_stages,
@@ -177,7 +167,11 @@ pub async fn drive_session_realization(
                 .await;
                 if let Err(error) = effect {
                     for receipt in &receipts {
-                        let _ = drain_mcp_projection(mcp, &receipt.generation).await;
+                        let _ = awaken_session_execution_contract::drain_mcp_generation_receipt(
+                            mcp,
+                            receipt.generation.clone(),
+                        )
+                        .await;
                     }
                     return Err(fail_realization_effect(
                         session_id,
@@ -208,7 +202,12 @@ pub async fn drive_session_realization(
                     Ok(next) => next,
                     Err(error) => {
                         for receipt in receipts {
-                            let _ = drain_mcp_projection(mcp, &receipt.generation).await;
+                            let _ =
+                                awaken_session_execution_contract::drain_mcp_generation_receipt(
+                                    mcp,
+                                    receipt.generation.clone(),
+                                )
+                                .await;
                         }
                         return Err(error.into());
                     }
@@ -217,7 +216,7 @@ pub async fn drive_session_realization(
             SessionRealizationAction::Publish { publish, drain } => {
                 let effect = async {
                     for generation in &publish {
-                        publish_mcp_projection(mcp, generation).await?;
+                        awaken_session_execution_contract::publish_mcp_generation_receipt(mcp, generation.clone()).await?;
                         #[cfg(feature = "test-support")]
                         awaken_session_execution_contract::realization_observation::checkpoint(
                             "publish-one",
@@ -229,7 +228,7 @@ pub async fn drive_session_realization(
                         .await;
                     }
                     for generation in &drain {
-                        drain_mcp_projection(mcp, generation).await?;
+                        awaken_session_execution_contract::drain_mcp_generation_receipt(mcp, generation.clone()).await?;
                         #[cfg(feature = "test-support")]
                         awaken_session_execution_contract::realization_observation::checkpoint(
                             "drain-one",
@@ -263,6 +262,7 @@ pub async fn drive_session_realization(
                 request_started = synchronizer.observe_realization_request()?;
                 directive = control
                     .acknowledge_session_realization(AcknowledgeSessionRealization {
+                        continuation: None,
                         session_id: session_id.clone(),
                         lease: directive.authority.lease,
                         published: publish,
@@ -272,10 +272,9 @@ pub async fn drive_session_realization(
             }
             SessionRealizationAction::Complete => {
                 #[cfg(feature = "test-support")]
-                awaken_session_execution_contract::realization_observation::checkpoint(
-                    "complete",
+                awaken_session_execution_contract::realization_observation::observe_completed(
                     session_id,
-                    serde_json::json!({"lease": directive.authority.lease}),
+                    &directive.authority.lease,
                 )
                 .await;
                 return Ok(());
@@ -286,10 +285,9 @@ pub async fn drive_session_realization(
         // terminal directive after a same-epoch renewal catch-up.
         if matches!(directive.action, SessionRealizationAction::Complete) {
             #[cfg(feature = "test-support")]
-            awaken_session_execution_contract::realization_observation::checkpoint(
-                "complete",
+            awaken_session_execution_contract::realization_observation::observe_completed(
                 session_id,
-                serde_json::json!({"lease": directive.authority.lease}),
+                &directive.authority.lease,
             )
             .await;
             return Ok(());

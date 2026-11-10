@@ -1576,14 +1576,17 @@ async fn task_attention_carries_its_private_input_and_acknowledges_the_activated
 #[tokio::test]
 async fn public_run_reserves_then_restores_and_projects_before_activation() {
     // Hibernated public-admission cause/effect graph: C1 a nonterminal local
-    // Session carries one live Hibernated checkpoint; C2 realization rejects
-    // continuation phases as physical effects; C3 the durable Run reservation
+    // Session carries one live Hibernated checkpoint; C2 Restoring installs
+    // authority without ordinary physical preparation; C3 the durable Run reservation
     // succeeds; C4 restore commits Resident; C5 activation follows. Effects:
     // E1 install only the existing non-physical Dispatch projection before the
-    // reservation; E2 reserve before restore; E3 after the Resident CAS install
+    // reservation; E2 reserve then install Realization(prepare=false) with the
+    // Restoring authority before restore I/O; E3 after the Resident CAS install
     // the complete Realization(prepare=true) projection with the current exact
     // lease and adopt its exact binding; E4 activate only after E3; E5 one
     // restore and no parallel queue.
+    // Constraint: a later projection may monotonically renew the same lease
+    // generation; the pre-I/O grant is not rewritten to its later expiry.
     //
     // | Rule | phase at recovery | pre-reserve projection | restore | Effect |
     // | H1 | Hibernated | Dispatch only | succeeds | E1-E5 |
@@ -1636,6 +1639,7 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
         [
             "dispatch_projection",
             "reserve",
+            "realization_projection",
             "restore",
             "resident_projection",
             "adopt",
@@ -1656,7 +1660,7 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
         "H1/E3",
     );
     let projections = runtime.projection_installs.lock().unwrap();
-    assert_eq!(projections.len(), 2, "H1/E1+E3");
+    assert_eq!(projections.len(), 3, "H1/E1-E3");
     assert!(
         matches!(
             projections[0].1,
@@ -1669,12 +1673,32 @@ async fn public_run_reserves_then_restores_and_projects_before_activation() {
             &projections[1].1,
             awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
                 lease,
+                prepare_session: false,
+            } if resident.realization.as_ref().is_some_and(|current|
+                awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
+                    current, &lease.lease,
+                ))
+        ),
+        "H1/E2 authority without Create/adoption",
+    );
+    assert!(
+        matches!(
+            projections[1].0.environment,
+            awaken_session_contract::SessionEnvironmentState::Restoring { .. }
+        ),
+        "H1/E2 exact Restoring projection",
+    );
+    assert!(
+        matches!(
+            &projections[2].1,
+            awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
+                lease,
                 prepare_session: true,
             } if Some(&lease.lease) == resident.realization.as_ref()
         ),
         "H1/E3",
     );
-    assert_eq!(projections[1].0.environment, resident.environment, "H1/E3");
+    assert_eq!(projections[2].0.environment, resident.environment, "H1/E3");
     drop(projections);
     assert_eq!(
         runtime.adoptions.lock().unwrap().as_slice(),

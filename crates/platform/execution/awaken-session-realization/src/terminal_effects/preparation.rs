@@ -315,13 +315,23 @@ impl crate::terminal_effects::TerminalEffects {
                     "Restoring Runtime request differs from aggregate truth",
                 ));
             }
+            let environment = PreparedBoundEnvironment::new(
+                None,
+                None,
+                TerminalSourceObservation::RestoreAwaiting,
+            );
+            let target_not_admitted = assignment
+                .projection
+                .environment_materialization
+                .as_deref()
+                .is_some_and(|facts| facts.restore_target_not_admitted(&state));
             return Ok(TerminalEnvironmentPreparation {
                 state,
-                environment: PreparedBoundEnvironment::new(
-                    None,
-                    None,
-                    TerminalSourceObservation::RestoreAwaiting,
-                ),
+                environment: if target_not_admitted {
+                    environment.with_definitive_absence()
+                } else {
+                    environment
+                },
                 pending_checkpoint,
             });
         }
@@ -334,6 +344,11 @@ impl crate::terminal_effects::TerminalEffects {
             }
             if assignment.environment_creation_not_attempted
                 || matches!(&state, SessionEnvironmentState::Hibernated { .. })
+                || assignment
+                    .projection
+                    .environment_materialization
+                    .as_deref()
+                    .is_some_and(|facts| facts.expired_generation_is_unmaterialized(&state))
             {
                 return Ok(TerminalEnvironmentPreparation {
                     state,

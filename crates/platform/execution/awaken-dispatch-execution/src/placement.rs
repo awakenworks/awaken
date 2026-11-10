@@ -291,6 +291,15 @@ fn apply_session_physical_placement(
                 Some(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
         }
         if let Some(environment) = environment {
+            if environment.idle_retention.mode
+                == awaken_provisioning_contract::SandboxIdleRetentionMode::CheckpointAndRelease
+            {
+                placement.required_capabilities.insert(
+                    awaken_worker_contract::SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY.to_owned(),
+                );
+                placement.checkpoint_format =
+                    Some(environment.idle_retention.checkpoint_format.clone());
+            }
             placement.resources =
                 awaken_session_configuration_contract::environment_projection::sandbox_resource_requests(environment);
         }
@@ -532,6 +541,24 @@ mod preparation_tests {
                 "P1/E4"
             );
         }
+        // P3 CheckpointAndRelease is a conjunctive code/format admission:
+        // both Run and preparation use this same physical compiler. A Worker
+        // lacking either the new protocol or exact format must not be selected.
+        environment.idle_retention.mode =
+            awaken_provisioning_contract::SandboxIdleRetentionMode::CheckpointAndRelease;
+        environment.idle_retention.checkpoint_format = "portable-sandbox-writable-tar-v3".into();
+        let checkpoint = session_preparation_placement(&environment, &resources, false);
+        assert!(
+            checkpoint
+                .required_capabilities
+                .contains(awaken_worker_contract::SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY),
+            "P3 protocol floor"
+        );
+        assert_eq!(
+            checkpoint.checkpoint_format.as_deref(),
+            Some("portable-sandbox-writable-tar-v3"),
+            "P3 exact format"
+        );
         environment.sandbox.host_access =
             awaken_provisioning_contract::HostAccessPolicy::TrustedHost;
         environment.sandbox.process_tree_supervision = true;

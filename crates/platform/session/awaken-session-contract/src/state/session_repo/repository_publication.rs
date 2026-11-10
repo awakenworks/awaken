@@ -88,6 +88,16 @@ impl PersistedSession {
         &self,
     ) -> Result<bool, crate::state::SessionCleanupError> {
         let cleanup = self.verified_terminal_cleanup()?;
+        if !self.is_terminal()
+            && (matches!(
+                self.environment,
+                crate::state::SessionEnvironmentState::Hibernated { .. }
+            ) || self
+                .environment_materialization()
+                .is_some_and(|facts| facts.target_not_admitted(&self.environment)))
+        {
+            return Ok(false);
+        }
         Ok(self.realization.is_some() && !cleanup.is_completed())
     }
 
@@ -104,15 +114,34 @@ impl PersistedSession {
             && self.needs_initial_realization_recovery()
             && !baseline.environment.self_hosted;
         let mcp_update = self.execution == crate::state::SessionExecutionState::Idle
+            && self.environment.admits_realization_effects()
             && !self.has_active_activities()
             && self.mcp.needs_realization()
             && (!baseline.environment.self_hosted || self.realization.is_some());
-        !self.is_terminal() && self.requires_external_environment_owner() && (initial || mcp_update)
+        let continuation = self.execution == crate::state::SessionExecutionState::Idle
+            && !self.has_active_activities()
+            && !baseline.environment.self_hosted
+            && matches!(
+                self.environment,
+                crate::state::SessionEnvironmentState::Suspending { .. }
+                    | crate::state::SessionEnvironmentState::Restoring { .. }
+                    | crate::state::SessionEnvironmentState::Hibernated { .. }
+            );
+        !self.is_terminal()
+            && self.requires_external_environment_owner()
+            && (initial || mcp_update || continuation)
     }
 
     #[must_use]
     pub fn needs_run_free_preparation_worker(&self) -> bool {
-        self.realization.is_none() && self.is_run_free_preparation_candidate()
+        !matches!(
+            self.environment,
+            crate::state::SessionEnvironmentState::Hibernated { .. }
+        ) && (self.realization.is_none()
+            || self
+                .environment_materialization()
+                .is_some_and(|facts| facts.target_not_admitted(&self.environment)))
+            && self.is_run_free_preparation_candidate()
     }
 
     /// Classify the one Worker capacity cause retained by this root. A bound
@@ -140,7 +169,11 @@ impl PersistedSession {
             if !matches!(
                 self.environment,
                 crate::state::SessionEnvironmentState::Unmaterialized
-            ) {
+                    | crate::state::SessionEnvironmentState::Hibernated { .. }
+            ) && !self
+                .environment_materialization()
+                .is_some_and(|facts| facts.target_not_admitted(&self.environment))
+            {
                 return Err(crate::state::SessionCleanupError::MissingPhysicalOwner);
             }
             return Ok(SessionWorkerObligation::UnboundTerminalCleanup);

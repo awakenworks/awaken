@@ -121,6 +121,18 @@ impl SessionRealizationPermit {
     pub fn session_id(&self) -> &SessionId {
         &self.session_id
     }
+
+    /// Check a borrowed held exclusion against the adapter's current
+    /// registration, without exposing its owner or acquiring another lock.
+    #[must_use]
+    pub fn registered_identity_matches<T: Send + Sync + 'static>(
+        &self,
+        check: impl FnOnce(&T) -> bool,
+    ) -> bool {
+        self._registered_identity
+            .downcast_ref::<T>()
+            .is_some_and(check)
+    }
 }
 
 impl std::fmt::Debug for SessionRealizationPermit {

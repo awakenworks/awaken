@@ -2394,6 +2394,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .acknowledge_session_realization(
             &registered.snapshot.identity,
             awaken_session_execution_contract::AcknowledgeSessionRealization {
+                continuation: None,
                 session_id: "signed-thread".into(),
                 lease: realization_lease.clone(),
                 published: Vec::new(),

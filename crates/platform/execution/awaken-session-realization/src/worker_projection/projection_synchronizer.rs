@@ -351,6 +351,22 @@ where
         Ok(())
     }
 
+    async fn execute_environment_continuation(
+        &self,
+        permit: &awaken_session_execution_contract::SessionRealizationPermit,
+        projection: &awaken_session_execution_contract::FrozenSessionProjection,
+        lease: &session_resource::SessionRealizationLease,
+        instruction: awaken_session_contract::SessionEnvironmentInstruction,
+    ) -> Result<
+        awaken_session_execution_contract::SessionContinuationReceipt,
+        awaken_session_execution_contract::SessionRealizationEffectFailure,
+    > {
+        self.execution
+            .execute_environment_continuation(permit, projection, lease, instruction)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn invalidate_session_realization_lease(
         &self,
         session_id: &awaken_session_types::SessionId,

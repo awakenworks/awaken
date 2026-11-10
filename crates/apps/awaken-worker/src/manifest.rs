@@ -267,6 +267,8 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
     capabilities
         .insert(awaken_worker_contract::SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY.to_owned());
     capabilities
+        .insert(awaken_worker_contract::SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY.to_owned());
+    capabilities
         .insert(awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string());
     capabilities.extend(inputs.inference_schemes.iter().cloned());
     match inputs.resource_support {

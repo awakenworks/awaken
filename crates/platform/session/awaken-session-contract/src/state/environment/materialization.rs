@@ -93,6 +93,44 @@ impl SessionEnvironmentMaterialization {
         matches!(self.restore_admission_version, Some(1))
     }
 
+    /// Positive write-ahead evidence for this restore target only. An old
+    /// origin remains history; absent legacy facts never prove target absence.
+    #[must_use]
+    pub fn restore_target_not_admitted(
+        &self,
+        environment: &super::SessionEnvironmentState,
+    ) -> bool {
+        matches!(
+            environment,
+            super::SessionEnvironmentState::Restoring { .. }
+        ) && self.tracks_restore_materialization()
+            && self.pending().is_none()
+    }
+
+    /// The disposed generation no longer has a physical source/target. Keep
+    /// a reader-floor/history marker so this is never fresh no-Create proof.
+    pub(crate) fn retire_expired_generation(&mut self) {
+        self.origin = None;
+        self.pending = None;
+        self.restore_admission_version = Some(1);
+    }
+
+    #[must_use]
+    pub fn expired_generation_is_unmaterialized(
+        &self,
+        environment: &super::SessionEnvironmentState,
+    ) -> bool {
+        matches!(environment, super::SessionEnvironmentState::Unmaterialized)
+            && self.tracks_restore_materialization()
+            && !self.has_admitted()
+    }
+
+    #[must_use]
+    pub fn target_not_admitted(&self, environment: &super::SessionEnvironmentState) -> bool {
+        self.restore_target_not_admitted(environment)
+            || self.expired_generation_is_unmaterialized(environment)
+    }
+
     pub(crate) fn begin_tracked_restore(&mut self) {
         self.restore_admission_version = Some(1);
     }
@@ -263,6 +301,18 @@ impl SessionEnvironmentMaterialization {
         // Later delivery never replaces that assertion with a new lease.
         let before = session.environment_materialization.as_deref();
         let after = replacement.environment_materialization.as_deref();
+        let expired_generation_retired = !session.is_terminal()
+            && matches!(
+                session.environment,
+                super::SessionEnvironmentState::Hibernated { .. }
+            )
+            && before.is_none_or(|facts| facts.pending().is_none())
+            && after.is_some_and(|facts| {
+                facts.expired_generation_is_unmaterialized(&replacement.environment)
+            });
+        if expired_generation_retired {
+            return Ok(());
+        }
         let restore_started = matches!((&session.environment, &replacement.environment),
             (super::SessionEnvironmentState::Hibernated { checkpoint, generation },
              super::SessionEnvironmentState::Restoring { checkpoint: next_checkpoint, generation: next_generation, .. })
@@ -317,7 +367,7 @@ impl SessionEnvironmentMaterialization {
             (None, None) => Ok(()),
             (None, Some(_)) | (Some(_), None) => Err(invalid()),
             (Some(before), Some(after)) if before == after => Ok(()),
-            (Some(before), Some(after)) if before.is_empty() => {
+            (Some(before), Some(after)) if !before.has_admitted() => {
                 if after.origin().is_none()
                     && after.pending().is_some_and(|intent| {
                         matches!(intent.kind(), SessionEnvironmentEffectKind::Create)

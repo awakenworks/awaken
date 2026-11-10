@@ -180,7 +180,8 @@ pub struct SessionEnvironmentFacts {
 }
 
 /// How a materialization effect relates the environment to its binding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MaterializationKind {
     Create,
     Adopt,
@@ -238,7 +239,8 @@ pub enum SessionEnvironmentEvent {
 }
 
 /// The effect the realization executor must perform next.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionEnvironmentInstruction {
     Materialize(MaterializationKind),
     Quiesce,
@@ -422,6 +424,30 @@ const fn begin_realization(facts: SessionEnvironmentFacts) -> Outcome {
         return Err(SessionEnvironmentRejection::Terminal);
     }
     if !facts.step.admits_realization_effects() {
+        if matches!(facts.step, SessionEnvironmentStep::Hibernated)
+            && !(facts.checkpoint_live && facts.generation_live)
+            && facts.execution_idle
+            && !facts.activities_open
+        {
+            return stay(facts);
+        }
+        if matches!(
+            facts.step,
+            SessionEnvironmentStep::Suspending(_) | SessionEnvironmentStep::Restoring
+        ) && facts.execution_idle
+            && !facts.activities_open
+        {
+            if matches!(
+                facts.step,
+                SessionEnvironmentStep::Suspending(
+                    SuspendPhase::Quiescing | SuspendPhase::Uploading
+                )
+            ) && !is_fenced(facts)
+            {
+                return Err(SessionEnvironmentRejection::LeaseNotCurrent);
+            }
+            return stay(facts);
+        }
         return Err(SessionEnvironmentRejection::ContinuationInProgress);
     }
     stay(facts)
@@ -431,7 +457,7 @@ const fn begin_realization(facts: SessionEnvironmentFacts) -> Outcome {
 /// renewing in every step (terminal cleanup needs its lease); an active one
 /// only outside a continuation. The gate precedes the lease check.
 const fn renew_realization(facts: SessionEnvironmentFacts) -> Outcome {
-    if is_active(facts) && !facts.step.admits_realization_effects() {
+    if is_active(facts) && matches!(facts.step, SessionEnvironmentStep::Hibernated) {
         return Err(SessionEnvironmentRejection::ContinuationInProgress);
     }
     if !is_fenced(facts) {

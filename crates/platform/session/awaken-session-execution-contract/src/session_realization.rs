@@ -49,7 +49,9 @@ pub use exclusion::{
     session_realization_exclusion_admits,
 };
 mod generation_authority;
-pub use generation_authority::realization_generation_authorizes;
+pub use generation_authority::{
+    realization_generation_authorizes, realization_generation_set_authorizes,
+};
 mod lease_receipt;
 pub use control_failure::{
     SESSION_REALIZATION_NOT_READY_CODE, SessionRealizationControlDisposition,
@@ -424,6 +426,15 @@ impl<T> WorkerSessionRealizationControl for T where
 /// topology-specific effects and owns no lifecycle transition or desired state.
 #[async_trait]
 pub trait SessionProjectionSynchronizer: Send + Sync {
+    /// Execute only the root's continuation instruction after installation of
+    /// its exact frozen input and delivery grant. This role owns no root state.
+    async fn execute_environment_continuation(
+        &self,
+        _permit: &SessionRealizationPermit,
+        _projection: &FrozenSessionProjection,
+        _lease: &SessionRealizationLease,
+        _instruction: awaken_session_contract::SessionEnvironmentInstruction,
+    ) -> Result<SessionContinuationReceipt, SessionRealizationEffectFailure>;
     fn observe_realization_request(
         &self,
     ) -> Result<

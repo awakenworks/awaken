@@ -66,6 +66,26 @@ mod test_support;
 pub use test_support::ExecutionObservationProbe;
 
 impl SessionExecutionAdmission {
+    /// Resolve the exact current registry incarnation that may participate in
+    /// an external cleanup claim. HTTP authentication is an adapter boundary;
+    /// the root-CAS owner repeats this read so direct callers and a stale
+    /// transport snapshot cannot mint a durable Session lease.
+    pub(crate) async fn worker_for_target(
+        &self,
+        target: &awaken_session_execution_contract::SessionRealizationTarget,
+        now: u64,
+    ) -> Result<
+        Option<awaken_worker_contract::WorkerSnapshot>,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        let observations = &self.workers;
+        let workers = observations.list().await.map_err(|error| {
+            awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+                error.to_string(),
+            )
+        })?;
+        target.worker_from_registry_observation(workers, now)
+    }
     #[must_use]
     pub fn new(
         dispatch: Arc<dyn DispatchOperationalFeed>,

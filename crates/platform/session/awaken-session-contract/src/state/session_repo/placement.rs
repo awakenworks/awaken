@@ -56,17 +56,16 @@ impl SessionPlacementClass {
     }
 
     /// Whether this placement can honour an idle-retention policy. An
-    /// external Worker has one realization/terminal-cleanup claim path but no
-    /// claim-fenced nonterminal quiesce, checkpoint, disposal or restore
-    /// transport, so checkpoint-and-release retention would require
-    /// Coordinator-local continuation effects against a Worker-owned
-    /// Environment.
+    /// registered cloud Worker uses the root-owned continuation protocol.
+    /// Self-hosted Worker placement remains WorkQueue-owned and has no
+    /// run-free nonterminal continuation claim; its retention stays refused.
     #[must_use]
     pub fn supports_idle_retention(
         self,
         idle_retention: &crate::state::SandboxIdleRetentionPolicy,
     ) -> bool {
         !(self.requires_external_environment_owner()
+            && self.self_hosted_environment
             && idle_retention.mode == crate::state::SandboxIdleRetentionMode::CheckpointAndRelease)
     }
 }

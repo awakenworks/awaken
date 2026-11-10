@@ -217,6 +217,19 @@ pub fn session_terminal_cleanup_affinity_for(
     );
     if expired
         && session.is_terminal()
+        && (matches!(
+            session.environment,
+            crate::state::SessionEnvironmentState::Hibernated { .. }
+        ) || session
+            .environment_materialization()
+            .is_some_and(|facts| facts.target_not_admitted(&session.environment)))
+    {
+        // Known filesystem absence is not process/dispatch closure. A new
+        // actor still needs the existing exact predecessor-exit observation.
+        return SessionTerminalCleanupAffinity::RequiresPredecessorExit;
+    }
+    if expired
+        && session.is_terminal()
         && session.environment.binding().is_some()
         && cleanup.thread_ids().is_some()
     {

@@ -363,6 +363,14 @@ fn session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum SessionRealizationAction {
+    /// A root-authored nonterminal Environment instruction, whose full input
+    /// already exists in the accompanying frozen projection.
+    Continue {
+        instruction: awaken_session_contract::SessionEnvironmentInstruction,
+    },
+    /// The exact predecessor may be invalidated locally; no physical effect
+    /// or installation is authorized by a released directive.
+    Released,
     /// Realize the frozen Environment/Resources and stage every exact MCP
     /// request. `prepare_session` is the exact execution-materialization bit;
     /// MCP-only hot updates must not recreate an already-live environment.
@@ -467,6 +475,21 @@ pub struct AcknowledgeSessionRealization {
     pub published: Vec<McpGenerationRef>,
     #[serde(default)]
     pub drained: Vec<McpGenerationRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation: Option<SessionContinuationReceipt>,
+}
+
+/// Observations of the existing Environment laws. This wire envelope holds no
+/// phase or retry authority; only the Session root applies these receipts.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "effect", content = "receipt", rename_all = "snake_case")]
+pub enum SessionContinuationReceipt {
+    Quiesced(crate::QuiescenceReceipt),
+    Checkpointed(crate::CheckpointReceipt),
+    SourceReleasePrepared(crate::SourceReleasePreparedReceipt),
+    SourceDisposed(crate::SourceDisposedReceipt),
+    Restored(crate::RestoreReceipt),
+    ExpiredCheckpointDeleted { checkpoint_id: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
