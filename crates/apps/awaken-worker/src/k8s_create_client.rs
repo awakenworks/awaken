@@ -227,6 +227,30 @@ mod tests {
     use axum::{Json, Router};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// Let real loopback I/O finish without auto-advancing a paused Tokio
+    /// clock past the protocol deadline. A live blocking task is visible to
+    /// Tokio's paused-clock scheduler. The independent two-second watchdog
+    /// diagnoses a stuck fixture; it does not change the client's budget.
+    async fn with_frozen_http_clock<F: std::future::Future>(work: F) -> F::Output {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (expired, expiry) = tokio::sync::oneshot::channel();
+        let watchdog = tokio::task::spawn_blocking(move || {
+            if matches!(
+                released.recv_timeout(std::time::Duration::from_secs(2)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                let _ = expired.send(());
+            }
+        });
+        let result = tokio::select! {
+            result = work => result,
+            _ = expiry => panic!("real HTTP fixture did not settle while its protocol clock was frozen"),
+        };
+        drop(release);
+        watchdog.await.unwrap();
+        result
+    }
+
     #[tokio::test]
     async fn create_client_cannot_use_or_replace_an_unregistered_incarnation() {
         // C1 provider is assembled before registration; C2 exact Registry
@@ -403,13 +427,12 @@ mod tests {
         server.abort();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn create_replay_is_budget_bounded_and_never_retries_authentication_rejection() {
-        // C1 400/401/403 -> one request and refusal; C2 persistent 503 ->
-        // same request retries only inside the original total budget, then
-        // MayHaveCommitted. The outer deadline detects an unbounded retry;
-        // neither row returns a fictitious Created or termination witness.
-        for status in [400_u16, 401, 403, 503] {
+        // C1 400/401/403 -> exactly one actual HTTP response and refusal.
+        // Keep the 100ms protocol clock frozen during loopback I/O: an expired
+        // scheduler budget before the handler runs cannot prove this rule.
+        for status in [400_u16, 401, 403] {
             let calls = Arc::new(AtomicUsize::new(0));
             let router = Router::new().route(
                 PATH,
@@ -436,22 +459,117 @@ mod tests {
             client
                 .bind_identity(WorkerIdentity::new("awaken-worker", "boot", 1))
                 .unwrap();
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                client.create(K8sCreateRequest {
-                    path: "/api/v1/namespaces/ns/pods".into(),
-                    object: serde_json::json!({"metadata":{"name":"exact"}}),
-                }),
-            )
-            .await
-            .expect("C2 bounded control future");
-            assert!(matches!(result, Err(RuntimeError::MayHaveCommitted(_))));
-            if status == 503 {
-                assert!(calls.load(Ordering::SeqCst) > 1);
-            } else {
-                assert_eq!(calls.load(Ordering::SeqCst), 1);
-            }
+            let result = with_frozen_http_clock(client.create(K8sCreateRequest {
+                path: "/api/v1/namespaces/ns/pods".into(),
+                object: serde_json::json!({"metadata":{"name":"exact"}}),
+            }))
+            .await;
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("C1 authentication/permanent rejection cannot succeed"),
+            };
+            let expected = format!(
+                "Kubernetes broker refused or retained uncertainty: {}",
+                axum::http::StatusCode::from_u16(status).unwrap()
+            );
+            assert!(
+                matches!(error, RuntimeError::MayHaveCommitted(ref reason) if reason == &expected),
+                "C1 must observe the actual {status} response, not an unrelated timeout: {error:?}"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
             server.abort();
         }
+
+        // C2: a real 503 causes a replay. Hold that replay in its real HTTP
+        // handler, then advance to the original total deadline. This proves
+        // both retry admission and cancellation of an in-flight attempt, rather
+        // than assuming two TCP exchanges fit into 100ms of shared-host time.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (entered, mut entries) = tokio::sync::mpsc::unbounded_channel();
+        let router = Router::new().route(
+            PATH,
+            post({
+                let calls = calls.clone();
+                let bodies = bodies.clone();
+                move |Json(body): Json<serde_json::Value>| {
+                    let calls = calls.clone();
+                    let bodies = bodies.clone();
+                    let entered = entered.clone();
+                    async move {
+                        bodies.lock().unwrap().push(body);
+                        let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                        entered.send(attempt).unwrap();
+                        if attempt > 1 {
+                            std::future::pending::<()>().await;
+                        }
+                        (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            Json(serde_json::json!({"error":"fixture refusal"})),
+                        )
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let client = WorkerK8sCreateClient::new(WorkerUpstream::new(format!("http://{address}")));
+        client
+            .bind_identity(WorkerIdentity::new("awaken-worker", "boot", 1))
+            .unwrap();
+        let budget = client.request_budget;
+        let start = awaken_time::mono::now();
+        let operation = tokio::spawn(async move {
+            client
+                .create(K8sCreateRequest {
+                    path: "/api/v1/namespaces/ns/pods".into(),
+                    object: serde_json::json!({"metadata":{"name":"exact"}}),
+                })
+                .await
+        });
+        assert_eq!(with_frozen_http_clock(entries.recv()).await, Some(1));
+        // Only the actual retry delay uses real time; the 30s production
+        // deadline below is exercised by explicit virtual-clock advancement.
+        tokio::time::resume();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), entries.recv())
+                .await
+                .expect("C2 a 503 must admit a replay"),
+            Some(2)
+        );
+        tokio::time::pause();
+        let before_deadline = budget
+            .checked_sub(awaken_time::mono::now().duration_since(start))
+            .and_then(|remaining| remaining.checked_sub(std::time::Duration::from_millis(1)))
+            .expect("fixture reaches the retry before the original budget");
+        tokio::time::advance(before_deadline).await;
+        assert!(
+            !operation.is_finished(),
+            "C2 in-flight replay remains live before the deadline"
+        );
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        let result = with_frozen_http_clock(operation).await.unwrap();
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("C2 in-flight replay cannot succeed after the original deadline"),
+        };
+        assert!(
+            matches!(error, RuntimeError::MayHaveCommitted(ref reason) if reason == "Kubernetes broker control budget expired; original request remains unproved"),
+            "C2 original total deadline must bound the in-flight replay: {error:?}"
+        );
+        assert_eq!(awaken_time::mono::now().duration_since(start), budget);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "C2 no post-deadline replay"
+        );
+        let history = bodies.lock().unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            history[0], history[1],
+            "C2 replay preserves the exact request"
+        );
+        server.abort();
     }
 }
