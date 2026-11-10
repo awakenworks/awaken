@@ -18,14 +18,19 @@ These are separately owned applications with broader product behavior. They are
 not required by the first-use examples above, and their historical evidence does
 not qualify a different Awaken revision.
 
-- [Pilot](https://awakenworks.com/cases/pilot): a Mission-oriented application.
-- [DeepSeek Harness](https://awakenworks.com/cases/deepseek-harness): a workbench
-  with trajectories, approvals, presets and deliverables. Its fixed walkthrough
-  uses a deterministic Managed API fixture.
-- [Design](https://awakenworks.com/cases/design): an application with its own
-  Project, Revision, review and artifact publication model.
-- Cowork: an internal React reference for uploads, tasks, approvals and file
-  delivery. Its source is maintained separately; no public source URL is claimed.
+- Cowork: the primary complete reference for uploads and file delivery, with
+  optional plans, Project context, quality checks and native schedules. It owns
+  one task view over Managed Sessions. Its source is maintained separately;
+  no public source URL is asserted here.
+- [Design](https://awakenworks.com/cases/design): an advanced domain application
+  with its own Project, Revision, review and artifact publication model.
+- [DeepSeek Harness](https://awakenworks.com/cases/deepseek-harness): a specialized
+  workbench reimplementation with trajectories, approvals, presets and deliverables.
+  Its fixed walkthrough uses a deterministic Managed API fixture.
+
+Pilot's application capabilities are consolidated into Cowork. The standalone historical case/source archives at the
+[Pilot case page](https://awakenworks.com/cases/pilot) retain their dated subject.
+They do not replace the current Cowork implementation or its qualification.
 
 Source availability and validation level are stated by each reference's own
 release/case page. The [existing recording system](../web/record/README.md) owns
