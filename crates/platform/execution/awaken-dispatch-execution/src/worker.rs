@@ -117,6 +117,7 @@ pub struct DispatchWorker<S> {
     claimed_commit: WorkerCommit,
     recovery_projection: Option<Arc<crate::RecoveryProjection>>,
     recovery_source: Option<Arc<dyn RunRecoverySource>>,
+    recovery_history: Option<Arc<crate::RecoveryHistoryCache>>,
     terminal_scan: crate::TerminalReconciliationScan,
     terminal_reads: crate::ClaimedTerminalReads,
     settlement_observer: Option<Arc<dyn crate::DispatchSettlementObserver>>,
@@ -128,6 +129,14 @@ pub struct DispatchWorker<S> {
     local_credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     worker_credential_resolver:
         Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
+}
+
+impl crate::RecoveryHistoryCache {
+    #[must_use]
+    pub fn bind<S>(self: Arc<Self>, mut worker: DispatchWorker<S>) -> DispatchWorker<S> {
+        worker.recovery_history = Some(self);
+        worker
+    }
 }
 
 struct ClaimBoundOwnershipVerifier {
@@ -283,16 +292,23 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: &Claimed,
         thread_id: &ThreadId,
+        history_key: Option<&crate::recovery_history::HistoryKey>,
     ) -> Result<ClaimedSnapshotAuthority, Error> {
+        use awaken_agent_contract::thread::read::recovery::LoadedRunRecovery;
+
         let claim = RunClaim::from(&claimed.lease);
         if let Some(projection) = &self.recovery_projection {
-            let snapshot = match &self.recovery_source {
+            let cached = self
+                .recovery_history
+                .as_ref()
+                .and_then(|history| history.get(history_key?));
+            let cached_prefix = cached.as_ref().map(|entry| entry.prefix);
+            let session = claimed.request.session_thread_id();
+            let loaded = match &self.recovery_source {
                 Some(source) => source
-                    .recovery_snapshot(thread_id, &claim.run_id)
+                    .load_recovery(session, thread_id, &claim.run_id, cached_prefix)
                     .await
-                    .map_err(|error| {
-                        crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
-                    })?,
+                    .map_err(|error| crate::DispatchError::Rejected(error.to_string()))?,
                 None => {
                     match &self.ports {
                         ExecutionAuthority::Remote { checkpoints, .. } => checkpoints,
@@ -303,15 +319,41 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                             )));
                         }
                     }
-                    .load_recovery_snapshot(&claim, claimed.session_work_authority.as_ref())
+                    .load_recovery(
+                        &claim,
+                        claimed.session_work_authority.as_ref(),
+                        cached_prefix,
+                    )
                     .await?
                 }
             };
+            let (snapshot, prefix) = match loaded {
+                LoadedRunRecovery::Full { snapshot, prefix } => (*snapshot, prefix),
+                LoadedRunRecovery::Reuse { reused } => {
+                    let cached = cached
+                        .filter(|entry| {
+                            entry.prefix == reused.prefix
+                                && &entry.snapshot.thread_id == thread_id
+                                && &reused.thread_id == thread_id
+                                && reused.run_id == claim.run_id
+                                && reused.store_cursor >= entry.prefix.last_commit
+                        })
+                        .ok_or_else(|| {
+                            crate::DispatchError::Rejected(
+                                "recovery response does not match the offered Thread prefix".into(),
+                            )
+                        })?;
+                    let mut snapshot = cached.snapshot.clone();
+                    snapshot.claimed_run_id = reused.run_id;
+                    snapshot.store_cursor = reused.store_cursor;
+                    snapshot.next_commit_ordinal = reused.next_commit_ordinal;
+                    snapshot.resume_tickets = reused.resume_tickets;
+                    (snapshot, Some(reused.prefix))
+                }
+            };
             projection
-                .install(&claim.run_id, thread_id, snapshot)
-                .map_err(|error| {
-                    crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
-                })?;
+                .install_cached(&claim, thread_id, snapshot, prefix)
+                .map_err(|error| crate::DispatchError::Rejected(error.to_string()))?;
         }
         Ok(ClaimedSnapshotAuthority::installed(&claim, thread_id))
     }
@@ -990,9 +1032,18 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self.runtime.metrics().record_dispatch_in_flight(1);
         let _drive_timer = DriveTimer::new(self.runtime.metrics());
 
+        let history_key = crate::recovery_history::HistoryKey::for_claimed(&claimed);
         let claimed_snapshot = self
-            .install_claimed_recovery_projection(&claimed, &thread_id)
+            .install_claimed_recovery_projection(&claimed, &thread_id, history_key.as_ref())
             .await?;
+        let _retain_history = history_key.and_then(|key| {
+            Some(crate::recovery_history::RetainHistory {
+                cache: self.recovery_history.as_deref()?,
+                projection: self.recovery_projection.as_deref()?,
+                claim: claim.clone(),
+                key,
+            })
+        });
         let mut all_pending: Vec<String> = claimed
             .pending
             .iter()
@@ -1750,6 +1801,7 @@ fn construct_dispatch_worker<S: Dispatch + 'static>(
         claimed_commit,
         recovery_projection: None,
         recovery_source: None,
+        recovery_history: None,
         terminal_scan: Default::default(),
         terminal_reads: Default::default(),
         settlement_observer: None,

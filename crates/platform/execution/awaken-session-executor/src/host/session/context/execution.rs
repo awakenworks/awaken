@@ -21,6 +21,7 @@ pub(super) struct ExecutionWiring {
 }
 
 pub(super) struct AcpTools<'a> {
+    pub(super) coordination: &'a [Arc<dyn awaken_tool_contract::tool::RawTool>],
     pub(super) skills: Option<&'a SemanticSkillTools>,
     pub(super) memory: Option<&'a crate::session_memory_tools::SessionMemoryTools>,
     pub(super) search: Option<ConfiguredWebTool>,
@@ -128,6 +129,17 @@ pub(super) async fn prepare(
             runtime = runtime.try_with_tool(tool.clone()).map_err(|error| {
                 SessionExecutionError::internal(format!("RUNTIME_CONFIGURATION: {error}"))
             })?;
+        }
+        for tool in tools.coordination {
+            if let Some(descriptor) = config
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .find(|descriptor| descriptor.id == tool.id())
+            {
+                descriptors.push(descriptor.clone());
+                executors.push(tool.clone());
+            }
         }
         // Project the exact publication-selected Hand subset. The
         // Session environment supplies rooted executors; the immutable

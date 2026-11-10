@@ -226,7 +226,7 @@ impl CommitCoordinator for ClaimedCommitCoordinator {
                 operation: operation.clone(),
             })
             .await?;
-        projection.apply_receipt(operation, &receipt)?;
+        projection.apply_claim_receipt(&self.claim, operation, &receipt)?;
         Ok(receipt.commit_record())
     }
 }

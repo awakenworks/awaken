@@ -21,6 +21,7 @@ pub mod pool;
 mod process_dispatch;
 mod publication;
 mod reconciliation;
+mod recovery_history;
 mod recovery_projection;
 mod service;
 mod session_admission;
@@ -64,6 +65,7 @@ pub use pool::{
 pub use process_dispatch::{ClaimedRunsDrained, ProcessDispatch, ProcessDispatchLifecycle};
 pub use publication::DispatchPublication;
 pub use reconciliation::TerminalReconciliationScan;
+pub use recovery_history::RecoveryHistoryCache;
 pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use session_admission::SessionRunAdmissionObserver;

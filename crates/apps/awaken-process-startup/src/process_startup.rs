@@ -12,6 +12,8 @@ use super::{
 
 #[derive(Default)]
 pub(super) struct ProcessStartup {
+    pub(super) session_diagnostics:
+        Option<Arc<dyn awaken_session_application::replay::SessionReplayReads>>,
     pub(super) service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     pub(super) deployment: Option<awaken_deployment_config::DeploymentConfig>,
     /// Exact Cargo-built companion for test-only process composition. Production

@@ -173,6 +173,12 @@ pub async fn build_delegation_router_with_deployment(
         assistant,
         snapshot("researcher", "default", Vec::new(), false),
         snapshot("acp-worker", "acp:claude", Vec::new(), false),
+        snapshot(
+            "acp-coordinator",
+            "acp:claude",
+            vec![AgentId("researcher".into())],
+            false,
+        ),
     ];
     snapshots.extend(awaken_acp_catalog::known_acp_clis().iter().map(|cli| {
         snapshot(
@@ -183,10 +189,7 @@ pub async fn build_delegation_router_with_deployment(
         )
     }));
     let publication = fixed_agent_publication(snapshots);
-    let launch = awaken_run_executor_acp::AcpLaunch::custom(
-        scenario_shell_argv(FAKE_ACP_JSONRPC_SCRIPT),
-        vec![],
-    );
+    let launch = delegation_acp_launch();
     let platform = crate::acp_scenarios::bind_acp_session_environment(
         resource_host_with_deployment(model, model_ref, deployment, trace_file_present).await,
         awaken_execution_composition::LaunchSource::FixedAcp(Box::new(launch)),
@@ -195,6 +198,27 @@ pub async fn build_delegation_router_with_deployment(
     .await
     .map_dependencies(|host| host.with_agent_publications(publication.clone()));
     mount_with_agent_source_on_lifecycle(platform, publication, lifecycle.clone()).await
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "scenario-only fixed fixture selection"
+)]
+fn delegation_acp_launch() -> awaken_run_executor_acp::AcpLaunch {
+    let argv = if std::env::var_os("AWAKEN_SCENARIO_ACP_COORDINATION").is_some() {
+        vec![
+            "node".into(),
+            "--input-type=module".into(),
+            "--eval".into(),
+            crate::acp_scenarios::embedded_acp_mcp_fixture(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../e2e/fixtures/acp_coordination_fixture.mjs"
+            ))),
+        ]
+    } else {
+        scenario_shell_argv(FAKE_ACP_JSONRPC_SCRIPT)
+    };
+    awaken_run_executor_acp::AcpLaunch::custom(argv, vec![])
 }
 
 #[cfg(test)]

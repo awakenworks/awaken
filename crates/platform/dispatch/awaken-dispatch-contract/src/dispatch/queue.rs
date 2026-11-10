@@ -30,13 +30,36 @@ pub trait ClaimedCheckpointTransport: Send + Sync {
         claim: &RunClaim,
     ) -> Result<SettleOutcome, DispatchError>;
 
+    /// A cached prefix is a hint. Return a full snapshot if it cannot be reused.
+    async fn load_recovery(
+        &self,
+        claim: &RunClaim,
+        session_work_authority: Option<
+            &awaken_session_application_contract::SessionWorkAuthorityReceipt,
+        >,
+        cached: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, DispatchError>;
+
     async fn load_recovery_snapshot(
         &self,
         claim: &RunClaim,
         session_work_authority: Option<
             &awaken_session_application_contract::SessionWorkAuthorityReceipt,
         >,
-    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>;
+    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
+    {
+        use awaken_agent_contract::thread::read::recovery::LoadedRunRecovery;
+
+        match self
+            .load_recovery(claim, session_work_authority, None)
+            .await?
+        {
+            LoadedRunRecovery::Full { snapshot, .. } => Ok(*snapshot),
+            LoadedRunRecovery::Reuse { .. } => Err(DispatchError::Rejected(
+                "recovery attempted to reuse a prefix that was not supplied".into(),
+            )),
+        }
+    }
 }
 
 #[async_trait]

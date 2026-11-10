@@ -28,6 +28,7 @@ use awaken_agent_contract::thread::read::lifecycle::{
 use awaken_dispatch_erasure::RuntimeAuthority;
 #[cfg(test)]
 use awaken_dispatch_erasure::{LocalCommitQueries, ProjectedQueries};
+use awaken_runtime_contract::runs::RunError;
 use awaken_session_run_delivery::SessionCommitSource;
 
 /// Test query policy for making committed State diverge from the underlying
@@ -265,6 +266,34 @@ impl LocalAuthority {
 
 #[async_trait::async_trait]
 impl SessionCommitSource for LocalAuthority {
+    fn shared_recovery_source(
+        &self,
+    ) -> Option<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>> {
+        self.runtime.shared_recovery_source()
+    }
+
+    async fn transcript_seek_page(
+        &self,
+        session: &str,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, RunError> {
+        self.runtime.transcript_seek_page(session, request).await
+    }
+
+    async fn archived_run_activation(
+        &self,
+        session: &str,
+        thread: &awaken_agent_contract::ThreadId,
+        run: &awaken_agent_contract::RunId,
+    ) -> Result<
+        Option<awaken_dispatch_contract::run_dispatch::ArchivedRunActivation>,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        self.runtime
+            .archived_run_activation(session, thread, run)
+            .await
+    }
+
     async fn read_transcript_page(
         &self,
         session: &str,

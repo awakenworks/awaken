@@ -22,6 +22,7 @@ use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::recovery::LoadedRunRecovery;
 use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_coordinator_client::RemoteClaimedRunCommit;
 use awaken_dispatch::ClaimedCommitService;
@@ -535,11 +536,24 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
         .expect("claim through Control B")
         .expect("shared dispatch is claimable");
     let claim = RunClaim::from(&claimed.lease);
-    let initial = queue_a
-        .load_recovery_snapshot(&claim, None)
+    let LoadedRunRecovery::Full {
+        snapshot: initial,
+        prefix: Some(initial_prefix),
+    } = queue_a
+        .load_recovery(&claim, None, None)
         .await
-        .expect("initial recovery through Control A");
+        .expect("initial recovery through Control A")
+    else {
+        panic!("initial recovery must include a complete body and its version");
+    };
     assert_eq!(initial.thread_version, 0);
+    assert!(matches!(
+        queue_b
+            .load_recovery(&claim, None, Some(initial_prefix))
+            .await
+            .expect("the same prefix is valid through Control B"),
+        LoadedRunRecovery::Reuse { reused } if reused.prefix == initial_prefix
+    ));
 
     let commit = ThreadCommit::assemble(
         thread_id.clone(),
@@ -581,12 +595,19 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
         duplicate.duplicate,
         "Control B returned the durable receipt"
     );
-    let recovered = queue_b
-        .load_recovery_snapshot(&claim, None)
+    let LoadedRunRecovery::Full {
+        snapshot: recovered,
+        prefix: Some(committed_prefix),
+    } = queue_b
+        .load_recovery(&claim, None, Some(initial_prefix))
         .await
-        .expect("authoritative recovery through Control B");
+        .expect("authoritative recovery through Control B")
+    else {
+        panic!("a peer commit invalidates the old cached prefix");
+    };
     assert_eq!(recovered.thread_version, 1);
     assert_eq!(recovered.messages.len(), 1);
+    assert_eq!(committed_prefix.last_commit, duplicate.commit_sequence);
     assert_eq!(
         queue_b
             .settle(&run_id, claim.epoch, DispatchOutcome::Done, &[])

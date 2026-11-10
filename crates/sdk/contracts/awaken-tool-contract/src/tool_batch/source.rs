@@ -88,12 +88,14 @@ impl ActiveToolBatch {
         let mut selected: Option<String> = None;
         for recorded in Self::recorded_batches(&snapshot.state, &run_id) {
             let (position, batch) = recorded?;
-            let batch = Self::require_retained_batch(batch)?;
             if let Some(cursor) = source_cursor
                 && snapshot.state_commit_cursors[position] != cursor
             {
                 continue;
             }
+            // A later continuation can clear its active cell without erasing
+            // the batch committed with the source Message.
+            let batch = Self::require_retained_batch(batch)?;
             let Some(call) = batch
                 .calls()
                 .iter()
@@ -313,6 +315,25 @@ mod tests {
             None,
             "S4"
         );
+    }
+
+    #[test]
+    fn source_provenance_survives_a_later_committed_clear() {
+        let (snapshot, message) = source();
+        let expected = ActiveToolBatch::operation_for_message(&snapshot, &message, "send").unwrap();
+        for mut clear in [ActiveToolBatch::remove(), ActiveToolBatch::write(&None)] {
+            clear.bind_run(&snapshot.claimed_run_id);
+            let mut history = snapshot.clone();
+            history.state.push(clear);
+            history.state_commit_cursors.push(8);
+            assert_eq!(
+                ActiveToolBatch::operation_for_message(&history, &message, "send").unwrap(),
+                expected
+            );
+
+            history.state_commit_cursors[1] = history.message_commit_cursors[0];
+            assert!(ActiveToolBatch::operation_for_message(&history, &message, "send").is_err());
+        }
     }
 
     #[test]

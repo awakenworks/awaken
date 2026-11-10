@@ -224,7 +224,9 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
         worker: Arc::new(worker),
         session_application: session_application.clone(),
     });
+    let recovery_history = Arc::new(awaken_dispatch_execution::RecoveryHistoryCache::default());
     let run_assembly = Arc::new(crate::RunAssembly {
+        recovery_history: recovery_history.clone(),
         child_runs: Arc::new(crate::ChildRunLauncher::new(
             capabilities.clone(),
             authority.clone(),
@@ -232,6 +234,7 @@ fn assemble_components(dependencies: SessionExecutorBuilder) -> ExecutorComponen
             execution.clone(),
             realization_executor.clone(),
             resources.memory.background(),
+            recovery_history,
         )),
         capabilities: capabilities.clone(),
         local_workspace: local_workspace.clone(),

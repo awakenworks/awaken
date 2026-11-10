@@ -165,6 +165,28 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
                 sessions: stores.sessions.clone(),
                 session_reconciliation: stores.sessions.clone(),
                 postgres_pool: persistence.postgres_pool.clone(),
+                session_replay: match &deployment.coordinator.sessions {
+                    awaken_control::StoreBackend::Postgres(url)
+                        if storage.database_url.as_ref() == Some(url)
+                            && matches!(
+                                storage.store,
+                                awaken_deployment_config::StoreKind::Postgres
+                            )
+                            && matches!(
+                                storage.dispatch_backend,
+                                awaken_deployment_config::DispatchBackend::Postgres
+                            ) =>
+                    {
+                        persistence.postgres_pool.clone().map(|pool| {
+                            Arc::new(
+                                awaken_coordinator::session_replay::PostgresSessionReplay::new(
+                                    pool,
+                                ),
+                            )
+                        })
+                    }
+                    _ => None,
+                },
                 run_recovery: persistence.run_recovery.clone(),
                 run_lifecycle: persistence.run_lifecycle.clone(),
             });
@@ -215,6 +237,12 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         identity.local_browser_auth,
         model_supply,
         ProcessStartup {
+            session_diagnostics: coordinator_authorities
+                .as_ref()
+                .and_then(|authorities| authorities.session_replay.clone())
+                .map(|reads| {
+                    reads as Arc<dyn awaken_session_application::replay::SessionReplayReads>
+                }),
             service_lifecycle: service_lifecycle.clone(),
             deployment: Some(deployment.runtime.clone()),
             namespace_hand_path: None,

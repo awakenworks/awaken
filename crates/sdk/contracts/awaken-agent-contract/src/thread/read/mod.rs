@@ -6,4 +6,5 @@ pub mod checkpoint;
 pub mod committed_thread_view;
 pub mod lifecycle;
 pub mod recovery;
+pub mod replay;
 pub mod transcript;

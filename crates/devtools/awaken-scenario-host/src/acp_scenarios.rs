@@ -260,10 +260,14 @@ pub async fn build_acp_permission_router_with_deployment(
 
 /// Embed the fixture module graph for its deployment-owned `--eval` launch.
 fn embedded_acp_tool_bridge_fixture() -> String {
-    let fixture = node_module_without_shebang(include_str!(concat!(
+    embedded_acp_mcp_fixture(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../e2e/fixtures/acp_awaken_tool_bridge_fixture.mjs"
-    )));
+    )))
+}
+
+pub(super) fn embedded_acp_mcp_fixture(source: &str) -> String {
+    let fixture = node_module_without_shebang(source);
     // --eval has no fixture directory inside the Namespace. Import the same
     // canonical client bytes as a self-contained module, preserving its exports
     // rather than copying its transport implementation or exposing host files.

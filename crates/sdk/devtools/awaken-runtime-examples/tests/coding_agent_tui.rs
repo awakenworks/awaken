@@ -31,9 +31,8 @@ fn tui_public_entry_points_keep_their_signatures() {
 
     // `model::build_executor() -> anyhow::Result<(Arc<dyn LlmExecutor>, String)>` — the
     // real genai-backed model port the TUI drives.
-    let _build: fn()
-        -> anyhow::Result<(Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, String)> =
-        build_executor;
+    type ModelExecutor = (Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, String);
+    let _build: fn() -> anyhow::Result<ModelExecutor> = build_executor;
 }
 
 /// Exercise the non-render session pieces the TUI's `run` loop drives — config,

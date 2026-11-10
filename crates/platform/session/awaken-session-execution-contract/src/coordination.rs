@@ -628,15 +628,19 @@ impl SessionAgentReportContinuation {
 
     /// Original root continuation identity, never selected from the latest Run.
     pub fn run_id(&self) -> RunId {
-        RunId(format!(
-            "coord-report-run-{}",
-            awaken_agent_contract::stable_fingerprint(&(
-                "managed-agent-report-run-v1",
-                self.session_id.as_str(),
-                self.source_run_id.0.as_str(),
-            ))
-        ))
+        agent_report_run_id(&self.session_id, &self.source_run_id)
     }
+}
+
+pub fn agent_report_run_id(session_id: &crate::SessionId, source_run_id: &RunId) -> RunId {
+    RunId(format!(
+        "coord-report-run-{}",
+        awaken_agent_contract::stable_fingerprint(&(
+            "managed-agent-report-run-v1",
+            session_id.as_str(),
+            source_run_id.0.as_str(),
+        ))
+    ))
 }
 
 impl CoordinatedAdmissionRef<'_> {

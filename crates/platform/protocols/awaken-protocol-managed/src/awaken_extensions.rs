@@ -21,7 +21,8 @@ pub use event_admissions::{
     session_event_admission_router,
 };
 pub use execution_evidence::{
-    SessionExecutionEvidence, SessionRunExecutionEvidence, session_execution_evidence_router,
+    SessionExecutionEvidence, SessionRunExecutionEvidence, session_diagnostics_router,
+    session_execution_evidence_router,
 };
 pub use memory_copy_conflicts::memory_copy_conflicts_router;
 pub use profiled_run_events::{
@@ -38,5 +39,6 @@ pub use profiled_sessions::{
 pub use repositories::{CreateRepository, RepositoryObject, repositories_router};
 pub use resource_manifests::session_resource_manifest_router;
 pub use transcript_history::{
-    ThreadHistoryMessage, ThreadMessagePageQuery, session_thread_history_router,
+    ThreadHistoryAttachment, ThreadHistoryMessage, ThreadMessagePageQuery,
+    session_thread_history_router,
 };

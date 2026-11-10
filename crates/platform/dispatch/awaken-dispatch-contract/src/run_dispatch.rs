@@ -213,6 +213,33 @@ pub struct RunDispatch {
     pub placement: PlacementRequirements,
 }
 
+/// Replay evidence extracted at the first claimed commit of a Managed Run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchivedRunActivation {
+    pub activation: RunActivation,
+    pub session_resources: Option<SessionResourceEnvelope>,
+    pub session_runtime: Option<SessionRuntimeEnvelope>,
+    pub agent_publications: Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
+    pub admission_fingerprint: String,
+    pub activity_epoch: Option<u64>,
+    pub full_dispatch: bool,
+}
+
+impl From<&RunDispatch> for ArchivedRunActivation {
+    fn from(request: &RunDispatch) -> Self {
+        Self {
+            activation: request.activation.clone(),
+            session_resources: request.session_resources.clone(),
+            session_runtime: request.session_runtime.clone(),
+            agent_publications: request.agent_publications.clone(),
+            admission_fingerprint: request.admission_fingerprint(),
+            activity_epoch: request.session_activity_epoch,
+            full_dispatch: request.identity_scope == DispatchIdentityScope::FullDispatch
+                && request.session_command_fingerprint.is_none(),
+        }
+    }
+}
+
 /// The BackgroundTask extension's plugin id as frozen into a snapshot's
 /// `plugin_ids` (`awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID`; the
 /// Session executor's tests hold the two equal).

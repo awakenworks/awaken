@@ -14,6 +14,7 @@ pub struct CoordinatorAuthorityHandles {
     /// The one process-owned Coordinator pool. Hosted adapters and the
     /// process-readiness probe clone this handle rather than reconnecting.
     pub postgres_pool: Option<sqlx::PgPool>,
+    pub session_replay: Option<Arc<awaken_coordinator::session_replay::PostgresSessionReplay>>,
     pub run_recovery:
         Option<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>>,
     pub run_lifecycle:

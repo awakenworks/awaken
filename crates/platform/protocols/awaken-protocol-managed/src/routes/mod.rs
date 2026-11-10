@@ -34,7 +34,8 @@ pub use sessions::{
     close_event_admission, create_profiled_session, enforce_managed_beta,
     get_profiled_session_run_events, get_resource_manifest, get_session_content_capture,
     get_session_execution_evidence, list_thread_messages, release_profiled_session,
-    replace_resource_manifest, resume_profiled_session_run, router, submit_profiled_session_run,
+    replace_resource_manifest, resume_profiled_session_run, router, run_evidence_at,
+    session_timeline, submit_profiled_session_run,
 };
 pub use tunnels::tunnels_router;
 

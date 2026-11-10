@@ -35,6 +35,27 @@ use std::sync::Arc;
 /// ```
 #[async_trait::async_trait]
 pub trait RuntimeAuthority: Send + Sync {
+    async fn transcript_seek_page(
+        &self,
+        _session: &str,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, RunError> {
+        let _ = request;
+        Err(RunError::unavailable(
+            "Thread history range reads are unavailable",
+        ))
+    }
+
+    async fn archived_run_activation(
+        &self,
+        _session: &str,
+        _thread: &ThreadId,
+        _run: &awaken_agent_contract::RunId,
+    ) -> Result<Option<awaken_dispatch_contract::run_dispatch::ArchivedRunActivation>, RunError>
+    {
+        Ok(None)
+    }
+
     async fn open_commit(
         &self,
         thread: &str,

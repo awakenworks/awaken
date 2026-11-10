@@ -111,6 +111,32 @@ impl InstalledCommitSource {
 
 #[async_trait::async_trait]
 impl awaken_session_run_delivery::SessionCommitSource for InstalledCommitSource {
+    fn shared_recovery_source(
+        &self,
+    ) -> Option<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>> {
+        self.authority.shared_recovery_source()
+    }
+
+    async fn transcript_seek_page(
+        &self,
+        session: &str,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, RunError> {
+        self.authority.transcript_seek_page(session, request).await
+    }
+
+    async fn archived_run_activation(
+        &self,
+        session: &str,
+        thread: &awaken_agent_contract::ThreadId,
+        run: &awaken_agent_contract::RunId,
+    ) -> Result<Option<awaken_dispatch_contract::run_dispatch::ArchivedRunActivation>, RunError>
+    {
+        self.authority
+            .archived_run_activation(session, thread, run)
+            .await
+    }
+
     async fn read_transcript_page(
         &self,
         session: &str,

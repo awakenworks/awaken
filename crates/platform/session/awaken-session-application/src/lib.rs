@@ -176,6 +176,7 @@ pub use event_batch_cutover_validation::{
 };
 include!("application.rs");
 mod access;
+pub mod replay;
 pub use access::{SessionAccess, SessionAccessError};
 mod activity;
 mod inputs;

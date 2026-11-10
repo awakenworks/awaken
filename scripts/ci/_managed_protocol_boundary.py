@@ -19,6 +19,8 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
         ("PUT", "/v1/awaken/memory-stores/{}/dream-policy"),
         ("GET", "/v1/awaken/sessions/{}/live-inbox"),
         ("GET", "/v1/awaken/sessions/{}/execution-evidence"),
+        ("GET", "/v1/awaken/sessions/{}/execution-evidence/runs/{}"),
+        ("GET", "/v1/awaken/sessions/{}/execution-evidence/timeline"),
         ("GET", "/v1/awaken/sessions/{}/content-capture"),
         ("GET", "/v1/awaken/sessions/{}/threads/{}/messages"),
         ("POST", "/v1/awaken/sessions"),
@@ -401,23 +403,16 @@ def selftest() -> None:
             managed_route_inventory_violations(official, set(official), remaining)
         ), "R5 omitted"
 
-    # R6 the read-only Session execution projection is an explicit Awaken
-    # extension. Removing it from either production or this sole inventory must
-    # fail rather than silently making a product evidence claim unverifiable.
-    execution_evidence_route = (
-        "GET", "/v1/awaken/sessions/{}/execution-evidence"
-    )
-    assert execution_evidence_route in AWAKEN_MANAGED_EXTENSION_ROUTES, "R6 registered"
-    without_execution_evidence = set(AWAKEN_MANAGED_EXTENSION_ROUTES) - {
-        execution_evidence_route
-    }
-    assert (
-        f"missing listed Awaken managed extension route: "
-        f"{execution_evidence_route[0]} {execution_evidence_route[1]}"
-        in managed_route_inventory_violations(
-            official, set(official), without_execution_evidence
-        )
-    ), "R6 omitted"
+    # R6 each read-only Session evidence route is an explicit Awaken extension.
+    for route in (
+        ("GET", "/v1/awaken/sessions/{}/execution-evidence"),
+        ("GET", "/v1/awaken/sessions/{}/execution-evidence/runs/{}"),
+        ("GET", "/v1/awaken/sessions/{}/execution-evidence/timeline"),
+    ):
+        assert route in AWAKEN_MANAGED_EXTENSION_ROUTES, "R6 registered"
+        remaining = set(AWAKEN_MANAGED_EXTENSION_ROUTES) - {route}
+        missing = f"missing listed Awaken managed extension route: {route[0]} {route[1]}"
+        assert missing in managed_route_inventory_violations(official, set(official), remaining), "R6 omitted"
 
     # Admission-ownership cause/effect graph: C8 SessionApplication owns the
     # neutral command and sole adapter; C9 the composition root builds that

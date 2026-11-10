@@ -1563,8 +1563,9 @@ async fn commit_maps_a_storage_failure_to_a_rejection() {
         .await
         .expect("coordinator");
 
-    // Remove a table the commit must write to, forcing the transaction to fail.
-    sqlx::query("DROP TABLE runtime_commit")
+    // Drop the commit table and its dependent archive constraint in this
+    // isolated schema, forcing the subsequent operation to fail.
+    sqlx::query("DROP TABLE runtime_commit CASCADE")
         .execute(&pool)
         .await
         .expect("drop");
@@ -2271,4 +2272,128 @@ async fn recovery_scope_uses_committed_run_ownership_when_cache_is_damaged() {
             "R3"
         );
     }
+}
+
+#[tokio::test]
+async fn backward_history_freezes_visible_rows_across_append_and_reconnect() {
+    use awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest;
+    let Some(pool) = schema_pool("t_visible_seek_history").await else {
+        return;
+    };
+    let store = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let thread = ThreadId("history".into());
+    let commit = |run: &str, messages| ThreadCommit {
+        thread_id: thread.clone(),
+        run: ended(run),
+        messages,
+        state: vec![],
+        events: vec![],
+    };
+    let mut hidden = message("hidden", "internal");
+    hidden.role = Role::System;
+    store
+        .commit(commit(
+            "first",
+            vec![
+                message("one", "one"),
+                hidden,
+                message("two", "two"),
+                message("three", "three"),
+            ],
+        ))
+        .await
+        .unwrap();
+    let mut request = TranscriptSeekRequest {
+        thread_id: thread.clone(),
+        seek: None,
+        limit: std::num::NonZeroUsize::new(2).unwrap(),
+    };
+    let first = store.transcript_seek_page(&request).await.unwrap();
+    assert_eq!(
+        first
+            .messages
+            .iter()
+            .map(|message| message.id.0.as_str())
+            .collect::<Vec<_>>(),
+        ["two", "three"]
+    );
+    request.seek = first.next;
+    assert!(request.seek.is_some());
+    store
+        .commit(commit("second", vec![message("four", "four")]))
+        .await
+        .unwrap();
+    let reopened = PostgresCommitCoordinator::with_existing_pool(pool)
+        .await
+        .unwrap();
+    let rest = reopened.transcript_seek_page(&request).await.unwrap();
+    assert_eq!(rest.messages[0].id.0, "one");
+    assert!(rest.next.is_none());
+    let mut foreign = request.clone();
+    foreign.thread_id = ThreadId("other-thread".into());
+    assert!(reopened.transcript_seek_page(&foreign).await.is_err());
+    request.seek = None;
+    let latest = reopened.transcript_seek_page(&request).await.unwrap();
+    assert_eq!(latest.messages.last().unwrap().id.0, "four");
+}
+
+#[tokio::test]
+async fn conditional_recovery_uses_thread_head_and_reloads_after_a_peer_commit() {
+    use awaken_agent_contract::thread::read::recovery::LoadedRunRecovery;
+    let Some(pool) = schema_pool("t_conditional_recovery").await else {
+        return;
+    };
+    let store = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let peer = PostgresCommitCoordinator::with_existing_pool(pool)
+        .await
+        .unwrap();
+    let thread = ThreadId("hot".into());
+    let other = ThreadId("other".into());
+    let next = RunId("next-run".into());
+    let commit = |thread: &ThreadId, run: &str, id: &str| ThreadCommit {
+        thread_id: thread.clone(),
+        run: ended(run),
+        messages: vec![message(id, id)],
+        state: vec![],
+        events: vec![],
+    };
+    store.commit(commit(&thread, "first", "one")).await.unwrap();
+    let LoadedRunRecovery::Full {
+        prefix: Some(prefix),
+        snapshot,
+    } = store
+        .load_recovery(&thread, &thread, &next, None)
+        .await
+        .unwrap()
+    else {
+        panic!("cold recovery did not issue a prefix")
+    };
+    peer.commit(commit(&other, "other-run", "unrelated"))
+        .await
+        .unwrap();
+    let LoadedRunRecovery::Reuse { reused } = store
+        .load_recovery(&thread, &thread, &next, Some(prefix))
+        .await
+        .unwrap()
+    else {
+        panic!("other Thread invalidated a valid prefix")
+    };
+    assert_eq!(reused.prefix, prefix);
+    assert_eq!(reused.run_id, next);
+    assert_eq!(reused.next_commit_ordinal, 0);
+    assert!(reused.store_cursor > snapshot.store_cursor);
+    peer.commit(commit(&thread, "later", "two")).await.unwrap();
+    let LoadedRunRecovery::Full { snapshot, .. } = store
+        .load_recovery(&thread, &thread, &next, Some(prefix))
+        .await
+        .unwrap()
+    else {
+        panic!("same Thread commit did not force a full load")
+    };
+    assert_eq!(snapshot.messages.len(), 2);
+    assert_eq!(snapshot.message_commit_cursors.len(), 2);
 }

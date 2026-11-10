@@ -899,16 +899,18 @@ async fn recovery_snapshot(
                 }
             }
         }
-        let snapshot = service
+        let recovery = service
             .recovery
-            .recovery_snapshot_in_session(
+            .load_recovery(
                 dispatch.session_thread_id(),
                 dispatch.thread_id(),
                 dispatch.run_id(),
+                request.cached_prefix,
             )
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        Ok(json!({ "snapshot": snapshot }))
+        serde_json::to_value(recovery)
+            .map_err(|error| ApplicationError::internal(error.to_string()))
     }
     .await;
     respond(result)

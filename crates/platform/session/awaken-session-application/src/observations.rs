@@ -27,6 +27,7 @@ use crate::{
 /// Thread, coordination and budget runtime roles, plus the File catalog that
 /// reports artifact capture.
 pub struct SessionObservations {
+    diagnostics: Option<Arc<dyn crate::replay::SessionReplayReads>>,
     mutations: Arc<crate::SessionMutations>,
     clock: Arc<dyn awaken_time::WallClock>,
     queries: Arc<crate::SessionQueries>,
@@ -38,14 +39,37 @@ pub struct SessionObservations {
 }
 
 impl SessionObservations {
+    async fn require_transcript_thread(
+        &self,
+        session: &awaken_session_types::SessionId,
+        thread: &awaken_agent_contract::ThreadId,
+    ) -> Result<(), RunError> {
+        if thread.0 != session.as_str()
+            && !self
+                .coordination_reads
+                .coordinated_threads(session, None)
+                .await?
+                .iter()
+                .any(|link| link.session_id == *session && link.thread_id == *thread)
+        {
+            return Err(RunError::bad_request_classified(
+                "not_found",
+                "Thread was not found",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(
         mutations: Arc<crate::SessionMutations>,
         clock: Arc<dyn awaken_time::WallClock>,
         queries: Arc<crate::SessionQueries>,
         resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
         runtime: &crate::SessionExecutionRoles,
+        diagnostics: Option<Arc<dyn crate::replay::SessionReplayReads>>,
     ) -> Self {
         Self {
+            diagnostics,
             mutations,
             clock,
             queries,
@@ -366,6 +390,64 @@ fn merge_session_usage(total: &mut SessionUsage, child: SessionUsage) {
 
 #[async_trait::async_trait]
 impl crate::SessionObservation for SessionObservations {
+    async fn timeline(
+        &self,
+        access: &crate::SessionAccess,
+        query: &crate::replay::TimelineQuery,
+        cursor: Option<&crate::replay::TimelineCursor>,
+    ) -> Result<crate::replay::TimelinePage, crate::replay::SessionReplayError> {
+        self.diagnostics
+            .as_ref()
+            .ok_or_else(|| {
+                crate::replay::SessionReplayError::Unavailable(
+                    "Session diagnostics require the shared PostgreSQL authority".into(),
+                )
+            })?
+            .timeline(access, query, cursor)
+            .await
+    }
+
+    async fn run_evidence_at(
+        &self,
+        access: &crate::SessionAccess,
+        run: &awaken_agent_contract::RunId,
+        snapshot: &crate::replay::TimelineSnapshot,
+    ) -> Result<crate::replay::RunEvidence, crate::replay::SessionReplayError> {
+        self.diagnostics
+            .as_ref()
+            .ok_or_else(|| {
+                crate::replay::SessionReplayError::Unavailable(
+                    "Session diagnostics require the shared PostgreSQL authority".into(),
+                )
+            })?
+            .run_evidence_at(access, run, snapshot)
+            .await
+    }
+
+    async fn transcript_seek_page(
+        &self,
+        access: &crate::SessionAccess,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, RunError> {
+        if request.thread_id.0 != access.session_id().as_str() {
+            let found = if let Some(diagnostics) = &self.diagnostics {
+                diagnostics
+                    .contains_thread(access, &request.thread_id)
+                    .await
+                    .map_err(|error| RunError::unavailable(error.to_string()))?
+            } else {
+                false
+            };
+            if !found {
+                self.require_transcript_thread(access.session_id(), &request.thread_id)
+                    .await?;
+            }
+        }
+        self.thread_reads
+            .transcript_seek_page(access.session_id(), request)
+            .await
+    }
+
     /// Read a committed page only after admitting the logical Thread under this Session.
     async fn transcript_page(
         &self,
@@ -373,19 +455,8 @@ impl crate::SessionObservation for SessionObservations {
         request: &awaken_agent_contract::thread::read::transcript::TranscriptPageRequest,
     ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptPage, RunError> {
         let session = access.session_id();
-        if request.thread_id.0 != session.as_str()
-            && !self
-                .coordination_reads
-                .coordinated_threads(session, None)
-                .await?
-                .iter()
-                .any(|link| link.session_id == *session && link.thread_id == request.thread_id)
-        {
-            return Err(RunError::bad_request_classified(
-                "not_found",
-                "Thread was not found",
-            ));
-        }
+        self.require_transcript_thread(session, &request.thread_id)
+            .await?;
         self.thread_reads.transcript_page(session, request).await
     }
 

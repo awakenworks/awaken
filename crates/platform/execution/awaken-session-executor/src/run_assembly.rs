@@ -26,6 +26,7 @@ use crate::host::capability;
 #[derive(Clone)]
 pub struct RunAssembly {
     pub(crate) capabilities: Arc<crate::RunCapabilities>,
+    pub(crate) recovery_history: Arc<awaken_dispatch_execution::RecoveryHistoryCache>,
     pub(crate) child_runs: Arc<crate::ChildRunLauncher>,
     pub(crate) local_workspace: String,
     pub(crate) installed_sessions: Arc<crate::InstalledSessions>,

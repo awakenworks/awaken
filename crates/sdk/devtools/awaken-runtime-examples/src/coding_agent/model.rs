@@ -15,10 +15,6 @@ use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor, Resul
 use genai::adapter::AdapterKind;
 
 /// Select the model and its non-streaming executor from one explicit environment.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the example program is its own process root and reads its model endpoint from the environment"
-)]
 pub fn build_executor() -> anyhow::Result<(Arc<dyn LlmExecutor>, String)> {
     let configuration = model_configuration(env_nonempty)?;
     let genai = GenaiExecutor::with_client_for_adapter(
@@ -88,47 +84,6 @@ fn model_configuration(
     anyhow::bail!("set an explicit provider credential for the coding-agent example")
 }
 
-#[cfg(test)]
-mod configuration_tests {
-    use super::*;
-
-    #[test]
-    fn provider_and_model_are_selected_together() {
-        // Causes: C1 available credentials in their documented priority; C2
-        // explicit model or named-provider default; C3 custom endpoint; C4 no
-        // credential. Effects: E1 one matching model/adapter; E2 explicit model
-        // wins; E3 custom URL retained; E4 missing model/credential refuses.
-        // Rules: T1 MiniMax+Kimi -> MiniMax/default; T2 Kimi -> Kimi/default;
-        // T3 OpenAI+explicit model+URL -> E1/E2/E3; T4 native key without model
-        // or no key -> E4. Pure inputs avoid process-global environment mutation.
-        let select = |pairs: &[(&str, &str)]| {
-            model_configuration(|name| {
-                pairs
-                    .iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            })
-        };
-        let named = select(&[("MINIMAX_API_KEY", "fixture"), ("KIMI_API_KEY", "fixture")]).unwrap();
-        assert_eq!(named.model, "MiniMax-M3");
-        assert!(matches!(named.adapter, AdapterKind::Anthropic));
-        assert_eq!(
-            select(&[("KIMI_API_KEY", "fixture")]).unwrap().model,
-            "kimi-k2.7-code"
-        );
-        let custom = select(&[
-            ("OPENAI_API_KEY", "fixture"),
-            ("OPENAI_BASE_URL", "https://gateway.example/v1"),
-            ("AWAKEN_MODEL", "selected-model"),
-        ])
-        .unwrap();
-        assert_eq!(custom.model, "selected-model");
-        assert_eq!(custom.base, "https://gateway.example/v1");
-        assert!(select(&[("OPENAI_API_KEY", "fixture")]).is_err());
-        assert!(select(&[]).is_err());
-    }
-}
-
 /// Forces non-streaming inference: it delegates `infer` and lets the trait's
 /// default `infer_streaming` emit the assembled turn. genai's streaming capture
 /// drops tool calls for some reasoning models (e.g. Kimi K2 emits a long
@@ -186,4 +141,45 @@ fn custom_client(
         .with_chat_options(ChatOptions::default().with_max_tokens(8192))
         .build()
         .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::*;
+
+    #[test]
+    fn provider_and_model_are_selected_together() {
+        // Causes: C1 available credentials in their documented priority; C2
+        // explicit model or named-provider default; C3 custom endpoint; C4 no
+        // credential. Effects: E1 one matching model/adapter; E2 explicit model
+        // wins; E3 custom URL retained; E4 missing model/credential refuses.
+        // Rules: T1 MiniMax+Kimi -> MiniMax/default; T2 Kimi -> Kimi/default;
+        // T3 OpenAI+explicit model+URL -> E1/E2/E3; T4 native key without model
+        // or no key -> E4. Pure inputs avoid process-global environment mutation.
+        let select = |pairs: &[(&str, &str)]| {
+            model_configuration(|name| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned())
+            })
+        };
+        let named = select(&[("MINIMAX_API_KEY", "fixture"), ("KIMI_API_KEY", "fixture")]).unwrap();
+        assert_eq!(named.model, "MiniMax-M3");
+        assert!(matches!(named.adapter, AdapterKind::Anthropic));
+        assert_eq!(
+            select(&[("KIMI_API_KEY", "fixture")]).unwrap().model,
+            "kimi-k2.7-code"
+        );
+        let custom = select(&[
+            ("OPENAI_API_KEY", "fixture"),
+            ("OPENAI_BASE_URL", "https://gateway.example/v1"),
+            ("AWAKEN_MODEL", "selected-model"),
+        ])
+        .unwrap();
+        assert_eq!(custom.model, "selected-model");
+        assert_eq!(custom.base, "https://gateway.example/v1");
+        assert!(select(&[("OPENAI_API_KEY", "fixture")]).is_err());
+        assert!(select(&[]).is_err());
+    }
 }

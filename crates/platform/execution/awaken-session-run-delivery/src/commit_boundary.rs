@@ -312,6 +312,23 @@ impl CommittedThreadView for SessionCommit {
 
 #[async_trait::async_trait]
 impl RunRecoverySource for SessionCommit {
+    async fn load_recovery(
+        &self,
+        session: &ThreadId,
+        thread: &ThreadId,
+        run: &RunId,
+        cached: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, RecoveryError>
+    {
+        match self {
+            SessionCommit::Local(store) => store.load_recovery(session, thread, run, cached).await,
+            SessionCommit::Remote(_) => self
+                .recovery_snapshot(thread, run)
+                .await
+                .map(awaken_agent_contract::thread::read::recovery::LoadedRunRecovery::full),
+        }
+    }
+
     async fn recovery_snapshot(
         &self,
         thread_id: &ThreadId,

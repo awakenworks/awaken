@@ -356,6 +356,20 @@ where
     S: RunRecoverySource + Send + Sync,
     Q: Send + Sync,
 {
+    async fn load_recovery(
+        &self,
+        session: &ThreadId,
+        thread: &ThreadId,
+        run: &RunId,
+        cached: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, RecoveryError>
+    {
+        self.store
+            .as_ref()
+            .load_recovery(session, thread, run, cached)
+            .await
+    }
+
     async fn recovery_snapshot(
         &self,
         thread_id: &ThreadId,

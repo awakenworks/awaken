@@ -282,6 +282,31 @@ async fn insert_dispatch_with_state(
     .map_err(store_error)?
     .rows_affected();
     if inserted > 0 {
+        if let Some(scope) = &request.execution_scope {
+            // The existing operational feed barrier also covers admissions.
+            // Reuse its sequence so both read views freeze at one Dispatch head.
+            sqlx::query(&format!(
+                "LOCK TABLE {prefix}_dispatch_operation IN ROW EXCLUSIVE MODE"
+            ))
+            .execute(&mut **tx)
+            .await
+            .map_err(store_error)?;
+            sqlx::query(&format!(
+                "INSERT INTO {prefix}_dispatch_session_membership
+                 (run_id, scope_id, session_id, thread_id, sequence, recorded_at_ms, initial_status, parent_run_id)
+                 VALUES ($1, $2, $3, $4,
+                   nextval(pg_get_serial_sequence($5, 'sequence')::regclass),
+                   FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint, $6, $7)"
+            ))
+            .bind(&request.run_id().0)
+            .bind(scope.0.as_str())
+            .bind(&request.session_thread_id().0)
+            .bind(&request.thread_id().0)
+            .bind(format!("{prefix}_dispatch_operation"))
+            .bind(initial_status)
+            .bind(request.activation.delegation_origin.as_ref().map(|origin| &origin.parent_run_id.0))
+            .execute(&mut **tx).await.map_err(store_error)?;
+        }
         return Ok(());
     }
     if exact_run_replay(tx, prefix, request).await? {
