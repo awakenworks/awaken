@@ -18,14 +18,20 @@ These are separately owned applications with broader product behavior. They are
 not required by the first-use examples above, and their historical evidence does
 not qualify a different Awaken revision.
 
-- [Pilot](https://awakenworks.com/cases/pilot): a Mission-oriented application.
-- [DeepSeek Harness](https://awakenworks.com/cases/deepseek-harness): a workbench
-  with trajectories, approvals, presets and deliverables. Its fixed walkthrough
-  uses a deterministic Managed API fixture.
-- [Design](https://awakenworks.com/cases/design): an application with its own
-  Project, Revision, review and artifact publication model.
-- Cowork: an internal React reference for uploads, tasks, approvals and file
-  delivery. Its source is maintained separately; no public source URL is claimed.
+- Cowork: the primary complete reference for uploads and file delivery, with
+  optional plans, Project context, quality checks and native schedules. It owns
+  one task view over Managed Sessions. Its source is maintained separately;
+  no new public source URL is claimed by this local consolidation.
+- [Design](https://awakenworks.com/cases/design): an advanced domain application
+  with its own Project, Revision, review and artifact publication model.
+- [DeepSeek Harness](https://awakenworks.com/cases/deepseek-harness): a specialized
+  workbench reimplementation with trajectories, approvals, presets and deliverables.
+  Its fixed walkthrough uses a deterministic Managed API fixture.
+
+Pilot's application capabilities are consolidated into Cowork. Standalone source
+`14d831e` remains historical; older case/source archives at the
+[Pilot case page](https://awakenworks.com/cases/pilot) retain their dated subject.
+They do not replace the current Cowork implementation or its qualification.
 
 Source availability and validation level are stated by each reference's own
 release/case page. The [existing recording system](../web/record/README.md) owns
@@ -51,23 +57,19 @@ protocol fixture. Real-provider success does not turn those fixture results
 into provider execution evidence. Product recordings have not been rerun for
 this change.
 
-The separately owned repairs below are integrated into each application's local
-main; original checkout work was preserved. No branch or public case/source
-archive was pushed or published. Provider journeys use real DeepSeek
-`deepseek-flash` on Linux.
+The independent applications below were checked on Linux with real DeepSeek
+`deepseek-flash` for the provider journeys. No source branch or public case archive
+was pushed or published. Cowork's consolidation builds on Native `69c5866fa0`
+with exact-publication diagnostic extension `64fd904057`; its own record binds
+the binary, Project, old/new Agent versions and real schedule-triggered Run.
+Harness retains its check against Native `a95f392e02`; Design retains its rebase
+check against Native `9d2b32d988`.
 
-Cowork, Pilot and Harness were checked against Native
-`a95f392e0243899fab673defb38c5366dadd0bc0`. Design was rebased over its newer
-main `297522b` and rechecked against Native `9d2b32d988`, whose intervening change
-is documentation only. The Design check retains main's transient-history
-recovery and the shared smoke/corpus terminal guard.
-
-| Application | Repair revision | Source and controlled checks | Real-provider check |
+| Application | Source subject | Source and controlled checks | Real-provider check |
 |---|---|---|---|
-| Cowork | `b378ede` | 214 unit, 54 oracle/helper tests, 62 browser journeys and build | Short and explicit headcount input both deliver verified Files on Namespace; independent arithmetic/status and approval limits retained |
-| Pilot | `14d831e` | 137 unit/runner tests, typecheck and build | Complete schedule/resources, desktop/mobile browser, both research children, Plan, satisfied Outcome, artifact and real IAM share/revoke journey on Namespace |
-| DeepSeek Harness | `c670e1f` | 46 unit tests, typecheck/build and 12 browser/video journeys | Complete preset/Skill/reconnect/plan/question/creator journey; approved child Bash, cross-Thread reply and later parent report on Namespace |
-| Design | `7725193` | 487 source tests and build; 53 PostgreSQL/MinIO/controlled-browser tests (live case explicitly skipped in that lane) | Rebased real Docker gate passed 29 checks, including initial/child generation, verified Preview, acceptance and ZIP export; missing-browser negative fails promptly |
+| Cowork | `24c06c2` | 256 unit, 54 oracle/helper checks, type/build; 67 browser journeys | Existing Project pin after Agent upgrade; approved plan and independent file oracle; satisfied Native Outcome; actual cron and Session readback on Namespace |
+| DeepSeek Harness | `c670e1f` | 46 unit tests, type/build and 12 browser/video journeys | Presets, Skill, reconnect, plan, question, creator and approved child Bash with parent report on Namespace |
+| Design | `7725193` | 487 source tests/build; 53 storage/controlled-browser checks, live case skipped in that lane | Separate Docker initial/child, Preview, acceptance and ZIP; missing-browser refusal |
 
 The application READMEs own preparation, the first useful result and verification
 commands; detailed records retain exact runtime and failure boundaries. Repair
