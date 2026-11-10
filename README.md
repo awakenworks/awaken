@@ -1,26 +1,49 @@
 # Awaken Agents
 
-Build AI applications with persistent sessions and tool permissions.
+Build and run AI agent applications on your own infrastructure.
 
 Awaken Agents is an open-source, self-hostable execution platform for AI agent
 applications. Start its local Console, publish an Agent, and connect your
-frontend or backend through supported APIs. Awaken manages execution, committed
-Session history, resources and tool permissions; your application keeps its
-experience, business rules and result acceptance.
+frontend or backend through supported APIs. Awaken provides Agent publication,
+persistent Sessions, resource bindings and tool permissions. Your application
+keeps its interface, business rules and result checks.
+
+[Quickstart](#build-from-source) · [Connect your application](#build-with-awaken) ·
+[Rust SDK](crates/sdk/runtime/awaken-runtime/README.md) · [Documentation](docs/README.md)
+
+## Why Awaken
+
+- **Start locally with the Console.** Create, review, publish and run an Agent
+  with the API and local Worker in one service. The built executable contains
+  the Console and needs no Node.js at runtime. [Try it](#try-awaken).
+- **Keep work across connections.** Reopen the same Session and inspect its
+  committed history after reconnecting or restarting. Eligible interrupted work
+  follows the configured [recovery policy](docs/design/remote-worker-protocol.md#recovery).
+- **Control tool actions.** Configure supported tools to allow, deny or wait for
+  a human decision before execution. Approval resumes the existing work through the
+  [permission path](docs/design/permission-policy-axis.md#permission-flow).
+- **Use your existing application stack.** Connect backends and frontends through
+  the supported Managed Agents, AI SDK and AG-UI interfaces; use A2A for Agent
+  communication and MCP for exported tools. [Choose an interface](#build-with-awaken).
+- **Choose how the Agent runs.** Use Native execution, a supported ACP runtime
+  or a remote A2A Agent. Execution capabilities depend on the selected adapter
+  and Environment; see the [runtime capability guide](docs/design/acp-harness-capability-and-tool-bridge.md#decision).
+- **Reuse task context and procedures.** Attach files and repositories, configure
+  persistent MemoryStores and bind versioned Skills. Inspect the resources used
+  by a Session through the existing [resource model](docs/design/resources-memory-files-skills.md).
 
 ## What you can build
 
 - **Assistants and copilots:** connect a product UI or backend to a published
   Agent and reopen the same Session across connections.
-- **Repository and research applications:** bind the files, tools, skills and
-  model access a task needs, then inspect its result and recorded progress.
-- **Multiple Agent applications:** reuse publication, permissions and execution
-  across applications while each keeps its own interface and business rules.
+- **Repository assistants:** inspect a mounted repository, propose a focused
+  change and run checks with the configured filesystem and tool permissions.
+- **Research applications:** use supplied files or configured search tools,
+  produce a sourced brief and inspect its inputs and output.
 
-Use Awaken when your application needs durable Agent work and an explicit
-execution boundary. A single prompt or a trusted one-off script may need less
-infrastructure. Recovery follows committed facts and configured policy; an
-uncertain external action must not be blindly replayed.
+The Console includes Task assistant, Repository change and Evidence brief
+[starters](web/src/lib/agent-starters.ts). A starter supplies an editable draft;
+its tools, resources and model still need to be available in your Environment.
 
 ## Choose your starting point
 
@@ -34,6 +57,15 @@ uncertain external action must not be blindly replayed.
 An Agent defines published behavior; an Environment describes execution
 requirements. A Session holds ongoing work and committed history, and a Run
 executes work within that Session.
+
+```mermaid
+flowchart LR
+  App[Your application] -->|Supported API or protocol| Session[Awaken Session]
+  Published[Published Agent and Environment] --> Session
+  Session --> Execution[Native, supported ACP or remote A2A]
+  Execution -->|Events and outputs| Session
+  Session -->|Stream or inspect| App
+```
 
 ## Availability
 
@@ -112,6 +144,19 @@ the same Session. The earlier committed history should still be there. This
 checks persistence. Continuing an in-flight task also depends on its configured
 recovery policy and the outcome of any external action.
 
+### 4. Try a task with tools
+
+For a repository task, choose **Repository change**, bind a repository to the
+Agent or Session and select an Environment with filesystem tools. Begin with
+the starter's inspection task, then request one small change. Set an approval rule before an operation you
+want to review: inspect the pending call, allow or deny it, and follow the result
+in the same Session. The [tool guide](docs/design/builtin-tools-extension-contract.md)
+and [permission guide](docs/design/permission-policy-axis.md) describe the controls.
+
+For research, choose **Evidence brief** and provide Files or a configured
+Web/Search tool or MCP server. Check that the brief answers the question and
+that its cited sources support it. A successful Run still needs that result check.
+
 ## Build with Awaken
 
 After the first task, open the Console's **Integrate** step or **API & protocols**.
@@ -130,6 +175,12 @@ the [Managed SDK example](web/src/lib/sdk-examples.ts). Before migrating an
 existing client, check the [SDK compatibility record](packages/managed-sdk-oracle/README.md)
 for reviewed versions, supported operations and qualification boundaries.
 
+For the backend path, the maintained example follows four steps: create a
+Session using the published Agent and Environment IDs, send a user message,
+open the returned Session link, then inspect its reply in the Console. Copy the
+contextual example from **Integrate** so it uses your actual IDs and deployment
+URL. Use that same Session for subsequent work.
+
 Follow the Console's identity-specific instructions for credentials. Keep a
 Workspace service API key in a trusted backend; browser and mobile applications
 use scoped, short-lived application access. See [application authentication](docs/application-authentication.md).
@@ -143,6 +194,25 @@ For a Rust process embedding execution directly, start with the [Runtime SDK](cr
 and [independent consumer](examples/sdk-consumer/README.md). Internal
 [runtime examples](crates/sdk/devtools/awaken-runtime-examples/examples/README.md)
 teach composition mechanics; they are an advanced path after the public SDK.
+
+## More capabilities
+
+| You need to | Existing capability and guide |
+|---|---|
+| Run recurring tasks | [Scheduled Deployments](docs/design/managed-deployments.md): bind an Agent, Environment and initial input to a cron schedule; an admitted occurrence starts a Session |
+| Notify another application | [Lifecycle webhooks](docs/design/managed-deployments.md#recovery-and-webhooks): subscribe to lifecycle notifications through the existing delivery and retry path |
+| Inspect usage and constrain later model execution | [Session budgets](crates/platform/session/awaken-session-contract/src/budget.rs) use recorded usage and configured price snapshots; they do not cap the total cost of a task |
+| Retain useful information across Sessions | The [Memory extension](crates/sdk/extensions/awaken-ext-memory/src/lib.rs) extracts and recalls configured memory; [context compaction](crates/sdk/extensions/awaken-ext-compact/src/lib.rs) manages the current context window separately |
+| Add Agent behavior | [Runtime extensions](docs/design/runtime-behavior.md#runtime-extension-surface) provide plugin hooks; [state machines](docs/design/tool-state-machine.md) constrain Native tool sequences, and [delegation](crates/sdk/runtime/awaken-runtime/tests/delegation.rs) exercises sub-Agent execution |
+
+## Fit and boundaries
+
+Use Awaken when your application needs durable Agent work, reusable execution
+and explicit tool permissions. A single prompt or a trusted one-off script may
+need less infrastructure. Recovery follows committed facts and configured
+policy; reconcile uncertain external outcomes before retrying an action.
+Capability availability depends on the runtime, provider and Environment you
+select. Self-hosting also requires choosing where models, tools and data run.
 
 ## Operate Awaken
 
