@@ -223,7 +223,10 @@ mod postgres {
             .as_nanos();
         let schema = format!("t_memory_redact_retry_{}_{nonce:x}", std::process::id());
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(
+                // The schema is a fixed fixture prefix plus integer process/time coordinates.
+                sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+            )
             .await
             .unwrap();
         admin.close().await;

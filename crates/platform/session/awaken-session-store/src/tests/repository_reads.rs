@@ -136,7 +136,8 @@ async fn postgres_reader_preserves_quarantine_and_only_maintenance_clears_it() {
     };
     let schema = format!("t_session_read_{}", uuid::Uuid::new_v4().simple());
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .unwrap();
     let pool = sqlx::postgres::PgPool::connect(&scoped_postgres_url(&url, &schema))
@@ -201,7 +202,8 @@ async fn postgres_reader_preserves_quarantine_and_only_maintenance_clears_it() {
     );
     store.pool.close().await;
     admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .await
         .unwrap();
     admin.close().await;

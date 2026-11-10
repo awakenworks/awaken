@@ -16,7 +16,7 @@ isolates = ["sqlx"]
 [dependencies]
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -24,7 +24,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = []
-postgres = ["dep:sqlx", "dep:tokio", "sqlx/runtime-tokio-rustls"]
+postgres = ["dep:sqlx", "dep:tokio", "sqlx/runtime-tokio", "sqlx/tls-rustls-ring"]
 
 [lints]
 workspace = true

@@ -115,9 +115,9 @@ async fn published_checksum(
     if ledger.is_none() {
         return Ok(None);
     }
-    sqlx::query_scalar(&format!(
-        "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = $2"
-    ))
+    sqlx::query_scalar(
+        "SELECT checksum FROM runtime_schema_migrations WHERE bundle_id = $1 AND version = $2",
+    )
     .bind(bundle)
     .bind(version)
     .fetch_optional(pool)
@@ -204,18 +204,17 @@ async fn insert_dispatch_with_state(
 ) -> Result<(), DispatchError> {
     let mut epoch = 0i64;
     if options.supersede {
-        let max: Option<i64> = sqlx::query_scalar(&format!(
-            "SELECT MAX(epoch) FROM {prefix}_dispatch WHERE thread_id = $1"
-        ))
-        .bind(&request.thread_id().0)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(store_error)?;
+        let max: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(epoch) FROM runtime_dispatch WHERE thread_id = $1")
+                .bind(&request.thread_id().0)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(store_error)?;
         epoch = crate::next_supersession_epoch(max.unwrap_or(0))?;
-        let candidates = sqlx::query(&format!(
-            "SELECT run_id, status, lease_epoch, cancel_requested FROM {prefix}_dispatch \
-             WHERE thread_id = $1 FOR UPDATE"
-        ))
+        let candidates = sqlx::query(
+            "SELECT run_id, status, lease_epoch, cancel_requested FROM runtime_dispatch \
+             WHERE thread_id = $1 FOR UPDATE",
+        )
         .bind(&request.thread_id().0)
         .fetch_all(&mut **tx)
         .await
@@ -248,10 +247,10 @@ async fn insert_dispatch_with_state(
             .supersede() else {
                 continue;
             };
-            sqlx::query(&format!(
-                "UPDATE {prefix}_dispatch SET status = $2, lease_owner = NULL, \
-                 lease_until = NULL WHERE run_id = $1"
-            ))
+            sqlx::query(
+                "UPDATE runtime_dispatch SET status = $2, lease_owner = NULL, \
+                 lease_until = NULL WHERE run_id = $1",
+            )
             .bind(run_id)
             .bind(crate::dispatch_state_db(next.state))
             .execute(&mut **tx)
@@ -260,15 +259,15 @@ async fn insert_dispatch_with_state(
         }
     }
 
-    let inserted = sqlx::query(&format!(
-        "INSERT INTO {prefix}_dispatch \
+    let inserted = sqlx::query(
+        "INSERT INTO runtime_dispatch \
          (run_id, thread_id, request, status, priority, epoch, dedupe_key, lease_until) \
          SELECT $1, $2, $3, $7, $4, $5, $6, $8 \
          WHERE NOT EXISTS ( \
-             SELECT 1 FROM {prefix}_dispatch WHERE dedupe_key = $6 AND status <> 'dead_letter') \
-         AND NOT EXISTS (SELECT 1 FROM {prefix}_dispatch_completion WHERE run_id = $1) \
-         ON CONFLICT (run_id) DO NOTHING"
-    ))
+             SELECT 1 FROM runtime_dispatch WHERE dedupe_key = $6 AND status <> 'dead_letter') \
+         AND NOT EXISTS (SELECT 1 FROM runtime_dispatch_completion WHERE run_id = $1) \
+         ON CONFLICT (run_id) DO NOTHING",
+    )
     .bind(&request.run_id().0)
     .bind(&request.thread_id().0)
     .bind(Json(request))
@@ -285,19 +284,15 @@ async fn insert_dispatch_with_state(
         if let Some(scope) = &request.execution_scope {
             // The existing operational feed barrier also covers admissions.
             // Reuse its sequence so both read views freeze at one Dispatch head.
-            sqlx::query(&format!(
-                "LOCK TABLE {prefix}_dispatch_operation IN ROW EXCLUSIVE MODE"
-            ))
-            .execute(&mut **tx)
-            .await
-            .map_err(store_error)?;
-            sqlx::query(&format!(
-                "INSERT INTO {prefix}_dispatch_session_membership
+            sqlx::query("LOCK TABLE runtime_dispatch_operation IN ROW EXCLUSIVE MODE")
+                .execute(&mut **tx)
+                .await
+                .map_err(store_error)?;
+            sqlx::query("INSERT INTO runtime_dispatch_session_membership
                  (run_id, scope_id, session_id, thread_id, sequence, recorded_at_ms, initial_status, parent_run_id)
                  VALUES ($1, $2, $3, $4,
                    nextval(pg_get_serial_sequence($5, 'sequence')::regclass),
-                   FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint, $6, $7)"
-            ))
+                   FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint, $6, $7)")
             .bind(&request.run_id().0)
             .bind(scope.0.as_str())
             .bind(&request.session_thread_id().0)
@@ -313,10 +308,10 @@ async fn insert_dispatch_with_state(
         return Ok(());
     }
     if let Some(dedupe_key) = options.dedupe_key.as_deref() {
-        let deduped: bool = sqlx::query_scalar(&format!(
-            "SELECT EXISTS(SELECT 1 FROM {prefix}_dispatch \
-             WHERE dedupe_key = $1 AND status <> 'dead_letter')"
-        ))
+        let deduped: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM runtime_dispatch \
+             WHERE dedupe_key = $1 AND status <> 'dead_letter')",
+        )
         .bind(dedupe_key)
         .fetch_one(&mut **tx)
         .await
@@ -333,13 +328,13 @@ async fn insert_dispatch_with_state(
 
 async fn admit_session_child(
     tx: &mut Transaction<'_, Postgres>,
-    prefix: &str,
+    _prefix: &str,
     request: &RunDispatch,
     admission: &SessionChildAdmission,
 ) -> Result<(), DispatchError> {
     let parent = session_child_parent(request)?.clone();
     lock_session_child_admission(tx, &parent.0).await?;
-    let rows = sqlx::query(&format!("SELECT request FROM {prefix}_dispatch"))
+    let rows = sqlx::query("SELECT request FROM runtime_dispatch")
         .fetch_all(&mut **tx)
         .await
         .map_err(store_error)?;
@@ -350,11 +345,11 @@ async fn admit_session_child(
             known.push(thread.clone());
         }
     }
-    let completed: Vec<String> = sqlx::query_scalar(&format!(
-        "SELECT thread_id FROM {prefix}_dispatch_completion \
+    let completed: Vec<String> = sqlx::query_scalar(
+        "SELECT thread_id FROM runtime_dispatch_completion \
          WHERE session_thread_id = $1 AND thread_id IS NOT NULL \
-         AND thread_id <> session_thread_id"
-    ))
+         AND thread_id <> session_thread_id",
+    )
     .bind(&parent.0)
     .fetch_all(&mut **tx)
     .await
@@ -427,10 +422,9 @@ impl PostgresDispatchStore {
     /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in
     /// enqueue order — backs the operational `dead_letters`/`superseded` queries.
     async fn run_ids_by_status(&self, status: &str) -> Result<Vec<RunId>, DispatchError> {
-        let p = NS;
-        let rows = sqlx::query(&format!(
-            "SELECT run_id FROM {p}_dispatch WHERE status = $1 ORDER BY created_at"
-        ))
+        let rows = sqlx::query(
+            "SELECT run_id FROM runtime_dispatch WHERE status = $1 ORDER BY created_at",
+        )
         .bind(status)
         .fetch_all(&self.pool)
         .await
@@ -481,11 +475,8 @@ async fn lock_claim_row(
     claim: &RunClaim,
     required_status: &str,
 ) -> Result<Option<(RunDispatch, u64, bool, PhysicalAttemptSlot)>, DispatchError> {
-    let p = NS;
-    let current: Option<ClaimEpochStorageRow<Json<RunDispatch>>> = sqlx::query_as(&format!(
-            "SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
-                 FROM {p}_dispatch WHERE run_id = $1 AND status = $2 FOR UPDATE"
-        ))
+    let current: Option<ClaimEpochStorageRow<Json<RunDispatch>>> = sqlx::query_as("SELECT lease_epoch, lease_owner, lease_until, request, cancel_requested, active_attempt_owner, active_attempt_epoch \
+                 FROM runtime_dispatch WHERE run_id = $1 AND status = $2 FOR UPDATE")
         .bind(&claim.run_id.0)
         .bind(required_status)
         .fetch_optional(&mut **tx)

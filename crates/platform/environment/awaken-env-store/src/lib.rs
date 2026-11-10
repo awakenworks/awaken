@@ -348,9 +348,12 @@ impl SqliteEnvRegistry {
         conn: &mut SqliteConnection,
         id: &str,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_env WHERE env_id = ?1"
-        ))
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM env_registry_env WHERE env_id = ?1"
+            )),
+        )
         .bind(id)
         .fetch_optional(&mut *conn)
         .await
@@ -403,7 +406,10 @@ impl SqliteEnvRegistry {
         Ok(())
     }
 
-    async fn list(&self, sql: &str) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
+    async fn list(
+        &self,
+        sql: sqlx::AssertSqlSafe<String>,
+    ) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
         sqlx::query(sql)
             .fetch_all(&self.pool)
             .await
@@ -417,16 +423,18 @@ impl SqliteEnvRegistry {
 #[async_trait]
 impl EnvironmentDefinitionQueries for SqliteEnvRegistry {
     async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        self.list(&format!(
+        // COLS is the fixed row codec; no business input enters the SQL text.
+        self.list(sqlx::AssertSqlSafe(format!(
             "SELECT {COLS} FROM env_registry_env WHERE archived_at IS NULL ORDER BY seq ASC"
-        ))
+        )))
         .await
     }
 
     async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        self.list(&format!(
+        // COLS is the fixed row codec; no business input enters the SQL text.
+        self.list(sqlx::AssertSqlSafe(format!(
             "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
-        ))
+        )))
         .await
     }
 
@@ -440,9 +448,12 @@ impl EnvironmentDefinitionQueries for SqliteEnvRegistry {
         id: &str,
         revision: EnvironmentRevision,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_revision WHERE env_id = ?1 AND revision = ?2"
-        ))
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM env_registry_revision WHERE env_id = ?1 AND revision = ?2"
+            )),
+        )
         .bind(id)
         .bind(sqlite_revision(revision)?)
         .fetch_optional(&self.pool)
@@ -474,9 +485,12 @@ async fn committed_create_result(
         if existing_fingerprint != fingerprint {
             return Err(CreateEnvironmentError::IdempotencyConflict);
         }
-        let row = sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_revision WHERE env_id = ?1 AND revision = 1"
-        ))
+        let row = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM env_registry_revision WHERE env_id = ?1 AND revision = 1"
+            )),
+        )
         .bind(&environment_id)
         .fetch_optional(&mut *connection)
         .await
@@ -697,17 +711,18 @@ impl EnvironmentRegistrationOutbox for SqliteEnvRegistry {
         &self,
         filter: EnvironmentRegistrationIntentFilter,
     ) -> Result<Vec<EnvironmentRegistrationIntent>, EnvironmentStoreError> {
-        let where_clause = match filter {
-            EnvironmentRegistrationIntentFilter::Pending => " WHERE delivered = 0",
-            EnvironmentRegistrationIntentFilter::All => "",
+        let statement = match filter {
+            EnvironmentRegistrationIntentFilter::Pending => {
+                "SELECT env_id, revision, operation, delivered FROM env_registry_registration_intent WHERE delivered = 0 ORDER BY env_id, revision"
+            }
+            EnvironmentRegistrationIntentFilter::All => {
+                "SELECT env_id, revision, operation, delivered FROM env_registry_registration_intent ORDER BY env_id, revision"
+            }
         };
-        let rows: Vec<(String, i64, String, i64)> = sqlx::query_as(&format!(
-            "SELECT env_id, revision, operation, delivered \
-             FROM env_registry_registration_intent{where_clause} ORDER BY env_id, revision"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(environment_store)?;
+        let rows: Vec<(String, i64, String, i64)> = sqlx::query_as(statement)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(environment_store)?;
         rows.into_iter()
             .map(|(environment_id, revision, operation, delivered)| {
                 Ok(EnvironmentRegistrationIntent {
@@ -948,9 +963,12 @@ mod tests {
         // instant available — when this install added them — never the empty
         // placeholder the ALTER needed and never a frozen literal.
         for table in ["env", "revision"] {
-            let stamps: Vec<(String, String)> = sqlx::query_as(&format!(
-                "SELECT created_at, updated_at FROM env_registry_{table}"
-            ))
+            let stamps: Vec<(String, String)> = sqlx::query_as(
+                // Identifiers come only from the closed fixture table/column lists or integer schema coordinates.
+                sqlx::AssertSqlSafe(format!(
+                    "SELECT created_at, updated_at FROM env_registry_{table}"
+                )),
+            )
             .fetch_all(&pool)
             .await
             .unwrap();
@@ -1032,10 +1050,13 @@ mod tests {
             ("command", "env_registry_create_command"),
             ("intent", "env_registry_registration_intent"),
         ] {
-            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(&registry.pool)
-                .await
-                .unwrap();
+            let count: i64 = sqlx::query_scalar(
+                // Identifiers come only from the closed fixture table/column lists or integer schema coordinates.
+                sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")),
+            )
+            .fetch_one(&registry.pool)
+            .await
+            .unwrap();
             assert_eq!(count, 0, "E2/{rule}");
         }
     }
@@ -1085,9 +1106,12 @@ mod tests {
                 )
                 .await
                 .expect("create Environment fixture");
-            sqlx::query(&format!(
-                "UPDATE env_registry_env SET {column} = 'not-json' WHERE env_id = ?1"
-            ))
+            sqlx::query(
+                // Identifiers come only from the closed fixture table/column lists or integer schema coordinates.
+                sqlx::AssertSqlSafe(format!(
+                    "UPDATE env_registry_env SET {column} = 'not-json' WHERE env_id = ?1"
+                )),
+            )
             .bind(&environment.id)
             .execute(&registry.pool)
             .await
@@ -1256,7 +1280,10 @@ mod tests {
         let instants_schema = format!("t_env_registry_instants_{owner}_{nonce:x}");
         for schema in [&parity_schema, &instants_schema] {
             admin
-                .execute(format!("CREATE SCHEMA {schema}").as_str())
+                .execute(
+                    // Identifiers come only from the closed fixture table/column lists or integer schema coordinates.
+                    sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+                )
                 .await
                 .expect("schema");
         }
@@ -1376,10 +1403,13 @@ mod tests {
         let mut before = Vec::new();
         for table in &tables {
             before.push(
-                sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
-                    .fetch_one(&r.pool)
-                    .await
-                    .unwrap(),
+                sqlx::query_scalar::<_, i64>(
+                    // Identifiers come only from the closed fixture table/column lists or integer schema coordinates.
+                    sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")),
+                )
+                .fetch_one(&r.pool)
+                .await
+                .unwrap(),
             );
         }
         sqlx::query(
@@ -1413,10 +1443,13 @@ mod tests {
             "E1"
         );
         for (index, table) in tables.iter().enumerate() {
-            let after = sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(&r.pool)
-                .await
-                .unwrap();
+            let after = sqlx::query_scalar::<_, i64>(
+                // Identifiers come only from the closed fixture table/column lists or integer schema coordinates.
+                sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")),
+            )
+            .fetch_one(&r.pool)
+            .await
+            .unwrap();
             assert_eq!(after, before[index], "E2/{table}");
         }
         sqlx::query("DROP TRIGGER env_registry_fail_intent ON env_registry_registration_intent")
@@ -1486,7 +1519,10 @@ mod tests {
         instants_pool.close().await;
         for schema in [&parity_schema, &instants_schema] {
             admin
-                .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+                .execute(
+                    // Identifiers come only from the closed fixture table/column lists or integer schema coordinates.
+                    sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")),
+                )
                 .await
                 .expect("drop only this run's schema");
         }

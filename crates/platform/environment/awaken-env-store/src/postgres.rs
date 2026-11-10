@@ -69,9 +69,12 @@ impl PostgresEnvRegistry {
     }
 
     async fn read(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_env WHERE env_id = $1"
-        ))
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM env_registry_env WHERE env_id = $1"
+            )),
+        )
         .bind(id)
         .fetch_optional(&self.pool)
         .await
@@ -84,9 +87,12 @@ impl PostgresEnvRegistry {
 #[async_trait]
 impl EnvironmentDefinitionQueries for PostgresEnvRegistry {
     async fn list_active(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_env WHERE archived_at IS NULL ORDER BY seq ASC"
-        ))
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM env_registry_env WHERE archived_at IS NULL ORDER BY seq ASC"
+            )),
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(environment_store)?
@@ -96,9 +102,12 @@ impl EnvironmentDefinitionQueries for PostgresEnvRegistry {
     }
 
     async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentStoreError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
-        ))
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM env_registry_env ORDER BY seq ASC"
+            )),
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(environment_store)?
@@ -117,9 +126,12 @@ impl EnvironmentDefinitionQueries for PostgresEnvRegistry {
         revision: EnvironmentRevision,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
         let revision = i64::try_from(revision.0).map_err(environment_store)?;
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_revision WHERE env_id = $1 AND revision = $2"
-        ))
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM env_registry_revision WHERE env_id = $1 AND revision = $2"
+            )),
+        )
         .bind(id)
         .bind(revision)
         .fetch_optional(&self.pool)
@@ -152,9 +164,12 @@ async fn committed_create_result(
             return Err(CreateEnvironmentError::IdempotencyConflict);
         }
         let environment_id: String = row.get("env_id");
-        let item = sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_revision WHERE env_id = $1 AND revision = 1"
-        ))
+        let item = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM env_registry_revision WHERE env_id = $1 AND revision = 1"
+            )),
+        )
         .bind(&environment_id)
         .fetch_optional(&mut *connection)
         .await
@@ -312,9 +327,12 @@ impl EnvironmentDefinitionStore for PostgresEnvRegistry {
         patch: EnvUpdate,
     ) -> Result<Option<EnvItem>, EnvironmentStoreError> {
         let mut tx = self.pool.begin().await.map_err(environment_store)?;
-        let Some(row) = sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_env WHERE env_id = $1 FOR UPDATE"
-        ))
+        let Some(row) = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM env_registry_env WHERE env_id = $1 FOR UPDATE"
+            )),
+        )
         .bind(id)
         .fetch_optional(&mut *tx)
         .await
@@ -388,9 +406,12 @@ impl EnvironmentDefinitionStore for PostgresEnvRegistry {
 
     async fn archive(&self, id: &str) -> Result<Option<EnvItem>, EnvironmentStoreError> {
         let mut tx = self.pool.begin().await.map_err(environment_store)?;
-        let Some(row) = sqlx::query(&format!(
-            "SELECT {COLS} FROM env_registry_env WHERE env_id = $1 FOR UPDATE"
-        ))
+        let Some(row) = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM env_registry_env WHERE env_id = $1 FOR UPDATE"
+            )),
+        )
         .bind(id)
         .fetch_optional(&mut *tx)
         .await

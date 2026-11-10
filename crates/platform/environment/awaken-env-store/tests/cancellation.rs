@@ -82,7 +82,10 @@ async fn fresh_schema(url: &str) -> String {
         .as_nanos();
     let schema = format!("t_env_t34_{}_{nonce:x}", std::process::id());
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(
+            // Schema identifiers use integer fixture coordinates; LOCK_KEY is the fixed advisory-lock integer.
+            sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+        )
         .await
         .unwrap();
     admin.close().await;
@@ -91,11 +94,11 @@ async fn fresh_schema(url: &str) -> String {
 
 async fn install_pause_trigger(pool: &PgPool) {
     pool.execute(
-        format!(
+        // Schema identifiers use integer fixture coordinates; LOCK_KEY is the fixed advisory-lock integer.
+        sqlx::AssertSqlSafe(format!(
             "CREATE FUNCTION t34_pause() RETURNS trigger LANGUAGE plpgsql AS \
              $$ BEGIN PERFORM pg_advisory_xact_lock({LOCK_KEY}); RETURN NEW; END $$"
-        )
-        .as_str(),
+        )),
     )
     .await
     .unwrap();

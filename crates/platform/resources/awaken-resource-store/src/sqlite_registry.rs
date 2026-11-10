@@ -11,7 +11,6 @@ use awaken_resource_contract::{
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::SqliteResourceStore;
-use crate::schema::REGISTRY_NS;
 
 const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
@@ -43,10 +42,10 @@ impl SqliteResourceStore {
         kind: &'static str,
         id: &str,
     ) -> Result<Option<Stored<T>>, RegistryRepositoryError> {
-        let row: Option<(i64, String)> = sqlx::query_as(&format!(
-            "SELECT revision, data FROM {REGISTRY_NS}_entry \
-             WHERE kind = ?1 AND id = ?2"
-        ))
+        let row: Option<(i64, String)> = sqlx::query_as(
+            "SELECT revision, data FROM resource_catalog_entry \
+             WHERE kind = ?1 AND id = ?2",
+        )
         .bind(kind)
         .bind(id)
         .fetch_optional(&self.pool)
@@ -72,10 +71,10 @@ impl SqliteResourceStore {
         aggregate: &T,
     ) -> Result<InsertOutcome, RegistryRepositoryError> {
         let data = serde_json::to_string(aggregate).map_err(corrupt)?;
-        match sqlx::query(&format!(
-            "INSERT INTO {REGISTRY_NS}_entry (kind, id, revision, data) \
-             VALUES (?1, ?2, 1, ?3)"
-        ))
+        match sqlx::query(
+            "INSERT INTO resource_catalog_entry (kind, id, revision, data) \
+             VALUES (?1, ?2, 1, ?3)",
+        )
         .bind(kind)
         .bind(id)
         .bind(data)
@@ -101,10 +100,10 @@ impl SqliteResourceStore {
             ))
         })?;
         let data = serde_json::to_string(aggregate).map_err(corrupt)?;
-        let changed = sqlx::query(&format!(
-            "UPDATE {REGISTRY_NS}_entry SET revision = ?4, data = ?5 \
-             WHERE kind = ?1 AND id = ?2 AND revision = ?3"
-        ))
+        let changed = sqlx::query(
+            "UPDATE resource_catalog_entry SET revision = ?4, data = ?5 \
+             WHERE kind = ?1 AND id = ?2 AND revision = ?3",
+        )
         .bind(kind)
         .bind(id)
         .bind(expected_revision.get() as i64)
@@ -126,10 +125,10 @@ impl SqliteResourceStore {
         kind: &'static str,
         validate: impl Fn(&T, &str) -> Result<(), RegistryRepositoryError>,
     ) -> Result<Vec<Stored<T>>, RegistryRepositoryError> {
-        let rows: Vec<(String, i64, String)> = sqlx::query_as(&format!(
-            "SELECT id, revision, data FROM {REGISTRY_NS}_entry \
-             WHERE kind = ?1 ORDER BY id"
-        ))
+        let rows: Vec<(String, i64, String)> = sqlx::query_as(
+            "SELECT id, revision, data FROM resource_catalog_entry \
+             WHERE kind = ?1 ORDER BY id",
+        )
         .bind(kind)
         .fetch_all(&self.pool)
         .await

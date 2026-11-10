@@ -58,6 +58,12 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 }
 
 async fn owned_postgres_pool(url: &str, tag: &str) -> (sqlx::PgPool, String) {
+    assert!(
+        !tag.is_empty()
+            && tag
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
     let admin = PgPoolOptions::new()
         .max_connections(1)
         .acquire_timeout(std::time::Duration::from_secs(5))
@@ -66,7 +72,8 @@ async fn owned_postgres_pool(url: &str, tag: &str) -> (sqlx::PgPool, String) {
         .expect("explicit Session PostgreSQL fixture must connect");
     let schema = format!("t_session_{tag}_{}", uuid::Uuid::new_v4().simple());
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .expect("create owned Session schema");
     admin.close().await;
@@ -77,8 +84,9 @@ async fn owned_postgres_pool(url: &str, tag: &str) -> (sqlx::PgPool, String) {
         .after_connect(move |connection, _| {
             let schema = owned_schema.clone();
             Box::pin(async move {
-                connection
-                    .execute(format!("SET search_path = {schema}").as_str())
+                sqlx::query("SELECT set_config('search_path', $1, false)")
+                    .bind(&schema)
+                    .execute(&mut *connection)
                     .await?;
                 Ok(())
             })
@@ -90,7 +98,14 @@ async fn owned_postgres_pool(url: &str, tag: &str) -> (sqlx::PgPool, String) {
 }
 
 async fn close_postgres_pool(pool: sqlx::PgPool, schema: &str) {
-    pool.execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+    assert!(
+        schema.starts_with("t_session_")
+            && schema
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
+    // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+    pool.execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .await
         .expect("drop exact owned Session schema");
     pool.close().await;

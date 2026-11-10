@@ -55,11 +55,9 @@ impl SqliteDispatchStore {
         let p = NS;
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let current: Option<PersistedAttemptFacts> = sqlx::query_as::<_, PersistedAttemptRow>(
-            &format!(
-                "SELECT status, lease_owner, lease_epoch, lease_until, \
+            "SELECT status, lease_owner, lease_epoch, lease_until, \
                  active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment, active_attempt_closing, request \
-                 FROM {p}_dispatch WHERE run_id = ?1"
-            ),
+                 FROM runtime_dispatch WHERE run_id = ?1",
         )
         .bind(&claim.run_id.0)
         .fetch_optional(&mut *tx)
@@ -114,12 +112,12 @@ impl SqliteDispatchStore {
             current.active_owner.as_deref() == Some(&claim.owner),
             active_epoch == Some(claim.epoch),
         );
-        let peer_occupied = sqlx::query_scalar::<_, bool>(&format!(
-            "SELECT EXISTS (SELECT 1 FROM {p}_dispatch peer JOIN {p}_dispatch target
+        let peer_occupied = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM runtime_dispatch peer JOIN runtime_dispatch target
              ON peer.thread_id = target.thread_id WHERE target.run_id = ?1
              AND peer.run_id <> target.run_id
-             AND (peer.active_attempt_owner IS NOT NULL OR peer.active_attempt_epoch IS NOT NULL))"
-        ))
+             AND (peer.active_attempt_owner IS NOT NULL OR peer.active_attempt_epoch IS NOT NULL))",
+        )
         .bind(&claim.run_id.0)
         .fetch_one(&mut *tx)
         .await
@@ -161,10 +159,8 @@ impl SqliteDispatchStore {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(DispatchError::unavailable)?;
-            sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET active_attempt_owner = ?2, \
-                     active_attempt_epoch = ?3, active_attempt_binding = ?4, active_attempt_closing = FALSE WHERE run_id = ?1"
-            ))
+            sqlx::query("UPDATE runtime_dispatch SET active_attempt_owner = ?2, \
+                     active_attempt_epoch = ?3, active_attempt_binding = ?4, active_attempt_closing = FALSE WHERE run_id = ?1")
             .bind(&claim.run_id.0)
             .bind(&claim.owner)
             .bind(epoch)
@@ -187,7 +183,7 @@ impl SqliteDispatchStore {
         let mut tx = immediate(&mut connection).await?;
         let p = NS;
         let epoch = durable_i64("dispatch attempt epoch", claim.epoch)?;
-        let current: Option<crate::dispatch::PhysicalAttemptStorageRow<String>> = sqlx::query_as(&format!("SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = ?1"))
+        let current: Option<crate::dispatch::PhysicalAttemptStorageRow<String>> = sqlx::query_as("SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM runtime_dispatch WHERE run_id = ?1")
             .bind(&claim.run_id.0).fetch_optional(&mut *tx).await.map_err(store_error)?;
         let row_exists = current.is_some();
         let (slot, closing, original) = if let Some((owner, epoch, binding, request, closing)) =
@@ -250,7 +246,7 @@ impl SqliteDispatchStore {
             if let Some(fact) = &fact {
                 insert_operation(&mut tx, p, fact, self.clock.now_ms()).await?;
             }
-            sqlx::query(&format!("UPDATE {p}_dispatch SET active_attempt_owner = NULL, active_attempt_epoch = NULL, active_attempt_binding = NULL, active_attempt_closing = FALSE, retired_attempt_epoch = ?3 WHERE run_id = ?1 AND active_attempt_owner = ?2 AND active_attempt_epoch = ?3"))
+            sqlx::query("UPDATE runtime_dispatch SET active_attempt_owner = NULL, active_attempt_epoch = NULL, active_attempt_binding = NULL, active_attempt_closing = FALSE, retired_attempt_epoch = ?3 WHERE run_id = ?1 AND active_attempt_owner = ?2 AND active_attempt_epoch = ?3")
                 .bind(&claim.run_id.0).bind(&claim.owner).bind(epoch).execute(&mut *tx).await.map_err(store_error)?;
         }
         tx.commit().await.map_err(store_error)?;
@@ -265,11 +261,8 @@ impl SqliteDispatchStore {
     ) -> Result<SettleOutcome, DispatchError> {
         let claim = claim.clone();
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
         let mut tx = immediate(&mut conn).await?;
-        let row: Option<(Option<String>, Option<i64>)> = sqlx::query_as(&format!(
-            "SELECT active_attempt_owner, active_attempt_epoch FROM {p}_dispatch WHERE run_id = ?1"
-        ))
+        let row: Option<(Option<String>, Option<i64>)> = sqlx::query_as("SELECT active_attempt_owner, active_attempt_epoch FROM runtime_dispatch WHERE run_id = ?1")
         .bind(&claim.run_id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -286,9 +279,9 @@ impl SqliteDispatchStore {
         );
         let outcome = crate::dispatch::decide_physical_attempt_close(slot)?;
         if outcome == SettleOutcome::Applied {
-            sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET active_attempt_closing = TRUE WHERE run_id = ?1"
-            ))
+            sqlx::query(
+                "UPDATE runtime_dispatch SET active_attempt_closing = TRUE WHERE run_id = ?1",
+            )
             .bind(&claim.run_id.0)
             .execute(&mut *tx)
             .await

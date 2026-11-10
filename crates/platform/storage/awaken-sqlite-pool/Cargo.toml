@@ -11,13 +11,19 @@ bounded_context = "storage"
 layer = "infrastructure"
 authority = "sqlite-connection"
 separation = "isolation"
-isolates = ["sqlx"]
+isolates = ["sqlx", "sqlx-core"]
 
 [dependencies]
 awaken-sync.workspace = true
 futures-core = { version = "0.3", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+# The official metadata path enables core/offline and every active driver's
+# matching offline implementation together; core-only activation is invalid.
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+# SQLx 0.9 keeps the driver's transaction-depth trait in core, without a facade re-export.
+sqlx-core = { workspace = true, default-features = false }
+# Own the minimum bundled SQLite even when the consumer does not embed IAM.
+libsqlite3-sys.workspace = true
 same-file = "1.0.6"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }

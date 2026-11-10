@@ -109,13 +109,10 @@ impl PgDataSubjectRepo {
 #[async_trait::async_trait]
 impl DataSubjectRepo for PgDataSubjectRepo {
     async fn create(&self, subject: DataSubject) -> Result<(), DataSubjectError> {
-        let p = NS;
         let stored_revision = i64::try_from(subject.revision)
             .map_err(|_| DataSubjectError::RevisionExhausted(subject.id.0.clone()))?;
-        let result = sqlx::query(&format!(
-            "INSERT INTO {p}_subject (id, org, data, revision) VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (id) DO NOTHING"
-        ))
+        let result = sqlx::query("INSERT INTO control_data_subject_subject (id, org, data, revision) VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (id) DO NOTHING")
         .bind(&subject.id.0)
         .bind(&subject.org)
         .bind(Json(&subject))
@@ -142,11 +139,10 @@ impl DataSubjectRepo for PgDataSubjectRepo {
             .map_err(|_| DataSubjectError::RevisionExhausted(subject.id.0.clone()))?;
         let stored_expected = i64::try_from(expected_revision)
             .map_err(|_| DataSubjectError::RevisionExhausted(subject.id.0.clone()))?;
-        let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let current = sqlx::query(&format!(
-            "SELECT data, revision FROM {p}_subject WHERE id = $1 FOR UPDATE"
-        ))
+        let current = sqlx::query(
+            "SELECT data, revision FROM control_data_subject_subject WHERE id = $1 FOR UPDATE",
+        )
         .bind(&subject.id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -162,10 +158,10 @@ impl DataSubjectRepo for PgDataSubjectRepo {
         if !subject.follows_revision(expected_revision, current_subject.revision) {
             return Err(DataSubjectError::Conflict(subject.id.0));
         }
-        let result = sqlx::query(&format!(
-            "UPDATE {p}_subject SET org = $1, data = $2, revision = $3 \
-             WHERE id = $4 AND revision = $5"
-        ))
+        let result = sqlx::query(
+            "UPDATE control_data_subject_subject SET org = $1, data = $2, revision = $3 \
+             WHERE id = $4 AND revision = $5",
+        )
         .bind(&subject.org)
         .bind(Json(&subject))
         .bind(stored_revision)
@@ -183,8 +179,7 @@ impl DataSubjectRepo for PgDataSubjectRepo {
     }
 
     async fn get(&self, id: &DataSubjectId) -> Result<DataSubject, DataSubjectError> {
-        let p = NS;
-        let row = sqlx::query(&format!("SELECT data FROM {p}_subject WHERE id = $1"))
+        let row = sqlx::query("SELECT data FROM control_data_subject_subject WHERE id = $1")
             .bind(&id.0)
             .fetch_optional(&self.pool)
             .await
@@ -195,12 +190,11 @@ impl DataSubjectRepo for PgDataSubjectRepo {
     }
 
     async fn list(&self, org: &str) -> Result<Vec<DataSubject>, DataSubjectError> {
-        let p = NS;
         // Org-partitioned (ADR-0050 D7): a workspace/org only ever sees its own
         // subjects. `created_at` orders insertion, matching the sqlite `rowid` order.
-        let rows = sqlx::query(&format!(
-            "SELECT data FROM {p}_subject WHERE org = $1 ORDER BY created_at, id"
-        ))
+        let rows = sqlx::query(
+            "SELECT data FROM control_data_subject_subject WHERE org = $1 ORDER BY created_at, id",
+        )
         .bind(org)
         .fetch_all(&self.pool)
         .await
@@ -217,14 +211,12 @@ impl DataSubjectRepo for PgDataSubjectRepo {
 #[async_trait::async_trait]
 impl ErasureJobRepo for PgDataSubjectRepo {
     async fn load(&self, id: &DataSubjectId) -> Result<Option<ErasureProgress>, DataSubjectError> {
-        let p = NS;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {p}_erasure_job WHERE subject_id = $1"
-        ))
-        .bind(&id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
+        let row =
+            sqlx::query("SELECT data FROM control_data_subject_erasure_job WHERE subject_id = $1")
+                .bind(&id.0)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(storage)?;
         row.map(|row| {
             let Json(progress): Json<ErasureProgress> = row.try_get("data").map_err(storage)?;
             Ok(progress)
@@ -238,14 +230,11 @@ impl ErasureJobRepo for PgDataSubjectRepo {
         expected_revision: Option<u64>,
         progress: &ErasureProgress,
     ) -> Result<(), DataSubjectError> {
-        let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         // Lock an existing row until commit. Absence cannot be row-locked:
         // competing creators are still fenced by the subject primary key and
         // insert-only statement below, on this same transaction connection.
-        let current = sqlx::query(&format!(
-            "SELECT data, revision FROM {p}_erasure_job WHERE subject_id = $1 FOR UPDATE"
-        ))
+        let current = sqlx::query("SELECT data, revision FROM control_data_subject_erasure_job WHERE subject_id = $1 FOR UPDATE")
         .bind(&id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -271,20 +260,16 @@ impl ErasureJobRepo for PgDataSubjectRepo {
             .map_err(|_| DataSubjectError::RevisionExhausted(id.0.clone()))?;
         let result =
             match expected {
-                None => sqlx::query(&format!(
-                    "INSERT INTO {p}_erasure_job (subject_id, data, revision) VALUES ($1, $2, $3) \
-                 ON CONFLICT (subject_id) DO NOTHING"
-                ))
+                None => sqlx::query("INSERT INTO control_data_subject_erasure_job (subject_id, data, revision) VALUES ($1, $2, $3) \
+                 ON CONFLICT (subject_id) DO NOTHING")
                 .bind(&id.0)
                 .bind(Json(progress))
                 .bind(revision)
                 .execute(&mut *tx)
                 .await,
                 Some(expected) => {
-                    sqlx::query(&format!(
-                        "UPDATE {p}_erasure_job SET data = $2, revision = $3, updated_at = now() \
-                 WHERE subject_id = $1 AND revision = $4"
-                    ))
+                    sqlx::query("UPDATE control_data_subject_erasure_job SET data = $2, revision = $3, updated_at = now() \
+                 WHERE subject_id = $1 AND revision = $4")
                     .bind(&id.0)
                     .bind(Json(progress))
                     .bind(revision)

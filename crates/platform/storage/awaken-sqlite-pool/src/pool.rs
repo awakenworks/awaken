@@ -15,13 +15,14 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use sqlx::Connection as _;
 #[expect(
     clippy::disallowed_types,
     reason = "awaken-sqlite-pool is the one owner of SQLite connect options (ADR-0087)"
 )]
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use sqlx::{Connection as _, TransactionManager as _};
+use sqlx_core::transaction::TransactionManager as _;
 
 use crate::WRITE_WAIT;
 use crate::clock_hold::ClockHold;
@@ -144,12 +145,10 @@ impl EmbeddedSqlite {
             .test_before_acquire(false)
             .after_release(|connection, _| {
                 Box::pin(async move {
-                    // sqlx's custom BEGIN validates its handle after the worker
-                    // acknowledged BEGIN but before a Transaction exists. A
-                    // cancelled constructor can therefore leave depth behind
-                    // without a Transaction Drop to enqueue rollback. Return
-                    // the same connection only after the driver's own rollback
-                    // settles every remaining level; sqlx retires it on error.
+                    // Settle any orphaned driver transaction before reuse,
+                    // including cancellation cleanup still in flight. Use the
+                    // driver's rollback so its depth agrees with SQLite;
+                    // sqlx retires the connection if that cleanup fails.
                     while connection.is_in_transaction() {
                         sqlx::sqlite::SqliteTransactionManager::rollback(connection).await?;
                     }
@@ -194,14 +193,23 @@ mod tests {
     use super::*;
 
     async fn pragma_text(pool: &EmbeddedPool, pragma: &str) -> String {
-        sqlx::query_scalar::<_, String>(&format!("PRAGMA {pragma}"))
+        let query = match pragma {
+            "journal_mode" => "PRAGMA journal_mode",
+            _ => panic!("unknown text pragma fixture"),
+        };
+        sqlx::query_scalar::<_, String>(query)
             .fetch_one(pool)
             .await
             .unwrap()
     }
 
     async fn pragma_int(pool: &EmbeddedPool, pragma: &str) -> i64 {
-        sqlx::query_scalar::<_, i64>(&format!("PRAGMA {pragma}"))
+        let query = match pragma {
+            "foreign_keys" => "PRAGMA foreign_keys",
+            "busy_timeout" => "PRAGMA busy_timeout",
+            _ => panic!("unknown integer pragma fixture"),
+        };
+        sqlx::query_scalar::<_, i64>(query)
             .fetch_one(pool)
             .await
             .unwrap()
@@ -695,63 +703,71 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pool_cancelled_custom_begin_never_leaks_transaction_depth() {
-        use std::future::{Future as _, poll_fn};
-        use std::task::Poll;
-
-        // H5 cancellation at the first driver suspension (BEGIN acknowledgement),
-        // H6 cancellation at the second suspension (custom-BEGIN handle validation)
-        // -> E1 the same pool admits the next BEGIN IMMEDIATE at depth zero.
-        // H7 a BEGIN completes before that suspension -> dropping its actual
-        // Transaction has the same E1. E2 the private memory table survives,
-        // proving rollback reused the connection instead of losing the database.
-        // Poll the real public sqlx future, not a
-        // model of its worker; dropping this acquired connection matches the
-        // pool-owned connection dropped by a cancelled Transaction constructor.
+        // H5: cancel a real BEGIN while SQLite is executing it, before the
+        // worker acknowledges it. H6: custom-BEGIN validation now runs in that
+        // same worker command in SQLx 0.9, not at a second async suspension.
+        // H7: an acknowledged BEGIN produces a real Transaction whose Drop
+        // rolls back its write. E1: every successor enters at depth zero;
+        // E2: the private memory table survives on the same connection.
+        // A progress hook gates the actual SQLite VM, avoiding assumptions
+        // about how many times the driver future happens to return Pending.
         let pool = memory_pool().await;
-        for boundary in [1, 2] {
-            let mut cancellations = 0;
-            for attempt in 0..32 {
-                let mut connection = pool.acquire().await.unwrap();
-                let cancelled = {
-                    let mut beginning = std::pin::pin!(sqlx::Connection::begin_with(
-                        &mut *connection,
-                        "BEGIN IMMEDIATE"
-                    ));
-                    let mut pending = 0;
-                    poll_fn(|context| match beginning.as_mut().poll(context) {
-                        Poll::Pending => {
-                            pending += 1;
-                            if pending == boundary {
-                                Poll::Ready(true)
-                            } else {
-                                Poll::Pending
-                            }
-                        }
-                        Poll::Ready(result) => {
-                            drop(result.unwrap());
-                            Poll::Ready(false)
-                        }
-                    })
-                    .await
-                };
-                cancellations += usize::from(cancelled);
-                drop(connection);
-                let next = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    pool.begin_with("BEGIN IMMEDIATE"),
-                )
-                .await
-                .expect("H5-H7 next admission must not remain blocked")
-                .unwrap_or_else(|error| panic!("boundary {boundary}, attempt {attempt}: {error}"));
-                next.rollback().await.unwrap();
-                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM evidence")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-                assert_eq!(count, 0, "E2 retain the same in-memory database");
-            }
-            assert!(cancellations > 0, "boundary {boundary} actually cancelled");
+        let mut connection = pool.acquire().await.unwrap();
+        assert!(!connection.is_in_transaction());
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        {
+            let mut handle = connection.lock_handle().await.unwrap();
+            let mut entered = Some(entered_tx);
+            handle.set_progress_handler(1, move || {
+                if let Some(entered) = entered.take() {
+                    let _ = entered.send(());
+                    // Only the SQLite worker blocks. The runtime remains free
+                    // to cancel its waiting constructor and release this gate.
+                    return release_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+                }
+                true
+            });
         }
+        let mut beginning = Box::pin(sqlx::Connection::begin_with(
+            &mut *connection,
+            "BEGIN IMMEDIATE",
+        ));
+        tokio::select! {
+            result = &mut beginning => panic!("H5 BEGIN completed before the VM gate: {result:?}"),
+            entered = tokio::time::timeout(Duration::from_secs(5), entered_rx) => {
+                entered.expect("H5 SQLite entered BEGIN").unwrap();
+            }
+        }
+        drop(beginning);
+        release_tx.send(()).unwrap();
+        drop(connection);
+
+        let mut completed =
+            tokio::time::timeout(Duration::from_secs(5), pool.begin_with("BEGIN IMMEDIATE"))
+                .await
+                .expect("H5 cancelled BEGIN releases admission")
+                .unwrap();
+        assert_eq!(
+            sqlx::sqlite::SqliteTransactionManager::get_transaction_depth(&completed),
+            1,
+            "E1 the successor starts one outer transaction, not a nested savepoint"
+        );
+        sqlx::query("INSERT INTO evidence VALUES (1)")
+            .execute(&mut *completed)
+            .await
+            .unwrap();
+        drop(completed);
+        let next = tokio::time::timeout(Duration::from_secs(5), pool.begin_with("BEGIN IMMEDIATE"))
+            .await
+            .expect("H7 dropped Transaction releases admission")
+            .unwrap();
+        next.rollback().await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM evidence")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "E2 same memory database, no committed H7 write");
     }
 
     #[tokio::test]

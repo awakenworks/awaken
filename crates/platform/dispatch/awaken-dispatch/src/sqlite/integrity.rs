@@ -69,11 +69,11 @@ pub(super) async fn dead_letter_expired_lease(
     else {
         return Ok(false);
     };
-    let changed = sqlx::query(&format!(
-        "UPDATE {p}_dispatch SET status = ?4, \
+    let changed = sqlx::query(
+        "UPDATE runtime_dispatch SET status = ?4, \
          lease_owner = NULL, lease_until = NULL, dead_lettered_at = ?1 \
-         WHERE run_id = ?2 AND status = 'running' AND lease_epoch = ?3"
-    ))
+         WHERE run_id = ?2 AND status = 'running' AND lease_epoch = ?3",
+    )
     .bind(crate::clock::db_millis(dead_lettered_at_ms))
     .bind(&run_id)
     .bind(epoch)
@@ -124,12 +124,13 @@ pub(super) async fn refuse_untrustworthy_expired_leases(
     p: &str,
     now_ms: u64,
 ) -> Result<usize, DispatchError> {
-    let rows = sqlx::query_as::<_, ExpiredLeaseRow>(&format!(
+    // Only fixed expired-lease columns and the built-in namespace are composed.
+    let rows = sqlx::query_as::<_, ExpiredLeaseRow>(sqlx::AssertSqlSafe(format!(
         "SELECT {EXPIRED_LEASE_COLUMNS} FROM {p}_dispatch WHERE status = 'running' \
          AND lease_until IS NOT NULL AND lease_until <= ?1 AND lease_epoch = ?2 \
          AND (active_attempt_epoch IS NULL OR cancel_requested <> 0) \
          ORDER BY created_at"
-    ))
+    )))
     .bind(crate::clock::db_millis(now_ms))
     .bind(i64::MAX)
     .fetch_all(&mut *tx)

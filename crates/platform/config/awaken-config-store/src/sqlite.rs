@@ -82,14 +82,12 @@ impl SqliteConfigStore {
         let ledger_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
         )
-        .bind(format!("{NS}_schema_migrations"))
+        .bind("config_schema_migrations")
         .fetch_one(&pool)
         .await
         .map_err(|error| StoreError::Migrate(error.to_string()))?;
         let v1_checksum: Option<String> = if ledger_exists {
-            sqlx::query_scalar(&format!(
-                "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
-            ))
+            sqlx::query_scalar("SELECT checksum FROM config_schema_migrations WHERE bundle_id = ?1 AND version = 1")
             .bind(BUNDLE_ID)
             .fetch_optional(&pool)
             .await
@@ -125,7 +123,6 @@ impl SqliteConfigStore {
         let mut conn = self.pool.acquire().await.map_err(reject)?;
         insert_publication(
             &mut conn,
-            NS,
             &publication.fingerprint,
             &publication.agent_id,
             state,
@@ -148,18 +145,17 @@ fn unsigned(value: i64) -> Result<u64, ConfigStoreError> {
 
 async fn insert_publication(
     conn: &mut SqliteConnection,
-    p: &str,
     fingerprint: &str,
     agent_id: &str,
     state: &str,
     record: &str,
     scope: &str,
 ) -> Result<(), ConfigStoreError> {
-    sqlx::query(&format!(
-        "INSERT INTO {p}_publication (fingerprint, agent_id, state, record, scope_id) \
+    sqlx::query(
+        "INSERT INTO config_publication (fingerprint, agent_id, state, record, scope_id) \
          VALUES (?1, ?2, ?3, ?4, ?5) \
-         ON CONFLICT(scope_id, fingerprint) DO NOTHING"
-    ))
+         ON CONFLICT(scope_id, fingerprint) DO NOTHING",
+    )
     .bind(fingerprint)
     .bind(agent_id)
     .bind(state)
@@ -174,13 +170,12 @@ async fn insert_publication(
 /// The current generation of one Agent row, if it exists.
 async fn current_generation(
     conn: &mut SqliteConnection,
-    p: &str,
     scope: &str,
     id: &str,
 ) -> Result<Option<u64>, ConfigStoreError> {
-    sqlx::query_scalar::<_, i64>(&format!(
-        "SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
-    ))
+    sqlx::query_scalar::<_, i64>(
+        "SELECT generation FROM config_agent WHERE id = ?1 AND scope_id = ?2",
+    )
     .bind(id)
     .bind(scope)
     .fetch_optional(&mut *conn)
@@ -195,25 +190,20 @@ async fn current_generation(
 /// predicate, including the absent-row case (zero means create, never update).
 async fn write_config_revision(
     conn: &mut SqliteConnection,
-    p: &str,
     scope: &str,
     id: &str,
     data: &str,
     plan: crate::ConfigRevisionWritePlan,
 ) -> Result<Option<u64>, ConfigStoreError> {
     let statement = if plan.kind == crate::ConfigRevisionWriteKind::Insert {
-        format!(
-            "INSERT INTO {p}_agent (id, data, scope_id, generation) \
+        "INSERT INTO config_agent (id, data, scope_id, generation) \
                  SELECT ?1, ?2, ?3, ?4 WHERE ?5 = 0 \
                  ON CONFLICT(scope_id, id) DO NOTHING RETURNING generation"
-        )
     } else {
-        format!(
-            "UPDATE {p}_agent SET data = ?2, generation = ?4 \
+        "UPDATE config_agent SET data = ?2, generation = ?4 \
                  WHERE id = ?1 AND scope_id = ?3 AND generation = ?5 RETURNING generation"
-        )
     };
-    sqlx::query_scalar::<_, i64>(&statement)
+    sqlx::query_scalar::<_, i64>(statement)
         .bind(id)
         .bind(data)
         .bind(scope)
@@ -229,10 +219,9 @@ async fn write_config_revision(
 #[async_trait]
 impl ScopedConfigRegistry for SqliteConfigStore {
     async fn list_config_scopes(&self) -> Result<Vec<ScopeId>, ConfigStoreError> {
-        let p = NS;
-        let scopes = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT DISTINCT scope_id FROM {p}_agent ORDER BY scope_id ASC"
-        ))
+        let scopes = sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT scope_id FROM config_agent ORDER BY scope_id ASC",
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(reject)?;
@@ -244,7 +233,6 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         config: &AgentConfig,
     ) -> Result<(), ConfigStoreError> {
-        let p = NS;
         let id = config.id.as_str();
         let data = serde_json::to_string(config).map_err(reject)?;
         let scope = scope.0.as_str();
@@ -255,7 +243,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(reject)?;
-        let current_revision = current_generation(&mut tx, p, scope, id).await?;
+        let current_revision = current_generation(&mut tx, scope, id).await?;
         let plan = match crate::ConfigRevisionWritePlan::advance_current(current_revision)
             .map_err(reject)?
         {
@@ -266,7 +254,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 ));
             }
         };
-        if write_config_revision(&mut tx, p, scope, id, &data, plan)
+        if write_config_revision(&mut tx, scope, id, &data, plan)
             .await?
             .is_none()
         {
@@ -297,7 +285,6 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         audit: &ManagementAuditRecord,
         effect: Option<&ManagementEffect>,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
-        let p = NS;
         let id = config.id.as_str();
         let scope = scope.0.as_str();
         let (tool, call_id) = audit.identity();
@@ -306,10 +293,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(reject)?;
-        let existing: Option<(String, i64)> = sqlx::query_as(&format!(
-            "SELECT record, business_committed FROM {p}_management_audit \
-             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
-        ))
+        let existing: Option<(String, i64)> = sqlx::query_as(
+            "SELECT record, business_committed FROM config_management_audit \
+             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3",
+        )
         .bind(scope)
         .bind(call_id)
         .bind(tool)
@@ -329,9 +316,9 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             tx.commit().await.map_err(reject)?;
             return Ok(AuditedConfigWrite::Replayed);
         }
-        let current: Option<(String, i64)> = sqlx::query_as(&format!(
-            "SELECT data, generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
-        ))
+        let current: Option<(String, i64)> = sqlx::query_as(
+            "SELECT data, generation FROM config_agent WHERE id = ?1 AND scope_id = ?2",
+        )
         .bind(id)
         .bind(scope)
         .fetch_optional(&mut *tx)
@@ -361,10 +348,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let data = serde_json::to_string(&config).map_err(reject)?;
         if let Some(effect) = effect {
             let effect_payload = serde_json::to_string(effect).map_err(reject)?;
-            let existing_payload: Option<String> = sqlx::query_scalar(&format!(
-                "SELECT payload FROM {p}_management_effect \
-                 WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
-            ))
+            let existing_payload: Option<String> = sqlx::query_scalar(
+                "SELECT payload FROM config_management_effect \
+                 WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3",
+            )
             .bind(scope)
             .bind(effect.kind())
             .bind(effect.key())
@@ -377,9 +364,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .transpose()
                 .map_err(reject)?;
             if effect.requires_enqueue(pending.as_ref())? {
-                sqlx::query(&format!(
-                    "INSERT INTO {p}_management_effect (scope_id, kind, effect_key, payload) VALUES (?1, ?2, ?3, ?4)"
-                ))
+                sqlx::query("INSERT INTO config_management_effect (scope_id, kind, effect_key, payload) VALUES (?1, ?2, ?3, ?4)")
                 .bind(scope)
                 .bind(effect.kind())
                 .bind(effect.key())
@@ -389,17 +374,17 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .map_err(reject)?;
             }
         }
-        if write_config_revision(&mut tx, p, scope, id, &data, plan)
+        if write_config_revision(&mut tx, scope, id, &data, plan)
             .await?
             .is_none()
         {
-            let current_revision = current_generation(&mut tx, p, scope, id).await?;
+            let current_revision = current_generation(&mut tx, scope, id).await?;
             return Ok(AuditedConfigWrite::Conflict { current_revision });
         }
-        sqlx::query(&format!(
-            "UPDATE {p}_management_audit SET business_committed = 1 \
-             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
-        ))
+        sqlx::query(
+            "UPDATE config_management_audit SET business_committed = 1 \
+             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3",
+        )
         .bind(scope)
         .bind(call_id)
         .bind(tool)
@@ -414,11 +399,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<ManagementEffect>, ConfigStoreError> {
-        let p = NS;
-        let rows: Vec<(String, String, String)> = sqlx::query_as(&format!(
-            "SELECT kind, effect_key, payload FROM {p}_management_effect \
-             WHERE scope_id = ?1 ORDER BY created_at, kind, effect_key"
-        ))
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT kind, effect_key, payload FROM config_management_effect \
+             WHERE scope_id = ?1 ORDER BY created_at, kind, effect_key",
+        )
         .bind(&scope.0)
         .fetch_all(&self.pool)
         .await
@@ -436,14 +420,13 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         &self,
         receipt: &ManagementEffectReceipt,
     ) -> Result<bool, ConfigStoreError> {
-        let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let effect = receipt.effect();
         let scope = &receipt.scope().0;
-        let payload: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT payload FROM {p}_management_effect \
-              WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
-        ))
+        let payload: Option<String> = sqlx::query_scalar(
+            "SELECT payload FROM config_management_effect \
+              WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3",
+        )
         .bind(scope)
         .bind(effect.kind())
         .bind(effect.key())
@@ -464,10 +447,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         // The same transaction protects the exact observation through DELETE.
         // A concurrent SQLite writer makes this upgrade fail, never delete a
         // newer payload using an earlier unfenced observation.
-        let removed = sqlx::query(&format!(
-            "DELETE FROM {p}_management_effect \
-              WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3"
-        ))
+        let removed = sqlx::query(
+            "DELETE FROM config_management_effect \
+              WHERE scope_id = ?1 AND kind = ?2 AND effect_key = ?3",
+        )
         .bind(scope)
         .bind(effect.kind())
         .bind(effect.key())
@@ -484,17 +467,16 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
-        let p = NS;
         let scope = scope.0.as_str();
         let data = serde_json::to_string(audit).map_err(reject)?;
         let (tool, call_id) = audit.identity();
         // The unique tuple arbitrates across connections, not a process-local
         // read-before-insert race. Exact retry compares domain data, not JSON text.
-        let inserted = sqlx::query(&format!(
-            "INSERT INTO {p}_management_audit (scope_id, tool, call_id, record) \
+        let inserted = sqlx::query(
+            "INSERT INTO config_management_audit (scope_id, tool, call_id, record) \
              VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT (scope_id, tool, call_id) DO NOTHING"
-        ))
+             ON CONFLICT (scope_id, tool, call_id) DO NOTHING",
+        )
         .bind(scope)
         .bind(tool)
         .bind(call_id)
@@ -506,10 +488,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         if inserted == 1 {
             return Ok(AuditedConfigWrite::Applied);
         }
-        let existing: String = sqlx::query_scalar(&format!(
-            "SELECT record FROM {p}_management_audit \
-             WHERE scope_id = ?1 AND tool = ?2 AND call_id = ?3"
-        ))
+        let existing: String = sqlx::query_scalar(
+            "SELECT record FROM config_management_audit \
+             WHERE scope_id = ?1 AND tool = ?2 AND call_id = ?3",
+        )
         .bind(scope)
         .bind(tool)
         .bind(call_id)
@@ -527,11 +509,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         tool: &str,
         call_id: &str,
     ) -> Result<Option<ManagementAuditEntry>, ConfigStoreError> {
-        let p = NS;
-        let row: Option<(String, i64)> = sqlx::query_as(&format!(
-            "SELECT record, business_committed FROM {p}_management_audit \
-             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
-        ))
+        let row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT record, business_committed FROM config_management_audit \
+             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3",
+        )
         .bind(&scope.0)
         .bind(call_id)
         .bind(tool)
@@ -553,11 +534,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         tool: &str,
         call_id: &str,
     ) -> Result<(), ConfigStoreError> {
-        let p = NS;
-        let changed = sqlx::query(&format!(
-            "UPDATE {p}_management_audit SET business_committed = 1 \
-             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3"
-        ))
+        let changed = sqlx::query(
+            "UPDATE config_management_audit SET business_committed = 1 \
+             WHERE scope_id = ?1 AND call_id = ?2 AND tool = ?3",
+        )
         .bind(&scope.0)
         .bind(call_id)
         .bind(tool)
@@ -579,7 +559,6 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         config: &AgentConfig,
         expected_generation: u64,
     ) -> Result<ConfigWrite, ConfigStoreError> {
-        let p = NS;
         let id = config.id.as_str();
         let data = serde_json::to_string(config).map_err(reject)?;
         let scope = scope.0.as_str();
@@ -588,7 +567,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(reject)?;
-        let current_revision = current_generation(&mut tx, p, scope, id).await?;
+        let current_revision = current_generation(&mut tx, scope, id).await?;
         let plan =
             match crate::ConfigRevisionWritePlan::admit(current_revision, expected_generation)
                 .map_err(reject)?
@@ -598,11 +577,11 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                     return Ok(ConfigWrite::Conflict { current_revision });
                 }
             };
-        if let Some(revision) = write_config_revision(&mut tx, p, scope, id, &data, plan).await? {
+        if let Some(revision) = write_config_revision(&mut tx, scope, id, &data, plan).await? {
             tx.commit().await.map_err(reject)?;
             return Ok(ConfigWrite::Applied { revision });
         }
-        let current_revision = current_generation(&mut tx, p, scope, id).await?;
+        let current_revision = current_generation(&mut tx, scope, id).await?;
         Ok(ConfigWrite::Conflict { current_revision })
     }
 
@@ -611,15 +590,13 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Option<AgentConfig>, ConfigStoreError> {
-        let p = NS;
-        let data: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"
-        ))
-        .bind(id)
-        .bind(&scope.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(reject)?;
+        let data: Option<String> =
+            sqlx::query_scalar("SELECT data FROM config_agent WHERE id = ?1 AND scope_id = ?2")
+                .bind(id)
+                .bind(&scope.0)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(reject)?;
         data.map(|s| serde_json::from_str(&s).map_err(reject))
             .transpose()
     }
@@ -629,18 +606,17 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
-        let p = NS;
-        let row: Option<(String, i64, i64, i64)> = sqlx::query_as(&format!(
+        let row: Option<(String, i64, i64, i64)> = sqlx::query_as(
             "SELECT a.data, a.generation, \
              CAST(strftime('%s', first.created_at) AS INTEGER) * 1000, \
              CAST(strftime('%s', current.created_at) AS INTEGER) * 1000 \
-             FROM {p}_agent a \
-             JOIN {p}_agent_revision first ON first.scope_id = a.scope_id \
+             FROM config_agent a \
+             JOIN config_agent_revision first ON first.scope_id = a.scope_id \
                AND first.id = a.id AND first.generation = 1 \
-             JOIN {p}_agent_revision current ON current.scope_id = a.scope_id \
+             JOIN config_agent_revision current ON current.scope_id = a.scope_id \
                AND current.id = a.id AND current.generation = a.generation \
-             WHERE a.id = ?1 AND a.scope_id = ?2"
-        ))
+             WHERE a.id = ?1 AND a.scope_id = ?2",
+        )
         .bind(id)
         .bind(&scope.0)
         .fetch_optional(&self.pool)
@@ -662,16 +638,15 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         id: &str,
     ) -> Result<Vec<AgentConfigRevision>, ConfigStoreError> {
-        let p = NS;
-        let rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(&format!(
+        let rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(
             "SELECT data, generation, \
              CAST(strftime('%s', (SELECT MIN(first.created_at) \
-               FROM {p}_agent_revision first WHERE first.scope_id = ?1 AND first.id = ?2)) \
+               FROM config_agent_revision first WHERE first.scope_id = ?1 AND first.id = ?2)) \
                AS INTEGER) * 1000, \
              CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
-             FROM {p}_agent_revision \
-             WHERE scope_id = ?1 AND id = ?2 ORDER BY generation ASC"
-        ))
+             FROM config_agent_revision \
+             WHERE scope_id = ?1 AND id = ?2 ORDER BY generation ASC",
+        )
         .bind(&scope.0)
         .bind(id)
         .fetch_all(&self.pool)
@@ -693,14 +668,12 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<AgentConfig>, ConfigStoreError> {
-        let p = NS;
-        let rows: Vec<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_agent WHERE scope_id = ?1 ORDER BY id ASC"
-        ))
-        .bind(&scope.0)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(reject)?;
+        let rows: Vec<String> =
+            sqlx::query_scalar("SELECT data FROM config_agent WHERE scope_id = ?1 ORDER BY id ASC")
+                .bind(&scope.0)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(reject)?;
         rows.iter()
             .map(|data| serde_json::from_str(data).map_err(reject))
             .collect()
@@ -711,7 +684,6 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         publication: &StoredPublication,
     ) -> Result<PublicationWrite, ConfigStoreError> {
-        let p = NS;
         let fingerprint = publication.fingerprint.as_str();
         let agent_id = publication.agent_id.as_str();
         let state = publication.state.as_str();
@@ -720,16 +692,16 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let execution_workspace = &publication.execution_workspace;
         let scope = scope.0.as_str();
         let mut tx = self.pool.begin().await.map_err(reject)?;
-        let current_revision = current_generation(&mut tx, p, scope, agent_id).await?;
+        let current_revision = current_generation(&mut tx, scope, agent_id).await?;
         if let crate::PublicationSourceAdmission::Conflict { current_revision } =
             crate::PublicationSourceAdmission::new(current_revision, source_revision)
         {
             return Ok(PublicationWrite::Conflict { current_revision });
         }
-        let existing = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT record FROM {p}_publication \
-             WHERE scope_id = ?1 AND agent_id = ?2"
-        ))
+        let existing = sqlx::query_scalar::<_, String>(
+            "SELECT record FROM config_publication \
+             WHERE scope_id = ?1 AND agent_id = ?2",
+        )
         .bind(scope)
         .bind(agent_id)
         .fetch_all(&mut *tx)
@@ -753,7 +725,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         if decision == PublicationRevisionDecision::Conflict {
             return Ok(PublicationWrite::Conflict { current_revision });
         }
-        insert_publication(&mut tx, p, fingerprint, agent_id, state, &record, scope).await?;
+        insert_publication(&mut tx, fingerprint, agent_id, state, &record, scope).await?;
         tx.commit().await.map_err(reject)?;
         Ok(PublicationWrite::Committed { source_revision })
     }
@@ -763,11 +735,10 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         scope: &ScopeId,
         fingerprint: &str,
     ) -> Result<Option<StoredPublication>, ConfigStoreError> {
-        let p = NS;
-        let row: Option<(String, i64, i64)> = sqlx::query_as(&format!(
+        let row: Option<(String, i64, i64)> = sqlx::query_as(
             "SELECT record, rowid, CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
-             FROM {p}_publication WHERE fingerprint = ?1 AND scope_id = ?2"
-        ))
+             FROM config_publication WHERE fingerprint = ?1 AND scope_id = ?2",
+        )
         .bind(fingerprint)
         .bind(&scope.0)
         .fetch_optional(&self.pool)
@@ -784,12 +755,11 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         &self,
         scope: &ScopeId,
     ) -> Result<Vec<StoredPublication>, ConfigStoreError> {
-        let p = NS;
-        let rows: Vec<(String, i64, i64)> = sqlx::query_as(&format!(
+        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
             "SELECT record, rowid, CAST(strftime('%s', created_at) AS INTEGER) * 1000 \
-             FROM {p}_publication \
-             WHERE scope_id = ?1 AND state = 'published' ORDER BY rowid ASC"
-        ))
+             FROM config_publication \
+             WHERE scope_id = ?1 AND state = 'published' ORDER BY rowid ASC",
+        )
         .bind(&scope.0)
         .fetch_all(&self.pool)
         .await

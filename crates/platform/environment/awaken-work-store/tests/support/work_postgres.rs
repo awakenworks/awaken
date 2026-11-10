@@ -29,7 +29,10 @@ impl WorkPostgresFixture {
             .expect("explicit Work PostgreSQL URL must connect");
         let schema = format!("work_fixture_{}", uuid::Uuid::new_v4().simple());
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(
+                // The private fixture owns a fixed prefix plus a UUID simple hexadecimal schema identifier.
+                sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+            )
             .await
             .expect("create exact owned Work schema");
         admin.close().await;
@@ -67,7 +70,10 @@ impl WorkPostgresFixture {
 
     pub async fn cleanup(self) {
         self.pool
-            .execute(format!("DROP SCHEMA {} CASCADE", self.schema).as_str())
+            .execute(
+                // The private fixture owns a fixed prefix plus a UUID simple hexadecimal schema identifier.
+                sqlx::AssertSqlSafe(format!("DROP SCHEMA {} CASCADE", self.schema)),
+            )
             .await
             .expect("drop only this Work fixture schema");
         self.pool.close().await;

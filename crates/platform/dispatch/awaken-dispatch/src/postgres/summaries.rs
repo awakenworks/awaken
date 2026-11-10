@@ -13,7 +13,9 @@ impl PostgresDispatchStore {
             "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until, active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing FROM {p}_dispatch \
              {suffix}"
         );
-        let query = sqlx::query(&query);
+        // suffix is one of two literal selection/order clauses; p is the
+        // built-in namespace. The optional run id is a bind parameter.
+        let query = sqlx::query(sqlx::AssertSqlSafe(query));
         let query = if let Some(run_id) = run_id {
             query.bind(run_id)
         } else {

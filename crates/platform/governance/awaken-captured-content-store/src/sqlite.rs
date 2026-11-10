@@ -110,9 +110,9 @@ impl SqliteCapturedContentStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|error| CaptureError::Store(error.to_string()))?;
-        let fenced = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT subject FROM {NS}_fence WHERE subject = ?1"
-        ))
+        let fenced = sqlx::query_scalar::<_, String>(
+            "SELECT subject FROM coordinator_data_capture_fence WHERE subject = ?1",
+        )
         .bind(&subject.0)
         .fetch_optional(&mut *tx)
         .await
@@ -121,10 +121,8 @@ impl SqliteCapturedContentStore {
         if fenced {
             return Err(CaptureError::SubjectErased);
         }
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_captured (id, subject, purpose, recorded_at, content, restricted) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 0)"
-        ))
+        sqlx::query("INSERT INTO coordinator_data_capture_captured (id, subject, purpose, recorded_at, content, restricted) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)")
         .bind(&id)
         .bind(&subject.0)
         .bind(&purpose)
@@ -145,9 +143,7 @@ impl SqliteCapturedContentStore {
         reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
     )]
     pub async fn restrict(&self, subject: &DataSubjectId) -> usize {
-        sqlx::query(&format!(
-            "UPDATE {NS}_captured SET restricted = 1 WHERE subject = ?1 AND restricted = 0"
-        ))
+        sqlx::query("UPDATE coordinator_data_capture_captured SET restricted = 1 WHERE subject = ?1 AND restricted = 0")
         .bind(&subject.0)
         .execute(&self.pool)
         .await
@@ -161,9 +157,7 @@ impl SqliteCapturedContentStore {
         reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
     )]
     pub async fn release(&self, subject: &DataSubjectId) -> usize {
-        sqlx::query(&format!(
-            "UPDATE {NS}_captured SET restricted = 0 WHERE subject = ?1 AND restricted = 1"
-        ))
+        sqlx::query("UPDATE coordinator_data_capture_captured SET restricted = 0 WHERE subject = ?1 AND restricted = 1")
         .bind(&subject.0)
         .execute(&self.pool)
         .await
@@ -178,9 +172,7 @@ impl SqliteCapturedContentStore {
         reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
     )]
     pub async fn sweep_expired(&self, ttl_millis: i64, now: i64) -> usize {
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_captured WHERE restricted = 0 AND ?1 - recorded_at >= ?2"
-        ))
+        sqlx::query("DELETE FROM coordinator_data_capture_captured WHERE restricted = 0 AND ?1 - recorded_at >= ?2")
         .bind(now)
         .bind(ttl_millis)
         .execute(&self.pool)
@@ -196,7 +188,7 @@ impl SqliteCapturedContentStore {
         reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
     )]
     pub async fn len(&self) -> usize {
-        sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {NS}_captured"))
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM coordinator_data_capture_captured")
             .fetch_one(&self.pool)
             .await
             .map(|n| n as usize)
@@ -242,9 +234,9 @@ impl ContentEraser for SqliteCapturedContentStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|error| awaken_data_governance_contract::ErasureError(error.to_string()))?;
-        let previous = sqlx::query_scalar::<_, i64>(&format!(
-            "SELECT records_removed FROM {NS}_fence WHERE subject = ?1"
-        ))
+        let previous = sqlx::query_scalar::<_, i64>(
+            "SELECT records_removed FROM coordinator_data_capture_fence WHERE subject = ?1",
+        )
         .bind(&subject.0)
         .fetch_optional(&mut *tx)
         .await
@@ -252,9 +244,9 @@ impl ContentEraser for SqliteCapturedContentStore {
         .unwrap_or(0);
         // Restricted (Art. 18) rows survive erasure until released. A DELETE that
         // errors is surfaced (fail-closed) rather than swallowed to a `0` count.
-        let removed = sqlx::query(&format!(
-            "DELETE FROM {NS}_captured WHERE subject = ?1 AND restricted = 0"
-        ))
+        let removed = sqlx::query(
+            "DELETE FROM coordinator_data_capture_captured WHERE subject = ?1 AND restricted = 0",
+        )
         .bind(&subject.0)
         .execute(&mut *tx)
         .await
@@ -263,10 +255,8 @@ impl ContentEraser for SqliteCapturedContentStore {
         let receipt = previous.checked_add(removed as i64).ok_or_else(|| {
             awaken_data_governance_contract::ErasureError("erasure receipt overflow".into())
         })?;
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_fence (subject, erased_at, records_removed) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(subject) DO UPDATE SET records_removed = excluded.records_removed"
-        ))
+        sqlx::query("INSERT INTO coordinator_data_capture_fence (subject, erased_at, records_removed) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(subject) DO UPDATE SET records_removed = excluded.records_removed")
         .bind(&subject.0)
         .bind(erased_at)
         .bind(receipt)

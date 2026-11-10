@@ -29,13 +29,13 @@ pub(super) async fn claim_retry_exhausted_transaction(
     // terminalized by a claim; it is dead-lettered here instead of aborting
     // this selection forever (it would otherwise head every later one).
     refuse_untrustworthy_expired_leases(&mut tx, prefix, now_ms).await?;
-    let run_id = sqlx::query_scalar::<_, String>(&format!(
-        "SELECT run_id FROM {prefix}_dispatch \
+    let run_id = sqlx::query_scalar::<_, String>(
+        "SELECT run_id FROM runtime_dispatch \
          WHERE status = 'running' AND lease_until IS NOT NULL \
          AND lease_until <= ?1 AND attempt_count >= ?2 \
          AND active_attempt_epoch IS NULL \
-         ORDER BY created_at LIMIT 1"
-    ))
+         ORDER BY created_at LIMIT 1",
+    )
     .bind(crate::clock::db_millis(now_ms))
     .bind(max_attempts_i64)
     .fetch_optional(&mut *tx)
@@ -69,13 +69,12 @@ pub(super) async fn claim_exact_transaction(
     worker: Option<&WorkerSnapshot>,
     capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
-    let phase: Option<(String, Option<i64>)> = sqlx::query_as(&format!(
-        "SELECT status, lease_until FROM {NS}_dispatch WHERE run_id = ?1"
-    ))
-    .bind(requested_run)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(store_error)?;
+    let phase: Option<(String, Option<i64>)> =
+        sqlx::query_as("SELECT status, lease_until FROM runtime_dispatch WHERE run_id = ?1")
+            .bind(requested_run)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_error)?;
     let mode = phase
         .map(|(status, deadline)| {
             let state = DispatchState::from_db(&status).ok_or_else(|| {
@@ -172,7 +171,9 @@ pub(super) async fn claim_exact_transaction_with_mode(
         .retry_limit()
         .map(|limit| durable_i64("dispatch retry limit", limit))
         .transpose()?;
-    let picked: Option<PickedDispatch> = sqlx::query_as(&sql)
+    // eligibility is the closed ExactClaimMode match; prefix is the built-in
+    // namespace. Every run/time/limit value remains a bind parameter.
+    let picked: Option<PickedDispatch> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(requested_run)
         .bind(crate::clock::db_millis(now_ms))
         .bind(retry_limit)
@@ -261,12 +262,12 @@ pub(super) async fn claim_exact_transaction_with_mode(
         .flatten()
         .map(|value| json(&value))
         .transpose()?;
-    sqlx::query(&format!(
-        "UPDATE {prefix}_dispatch SET status = ?9, lease_owner = ?1, \
+    sqlx::query(
+        "UPDATE runtime_dispatch SET status = ?9, lease_owner = ?1, \
          lease_until = ?2, attempt_count = attempt_count + ?3, \
          lease_epoch = ?5, worker_assignment = ?6, credential_bindings = ?7, \
-         credential_receipts = ?8, retry_not_before = NULL WHERE run_id = ?4"
-    ))
+         credential_receipts = ?8, retry_not_before = NULL WHERE run_id = ?4",
+    )
     .bind(owner)
     .bind(crate::clock::db_millis(expires))
     .bind(i64::from(status == "running"))

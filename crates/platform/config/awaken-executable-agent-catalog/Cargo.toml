@@ -28,7 +28,7 @@ axum.workspace = true
 awaken-outbound-http = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "postgres"] }
 tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]

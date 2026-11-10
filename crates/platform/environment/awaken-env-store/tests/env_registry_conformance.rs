@@ -80,7 +80,10 @@ impl PostgresSuiteFixture {
         assert!(!identity.is_empty() && identity.bytes().all(|b| b.is_ascii_digit()));
         let schema = format!("t_env_contract_{identity}");
         self.admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(
+                // The schema contains a fixed fixture prefix and the explicitly digit-checked database transaction ID.
+                sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+            )
             .await
             .expect("create a fresh Environment conformance schema");
         self.schemas
@@ -120,7 +123,10 @@ impl PostgresSuiteFixture {
         for schema in schemas {
             if let Err(error) = self
                 .admin
-                .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+                .execute(
+                    // The schema contains a fixed fixture prefix and the explicitly digit-checked database transaction ID.
+                    sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")),
+                )
                 .await
             {
                 errors.push(error.to_string());

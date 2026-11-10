@@ -47,9 +47,7 @@ async fn migrate(pool: &EmbeddedPool) -> Result<(), StoreError> {
     .await
     .map_err(|error| StoreError::Migrate(error.to_string()))?;
     let v1_checksum = if ledger_exists {
-        sqlx::query_scalar::<_, String>(&format!(
-            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
-        ))
+        sqlx::query_scalar::<_, String>("SELECT checksum FROM skill_store_schema_migrations WHERE bundle_id = ?1 AND version = 1")
         .bind(BUNDLE_ID)
         .fetch_optional(pool)
         .await
@@ -105,9 +103,9 @@ async fn aggregate_data(
     workspace_id: &str,
     skill_id: &str,
 ) -> Result<Option<String>, SkillStoreError> {
-    sqlx::query_scalar::<_, String>(&format!(
-        "SELECT data FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"
-    ))
+    sqlx::query_scalar::<_, String>(
+        "SELECT data FROM skill_store_aggregate WHERE workspace_id = ?1 AND id = ?2",
+    )
     .bind(workspace_id)
     .bind(skill_id)
     .fetch_optional(conn)
@@ -121,15 +119,13 @@ async fn update_aggregate_data(
     skill_id: &str,
     data: &str,
 ) -> Result<(), SkillStoreError> {
-    sqlx::query(&format!(
-        "UPDATE {NS}_aggregate SET data = ?3 WHERE workspace_id = ?1 AND id = ?2"
-    ))
-    .bind(workspace_id)
-    .bind(skill_id)
-    .bind(data)
-    .execute(conn)
-    .await
-    .map_err(storage)?;
+    sqlx::query("UPDATE skill_store_aggregate SET data = ?3 WHERE workspace_id = ?1 AND id = ?2")
+        .bind(workspace_id)
+        .bind(skill_id)
+        .bind(data)
+        .execute(conn)
+        .await
+        .map_err(storage)?;
     Ok(())
 }
 
@@ -177,9 +173,9 @@ impl SqliteSkillStore {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<SkillAggregate>, SkillStoreError> {
-        let rows = sqlx::query_as::<_, (String, String)>(&format!(
-            "SELECT id, data FROM {NS}_aggregate WHERE workspace_id = ?1 ORDER BY id"
-        ))
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, data FROM skill_store_aggregate WHERE workspace_id = ?1 ORDER BY id",
+        )
         .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
@@ -198,9 +194,9 @@ impl SqliteSkillStore {
 #[async_trait::async_trait]
 impl SkillStore for SqliteSkillStore {
     async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
-        sqlx::query_scalar::<_, String>(&format!(
-            "SELECT DISTINCT workspace_id FROM {NS}_aggregate ORDER BY workspace_id"
-        ))
+        sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT workspace_id FROM skill_store_aggregate ORDER BY workspace_id",
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(storage)
@@ -224,9 +220,9 @@ impl SkillStore for SqliteSkillStore {
         let ws = aggregate.definition.workspace_id.to_string();
         let id = aggregate.definition.id.to_string();
         let data = encode_aggregate(&aggregate)?;
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_aggregate (workspace_id, id, data) VALUES (?1, ?2, ?3)"
-        ))
+        sqlx::query(
+            "INSERT INTO skill_store_aggregate (workspace_id, id, data) VALUES (?1, ?2, ?3)",
+        )
         .bind(&ws)
         .bind(&id)
         .bind(&data)
@@ -390,14 +386,12 @@ impl SkillStore for SqliteSkillStore {
                 detail: "an active Skill cannot be physically reclaimed".into(),
             });
         }
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_aggregate WHERE workspace_id = ?1 AND id = ?2"
-        ))
-        .bind(workspace_id)
-        .bind(skill_id)
-        .execute(&mut *conn)
-        .await
-        .map_err(storage)?;
+        sqlx::query("DELETE FROM skill_store_aggregate WHERE workspace_id = ?1 AND id = ?2")
+            .bind(workspace_id)
+            .bind(skill_id)
+            .execute(&mut *conn)
+            .await
+            .map_err(storage)?;
         u64::try_from(aggregate.versions.len()).map_err(storage)
     }
 }

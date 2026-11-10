@@ -42,7 +42,7 @@ impl Inbox for SqliteDispatchStore {
         {
             PendingInputMutationPlan::Unchanged(outcome) => outcome,
             PendingInputMutationPlan::Retract => {
-                sqlx::query(&format!("DELETE FROM {p}_pending WHERE message_id = ?1"))
+                sqlx::query("DELETE FROM runtime_pending WHERE message_id = ?1")
                     .bind(&message_id)
                     .execute(&mut *tx)
                     .await
@@ -76,10 +76,10 @@ impl Inbox for SqliteDispatchStore {
         {
             PendingInputMutationPlan::Unchanged(outcome) => outcome,
             PendingInputMutationPlan::Edit { next_revision } => {
-                sqlx::query(&format!(
-                    "UPDATE {p}_pending SET result = ?1, revision = ?3 \
-                     WHERE message_id = ?2"
-                ))
+                sqlx::query(
+                    "UPDATE runtime_pending SET result = ?1, revision = ?3 \
+                     WHERE message_id = ?2",
+                )
                 .bind(&result_json)
                 .bind(&message_id)
                 .bind(durable_i64("pending input revision", next_revision)?)
@@ -100,11 +100,8 @@ impl awaken_dispatch_contract::InboxRead for SqliteDispatchStore {
     async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
         let thread = thread_id.clone();
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let rows = sqlx::query_as::<_, PendingRecordRow>(&format!(
-            "SELECT message_id, run_id, correlation_id, result, context_messages, revision, available_at \
-             FROM {p}_pending WHERE thread_id = ?1 ORDER BY created_at"
-        ))
+        let rows = sqlx::query_as::<_, PendingRecordRow>("SELECT message_id, run_id, correlation_id, result, context_messages, revision, available_at \
+             FROM runtime_pending WHERE thread_id = ?1 ORDER BY created_at")
         .bind(&thread.0)
         .fetch_all(&mut *conn)
         .await
@@ -174,8 +171,7 @@ mod inbox_revision_tests {
             .unwrap();
         {
             let (_authority, mut conn) = store.with_conn().await.unwrap();
-            let p = NS;
-            sqlx::query(&format!("UPDATE {p}_pending SET revision = ?1"))
+            sqlx::query("UPDATE runtime_pending SET revision = ?1")
                 .bind(i64::MAX)
                 .execute(&mut *conn)
                 .await
@@ -296,11 +292,10 @@ impl Outbox for SqliteDispatchStore {
         let input = normalize_pending_millis(input);
         let payload = json(&input)?;
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let changed = sqlx::query(&format!(
-            "INSERT INTO {p}_outbox (message_id, payload) VALUES (?1,?2) \
-             ON CONFLICT(message_id) DO NOTHING"
-        ))
+        let changed = sqlx::query(
+            "INSERT INTO runtime_outbox (message_id, payload) VALUES (?1,?2) \
+             ON CONFLICT(message_id) DO NOTHING",
+        )
         .bind(&input.message_id)
         .bind(payload)
         .execute(&mut *conn)
@@ -310,9 +305,9 @@ impl Outbox for SqliteDispatchStore {
         if changed > 0 {
             return Ok(true);
         }
-        let existing = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT payload FROM {p}_outbox WHERE message_id = ?1"
-        ))
+        let existing = sqlx::query_scalar::<_, String>(
+            "SELECT payload FROM runtime_outbox WHERE message_id = ?1",
+        )
         .bind(&input.message_id)
         .fetch_optional(&mut *conn)
         .await
@@ -333,7 +328,7 @@ impl Outbox for SqliteDispatchStore {
         let (_authority, mut conn) = self.with_conn().await?;
         let p = NS;
         let staged: Vec<(String, String)> =
-            sqlx::query_as(&format!("SELECT message_id, payload FROM {p}_outbox"))
+            sqlx::query_as("SELECT message_id, payload FROM runtime_outbox")
                 .fetch_all(&mut *conn)
                 .await
                 .map_err(store_error)?;
@@ -347,7 +342,7 @@ impl Outbox for SqliteDispatchStore {
             // drop the outbox row.
             let mut tx = immediate(&mut conn).await?;
             append_pending_row(&mut tx, p, &input).await?;
-            sqlx::query(&format!("DELETE FROM {p}_outbox WHERE message_id = ?1"))
+            sqlx::query("DELETE FROM runtime_outbox WHERE message_id = ?1")
                 .bind(&message_id)
                 .execute(&mut *tx)
                 .await
@@ -373,21 +368,20 @@ impl awaken_dispatch_contract::SessionContinuationOutbox for SqliteDispatchStore
         let (_authority, mut conn) = self.with_conn().await?;
         let p = NS;
         let mut tx = immediate(&mut conn).await?;
-        let stored =
-            sqlx::query_as::<_, (String, String, i64, Option<String>, Option<i64>)>(&format!(
-                "SELECT request, status, cancel_requested, lease_owner, lease_until \
-                 FROM {p}_dispatch WHERE run_id = ?1"
+        let stored = sqlx::query_as::<_, (String, String, i64, Option<String>, Option<i64>)>(
+            "SELECT request, status, cancel_requested, lease_owner, lease_until \
+                 FROM runtime_dispatch WHERE run_id = ?1",
+        )
+        .bind(&input.run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .ok_or_else(|| {
+            DispatchError::Rejected(format!(
+                "Session resume Run `{}` was not found",
+                input.run_id.0
             ))
-            .bind(&input.run_id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(store_error)?
-            .ok_or_else(|| {
-                DispatchError::Rejected(format!(
-                    "Session resume Run `{}` was not found",
-                    input.run_id.0
-                ))
-            })?;
+        })?;
         let (request, status, cancel_requested, lease_owner, lease_until) = stored;
         let mut request = serde_json::from_str::<RunDispatch>(&request).map_err(json_err)?;
         validate_session_resume_target(
@@ -398,11 +392,11 @@ impl awaken_dispatch_contract::SessionContinuationOutbox for SqliteDispatchStore
             session_activity_epoch,
         )?;
 
-        let mut evidence = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT payload FROM {p}_outbox WHERE message_id = ?1 OR \
+        let mut evidence = sqlx::query_scalar::<_, String>(
+            "SELECT payload FROM runtime_outbox WHERE message_id = ?1 OR \
              (json_extract(payload, '$.run_id') = ?2 AND \
-             json_extract(payload, '$.correlation_id') = ?3)"
-        ))
+             json_extract(payload, '$.correlation_id') = ?3)",
+        )
         .bind(&input.message_id)
         .bind(&input.run_id.0)
         .bind(&input.correlation_id)
@@ -412,11 +406,11 @@ impl awaken_dispatch_contract::SessionContinuationOutbox for SqliteDispatchStore
         .into_iter()
         .map(|payload| serde_json::from_str::<PendingInput>(&payload).map_err(json_err))
         .collect::<Result<Vec<_>, _>>()?;
-        let pending_ids = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT message_id FROM {p}_pending \
+        let pending_ids = sqlx::query_scalar::<_, String>(
+            "SELECT message_id FROM runtime_pending \
              WHERE message_id = ?1 OR \
-             (run_id = ?2 AND correlation_id = ?3)"
-        ))
+             (run_id = ?2 AND correlation_id = ?3)",
+        )
         .bind(&input.message_id)
         .bind(&input.run_id.0)
         .bind(&input.correlation_id)
@@ -450,22 +444,18 @@ impl awaken_dispatch_contract::SessionContinuationOutbox for SqliteDispatchStore
         }
 
         request.session_activity_epoch = session_activity_epoch;
-        sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET request = ?1 WHERE run_id = ?2"
-        ))
-        .bind(json(&request)?)
-        .bind(&input.run_id.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_outbox (message_id, payload) VALUES (?1, ?2)"
-        ))
-        .bind(&input.message_id)
-        .bind(json(&input)?)
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        sqlx::query("UPDATE runtime_dispatch SET request = ?1 WHERE run_id = ?2")
+            .bind(json(&request)?)
+            .bind(&input.run_id.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        sqlx::query("INSERT INTO runtime_outbox (message_id, payload) VALUES (?1, ?2)")
+            .bind(&input.message_id)
+            .bind(json(&input)?)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
         tx.commit().await.map_err(store_error)?;
         Ok(true)
     }
@@ -481,9 +471,9 @@ impl awaken_dispatch_contract::SessionContinuationOutbox for SqliteDispatchStore
         let p = NS;
         let mut tx = immediate(&mut conn).await?;
         let replay = exact_run_replay(&mut tx, p, &request).await?;
-        let staged = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT payload FROM {p}_outbox WHERE message_id = ?1"
-        ))
+        let staged = sqlx::query_scalar::<_, String>(
+            "SELECT payload FROM runtime_outbox WHERE message_id = ?1",
+        )
         .bind(&message_id)
         .fetch_optional(&mut *tx)
         .await
@@ -517,7 +507,7 @@ impl awaken_dispatch_contract::SessionContinuationOutbox for SqliteDispatchStore
             insert_new_dispatch(&mut tx, p, &request, &SubmitOptions::default()).await?;
         }
         if staged.is_some() {
-            sqlx::query(&format!("DELETE FROM {p}_outbox WHERE message_id = ?1"))
+            sqlx::query("DELETE FROM runtime_outbox WHERE message_id = ?1")
                 .bind(&message_id)
                 .execute(&mut *tx)
                 .await
@@ -559,9 +549,12 @@ async fn read_stored_operation_page(
         let sql = format!(
             "SELECT sequence, recorded_at_ms, run_id, operation FROM {NS}_dispatch_operation WHERE sequence > ?1 {selection} ORDER BY sequence LIMIT ?2"
         );
-        let mut query = sqlx::query_as::<_, (i64, Option<i64>, String, String)>(&sql)
-            .bind(after)
-            .bind(remaining);
+        // selection is the closed purpose/run-presence match above and NS is
+        // fixed. Every cursor, limit, thread/run id and operation tag is bound.
+        let mut query =
+            sqlx::query_as::<_, (i64, Option<i64>, String, String)>(sqlx::AssertSqlSafe(sql))
+                .bind(after)
+                .bind(remaining);
         if let crate::dispatch::OperationReadPurpose::Admissions {
             session_thread,
             member_threads,

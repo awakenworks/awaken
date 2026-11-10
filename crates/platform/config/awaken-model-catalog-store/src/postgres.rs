@@ -102,12 +102,9 @@ fn storage(err: impl std::fmt::Display) -> RepoError {
 /// the SQLite backend and stable across reopens/upserts (portable Postgres has no
 /// implicit rowid), so `resolve_offering`'s first-match is reproducible on every
 /// backend. `exec` is any Postgres executor (pool or transaction).
-async fn load_catalog(
-    conn: &mut sqlx::PgConnection,
-    p: &str,
-) -> Result<ProviderCatalog, RepoError> {
+async fn load_catalog(conn: &mut sqlx::PgConnection) -> Result<ProviderCatalog, RepoError> {
     let mut cat = ProviderCatalog::default();
-    for row in sqlx::query(&format!("SELECT data FROM {p}_provider"))
+    for row in sqlx::query("SELECT data FROM catalog_provider")
         .fetch_all(&mut *conn)
         .await
         .map_err(storage)?
@@ -115,7 +112,7 @@ async fn load_catalog(
         let Json(provider): Json<Provider> = row.try_get("data").map_err(storage)?;
         cat.providers.insert(provider.id.0.clone(), provider);
     }
-    for row in sqlx::query(&format!("SELECT data FROM {p}_protocol_endpoint"))
+    for row in sqlx::query("SELECT data FROM catalog_protocol_endpoint")
         .fetch_all(&mut *conn)
         .await
         .map_err(storage)?
@@ -123,17 +120,16 @@ async fn load_catalog(
         let Json(endpoint): Json<ProtocolEndpoint> = row.try_get("data").map_err(storage)?;
         cat.endpoints.insert(endpoint.id.0.clone(), endpoint);
     }
-    for row in sqlx::query(&format!(
-        "SELECT data FROM {p}_offering ORDER BY model_id, protocol_endpoint_id"
-    ))
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(storage)?
+    for row in
+        sqlx::query("SELECT data FROM catalog_offering ORDER BY model_id, protocol_endpoint_id")
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(storage)?
     {
         let Json(offering): Json<Offering> = row.try_get("data").map_err(storage)?;
         cat.offerings.push(offering);
     }
-    for row in sqlx::query(&format!("SELECT model_id, data FROM {p}_model_attributes"))
+    for row in sqlx::query("SELECT model_id, data FROM catalog_model_attributes")
         .fetch_all(&mut *conn)
         .await
         .map_err(storage)?
@@ -145,11 +141,11 @@ async fn load_catalog(
     Ok(cat)
 }
 
-async fn row_exists<'e, E>(exec: E, table: &str, id: &str) -> Result<bool, RepoError>
+async fn row_exists<'e, E>(exec: E, sql: &'static str, id: &str) -> Result<bool, RepoError>
 where
     E: sqlx::PgExecutor<'e>,
 {
-    let found: Option<i32> = sqlx::query_scalar(&format!("SELECT 1 FROM {table} WHERE id = $1"))
+    let found: Option<i32> = sqlx::query_scalar(sql)
         .bind(id)
         .fetch_optional(exec)
         .await
@@ -169,28 +165,25 @@ impl CatalogRepo for PostgresCatalogRepo {
         if endpoint.provider_id != provider.id {
             return Err(RepoError::ProviderNotFound(endpoint.provider_id.0));
         }
-        let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_provider (id, data) VALUES ($1, $2) \
-             ON CONFLICT (id) DO UPDATE SET data = excluded.data"
-        ))
+        sqlx::query(
+            "INSERT INTO catalog_provider (id, data) VALUES ($1, $2) \
+             ON CONFLICT (id) DO UPDATE SET data = excluded.data",
+        )
         .bind(&provider.id.0)
         .bind(Json(&provider))
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_protocol_endpoint (id, provider_id, data) VALUES ($1, $2, $3) \
-             ON CONFLICT (id) DO UPDATE SET provider_id = excluded.provider_id, data = excluded.data"
-        ))
+        sqlx::query("INSERT INTO catalog_protocol_endpoint (id, provider_id, data) VALUES ($1, $2, $3) \
+             ON CONFLICT (id) DO UPDATE SET provider_id = excluded.provider_id, data = excluded.data")
         .bind(&endpoint.id.0)
         .bind(&endpoint.provider_id.0)
         .bind(Json(&endpoint))
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        let mut catalog = load_catalog(&mut tx, p).await?;
+        let mut catalog = load_catalog(&mut tx).await?;
         let result =
             catalog.reconcile_discovered_models(&endpoint.id, models, observed_at_unix_ms)?;
         for offering in catalog
@@ -198,11 +191,11 @@ impl CatalogRepo for PostgresCatalogRepo {
             .iter()
             .filter(|offering| offering.protocol_endpoint_id == endpoint.id)
         {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
+            sqlx::query(
+                "INSERT INTO catalog_offering (model_id, protocol_endpoint_id, data) \
                  VALUES ($1, $2, $3) ON CONFLICT (model_id, protocol_endpoint_id) \
-                 DO UPDATE SET data = excluded.data"
-            ))
+                 DO UPDATE SET data = excluded.data",
+            )
             .bind(&offering.model_id)
             .bind(endpoint.id.as_str())
             .bind(Json(offering))
@@ -210,17 +203,16 @@ impl CatalogRepo for PostgresCatalogRepo {
             .await
             .map_err(storage)?;
         }
-        ValidCatalog::parse(load_catalog(&mut tx, p).await?)?;
+        ValidCatalog::parse(load_catalog(&mut tx).await?)?;
         tx.commit().await.map_err(storage)?;
         Ok(result)
     }
 
     async fn put_provider(&self, provider: Provider) -> Result<(), RepoError> {
-        let p = NS;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_provider (id, data) VALUES ($1, $2) \
-             ON CONFLICT (id) DO UPDATE SET data = excluded.data"
-        ))
+        sqlx::query(
+            "INSERT INTO catalog_provider (id, data) VALUES ($1, $2) \
+             ON CONFLICT (id) DO UPDATE SET data = excluded.data",
+        )
         .bind(&provider.id.0)
         .bind(Json(&provider))
         .execute(&self.pool)
@@ -230,21 +222,20 @@ impl CatalogRepo for PostgresCatalogRepo {
     }
 
     async fn put_endpoint(&self, endpoint: ProtocolEndpoint) -> Result<(), RepoError> {
-        let p = NS;
         if !row_exists(
             &self.pool,
-            &format!("{p}_provider"),
+            "SELECT 1 FROM catalog_provider WHERE id = $1",
             &endpoint.provider_id.0,
         )
         .await?
         {
             return Err(RepoError::ProviderNotFound(endpoint.provider_id.0.clone()));
         }
-        sqlx::query(&format!(
-            "INSERT INTO {p}_protocol_endpoint (id, provider_id, data) VALUES ($1, $2, $3) \
+        sqlx::query(
+            "INSERT INTO catalog_protocol_endpoint (id, provider_id, data) VALUES ($1, $2, $3) \
              ON CONFLICT (id) DO UPDATE SET \
-             provider_id = excluded.provider_id, data = excluded.data"
-        ))
+             provider_id = excluded.provider_id, data = excluded.data",
+        )
         .bind(&endpoint.id.0)
         .bind(&endpoint.provider_id.0)
         .bind(Json(&endpoint))
@@ -258,14 +249,13 @@ impl CatalogRepo for PostgresCatalogRepo {
         offering.source = awaken_model_catalog::OfferingSource::Manual;
         offering.status = awaken_model_catalog::OfferingStatus::Active;
         offering.last_seen_at_unix_ms = None;
-        let p = NS;
         // Insert + whole-catalog re-validation in one transaction (fail-closed): a
         // rejected offering rolls back and leaves no trace — same no-trace semantics
         // as the in-memory repo's push-then-pop.
         let mut tx = self.pool.begin().await.map_err(storage)?;
         if !row_exists(
             &mut *tx,
-            &format!("{p}_protocol_endpoint"),
+            "SELECT 1 FROM catalog_protocol_endpoint WHERE id = $1",
             &offering.protocol_endpoint_id.0,
         )
         .await?
@@ -274,11 +264,11 @@ impl CatalogRepo for PostgresCatalogRepo {
                 offering.protocol_endpoint_id.0.clone(),
             ));
         }
-        sqlx::query(&format!(
-            "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
+        sqlx::query(
+            "INSERT INTO catalog_offering (model_id, protocol_endpoint_id, data) \
              VALUES ($1, $2, $3) ON CONFLICT (model_id, protocol_endpoint_id) \
-             DO UPDATE SET data = excluded.data"
-        ))
+             DO UPDATE SET data = excluded.data",
+        )
         .bind(&offering.model_id)
         .bind(&offering.protocol_endpoint_id.0)
         .bind(Json(&offering))
@@ -287,7 +277,7 @@ impl CatalogRepo for PostgresCatalogRepo {
         .map_err(storage)?;
         // Route the whole-catalog re-validation through the single construction
         // boundary (`ValidCatalog::parse`) — same fail-closed check, funneled.
-        ValidCatalog::parse(load_catalog(&mut tx, p).await?)?; // Transaction derefs to PgConnection
+        ValidCatalog::parse(load_catalog(&mut tx).await?)?; // Transaction derefs to PgConnection
         tx.commit().await.map_err(storage)?;
         Ok(())
     }
@@ -298,18 +288,17 @@ impl CatalogRepo for PostgresCatalogRepo {
         models: Vec<DiscoveredModel>,
         observed_at_unix_ms: u64,
     ) -> Result<CatalogSyncResult, RepoError> {
-        let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         if !row_exists(
             &mut *tx,
-            &format!("{p}_protocol_endpoint"),
+            "SELECT 1 FROM catalog_protocol_endpoint WHERE id = $1",
             endpoint_id.as_str(),
         )
         .await?
         {
             return Err(RepoError::EndpointNotFound(endpoint_id.0.clone()));
         }
-        let mut catalog = load_catalog(&mut tx, p).await?;
+        let mut catalog = load_catalog(&mut tx).await?;
         let result =
             catalog.reconcile_discovered_models(endpoint_id, models, observed_at_unix_ms)?;
         for offering in catalog
@@ -317,11 +306,11 @@ impl CatalogRepo for PostgresCatalogRepo {
             .iter()
             .filter(|offering| offering.protocol_endpoint_id == *endpoint_id)
         {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) \
+            sqlx::query(
+                "INSERT INTO catalog_offering (model_id, protocol_endpoint_id, data) \
                  VALUES ($1, $2, $3) ON CONFLICT (model_id, protocol_endpoint_id) \
-                 DO UPDATE SET data = excluded.data"
-            ))
+                 DO UPDATE SET data = excluded.data",
+            )
             .bind(&offering.model_id)
             .bind(endpoint_id.as_str())
             .bind(Json(offering))
@@ -329,7 +318,7 @@ impl CatalogRepo for PostgresCatalogRepo {
             .await
             .map_err(storage)?;
         }
-        ValidCatalog::parse(load_catalog(&mut tx, p).await?)?;
+        ValidCatalog::parse(load_catalog(&mut tx).await?)?;
         tx.commit().await.map_err(storage)?;
         Ok(result)
     }
@@ -339,15 +328,14 @@ impl CatalogRepo for PostgresCatalogRepo {
         projection: BrokeredCatalogProjection,
     ) -> Result<CatalogSyncResult, RepoError> {
         let endpoint_prefix = format!("brokered:{}:", projection.broker_id.trim());
-        let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let mut catalog = load_catalog(&mut tx, p).await?;
+        let mut catalog = load_catalog(&mut tx).await?;
         let result = catalog.reconcile_brokered_projection(projection)?;
         for provider in catalog.providers.values() {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_provider (id, data) VALUES ($1, $2) \
-                 ON CONFLICT (id) DO UPDATE SET data = excluded.data"
-            ))
+            sqlx::query(
+                "INSERT INTO catalog_provider (id, data) VALUES ($1, $2) \
+                 ON CONFLICT (id) DO UPDATE SET data = excluded.data",
+            )
             .bind(&provider.id.0)
             .bind(Json(provider))
             .execute(&mut *tx)
@@ -359,10 +347,8 @@ impl CatalogRepo for PostgresCatalogRepo {
             .values()
             .filter(|endpoint| endpoint.id.0.starts_with(&endpoint_prefix))
         {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_protocol_endpoint (id, provider_id, data) VALUES ($1, $2, $3) \
-                 ON CONFLICT (id) DO UPDATE SET provider_id = excluded.provider_id, data = excluded.data"
-            ))
+            sqlx::query("INSERT INTO catalog_protocol_endpoint (id, provider_id, data) VALUES ($1, $2, $3) \
+                 ON CONFLICT (id) DO UPDATE SET provider_id = excluded.provider_id, data = excluded.data")
             .bind(&endpoint.id.0)
             .bind(&endpoint.provider_id.0)
             .bind(Json(endpoint))
@@ -377,10 +363,8 @@ impl CatalogRepo for PostgresCatalogRepo {
                     .0
                     .starts_with(&endpoint_prefix)
         }) {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_offering (model_id, protocol_endpoint_id, data) VALUES ($1, $2, $3) \
-                 ON CONFLICT (model_id, protocol_endpoint_id) DO UPDATE SET data = excluded.data"
-            ))
+            sqlx::query("INSERT INTO catalog_offering (model_id, protocol_endpoint_id, data) VALUES ($1, $2, $3) \
+                 ON CONFLICT (model_id, protocol_endpoint_id) DO UPDATE SET data = excluded.data")
             .bind(&offering.model_id)
             .bind(&offering.protocol_endpoint_id.0)
             .bind(Json(offering))
@@ -391,21 +375,19 @@ impl CatalogRepo for PostgresCatalogRepo {
         // Reconciliation produces the authoritative merged view. Replace the
         // attribute projection atomically so stale Brokered-only values are
         // removed without losing Manual or Provider API facts.
-        sqlx::query(&format!("DELETE FROM {p}_model_attributes"))
+        sqlx::query("DELETE FROM catalog_model_attributes")
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
         for (model_id, attributes) in &catalog.model_attributes {
-            sqlx::query(&format!(
-                "INSERT INTO {p}_model_attributes (model_id, data) VALUES ($1, $2)"
-            ))
-            .bind(model_id)
-            .bind(Json(attributes))
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
+            sqlx::query("INSERT INTO catalog_model_attributes (model_id, data) VALUES ($1, $2)")
+                .bind(model_id)
+                .bind(Json(attributes))
+                .execute(&mut *tx)
+                .await
+                .map_err(storage)?;
         }
-        ValidCatalog::parse(load_catalog(&mut tx, p).await?)?;
+        ValidCatalog::parse(load_catalog(&mut tx).await?)?;
         tx.commit().await.map_err(storage)?;
         Ok(result)
     }
@@ -416,11 +398,10 @@ impl CatalogRepo for PostgresCatalogRepo {
         attrs: ModelAttributes,
     ) -> Result<(), RepoError> {
         attrs.validate(&model_id)?;
-        let p = NS;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_model_attributes (model_id, data) VALUES ($1, $2) \
-             ON CONFLICT (model_id) DO UPDATE SET data = excluded.data"
-        ))
+        sqlx::query(
+            "INSERT INTO catalog_model_attributes (model_id, data) VALUES ($1, $2) \
+             ON CONFLICT (model_id) DO UPDATE SET data = excluded.data",
+        )
         .bind(&model_id)
         .bind(Json(&attrs))
         .execute(&self.pool)
@@ -430,8 +411,7 @@ impl CatalogRepo for PostgresCatalogRepo {
     }
 
     async fn get_provider(&self, id: &ProviderId) -> Result<Provider, RepoError> {
-        let p = NS;
-        let row = sqlx::query(&format!("SELECT data FROM {p}_provider WHERE id = $1"))
+        let row = sqlx::query("SELECT data FROM catalog_provider WHERE id = $1")
             .bind(&id.0)
             .fetch_optional(&self.pool)
             .await
@@ -442,14 +422,11 @@ impl CatalogRepo for PostgresCatalogRepo {
     }
 
     async fn get_endpoint(&self, id: &ProtocolEndpointId) -> Result<ProtocolEndpoint, RepoError> {
-        let p = NS;
-        let row = sqlx::query(&format!(
-            "SELECT data FROM {p}_protocol_endpoint WHERE id = $1"
-        ))
-        .bind(&id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
+        let row = sqlx::query("SELECT data FROM catalog_protocol_endpoint WHERE id = $1")
+            .bind(&id.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage)?;
         let row = row.ok_or_else(|| RepoError::EndpointNotFound(id.0.clone()))?;
         let Json(endpoint): Json<ProtocolEndpoint> = row.try_get("data").map_err(storage)?;
         Ok(endpoint)
@@ -459,7 +436,7 @@ impl CatalogRepo for PostgresCatalogRepo {
         let mut conn = self.pool.acquire().await.map_err(storage)?;
         // Load-time integrity guard against corrupt rows, funneled through the same
         // `ValidCatalog::parse` boundary; hand back the checked inner.
-        let cat = load_catalog(&mut conn, NS).await?;
+        let cat = load_catalog(&mut conn).await?;
         Ok(ValidCatalog::parse(cat)?.into_inner())
     }
 }

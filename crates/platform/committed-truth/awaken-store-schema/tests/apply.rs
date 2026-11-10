@@ -15,6 +15,16 @@ use sqlx::SqlitePool;
 
 const NS: &str = "runtime";
 
+fn require_fixture_schema(schema: &str) {
+    assert!(
+        !schema.is_empty()
+            && schema
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'),
+        "fixture schema must be one unquoted identifier"
+    );
+}
+
 fn failure_atomicity_bundle(
     second_statement: &str,
 ) -> Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError> {
@@ -43,9 +53,10 @@ async fn isolated_postgres_pool(
     let suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
-    let schema = format!("t_{label}_{suffix}");
+    let schema = format!("t_{label}_{}_{suffix}", std::process::id());
+    require_fixture_schema(&schema);
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await?;
     let selected_schema = schema.clone();
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -53,8 +64,9 @@ async fn isolated_postgres_pool(
         .after_connect(move |connection, _| {
             let selected_schema = selected_schema.clone();
             Box::pin(async move {
-                connection
-                    .execute(format!("SET search_path = {selected_schema}").as_str())
+                sqlx::query("SELECT set_config('search_path',$1,false)")
+                    .bind(selected_schema)
+                    .execute(connection)
                     .await?;
                 Ok(())
             })
@@ -72,8 +84,9 @@ async fn drop_postgres_pool(
     use sqlx::Executor;
 
     pool.close().await;
+    require_fixture_schema(schema);
     admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .await?;
     admin.close().await;
     Ok(())
@@ -195,30 +208,32 @@ async fn column_types_sqlite(
     conn: &SqlitePool,
     table: &str,
 ) -> std::collections::HashMap<String, String> {
-    sqlx::query(&format!("PRAGMA table_info({table})"))
+    sqlx::query("SELECT name,type FROM pragma_table_info(?1)")
+        .bind(table)
         .fetch_all(conn)
         .await
         .expect("query pragma")
         .iter()
-        .map(|row| (row.get::<String, _>(1), row.get::<String, _>(2)))
+        .map(|row| (row.get::<String, _>(0), row.get::<String, _>(1)))
         .collect()
 }
 
 /// The column names of a SQLite index, in key order, via `PRAGMA index_info`.
 async fn index_columns_sqlite(conn: &SqlitePool, index: &str) -> Vec<String> {
-    sqlx::query(&format!("PRAGMA index_info({index})"))
+    sqlx::query("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+        .bind(index)
         .fetch_all(conn)
         .await
         .unwrap()
         .iter()
-        .map(|row| row.get::<String, _>(2))
+        .map(|row| row.get::<String, _>(0))
         .collect()
 }
 
 /// The detail lines of SQLite's `EXPLAIN QUERY PLAN` for one query.
 async fn query_plan_sqlite<'q>(
     conn: &SqlitePool,
-    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments>,
 ) -> String {
     query
         .fetch_all(conn)
@@ -441,38 +456,18 @@ async fn sqlite_failed_migration_rolls_back_schema_and_ledger()
 }
 
 #[tokio::test]
-async fn every_postgres_historical_prefix_migrates_to_full() {
-    use sqlx::Executor;
-
+async fn every_postgres_historical_prefix_migrates_to_full()
+-> Result<(), Box<dyn std::error::Error>> {
     let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
-        return;
+        return Ok(());
     };
-    let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
     let full = commit_bundle().expect("bundle builds");
     for prefix_len in 0..=full.migrations().len() {
-        let schema = format!("t_schema_history_{prefix_len}");
-        admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
-            .await
-            .expect("drop historical schema");
-        admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
-            .await
-            .expect("create historical schema");
-        let selected_schema = schema.clone();
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .after_connect(move |connection, _| {
-                let selected_schema = selected_schema.clone();
-                Box::pin(async move {
-                    connection
-                        .execute(format!("SET search_path = {selected_schema}").as_str())
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect(&url)
-            .await
-            .expect("historical schema pool");
+        // The fixture-admission owner also executes this exact case in a live
+        // child. Each invocation owns its schemas; fixed prefix names would
+        // let one process drop another process's ledger while it migrates.
+        let (admin, pool, schema) =
+            isolated_postgres_pool(&url, &format!("schema_history_{prefix_len}")).await?;
         let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
             pool.clone(),
             NS,
@@ -505,9 +500,10 @@ async fn every_postgres_historical_prefix_migrates_to_full() {
                 .is_empty(),
             "H4 prefix={prefix_len}"
         );
-        pool.close().await;
+        drop(runner);
+        drop_postgres_pool(admin, pool, &schema).await?;
     }
-    admin.close().await;
+    Ok(())
 }
 
 #[tokio::test]
@@ -651,42 +647,21 @@ async fn postgres_v10_canonicalizes_historical_kinds_and_rolls_back_as_one_unit(
     Ok(())
 }
 
-// The bundle applies against a real Postgres (skip-on-unreachable), rendering the
+// The bundle applies against an admitted real Postgres, rendering the
 // portable tokens to Postgres's concrete forms: `{json}` → JSONB, `{timestamptz}`
 // → TIMESTAMPTZ, `{pk_autoinc}` → BIGSERIAL, `{now}` → now() (asserted via a
 // defaulted insert). Mirrors the SQLite test on the other dialect so the single
 // portable schema is proven on both backends it drives.
 #[tokio::test]
-async fn bundle_applies_on_real_postgres() {
+async fn bundle_applies_on_real_postgres() -> Result<(), Box<dyn std::error::Error>> {
     use sqlx::Row;
 
     let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
-        return;
+        return Ok(());
     };
-    let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
-    // Isolate in a fresh schema so this never collides with other suites.
-    let schema = "t_schema_apply";
-    use sqlx::Executor;
-    let _ = admin
-        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
-        .await;
-    admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
-        .await
-        .expect("create schema");
-    admin.close().await;
-
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .after_connect(move |conn, _meta| {
-            Box::pin(async move {
-                conn.execute(format!("SET search_path = {schema}").as_str())
-                    .await?;
-                Ok(())
-            })
-        })
-        .connect(&url)
-        .await
-        .expect("schema pool");
+    // The admission-contract test concurrently launches this exact case in a
+    // child process. Never drop or reuse a fixed schema shared with that child.
+    let (admin, pool, schema) = isolated_postgres_pool(&url, "schema_apply").await?;
 
     let bundle = commit_bundle().expect("bundle builds");
     let applied =
@@ -706,7 +681,7 @@ async fn bundle_applies_on_real_postgres() {
         "SELECT data_type FROM information_schema.columns \
          WHERE table_schema=$1 AND table_name='runtime_commit' AND column_name='phase'",
     )
-    .bind(schema)
+    .bind(&schema)
     .fetch_one(&pool)
     .await
     .expect("legacy phase type")
@@ -720,7 +695,7 @@ async fn bundle_applies_on_real_postgres() {
         "SELECT data_type FROM information_schema.columns \
          WHERE table_schema=$1 AND table_name='runtime_commit' AND column_name='committed_at'",
     )
-    .bind(schema)
+    .bind(&schema)
     .fetch_one(&pool)
     .await
     .expect("committed_at type")
@@ -735,7 +710,7 @@ async fn bundle_applies_on_real_postgres() {
         "SELECT column_default FROM information_schema.columns \
          WHERE table_schema=$1 AND table_name='runtime_message' AND column_name='id'",
     )
-    .bind(schema)
+    .bind(&schema)
     .fetch_one(&pool)
     .await
     .expect("id default")
@@ -770,7 +745,8 @@ async fn bundle_applies_on_real_postgres() {
         "negative Postgres authority is rejected by CHECK"
     );
 
-    pool.close().await;
+    drop_postgres_pool(admin, pool, &schema).await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -846,10 +822,11 @@ async fn sqlite_v11_indexes_run_predecessors_without_rewriting_history() {
             .unwrap();
         assert_eq!(actual, expected, "R1 run={run} bound={bound}");
     }
-    let explain = format!("EXPLAIN QUERY PLAN {query}");
+    // `query` is the static predecessor template above; its data stays bound.
+    let explain = sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {query}"));
     let plan = query_plan_sqlite(
         &connection,
-        sqlx::query(&explain).bind("run-7").bind(508_i64),
+        sqlx::query(explain).bind("run-7").bind(508_i64),
     )
     .await;
     assert!(plan.contains("runtime_event_run_sequence"), "R2 {plan}");
@@ -909,7 +886,8 @@ async fn postgres_v11_indexes_run_predecessors_without_rewriting_history()
         assert_eq!(actual, expected, "R1 run={run} bound={bound}");
     }
     sqlx::query("ANALYZE runtime_event").execute(&pool).await?;
-    let plan: Vec<String> = sqlx::query_scalar(&format!("EXPLAIN {query}"))
+    // EXPLAIN wraps only the static predecessor query, not request SQL.
+    let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("EXPLAIN {query}")))
         .bind("run-7")
         .bind(508_i64)
         .fetch_all(&pool)
@@ -989,16 +967,17 @@ async fn sqlite_v12_indexes_recovery_ranges_atomically_without_changing_rows() {
         .execute(&conn)
         .await
         .unwrap();
-        for table in ["message", "state_command"] {
-            sqlx::query(&format!(
-                "INSERT INTO runtime_{table}(commit_sequence,thread_id,data) VALUES(?1,?2,?3)"
-            ))
-            .bind(n)
-            .bind(format!("thread-{}", n % 100))
-            .bind(format!("{{\"sequence\":{n}}}"))
-            .execute(&conn)
-            .await
-            .unwrap();
+        for query in [
+            "INSERT INTO runtime_message(commit_sequence,thread_id,data) VALUES(?1,?2,?3)",
+            "INSERT INTO runtime_state_command(commit_sequence,thread_id,data) VALUES(?1,?2,?3)",
+        ] {
+            sqlx::query(query)
+                .bind(n)
+                .bind(format!("thread-{}", n % 100))
+                .bind(format!("{{\"sequence\":{n}}}"))
+                .execute(&conn)
+                .await
+                .unwrap();
         }
     }
     let stored = || async {
@@ -1072,8 +1051,9 @@ async fn sqlite_v12_indexes_recovery_ranges_atomically_without_changing_rows() {
     );
     for ((name, query), expected) in RECOVERY_RANGE_READS.into_iter().zip(results) {
         assert_eq!(read(query).await, expected, "R2 {name}");
-        let explain = format!("EXPLAIN QUERY PLAN {query}");
-        let plan = query_plan_sqlite(&conn, sqlx::query(&explain)).await;
+        // RECOVERY_RANGE_READS is a constant schema-owned query corpus.
+        let explain = sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {query}"));
+        let plan = query_plan_sqlite(&conn, sqlx::query(explain)).await;
         assert!(plan.contains(&format!("runtime_{name}")), "R2 {plan}");
     }
     assert!(runner.run_bundle(&full).await.unwrap().is_empty(), "R3");
@@ -1109,8 +1089,11 @@ async fn postgres_v12_indexes_recovery_ranges_atomically_without_changing_rows()
     )?;
     runner.run_bundle(&previous).await?;
     sqlx::query("INSERT INTO runtime_commit(sequence,thread_id,run_id,phase) SELECT n, 'thread-'||(n%100), 'run-'||(n%1000), '\"Running\"'::jsonb FROM generate_series(1,10000) n").execute(&pool).await?;
-    for table in ["message", "state_command"] {
-        sqlx::query(&format!("INSERT INTO runtime_{table}(commit_sequence,thread_id,data) SELECT sequence,thread_id,jsonb_build_object('sequence',sequence) FROM runtime_commit ORDER BY sequence")).execute(&pool).await?;
+    for query in [
+        "INSERT INTO runtime_message(commit_sequence,thread_id,data) SELECT sequence,thread_id,jsonb_build_object('sequence',sequence) FROM runtime_commit ORDER BY sequence",
+        "INSERT INTO runtime_state_command(commit_sequence,thread_id,data) SELECT sequence,thread_id,jsonb_build_object('sequence',sequence) FROM runtime_commit ORDER BY sequence",
+    ] {
+        sqlx::query(query).execute(&pool).await?;
     }
     let mut before = Vec::new();
     for query in RECOVERY_STORED_ROWS {
@@ -1165,10 +1148,12 @@ async fn postgres_v12_indexes_recovery_ranges_atomically_without_changing_rows()
             "R1/R2 unchanged facts"
         );
     }
-    for table in ["commit", "message", "state_command"] {
-        sqlx::query(&format!("ANALYZE runtime_{table}"))
-            .execute(&pool)
-            .await?;
+    for query in [
+        "ANALYZE runtime_commit",
+        "ANALYZE runtime_message",
+        "ANALYZE runtime_state_command",
+    ] {
+        sqlx::query(query).execute(&pool).await?;
     }
     for ((name, query), expected) in RECOVERY_RANGE_READS.into_iter().zip(results) {
         assert_eq!(
@@ -1178,7 +1163,8 @@ async fn postgres_v12_indexes_recovery_ranges_atomically_without_changing_rows()
             expected,
             "R2 {name}"
         );
-        let plan = sqlx::query_scalar::<_, String>(&format!("EXPLAIN {query}"))
+        // RECOVERY_RANGE_READS is a constant schema-owned query corpus.
+        let plan = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(format!("EXPLAIN {query}")))
             .fetch_all(&pool)
             .await?
             .join("\n");

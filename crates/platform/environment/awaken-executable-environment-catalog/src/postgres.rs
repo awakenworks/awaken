@@ -912,18 +912,19 @@ mod tests {
             .await
             .expect("configured executable Environment PostgreSQL fixture must connect");
         admin
-            .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
+            .execute("DROP SCHEMA IF EXISTS t_executable_environment_catalog CASCADE")
             .await
             .unwrap();
         admin
-            .execute(format!("CREATE SCHEMA {SCHEMA}").as_str())
+            .execute("CREATE SCHEMA t_executable_environment_catalog")
             .await
             .unwrap();
         let pool = PgPoolOptions::new()
             .after_connect(|connection, _| {
                 Box::pin(async move {
-                    connection
-                        .execute(format!("SET search_path = {SCHEMA}").as_str())
+                    sqlx::query("SELECT set_config('search_path', $1, false)")
+                        .bind(SCHEMA)
+                        .execute(connection)
                         .await?;
                     Ok(())
                 })
@@ -960,7 +961,7 @@ mod tests {
 
         pool.close().await;
         admin
-            .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
+            .execute("DROP SCHEMA IF EXISTS t_executable_environment_catalog CASCADE")
             .await
             .unwrap();
         admin.close().await;
@@ -1066,16 +1067,22 @@ mod tests {
             .as_nanos();
         let schema = format!("t_env_history_{}_{}", std::process::id(), unique);
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(
+                // The fixture schema is either a literal or a fixed prefix plus integer process/time coordinates.
+                sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+            )
             .await
             .unwrap();
         let search_schema = schema.clone();
         let pool = PgPoolOptions::new()
             .max_connections(3)
             .after_connect(move |connection, _| {
-                let statement = format!("SET search_path = {search_schema}");
+                let schema = search_schema.clone();
                 Box::pin(async move {
-                    connection.execute(statement.as_str()).await?;
+                    sqlx::query("SELECT set_config('search_path', $1, false)")
+                        .bind(schema)
+                        .execute(connection)
+                        .await?;
                     Ok(())
                 })
             })
@@ -1142,7 +1149,10 @@ mod tests {
         drop((writer, reopened, final_registrar));
         pool.close().await;
         admin
-            .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+            .execute(
+                // The fixture schema is either a literal or a fixed prefix plus integer process/time coordinates.
+                sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")),
+            )
             .await
             .unwrap();
         admin.close().await;

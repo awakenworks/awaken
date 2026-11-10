@@ -241,17 +241,19 @@ async fn sqlite_rows(path: &str, store: &str) -> [i64; 3] {
         .await
         .unwrap();
     let mut counts = [0; 3];
-    for (slot, table) in ["memories", "versions", "copy_conflicts"]
-        .iter()
-        .enumerate()
+    for (slot, statement) in [
+        "SELECT COUNT(*) FROM memory_store_memories WHERE store_id = ?1",
+        "SELECT COUNT(*) FROM memory_store_versions WHERE store_id = ?1",
+        "SELECT COUNT(*) FROM memory_store_copy_conflicts WHERE store_id = ?1",
+    ]
+    .iter()
+    .enumerate()
     {
-        counts[slot] = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM memory_store_{table} WHERE store_id = ?1"
-        ))
-        .bind(store)
-        .fetch_one(&mut conn)
-        .await
-        .unwrap();
+        counts[slot] = sqlx::query_scalar(*statement)
+            .bind(store)
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
     }
     conn.close().await.unwrap();
     counts
@@ -314,8 +316,9 @@ mod postgres {
             .unwrap()
             .as_nanos();
         let schema = format!("t_memory_purge_iso_{}_{nonce:x}", std::process::id());
+        // The schema uses only a fixed fixture prefix and integer coordinates.
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .await
             .expect("create schema");
         admin.close().await;
@@ -336,17 +339,19 @@ mod postgres {
 
     async fn pg_rows(pool: &PgPool, store: &str) -> [i64; 3] {
         let mut counts = [0; 3];
-        for (slot, table) in ["memories", "versions", "copy_conflicts"]
-            .iter()
-            .enumerate()
+        for (slot, statement) in [
+            "SELECT COUNT(*) FROM memory_store_memories WHERE store_id = $1",
+            "SELECT COUNT(*) FROM memory_store_versions WHERE store_id = $1",
+            "SELECT COUNT(*) FROM memory_store_copy_conflicts WHERE store_id = $1",
+        ]
+        .iter()
+        .enumerate()
         {
-            counts[slot] = sqlx::query_scalar(&format!(
-                "SELECT COUNT(*) FROM memory_store_{table} WHERE store_id = $1"
-            ))
-            .bind(store)
-            .fetch_one(pool)
-            .await
-            .unwrap();
+            counts[slot] = sqlx::query_scalar(*statement)
+                .bind(store)
+                .fetch_one(pool)
+                .await
+                .unwrap();
         }
         counts
     }

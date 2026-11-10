@@ -115,10 +115,13 @@ impl PostgresFixture {
             .unwrap()
             .as_nanos();
         let schema = format!("env_replay_{}_{}", std::process::id(), stamp);
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
-            .execute(&admin)
-            .await
-            .expect("new owned replay schema");
+        sqlx::query(
+            // The owned fixture schema consists of a fixed prefix and integer process/time coordinates.
+            sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+        )
+        .execute(&admin)
+        .await
+        .expect("new owned replay schema");
         admin.close().await;
         let options = options.options([("search_path", schema.as_str())]);
         let pool = Self::connect(&options).await;
@@ -144,10 +147,13 @@ impl PostgresFixture {
     }
 
     async fn cleanup(self) {
-        sqlx::query(&format!("DROP SCHEMA {} CASCADE", self.schema))
-            .execute(&self.pool)
-            .await
-            .expect("drop only this replay fixture schema");
+        sqlx::query(
+            // The owned fixture schema consists of a fixed prefix and integer process/time coordinates.
+            sqlx::AssertSqlSafe(format!("DROP SCHEMA {} CASCADE", self.schema)),
+        )
+        .execute(&self.pool)
+        .await
+        .expect("drop only this replay fixture schema");
         self.pool.close().await;
     }
 }

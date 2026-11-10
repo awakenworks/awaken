@@ -209,7 +209,9 @@ const ENVIRONMENT_COUNT_SQL: &str =
 /// A nullable-parameter OR instead leaves it as a prefix filter in PostgreSQL
 /// generic plans and SQLite scans. Callers pass only fixed SQL identifiers and
 /// placeholders here; the actual cursor always remains a bound value.
-fn keyset_predicate(column: &str, parameter: &str, has_after: bool) -> String {
+fn keyset_predicate(column: &'static str, parameter: &'static str, has_after: bool) -> String {
+    assert!(matches!(column, "root.session_id" | "work.session_id"));
+    assert!(matches!(parameter, "?1" | "$1::text"));
     if has_after {
         format!("{column} > {parameter}")
     } else {
@@ -220,7 +222,7 @@ fn keyset_predicate(column: &str, parameter: &str, has_after: bool) -> String {
 fn reconciliation_scan_sql(
     preparation_only: bool,
     has_after: bool,
-    after_parameter: &str,
+    after_parameter: &'static str,
 ) -> String {
     let preparation = if preparation_only {
         "work.preparation_candidate = 1 AND "

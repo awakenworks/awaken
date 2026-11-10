@@ -5,9 +5,20 @@
 use sqlx::Executor as _;
 use sqlx::postgres::{PgConnectOptions, PgPool};
 
+fn require_fixture_identifier(identifier: &str) {
+    assert!(
+        !identifier.is_empty()
+            && !identifier.as_bytes()[0].is_ascii_digit()
+            && identifier
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
+}
+
 /// The configured fixture URL and a newly created schema, or `None` when the
 /// fixture is not configured (the `*_fixture_admission` twin owns that rule).
 pub async fn fresh_schema(tag: &str) -> Option<(String, String)> {
+    require_fixture_identifier(tag);
     let url = awaken_reliability_testkit::postgres_fixture_url()?;
     let admin = awaken_sql_storage::postgres_pool_options()
         .max_connections(1)
@@ -20,8 +31,9 @@ pub async fn fresh_schema(tag: &str) -> Option<(String, String)> {
         .unwrap()
         .as_nanos();
     let schema = format!("{tag}_{}_{nonce:x}", std::process::id());
+    // tag is an ASCII fixture identifier; the remaining coordinates are integers.
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .expect("create the test schema");
     admin.close().await;
@@ -30,6 +42,7 @@ pub async fn fresh_schema(tag: &str) -> Option<(String, String)> {
 
 /// An independent pool whose sessions resolve to `schema`.
 pub async fn connect(url: &str, schema: &str, application_name: &str) -> PgPool {
+    require_fixture_identifier(schema);
     let options = url
         .parse::<PgConnectOptions>()
         .expect("parse the configured Memory PostgreSQL fixture")
@@ -45,6 +58,7 @@ pub async fn connect(url: &str, schema: &str, application_name: &str) -> PgPool 
 
 /// Drop the schema this test created, and only that one.
 pub async fn drop_schema(url: &str, schema: &str) {
+    require_fixture_identifier(schema);
     let admin = awaken_sql_storage::postgres_pool_options()
         .max_connections(1)
         .acquire_timeout(std::time::Duration::from_secs(3))
@@ -52,7 +66,7 @@ pub async fn drop_schema(url: &str, schema: &str) {
         .await
         .expect("connect to drop the test schema");
     admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .await
         .expect("drop the test schema");
     admin.close().await;

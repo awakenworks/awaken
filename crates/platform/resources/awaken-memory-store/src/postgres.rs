@@ -85,9 +85,7 @@ async fn selected_bundles(
         .await
         .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
     let v1_checksum: Option<String> = if ledger.is_some() {
-        sqlx::query_scalar(&format!(
-            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = $1 AND version = 1"
-        ))
+        sqlx::query_scalar("SELECT checksum FROM memory_store_schema_migrations WHERE bundle_id = $1 AND version = 1")
         .bind(BUNDLE_ID)
         .fetch_optional(pool)
         .await
@@ -254,23 +252,19 @@ fn to_version(row: sqlx::postgres::PgRow) -> Result<MemoryVersion, MemErr> {
 async fn next_counter(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     name: &str,
-    seed_sql: &str,
+    seed_sql: &'static str,
 ) -> Result<i64, MemErr> {
     let seed: i64 = sqlx::query_scalar(seed_sql)
         .fetch_one(&mut **tx)
         .await
         .map_err(mem_err)?;
-    sqlx::query(&format!(
-        "INSERT INTO {NS}_counters(name, next_value) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING"
-    ))
+    sqlx::query("INSERT INTO memory_store_counters(name, next_value) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING")
     .bind(name)
     .bind(seed)
     .execute(&mut **tx)
     .await
     .map_err(mem_err)?;
-    sqlx::query_scalar(&format!(
-        "UPDATE {NS}_counters SET next_value = next_value + 1 WHERE name = $1 RETURNING next_value"
-    ))
+    sqlx::query_scalar("UPDATE memory_store_counters SET next_value = next_value + 1 WHERE name = $1 RETURNING next_value")
     .bind(name)
     .fetch_one(&mut **tx)
     .await
@@ -284,14 +278,12 @@ async fn append_version(
     let ordinal = next_counter(
         tx,
         "memory_version",
-        &format!("SELECT COALESCE(MAX(ordinal), 0) FROM {NS}_versions"),
+        "SELECT COALESCE(MAX(ordinal), 0) FROM memory_store_versions",
     )
     .await?;
-    sqlx::query(&format!(
-        "INSERT INTO {NS}_versions \
+    sqlx::query("INSERT INTO memory_store_versions \
          (store_id, ordinal, id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NULL)"
-    ))
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NULL)")
     .bind(append.store)
     .bind(ordinal)
     .bind(format!("memver_{ordinal:016}"))
@@ -333,9 +325,7 @@ impl PostgresMemoryRepository {
             .execute(&mut *tx)
             .await
             .map_err(mem_err)?;
-        let existing: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT candidate_json FROM {NS}_copy_conflicts WHERE store_id = $1 AND id = $2"
-        ))
+        let existing: Option<String> = sqlx::query_scalar("SELECT candidate_json FROM memory_store_copy_conflicts WHERE store_id = $1 AND id = $2")
         .bind(store)
         .bind(&id)
         .fetch_optional(&mut *tx)
@@ -348,9 +338,9 @@ impl PostgresMemoryRepository {
                 Err(mem_err("Memory copy proposal identity mismatch"))
             };
         }
-        let count: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {NS}_copy_conflicts WHERE store_id = $1"
-        ))
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM memory_store_copy_conflicts WHERE store_id = $1",
+        )
         .bind(store)
         .fetch_one(&mut *tx)
         .await
@@ -358,9 +348,7 @@ impl PostgresMemoryRepository {
         if count >= crate::MAX_MEMORIES_PER_STORE as i64 {
             return Err(MemErr::AtCapacity);
         }
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_copy_conflicts (store_id, id, candidate_json) VALUES ($1, $2, $3)"
-        ))
+        sqlx::query("INSERT INTO memory_store_copy_conflicts (store_id, id, candidate_json) VALUES ($1, $2, $3)")
         .bind(store)
         .bind(id)
         .bind(encoded)
@@ -374,9 +362,7 @@ impl PostgresMemoryRepository {
         &self,
         store: &str,
     ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, MemErr> {
-        let rows = sqlx::query(&format!(
-            "SELECT id, candidate_json FROM {NS}_copy_conflicts WHERE store_id = $1 ORDER BY id"
-        ))
+        let rows = sqlx::query("SELECT id, candidate_json FROM memory_store_copy_conflicts WHERE store_id = $1 ORDER BY id")
         .bind(store)
         .fetch_all(&self.pool)
         .await
@@ -392,10 +378,10 @@ impl PostgresMemoryRepository {
             .collect()
     }
     async fn snapshot_heads_inner(&self, store: &str) -> Result<Vec<Memory>, MemErr> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(
             "SELECT id, path, content, sha, version, created, updated \
-             FROM {NS}_memories WHERE store_id = $1 ORDER BY path"
-        ))
+             FROM memory_store_memories WHERE store_id = $1 ORDER BY path",
+        )
         .bind(store)
         .fetch_all(&self.pool)
         .await
@@ -416,10 +402,10 @@ impl PostgresMemoryRepository {
     }
 
     async fn list_inner(&self, store: &str, prefix: &str) -> Result<Vec<MemoryEntry>, MemErr> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(
             "SELECT id, path, sha, length(content) AS n, version, updated \
-             FROM {NS}_memories WHERE store_id = $1"
-        ))
+             FROM memory_store_memories WHERE store_id = $1",
+        )
         .bind(store)
         .fetch_all(&self.pool)
         .await
@@ -450,10 +436,10 @@ impl PostgresMemoryRepository {
     }
 
     async fn get_by_path_inner(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(
             "SELECT id, path, content, sha, version, created, updated \
-             FROM {NS}_memories WHERE store_id = $1 AND path = $2"
-        ))
+             FROM memory_store_memories WHERE store_id = $1 AND path = $2",
+        )
         .bind(store)
         .bind(path)
         .fetch_optional(&self.pool)
@@ -498,42 +484,40 @@ impl PostgresMemoryRepository {
             .execute(&mut *tx)
             .await
             .map_err(mem_err)?;
-        let exists = sqlx::query(&format!(
-            "SELECT 1 FROM {NS}_memories WHERE store_id = $1 AND path = $2"
-        ))
-        .bind(store)
-        .bind(path)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(mem_err)?
-        .is_some();
+        let exists =
+            sqlx::query("SELECT 1 FROM memory_store_memories WHERE store_id = $1 AND path = $2")
+                .bind(store)
+                .bind(path)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(mem_err)?
+                .is_some();
         if exists {
             return Err(MemErr::PathConflict(path.to_string()));
         }
-        let live_count: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {NS}_memories WHERE store_id = $1"
-        ))
-        .bind(store)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(mem_err)?;
+        let live_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM memory_store_memories WHERE store_id = $1")
+                .bind(store)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(mem_err)?;
         if live_count >= crate::MAX_MEMORIES_PER_STORE as i64 {
             return Err(MemErr::AtCapacity);
         }
         let ordinal = next_counter(
             &mut tx,
             "memory_id",
-            &format!("SELECT COALESCE(MAX(ordinal), 0) FROM {NS}_memories"),
+            "SELECT COALESCE(MAX(ordinal), 0) FROM memory_store_memories",
         )
         .await?;
         let id = format!("mem_{ordinal}");
         let sha = sha256_hex(content);
         let now = stored_now_nanos(self.clock.as_ref())?;
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_memories \
+        sqlx::query(
+            "INSERT INTO memory_store_memories \
              (store_id, path, id, ordinal, content, sha, version, created, updated) \
-             VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $7)"
-        ))
+             VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $7)",
+        )
         .bind(store)
         .bind(path)
         .bind(&id)
@@ -626,10 +610,10 @@ impl PostgresMemoryRepository {
     ) -> Result<Memory, MemErr> {
         validate_path(to)?;
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
-        let row = sqlx::query(&format!(
-            "SELECT id, content, sha, version, created FROM {NS}_memories \
-             WHERE store_id = $1 AND path = $2 FOR UPDATE"
-        ))
+        let row = sqlx::query(
+            "SELECT id, content, sha, version, created FROM memory_store_memories \
+             WHERE store_id = $1 AND path = $2 FOR UPDATE",
+        )
         .bind(store)
         .bind(from)
         .fetch_optional(&mut *tx)
@@ -647,27 +631,25 @@ impl PostgresMemoryRepository {
             return to_memory(id, from.into(), content, sha, version, created, created);
         }
         let now = stored_now_nanos(self.clock.as_ref())?;
-        let displaced_id = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT id FROM {NS}_memories WHERE store_id = $1 AND path = $2 FOR UPDATE"
-        ))
+        let displaced_id = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM memory_store_memories WHERE store_id = $1 AND path = $2 FOR UPDATE",
+        )
         .bind(store)
         .bind(to)
         .fetch_optional(&mut *tx)
         .await
         .map_err(mem_err)?;
         let id = rename_replace_identity(id, displaced_id.as_ref());
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
-        ))
-        .bind(store)
-        .bind(to)
-        .execute(&mut *tx)
-        .await
-        .map_err(mem_err)?;
-        sqlx::query(&format!(
-            "UPDATE {NS}_memories SET path = $1, version = version + 1, updated = $2 \
-             WHERE store_id = $3 AND id = $4"
-        ))
+        sqlx::query("DELETE FROM memory_store_memories WHERE store_id = $1 AND path = $2")
+            .bind(store)
+            .bind(to)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
+        sqlx::query(
+            "UPDATE memory_store_memories SET path = $1, version = version + 1, updated = $2 \
+             WHERE store_id = $3 AND id = $4",
+        )
         .bind(to)
         .bind(now)
         .bind(store)
@@ -728,9 +710,9 @@ impl PostgresMemoryRepository {
         actor: Option<&MemoryActor>,
     ) -> Result<(), MemErr> {
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
-        let memory_id = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT id FROM {NS}_memories WHERE store_id = $1 AND path = $2 FOR UPDATE"
-        ))
+        let memory_id = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM memory_store_memories WHERE store_id = $1 AND path = $2 FOR UPDATE",
+        )
         .bind(store)
         .bind(path)
         .fetch_optional(&mut *tx)
@@ -739,14 +721,12 @@ impl PostgresMemoryRepository {
         let Some(memory_id) = memory_id else {
             return Ok(());
         };
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
-        ))
-        .bind(store)
-        .bind(path)
-        .execute(&mut *tx)
-        .await
-        .map_err(mem_err)?;
+        sqlx::query("DELETE FROM memory_store_memories WHERE store_id = $1 AND path = $2")
+            .bind(store)
+            .bind(path)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
         append_version(
             &mut tx,
             VersionAppend {
@@ -781,10 +761,10 @@ impl PostgresMemoryRepository {
         actor: Option<&MemoryActor>,
     ) -> Result<bool, MemErr> {
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
-        let row = sqlx::query(&format!(
-            "SELECT id, content, sha, version, created, updated FROM {NS}_memories \
-             WHERE store_id = $1 AND path = $2 FOR UPDATE"
-        ))
+        let row = sqlx::query(
+            "SELECT id, content, sha, version, created, updated FROM memory_store_memories \
+             WHERE store_id = $1 AND path = $2 FOR UPDATE",
+        )
         .bind(store)
         .bind(path)
         .fetch_optional(&mut *tx)
@@ -817,14 +797,12 @@ impl PostgresMemoryRepository {
             }
             ConditionalDeleteAdmission::Delete => {}
         }
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
-        ))
-        .bind(store)
-        .bind(path)
-        .execute(&mut *tx)
-        .await
-        .map_err(mem_err)?;
+        sqlx::query("DELETE FROM memory_store_memories WHERE store_id = $1 AND path = $2")
+            .bind(store)
+            .bind(path)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?;
         append_version(
             &mut tx,
             VersionAppend {
@@ -843,10 +821,8 @@ impl PostgresMemoryRepository {
     }
 
     async fn list_versions_inner(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr> {
-        sqlx::query(&format!(
-            "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
-             FROM {NS}_versions WHERE store_id = $1 ORDER BY ordinal"
-        ))
+        sqlx::query("SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
+             FROM memory_store_versions WHERE store_id = $1 ORDER BY ordinal")
         .bind(store)
         .fetch_all(&self.pool)
         .await
@@ -871,10 +847,8 @@ impl PostgresMemoryRepository {
         actor: Option<&MemoryActor>,
     ) -> Result<Option<MemoryVersion>, MemErr> {
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
-        let row = sqlx::query(&format!(
-            "SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
-             FROM {NS}_versions WHERE store_id = $1 AND id = $2 FOR UPDATE"
-        ))
+        let row = sqlx::query("SELECT id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json \
+             FROM memory_store_versions WHERE store_id = $1 AND id = $2 FOR UPDATE")
         .bind(store)
         .bind(version_id)
         .fetch_optional(&mut *tx)
@@ -886,10 +860,8 @@ impl PostgresMemoryRepository {
         let mut version = to_version(row)?;
         if version.redacted_unix_nanos.is_none() {
             let redacted = stored_now_nanos(self.clock.as_ref())?;
-            sqlx::query(&format!(
-                "UPDATE {NS}_versions SET content = NULL, redacted = $1, redacted_by_json = $2 \
-                 WHERE store_id = $3 AND id = $4"
-            ))
+            sqlx::query("UPDATE memory_store_versions SET content = NULL, redacted = $1, redacted_by_json = $2 \
+                 WHERE store_id = $3 AND id = $4")
             .bind(redacted)
             .bind(
                 actor
@@ -917,22 +889,20 @@ impl PostgresMemoryRepository {
             .execute(&mut *tx)
             .await
             .map_err(mem_err)?;
-        let copy_conflicts_deleted = sqlx::query(&format!(
-            "DELETE FROM {NS}_copy_conflicts WHERE store_id = $1"
-        ))
-        .bind(store)
-        .execute(&mut *tx)
-        .await
-        .map_err(mem_err)?
-        .rows_affected();
-        let versions_deleted =
-            sqlx::query(&format!("DELETE FROM {NS}_versions WHERE store_id = $1"))
+        let copy_conflicts_deleted =
+            sqlx::query("DELETE FROM memory_store_copy_conflicts WHERE store_id = $1")
                 .bind(store)
                 .execute(&mut *tx)
                 .await
                 .map_err(mem_err)?
                 .rows_affected();
-        let heads_deleted = sqlx::query(&format!("DELETE FROM {NS}_memories WHERE store_id = $1"))
+        let versions_deleted = sqlx::query("DELETE FROM memory_store_versions WHERE store_id = $1")
+            .bind(store)
+            .execute(&mut *tx)
+            .await
+            .map_err(mem_err)?
+            .rows_affected();
+        let heads_deleted = sqlx::query("DELETE FROM memory_store_memories WHERE store_id = $1")
             .bind(store)
             .execute(&mut *tx)
             .await
@@ -967,10 +937,10 @@ impl PostgresMemoryRepository {
             validate_path(path)?;
         }
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
-        let row = sqlx::query(&format!(
-            "SELECT path, sha, content, version, created, updated FROM {NS}_memories \
-             WHERE store_id = $1 AND id = $2 FOR UPDATE"
-        ))
+        let row = sqlx::query(
+            "SELECT path, sha, content, version, created, updated FROM memory_store_memories \
+             WHERE store_id = $1 AND id = $2 FOR UPDATE",
+        )
         .bind(store)
         .bind(base.memory_id())
         .fetch_optional(&mut *tx)
@@ -1033,9 +1003,9 @@ impl PostgresMemoryRepository {
         let displaced_id = if requested_path == path {
             None
         } else {
-            sqlx::query_scalar::<_, String>(&format!(
-                "SELECT id FROM {NS}_memories WHERE store_id = $1 AND path = $2 FOR UPDATE"
-            ))
+            sqlx::query_scalar::<_, String>(
+                "SELECT id FROM memory_store_memories WHERE store_id = $1 AND path = $2 FOR UPDATE",
+            )
             .bind(store)
             .bind(requested_path)
             .fetch_optional(&mut *tx)
@@ -1043,19 +1013,17 @@ impl PostgresMemoryRepository {
             .map_err(mem_err)?
         };
         if displaced_id.is_some() {
-            sqlx::query(&format!(
-                "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
-            ))
-            .bind(store)
-            .bind(requested_path)
-            .execute(&mut *tx)
-            .await
-            .map_err(mem_err)?;
+            sqlx::query("DELETE FROM memory_store_memories WHERE store_id = $1 AND path = $2")
+                .bind(store)
+                .bind(requested_path)
+                .execute(&mut *tx)
+                .await
+                .map_err(mem_err)?;
         }
-        sqlx::query(&format!(
-            "UPDATE {NS}_memories SET path = $1, content = $2, sha = $3, \
-             version = version + 1, updated = $4 WHERE store_id = $5 AND id = $6"
-        ))
+        sqlx::query(
+            "UPDATE memory_store_memories SET path = $1, content = $2, sha = $3, \
+             version = version + 1, updated = $4 WHERE store_id = $5 AND id = $6",
+        )
         .bind(requested_path)
         .bind(content.as_bytes())
         .bind(&new_sha)

@@ -1,8 +1,18 @@
 //! Explicit PostgreSQL fixtures and authority-clock observation for ingress tests.
 // --- Live Postgres helpers, shared by the live suites -----------------------
 
-use sqlx::Executor;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+
+fn require_fixture_schema(schema: &str) {
+    assert!(
+        !schema.is_empty()
+            && schema
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            && !schema.as_bytes()[0].is_ascii_digit(),
+        "fixture schema must be an unquoted ASCII identifier"
+    );
+}
 
 /// The explicitly admitted `AWAKEN_TEST_DATABASE_URL` for an active fixture.
 pub fn database_url() -> String {
@@ -42,6 +52,7 @@ pub async fn pool() -> Option<PgPool> {
 /// that exercises `connect()` (which opens its own pool, so it cannot use
 /// `schema_pool`'s `after_connect` hook).
 pub fn database_url_in_schema(schema: &str) -> String {
+    require_fixture_schema(schema);
     let base = database_url();
     let sep = if base.contains('?') { '&' } else { '?' };
     format!("{base}{sep}options=-c%20search_path%3D{schema}")
@@ -53,12 +64,17 @@ pub fn database_url_in_schema(schema: &str) -> String {
 /// the test, via `search_path` — it never leaks into the store's API. Returns
 /// `None` for an absent optional fixture.
 pub async fn schema_pool(schema: &'static str) -> Option<PgPool> {
+    require_fixture_schema(schema);
     let admin = pool().await?;
-    let _ = admin
-        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
-        .await;
-    admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+    // These identifiers are test-owned schema names checked above; all other
+    // fixture values stay bound parameters.
+    let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP SCHEMA IF EXISTS {schema} CASCADE"
+    )))
+    .execute(&admin)
+    .await;
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin)
         .await
         .expect("create schema");
     admin.close().await;
@@ -66,7 +82,9 @@ pub async fn schema_pool(schema: &'static str) -> Option<PgPool> {
         PgPoolOptions::new()
             .after_connect(move |conn, _meta| {
                 Box::pin(async move {
-                    conn.execute(format!("SET search_path = {schema}").as_str())
+                    sqlx::query("SELECT set_config('search_path', $1, false)")
+                        .bind(schema)
+                        .execute(conn)
                         .await?;
                     Ok(())
                 })

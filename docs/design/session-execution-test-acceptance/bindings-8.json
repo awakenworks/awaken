@@ -4,7 +4,7 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 701,
+        "line": 705,
         "file_sha256": "0da9d07ed53363251ee5a121e1f174913093021276403fb15629a88e5bea7be5",
         "relocated_from": "crates/stores/awaken-session-store/tests/pause_transaction.rs:701"
       }
@@ -12,15 +12,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 710
+        "line": 714
       },
       {
         "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 715
+        "line": 720
       },
       {
         "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 734
+        "line": 741
       }
     ],
     "execution_witnesses": [
@@ -640,7 +640,7 @@
     "source_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 262,
+        "line": 264,
         "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc",
         "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:262"
       }
@@ -648,15 +648,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 276
+        "line": 278
       },
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 277
+        "line": 279
       },
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 281
+        "line": 283
       }
     ],
     "execution_witnesses": [
@@ -691,7 +691,7 @@
     "source_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 355,
+        "line": 360,
         "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc",
         "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:355"
       }
@@ -699,15 +699,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 366
+        "line": 371
       },
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 367
+        "line": 372
       },
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 378
+        "line": 383
       }
     ],
     "execution_witnesses": [

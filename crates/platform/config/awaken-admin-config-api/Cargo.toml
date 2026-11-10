@@ -41,7 +41,7 @@ schemars = { version = "1", optional = true }
 awaken-sqlite-pool = { workspace = true, optional = true }
 # Features `sqlite` and `postgres`: the async admin stores over the same `admin`
 # migration scope (ADR-0043).
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "json"], optional = true }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "json"], optional = true }
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 
 [dev-dependencies]
@@ -54,7 +54,7 @@ tempfile = "3"
 # The live Postgres store test (feature `postgres`) isolates itself in its own
 # schema via `SET search_path`; the SQLite admission test drives a second control
 # pool on the same database file.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
+sqlx = { workspace = true, default-features = false, features = ["runtime-tokio", "postgres", "sqlite"] }
 
 [features]
 default = []

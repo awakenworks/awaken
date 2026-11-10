@@ -96,14 +96,17 @@ async fn file_by_id(
     conn: &mut SqliteConnection,
     id: &str,
 ) -> Result<Option<FileRecord>, FileStoreError> {
-    sqlx::query(&format!("SELECT {FILE_COLUMNS} FROM {NS}_file WHERE id=?1"))
-        .bind(id)
-        .fetch_optional(conn)
-        .await
-        .map_err(e)?
-        .map(|row| row_record(&row))
-        .transpose()
-        .map_err(e)
+    sqlx::query(
+        // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+        sqlx::AssertSqlSafe(format!("SELECT {FILE_COLUMNS} FROM {NS}_file WHERE id=?1")),
+    )
+    .bind(id)
+    .fetch_optional(conn)
+    .await
+    .map_err(e)?
+    .map(|row| row_record(&row))
+    .transpose()
+    .map_err(e)
 }
 
 /// A SQLite-backed [`FileStore`] over a `file_store_blob(id, bytes, size, created_at)` table.
@@ -156,9 +159,7 @@ impl SqliteFileStore {
         request: ReplaceArtifactCapture,
     ) -> Result<Result<ReplaceArtifactCaptureOutcome, FileCatalogError>, FileStoreError> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(e)?;
-        let row = sqlx::query_as::<_, (i64, String, Option<String>)>(&format!(
-            "SELECT revision,file_ids_json,origin_json FROM {NS}_artifact_capture WHERE workspace_id=?1 AND session_id=?2"
-        ))
+        let row = sqlx::query_as::<_, (i64, String, Option<String>)>("SELECT revision,file_ids_json,origin_json FROM file_store_artifact_capture WHERE workspace_id=?1 AND session_id=?2")
         .bind(&request.workspace_id)
         .bind(&request.session_id)
         .fetch_optional(&mut *transaction)
@@ -193,9 +194,7 @@ impl SqliteFileStore {
             if let Err(error) = capture.verify_files(&records) {
                 return Ok(Err(error));
             }
-            sqlx::query(&format!(
-                "INSERT INTO {NS}_artifact_capture (workspace_id,session_id,revision,file_ids_json,origin_json) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(workspace_id,session_id) DO UPDATE SET revision=excluded.revision,file_ids_json=excluded.file_ids_json,origin_json=excluded.origin_json"
-            ))
+            sqlx::query("INSERT INTO file_store_artifact_capture (workspace_id,session_id,revision,file_ids_json,origin_json) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(workspace_id,session_id) DO UPDATE SET revision=excluded.revision,file_ids_json=excluded.file_ids_json,origin_json=excluded.origin_json")
             .bind(&capture.workspace_id)
             .bind(&capture.session_id)
             .bind(
@@ -224,9 +223,10 @@ impl SqliteFileStore {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(e)?;
         if let Some(key) = record.harvest_key.as_deref() {
             let matching = row_records(
-                sqlx::query(&format!(
+                sqlx::query(// Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+sqlx::AssertSqlSafe(format!(
                     "SELECT {FILE_COLUMNS} FROM {NS}_file WHERE workspace_id=?1 AND harvest_key=?2"
-                ))
+                )))
                 .bind(&record.workspace_id)
                 .bind(key)
                 .fetch_all(&mut *transaction)
@@ -248,11 +248,14 @@ impl SqliteFileStore {
             record.artifact_idempotency_scope.as_deref(),
         ) {
             let matching = row_records(
-                sqlx::query(&format!(
-                    "SELECT {FILE_COLUMNS} FROM {NS}_file \
+                sqlx::query(
+                    // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+                    sqlx::AssertSqlSafe(format!(
+                        "SELECT {FILE_COLUMNS} FROM {NS}_file \
                      WHERE workspace_id=?1 AND harvest_key=?2 \
                      ORDER BY deleted ASC, created_at DESC, id DESC"
-                ))
+                    )),
+                )
                 .bind(&record.workspace_id)
                 .bind(key)
                 .fetch_all(&mut *transaction)
@@ -266,10 +269,10 @@ impl SqliteFileStore {
                     return Ok(Ok(CreateFileRecordOutcome::Existing(existing)));
                 }
                 Ok(Some(ArtifactAssociationDecision::Associate(target))) => {
-                    sqlx::query(&format!(
-                        "UPDATE {NS}_file SET artifact_idempotency_scope=?1 \
-                         WHERE id=?2 AND artifact_idempotency_scope IS NULL"
-                    ))
+                    sqlx::query(
+                        "UPDATE file_store_file SET artifact_idempotency_scope=?1 \
+                         WHERE id=?2 AND artifact_idempotency_scope IS NULL",
+                    )
                     .bind(requested)
                     .bind(&target.id)
                     .execute(&mut *transaction)
@@ -297,10 +300,13 @@ impl SqliteFileStore {
             }
         }
 
-        let inserted = sqlx::query(&format!(
-            "INSERT OR IGNORE INTO {NS}_file ({FILE_COLUMNS}) \
+        let inserted = sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "INSERT OR IGNORE INTO {NS}_file ({FILE_COLUMNS}) \
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"
-        ))
+            )),
+        )
         .bind(&record.id)
         .bind(&record.workspace_id)
         .bind(&record.blob_id)
@@ -332,10 +338,13 @@ impl SqliteFileStore {
                 .await?
                 .ok_or_else(|| e(sqlx::Error::RowNotFound))?
         } else if let Some(key) = record.harvest_key.as_deref() {
-            let row = sqlx::query(&format!(
-                "SELECT {FILE_COLUMNS} FROM {NS}_file \
+            let row = sqlx::query(
+                // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+                sqlx::AssertSqlSafe(format!(
+                    "SELECT {FILE_COLUMNS} FROM {NS}_file \
                  WHERE workspace_id=?1 AND harvest_key=?2 AND deleted=0"
-            ))
+                )),
+            )
             .bind(&record.workspace_id)
             .bind(key)
             .fetch_one(&mut *transaction)
@@ -372,29 +381,28 @@ impl FileStore for SqliteFileStore {
         let id = content_id(bytes);
         let size = bytes.len() as i64;
         let mut conn = self.pool.acquire().await.map_err(e)?;
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_blob (id, bytes, size) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(id) DO NOTHING"
-        ))
+        sqlx::query(
+            "INSERT INTO file_store_blob (id, bytes, size) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(id) DO NOTHING",
+        )
         .bind(&id)
         .bind(bytes)
         .bind(size)
         .execute(&mut *conn)
         .await
         .map_err(e)?;
-        let stored: Vec<u8> =
-            sqlx::query_scalar(&format!("SELECT bytes FROM {NS}_blob WHERE id = ?1"))
-                .bind(&id)
-                .fetch_one(&mut *conn)
-                .await
-                .map_err(e)?;
+        let stored: Vec<u8> = sqlx::query_scalar("SELECT bytes FROM file_store_blob WHERE id = ?1")
+            .bind(&id)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(e)?;
         crate::verify_blob(&id, &stored)?;
         Ok(id)
     }
 
     async fn get(&self, id: &str) -> Result<Option<Vec<u8>>, FileStoreError> {
         let bytes: Option<Vec<u8>> =
-            sqlx::query_scalar(&format!("SELECT bytes FROM {NS}_blob WHERE id = ?1"))
+            sqlx::query_scalar("SELECT bytes FROM file_store_blob WHERE id = ?1")
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await
@@ -406,14 +414,14 @@ impl FileStore for SqliteFileStore {
     }
 
     async fn list(&self) -> Result<Vec<String>, FileStoreError> {
-        sqlx::query_scalar(&format!("SELECT id FROM {NS}_blob ORDER BY id"))
+        sqlx::query_scalar("SELECT id FROM file_store_blob ORDER BY id")
             .fetch_all(&self.pool)
             .await
             .map_err(e)
     }
 
     async fn delete(&self, id: &str) -> Result<bool, FileStoreError> {
-        let affected = sqlx::query(&format!("DELETE FROM {NS}_blob WHERE id = ?1"))
+        let affected = sqlx::query("DELETE FROM file_store_blob WHERE id = ?1")
             .bind(id)
             .execute(&self.pool)
             .await
@@ -430,9 +438,7 @@ impl FileCatalog for SqliteFileStore {
         workspace_id: &str,
         session_id: &str,
     ) -> Result<Option<ArtifactCapture>, FileCatalogError> {
-        let row = sqlx::query_as::<_, (i64, String, Option<String>)>(&format!(
-            "SELECT revision,file_ids_json,origin_json FROM {NS}_artifact_capture WHERE workspace_id=?1 AND session_id=?2"
-        ))
+        let row = sqlx::query_as::<_, (i64, String, Option<String>)>("SELECT revision,file_ids_json,origin_json FROM file_store_artifact_capture WHERE workspace_id=?1 AND session_id=?2")
         .bind(workspace_id)
         .bind(session_id)
         .fetch_optional(&self.pool)
@@ -471,10 +477,13 @@ impl FileCatalog for SqliteFileStore {
         file_id: &str,
         include_deleted: bool,
     ) -> Result<Option<FileRecord>, FileCatalogError> {
-        sqlx::query(&format!(
-            "SELECT {FILE_COLUMNS} FROM {NS}_file \
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {FILE_COLUMNS} FROM {NS}_file \
              WHERE id=?1 AND workspace_id=?2 AND (?3=1 OR deleted=0)"
-        ))
+            )),
+        )
         .bind(file_id)
         .bind(workspace_id)
         .bind(i64::from(include_deleted))
@@ -492,11 +501,14 @@ impl FileCatalog for SqliteFileStore {
         scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, FileCatalogError> {
         row_records(
-            sqlx::query(&format!(
-                "SELECT {FILE_COLUMNS} FROM {NS}_file \
+            sqlx::query(
+                // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+                sqlx::AssertSqlSafe(format!(
+                    "SELECT {FILE_COLUMNS} FROM {NS}_file \
                  WHERE workspace_id=?1 AND deleted=0 \
                  AND (?2 IS NULL OR scope_id=?2) ORDER BY created_at DESC, id DESC"
-            ))
+                )),
+            )
             .bind(workspace_id)
             .bind(scope_id)
             .fetch_all(&self.pool)
@@ -512,11 +524,14 @@ impl FileCatalog for SqliteFileStore {
         scope_id: Option<&str>,
     ) -> Result<Vec<FileRecord>, FileCatalogError> {
         row_records(
-            sqlx::query(&format!(
-                "SELECT {FILE_COLUMNS} FROM {NS}_file \
+            sqlx::query(
+                // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+                sqlx::AssertSqlSafe(format!(
+                    "SELECT {FILE_COLUMNS} FROM {NS}_file \
                  WHERE workspace_id=?1 AND (?2 IS NULL OR scope_id=?2) \
                  ORDER BY created_at DESC, id DESC"
-            ))
+                )),
+            )
             .bind(workspace_id)
             .bind(scope_id)
             .fetch_all(&self.pool)
@@ -532,17 +547,18 @@ impl FileCatalog for SqliteFileStore {
         file_id: &str,
     ) -> Result<Option<FileRecord>, FileCatalogError> {
         let mut conn = self.pool.acquire().await.map_err(cs)?;
-        sqlx::query(&format!(
-            "UPDATE {NS}_file SET deleted=1 WHERE id=?1 AND workspace_id=?2"
-        ))
-        .bind(file_id)
-        .bind(workspace_id)
-        .execute(&mut *conn)
-        .await
-        .map_err(cs)?;
-        sqlx::query(&format!(
-            "SELECT {FILE_COLUMNS} FROM {NS}_file WHERE id=?1 AND workspace_id=?2"
-        ))
+        sqlx::query("UPDATE file_store_file SET deleted=1 WHERE id=?1 AND workspace_id=?2")
+            .bind(file_id)
+            .bind(workspace_id)
+            .execute(&mut *conn)
+            .await
+            .map_err(cs)?;
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {FILE_COLUMNS} FROM {NS}_file WHERE id=?1 AND workspace_id=?2"
+            )),
+        )
         .bind(file_id)
         .bind(workspace_id)
         .fetch_optional(&mut *conn)
@@ -558,10 +574,10 @@ impl FileCatalog for SqliteFileStore {
         reason = "a size or count conversion that predates the SQL-adapter cast rule (guard-consolidation R14)"
     )]
     async fn active_size_bytes(&self, workspace_id: &str) -> Result<u64, FileCatalogError> {
-        sqlx::query_scalar::<_, i64>(&format!(
-            "SELECT COALESCE(SUM(size_bytes),0) FROM {NS}_file \
-             WHERE workspace_id=?1 AND deleted=0"
-        ))
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(size_bytes),0) FROM file_store_file \
+             WHERE workspace_id=?1 AND deleted=0",
+        )
         .bind(workspace_id)
         .fetch_one(&self.pool)
         .await
@@ -584,7 +600,7 @@ mod tests {
         let id = store.put(b"original").await.unwrap();
         assert_eq!(store.get(&id).await.unwrap(), Some(b"original".to_vec()));
         assert_eq!(store.put(b"original").await.unwrap(), id);
-        sqlx::query(&format!("UPDATE {NS}_blob SET bytes = ?1 WHERE id = ?2"))
+        sqlx::query("UPDATE file_store_blob SET bytes = ?1 WHERE id = ?2")
             .bind(b"damaged".as_slice())
             .bind(&id)
             .execute(&store.pool)
@@ -595,7 +611,7 @@ mod tests {
         assert!(matches!(store.put(b"original").await,
             Err(FileStoreError::CorruptContent { content_id }) if content_id == id));
         let persisted: Vec<u8> =
-            sqlx::query_scalar(&format!("SELECT bytes FROM {NS}_blob WHERE id = ?1"))
+            sqlx::query_scalar("SELECT bytes FROM file_store_blob WHERE id = ?1")
                 .bind(&id)
                 .fetch_one(&store.pool)
                 .await

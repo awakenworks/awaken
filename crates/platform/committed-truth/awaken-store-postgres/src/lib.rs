@@ -310,12 +310,11 @@ impl PostgresCommitCoordinator {
     }
 
     async fn open_pool(pool: PgPool) -> Result<Self, StoreError> {
-        let sequence: i64 = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"
-        ))
-        .fetch_one(&pool)
-        .await
-        .map_err(|error| StoreError::Read(error.to_string()))?;
+        let sequence: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(sequence), 0) FROM runtime_commit")
+                .fetch_one(&pool)
+                .await
+                .map_err(|error| StoreError::Read(error.to_string()))?;
         let sequence =
             decode_authority(sequence).map_err(|error| StoreError::Read(error.to_string()))?;
         Ok(Self {
@@ -408,13 +407,11 @@ impl PostgresCommitCoordinator {
         &self,
         run_id: &RunId,
     ) -> Result<Option<RunRecord>, StoreError> {
-        let row = sqlx::query(&format!(
-            "SELECT thread_id, phase FROM {NS}_run_record WHERE run_id = $1"
-        ))
-        .bind(&run_id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|error| StoreError::Read(error.to_string()))?;
+        let row = sqlx::query("SELECT thread_id, phase FROM runtime_run_record WHERE run_id = $1")
+            .bind(&run_id.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| StoreError::Read(error.to_string()))?;
         row.map(|row| {
             let thread_id = ThreadId(
                 row.try_get("thread_id")
@@ -440,14 +437,14 @@ impl PostgresCommitCoordinator {
         &self,
         thread_id: &ThreadId,
     ) -> Result<Option<RunRecord>, StoreError> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(
             "SELECT latest.run_id, run.phase \
              FROM (\
-                 SELECT run_id FROM {NS}_commit \
+                 SELECT run_id FROM runtime_commit \
                  WHERE thread_id = $1 ORDER BY sequence DESC LIMIT 1\
              ) AS latest \
-             JOIN {NS}_run_record AS run ON run.run_id = latest.run_id"
-        ))
+             JOIN runtime_run_record AS run ON run.run_id = latest.run_id",
+        )
         .bind(&thread_id.0)
         .fetch_optional(&self.pool)
         .await
@@ -477,15 +474,15 @@ impl PostgresCommitCoordinator {
         &self,
         thread_id: &ThreadId,
     ) -> Result<Option<(RunId, ResumeTicket)>, StoreError> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(
             "SELECT latest.run_id, run.phase, waiting.ticket \
              FROM (\
-                 SELECT run_id FROM {NS}_commit \
+                 SELECT run_id FROM runtime_commit \
                  WHERE thread_id = $1 ORDER BY sequence DESC LIMIT 1\
              ) AS latest \
-             JOIN {NS}_run_record AS run ON run.run_id = latest.run_id \
-             JOIN {NS}_waiting AS waiting ON waiting.run_id = latest.run_id"
-        ))
+             JOIN runtime_run_record AS run ON run.run_id = latest.run_id \
+             JOIN runtime_waiting AS waiting ON waiting.run_id = latest.run_id",
+        )
         .bind(&thread_id.0)
         .fetch_optional(&self.pool)
         .await
@@ -521,13 +518,11 @@ impl PostgresCommitCoordinator {
         &self,
         thread_id: &ThreadId,
     ) -> Result<Vec<Message>, StoreError> {
-        let rows = sqlx::query(&format!(
-            "SELECT data FROM {NS}_message WHERE thread_id = $1 ORDER BY id"
-        ))
-        .bind(&thread_id.0)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|error| StoreError::Read(error.to_string()))?;
+        let rows = sqlx::query("SELECT data FROM runtime_message WHERE thread_id = $1 ORDER BY id")
+            .bind(&thread_id.0)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| StoreError::Read(error.to_string()))?;
         rows.into_iter()
             .map(|row| {
                 let Json(message): Json<Message> = row
@@ -553,20 +548,19 @@ impl PostgresCommitCoordinator {
             .execute(&mut *tx)
             .await
             .map_err(read_error)?;
-        let available: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {NS}_message WHERE thread_id = $1"
-        ))
-        .bind(&request.thread_id.0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(read_error)?;
+        let available: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM runtime_message WHERE thread_id = $1")
+                .bind(&request.thread_id.0)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(read_error)?;
         let (snapshot, range) =
             request.resolve_append_only(u64::try_from(available).map_err(read_error)?)?;
         let offset = i64::try_from(range.start).map_err(read_error)?;
         let limit = i64::try_from(range.end - range.start).map_err(read_error)?;
-        let rows: Vec<Json<Message>> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {NS}_message WHERE thread_id = $1 ORDER BY id OFFSET $2 LIMIT $3"
-        ))
+        let rows: Vec<Json<Message>> = sqlx::query_scalar(
+            "SELECT data FROM runtime_message WHERE thread_id = $1 ORDER BY id OFFSET $2 LIMIT $3",
+        )
         .bind(&request.thread_id.0)
         .bind(offset)
         .bind(limit)
@@ -598,13 +592,12 @@ impl PostgresCommitCoordinator {
         &self,
         thread_id: &ThreadId,
     ) -> Result<Vec<StateCommand>, StoreError> {
-        let rows = sqlx::query(&format!(
-            "SELECT data FROM {NS}_state_command WHERE thread_id = $1 ORDER BY id"
-        ))
-        .bind(&thread_id.0)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|error| StoreError::Read(error.to_string()))?;
+        let rows =
+            sqlx::query("SELECT data FROM runtime_state_command WHERE thread_id = $1 ORDER BY id")
+                .bind(&thread_id.0)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|error| StoreError::Read(error.to_string()))?;
         rows.into_iter()
             .map(|row| {
                 let Json(command): Json<StateCommand> = row
@@ -621,9 +614,9 @@ impl PostgresCommitCoordinator {
         &self,
         thread_id: &ThreadId,
     ) -> Result<bool, StoreError> {
-        sqlx::query_scalar::<_, bool>(&format!(
-            "SELECT EXISTS(SELECT 1 FROM {NS}_commit WHERE thread_id = $1)"
-        ))
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM runtime_commit WHERE thread_id = $1)",
+        )
         .bind(&thread_id.0)
         .fetch_one(&self.pool)
         .await
@@ -737,13 +730,12 @@ async fn persist_commit_operation(
     }
     require_commit_operation_payload_hash(operation)
         .map_err(|error| Error::Rejected(error.to_string()))?;
-    let current_ordinal: i64 = sqlx::query_scalar(&format!(
-        "SELECT COUNT(*) FROM {NS}_commit WHERE run_id = $1"
-    ))
-    .bind(&operation.operation_id.run_id.0)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(reject)?;
+    let current_ordinal: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit WHERE run_id = $1")
+            .bind(&operation.operation_id.run_id.0)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(reject)?;
     let current_ordinal = decode_authority(current_ordinal)?;
     let thread_version =
         admit_commit_operation_append(operation, current_version, current_ordinal)?;
@@ -752,11 +744,11 @@ async fn persist_commit_operation(
         replay::insert_archive(&mut tx, &operation.commit, next, archive).await?;
     }
     set_thread_version(&mut tx, &operation.commit.thread_id, thread_version).await?;
-    sqlx::query(&format!(
-        "INSERT INTO {NS}_commit_receipt \
+    sqlx::query(
+        "INSERT INTO runtime_commit_receipt \
              (operation_run_id, operation_ordinal, thread_id, payload_hash, \
-              commit_sequence, thread_version) VALUES ($1, $2, $3, $4, $5, $6)"
-    ))
+              commit_sequence, thread_version) VALUES ($1, $2, $3, $4, $5, $6)",
+    )
     .bind(&operation.operation_id.run_id.0)
     .bind(operation_ordinal)
     .bind(&operation.commit.thread_id.0)
@@ -791,17 +783,16 @@ async fn lock_thread_version(
         .execute(&mut **tx)
         .await
         .map_err(reject)?;
-    let committed: i64 = sqlx::query_scalar(&format!(
-        "SELECT COUNT(*) FROM {NS}_commit WHERE thread_id = $1"
-    ))
-    .bind(&thread_id.0)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(reject)?;
-    sqlx::query(&format!(
-        "INSERT INTO {NS}_thread_version (thread_id, version) VALUES ($1, $2) \
-         ON CONFLICT (thread_id) DO UPDATE SET version = EXCLUDED.version"
-    ))
+    let committed: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit WHERE thread_id = $1")
+            .bind(&thread_id.0)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(reject)?;
+    sqlx::query(
+        "INSERT INTO runtime_thread_version (thread_id, version) VALUES ($1, $2) \
+         ON CONFLICT (thread_id) DO UPDATE SET version = EXCLUDED.version",
+    )
     .bind(&thread_id.0)
     .bind(committed)
     .execute(&mut **tx)
@@ -815,14 +806,12 @@ async fn set_thread_version(
     thread_id: &ThreadId,
     version: u64,
 ) -> Result<(), Error> {
-    sqlx::query(&format!(
-        "UPDATE {NS}_thread_version SET version = $2 WHERE thread_id = $1"
-    ))
-    .bind(&thread_id.0)
-    .bind(encode_authority(version)?)
-    .execute(&mut **tx)
-    .await
-    .map_err(reject)?;
+    sqlx::query("UPDATE runtime_thread_version SET version = $2 WHERE thread_id = $1")
+        .bind(&thread_id.0)
+        .bind(encode_authority(version)?)
+        .execute(&mut **tx)
+        .await
+        .map_err(reject)?;
     Ok(())
 }
 
@@ -830,11 +819,11 @@ async fn load_receipt(
     tx: &mut Transaction<'_, Postgres>,
     operation: &CommitOperation,
 ) -> Result<Option<(ThreadId, CommitReceipt)>, Error> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(
         "SELECT thread_id, payload_hash, commit_sequence, thread_version \
-         FROM {NS}_commit_receipt \
-         WHERE operation_run_id = $1 AND operation_ordinal = $2"
-    ))
+         FROM runtime_commit_receipt \
+         WHERE operation_run_id = $1 AND operation_ordinal = $2",
+    )
     .bind(&operation.operation_id.run_id.0)
     .bind(encode_authority(operation.operation_id.ordinal)?)
     .fetch_optional(&mut **tx)
@@ -868,14 +857,12 @@ async fn append_commit(
     let run_id = commit.run_id();
     let thread_id = &commit.thread_id;
     let run_state = commit.run_state();
-    let p = NS;
-    let existing: Option<Json<RunState>> = sqlx::query_scalar(&format!(
-        "SELECT phase FROM {p}_run_record WHERE run_id = $1 FOR UPDATE"
-    ))
-    .bind(&run_id.0)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(reject)?;
+    let existing: Option<Json<RunState>> =
+        sqlx::query_scalar("SELECT phase FROM runtime_run_record WHERE run_id = $1 FOR UPDATE")
+            .bind(&run_id.0)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(reject)?;
     if existing
         .as_ref()
         .is_some_and(|Json(state)| !state.permits(&run_state))
@@ -890,22 +877,18 @@ async fn append_commit(
     // the commit table, observes its exact tail, then inserts the successor.
     // A rollback releases both the lock and candidate, so no durable gap can be
     // created by a failed later write.
-    sqlx::query(&format!(
-        "LOCK TABLE {p}_commit IN SHARE ROW EXCLUSIVE MODE"
-    ))
-    .execute(&mut **tx)
-    .await
-    .map_err(reject)?;
-    let last: i64 = sqlx::query_scalar(&format!(
-        "SELECT COALESCE(MAX(sequence), 0) FROM {p}_commit"
-    ))
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(reject)?;
+    sqlx::query("LOCK TABLE runtime_commit IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut **tx)
+        .await
+        .map_err(reject)?;
+    let last: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence), 0) FROM runtime_commit")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(reject)?;
     let next = dense_commit_sequence_successor(last)?;
-    sqlx::query(&format!(
-        "INSERT INTO {p}_commit (sequence, thread_id, run_id, phase) VALUES ($1, $2, $3, $4)"
-    ))
+    sqlx::query(
+        "INSERT INTO runtime_commit (sequence, thread_id, run_id, phase) VALUES ($1, $2, $3, $4)",
+    )
     .bind(encode_authority(next)?)
     .bind(&thread_id.0)
     .bind(&run_id.0)
@@ -929,11 +912,11 @@ async fn append_commit(
         });
     }
     append_ordered_events(tx, run_id, &committed_events).await?;
-    sqlx::query(&format!(
-        "INSERT INTO {p}_run_record (run_id, thread_id, phase) VALUES ($1, $2, $3) \
+    sqlx::query(
+        "INSERT INTO runtime_run_record (run_id, thread_id, phase) VALUES ($1, $2, $3) \
          ON CONFLICT (run_id) DO UPDATE \
-         SET thread_id = EXCLUDED.thread_id, phase = EXCLUDED.phase, updated_at = now()"
-    ))
+         SET thread_id = EXCLUDED.thread_id, phase = EXCLUDED.phase, updated_at = now()",
+    )
     .bind(&run_id.0)
     .bind(&thread_id.0)
     .bind(Json(&run_state))
@@ -945,17 +928,17 @@ async fn append_commit(
         let ticket = commit
             .resume_ticket()
             .expect("awaiting disposition has a ticket");
-        sqlx::query(&format!(
-            "INSERT INTO {p}_waiting (run_id, ticket) VALUES ($1, $2) \
-             ON CONFLICT (run_id) DO UPDATE SET ticket = EXCLUDED.ticket"
-        ))
+        sqlx::query(
+            "INSERT INTO runtime_waiting (run_id, ticket) VALUES ($1, $2) \
+             ON CONFLICT (run_id) DO UPDATE SET ticket = EXCLUDED.ticket",
+        )
         .bind(&run_id.0)
         .bind(Json(ticket))
         .execute(&mut **tx)
         .await
         .map_err(reject)?;
     } else {
-        sqlx::query(&format!("DELETE FROM {p}_waiting WHERE run_id = $1"))
+        sqlx::query("DELETE FROM runtime_waiting WHERE run_id = $1")
             .bind(&run_id.0)
             .execute(&mut **tx)
             .await
@@ -978,19 +961,23 @@ async fn append_ordered_thread_facts<T: serde::Serialize>(
 ) -> Result<(), Error> {
     const FACTS_PER_STATEMENT: usize = 256;
     let sequence = encode_authority(sequence)?;
+    let query = match table {
+        "message" => {
+            "INSERT INTO runtime_message (commit_sequence, thread_id, data) SELECT $1, $2, entry.value FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS entry(value, ordinal) ORDER BY entry.ordinal"
+        }
+        "state_command" => {
+            "INSERT INTO runtime_state_command (commit_sequence, thread_id, data) SELECT $1, $2, entry.value FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS entry(value, ordinal) ORDER BY entry.ordinal"
+        }
+        _ => return Err(Error::Rejected("unsupported committed fact table".into())),
+    };
     for chunk in facts.chunks(FACTS_PER_STATEMENT) {
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_{table} (commit_sequence, thread_id, data) \
-             SELECT $1, $2, entry.value \
-             FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS entry(value, ordinal) \
-             ORDER BY entry.ordinal"
-        ))
-        .bind(sequence)
-        .bind(&thread_id.0)
-        .bind(Json(chunk))
-        .execute(&mut **tx)
-        .await
-        .map_err(reject)?;
+        sqlx::query(query)
+            .bind(sequence)
+            .bind(&thread_id.0)
+            .bind(Json(chunk))
+            .execute(&mut **tx)
+            .await
+            .map_err(reject)?;
     }
     Ok(())
 }
@@ -1002,13 +989,13 @@ async fn append_ordered_events(
 ) -> Result<(), Error> {
     const EVENTS_PER_STATEMENT: usize = 256;
     for chunk in events.chunks(EVENTS_PER_STATEMENT) {
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_event (sequence, run_id, kind, payload) \
+        sqlx::query(
+            "INSERT INTO runtime_event (sequence, run_id, kind, payload) \
              SELECT (entry.value->>'sequence')::bigint, $1, \
                     entry.value->'kind', entry.value->'payload' \
              FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS entry(value, ordinal) \
-             ORDER BY entry.ordinal"
-        ))
+             ORDER BY entry.ordinal",
+        )
         .bind(&run_id.0)
         .bind(Json(chunk))
         .execute(&mut **tx)
@@ -1150,28 +1137,23 @@ impl CheckpointReader for PostgresCommitCoordinator {
         }
         let after = encode_authority(from.unwrap_or(0)).map_err(|error| error.to_string())?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let (source, predicate, scope_id) = match scope {
-            EventScope::All => (format!("{NS}_event AS event"), "", ""),
+        // The scope enum selects complete static SQL. Scope ids, limits and
+        // cursors remain data parameters in every branch.
+        let (statement, scope_id) = match scope {
+            EventScope::All => (
+                "SELECT event.sequence,event.run_id,event.kind,event.payload FROM runtime_event AS event WHERE event.sequence>$1 ORDER BY event.sequence LIMIT $2",
+                "",
+            ),
             EventScope::Run(run_id) => (
-                format!("{NS}_event AS event"),
-                "AND event.run_id = $3",
+                "SELECT event.sequence,event.run_id,event.kind,event.payload FROM runtime_event AS event WHERE event.sequence>$1 AND event.run_id=$3 ORDER BY event.sequence LIMIT $2",
                 run_id.0.as_str(),
             ),
             EventScope::Thread(thread_id) => (
-                format!(
-                    "(SELECT DISTINCT run_id FROM {NS}_commit WHERE thread_id = $3) AS run \
-                     JOIN {NS}_event AS event ON event.run_id = run.run_id"
-                ),
-                "",
+                "SELECT event.sequence,event.run_id,event.kind,event.payload FROM (SELECT DISTINCT run_id FROM runtime_commit WHERE thread_id=$3) AS run JOIN runtime_event AS event ON event.run_id=run.run_id WHERE event.sequence>$1 ORDER BY event.sequence LIMIT $2",
                 thread_id.0.as_str(),
             ),
         };
-        let statement = format!(
-            "SELECT event.sequence, event.run_id, event.kind, event.payload \
-             FROM {source} WHERE event.sequence > $1 {predicate} \
-             ORDER BY event.sequence LIMIT $2"
-        );
-        let query = sqlx::query(&statement).bind(after).bind(limit);
+        let query = sqlx::query(statement).bind(after).bind(limit);
         let rows = match scope {
             EventScope::All => query.fetch_all(&self.pool).await,
             EventScope::Run(_) | EventScope::Thread(_) => {
@@ -1275,22 +1257,20 @@ impl PostgresCommitCoordinator {
         use awaken_agent_contract::thread::read::recovery::{
             LoadedRunRecovery, ReusedRunRecovery, ThreadPrefixRef,
         };
-        let p = NS;
         let mut tx = self.pool.begin().await.map_err(recovery_reject)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
             .map_err(recovery_reject)?;
 
-        let store_cursor: i64 = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(MAX(sequence), 0) FROM {p}_commit"
-        ))
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(recovery_reject)?;
-        let last_commit: i64 = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(MAX(sequence), 0) FROM {p}_commit WHERE thread_id = $1"
-        ))
+        let store_cursor: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(sequence), 0) FROM runtime_commit")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(recovery_reject)?;
+        let last_commit: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(sequence), 0) FROM runtime_commit WHERE thread_id = $1",
+        )
         .bind(&thread_id.0)
         .fetch_one(&mut *tx)
         .await
@@ -1299,20 +1279,19 @@ impl PostgresCommitCoordinator {
             .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
         let store_cursor = decode_authority(store_cursor)
             .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
-        let next_commit_ordinal: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {p}_commit WHERE run_id = $1"
-        ))
-        .bind(&claimed_run_id.0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(recovery_reject)?;
+        let next_commit_ordinal: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit WHERE run_id = $1")
+                .bind(&claimed_run_id.0)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(recovery_reject)?;
 
         let next_commit_ordinal = decode_authority(next_commit_ordinal)
             .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
         if let Some(prefix) = cached.filter(|prefix| prefix.last_commit == last_commit) {
-            let version: Option<i64> = sqlx::query_scalar(&format!(
-                "SELECT version FROM {p}_thread_version WHERE thread_id = $1"
-            ))
+            let version: Option<i64> = sqlx::query_scalar(
+                "SELECT version FROM runtime_thread_version WHERE thread_id = $1",
+            )
             .bind(&thread_id.0)
             .fetch_optional(&mut *tx)
             .await
@@ -1335,19 +1314,18 @@ impl PostgresCommitCoordinator {
                 });
             }
         }
-        let thread_version: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {p}_commit WHERE thread_id = $1"
-        ))
-        .bind(&thread_id.0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(recovery_reject)?;
+        let thread_version: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit WHERE thread_id = $1")
+                .bind(&thread_id.0)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(recovery_reject)?;
         let thread_version = decode_authority(thread_version)
             .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
 
-        let commit_rows = sqlx::query(&format!(
-            "SELECT run_id, phase FROM {p}_commit WHERE thread_id = $1 ORDER BY sequence"
-        ))
+        let commit_rows = sqlx::query(
+            "SELECT run_id, phase FROM runtime_commit WHERE thread_id = $1 ORDER BY sequence",
+        )
         .bind(&thread_id.0)
         .fetch_all(&mut *tx)
         .await
@@ -1364,9 +1342,9 @@ impl PostgresCommitCoordinator {
             }),
         )?;
 
-        let message_rows = sqlx::query(&format!(
-            "SELECT commit_sequence, data FROM {p}_message WHERE thread_id = $1 ORDER BY id"
-        ))
+        let message_rows = sqlx::query(
+            "SELECT commit_sequence, data FROM runtime_message WHERE thread_id = $1 ORDER BY id",
+        )
         .bind(&thread_id.0)
         .fetch_all(&mut *tx)
         .await
@@ -1385,9 +1363,7 @@ impl PostgresCommitCoordinator {
             messages.push(message);
         }
 
-        let state_rows = sqlx::query(&format!(
-            "SELECT commit_sequence, data FROM {p}_state_command WHERE thread_id = $1 ORDER BY id"
-        ))
+        let state_rows = sqlx::query("SELECT commit_sequence, data FROM runtime_state_command WHERE thread_id = $1 ORDER BY id")
         .bind(&thread_id.0)
         .fetch_all(&mut *tx)
         .await
@@ -1411,10 +1387,10 @@ impl PostgresCommitCoordinator {
         // and prevents a damaged cache owner from misattributing committed facts.
         // One array bind preserves index access without one query per Run.
         let committed_run_ids = runs.iter().map(|run| run.id.0.as_str()).collect::<Vec<_>>();
-        let event_rows = sqlx::query(&format!(
-            "SELECT sequence, run_id, kind, payload FROM {p}_event \
-             WHERE run_id = ANY($1) ORDER BY sequence"
-        ))
+        let event_rows = sqlx::query(
+            "SELECT sequence, run_id, kind, payload FROM runtime_event \
+             WHERE run_id = ANY($1) ORDER BY sequence",
+        )
         .bind(&committed_run_ids)
         .fetch_all(&mut *tx)
         .await
@@ -1442,9 +1418,7 @@ impl PostgresCommitCoordinator {
 
         let resume_tickets = recovery_tickets(&mut tx, thread_id).await?;
 
-        let timestamp_rows = sqlx::query(&format!(
-            "SELECT sequence, FLOOR(EXTRACT(EPOCH FROM committed_at) * 1000)::BIGINT AS millis FROM {p}_commit WHERE thread_id = $1 ORDER BY sequence"
-        )).bind(&thread_id.0).fetch_all(&mut *tx).await.map_err(recovery_reject)?;
+        let timestamp_rows = sqlx::query("SELECT sequence, FLOOR(EXTRACT(EPOCH FROM committed_at) * 1000)::BIGINT AS millis FROM runtime_commit WHERE thread_id = $1 ORDER BY sequence").bind(&thread_id.0).fetch_all(&mut *tx).await.map_err(recovery_reject)?;
         let mut commit_timestamps = std::collections::BTreeMap::new();
         for row in timestamp_rows {
             let sequence: i64 = row.try_get("sequence").map_err(recovery_reject)?;
@@ -1504,22 +1478,21 @@ impl RunLifecycleFeed for PostgresCommitCoordinator {
         let after = i64::try_from(cursor.0)
             .map_err(|_| RunLifecycleFeedError::Rejected("cursor exceeds BIGINT range".into()))?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let prefix = NS;
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(
             "WITH lifecycle AS (\
                  SELECT event.sequence, event.run_id, run.thread_id, event.kind, event.payload, \
-                        (SELECT prior.payload FROM {prefix}_event AS prior \
+                         (SELECT prior.payload FROM runtime_event AS prior \
                          WHERE prior.run_id = event.run_id \
                            AND prior.sequence < event.sequence \
                            AND prior.kind::text = '\"RunStateChanged\"' \
                          ORDER BY prior.sequence DESC LIMIT 1) AS previous_payload \
-                 FROM {prefix}_event AS event \
-                 JOIN {prefix}_run_record AS run ON run.run_id = event.run_id \
+                  FROM runtime_event AS event \
+                  JOIN runtime_run_record AS run ON run.run_id = event.run_id \
                  WHERE event.kind::text IN ('\"RunStateChanged\"', '\"RunRescheduled\"')\
              ) \
              SELECT sequence, run_id, thread_id, kind, payload, previous_payload \
-             FROM lifecycle WHERE sequence > $1 ORDER BY sequence LIMIT $2"
-        ))
+             FROM lifecycle WHERE sequence > $1 ORDER BY sequence LIMIT $2",
+        )
         .bind(after)
         .bind(limit)
         .fetch_all(&self.pool)

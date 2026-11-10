@@ -530,7 +530,8 @@ async fn postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy() {
     let fresh_schema = format!("cli_binding_fresh_{suffix}");
     let legacy_schema = format!("cli_binding_legacy_{suffix}");
     for schema in [&fresh_schema, &legacy_schema] {
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        // Both names use fixed fixture prefixes and the integer time suffix.
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin)
             .await
             .unwrap();
@@ -649,7 +650,7 @@ async fn postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy() {
     );
 
     for schema in [&fresh_schema, &legacy_schema] {
-        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin)
             .await
             .unwrap();

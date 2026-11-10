@@ -126,9 +126,12 @@ pub struct SqliteWorkQueue {
 impl WorkQueries for SqliteWorkQueue {
     async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
         let mut conn = self.connection().await?;
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM work_queue_item WHERE environment_id = ?1 ORDER BY seq ASC"
-        ))
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM work_queue_item WHERE environment_id = ?1 ORDER BY seq ASC"
+            )),
+        )
         .bind(env_id)
         .fetch_all(&mut *conn)
         .await
@@ -159,18 +162,19 @@ impl WorkQueries for SqliteWorkQueue {
         .fetch_optional(&mut *conn)
         .await
         .map_err(storage)?;
-        let mut count = async |state_clause: &str| -> Result<usize, WorkQueueError> {
-            sqlx::query_scalar::<_, i64>(&format!(
-                "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND {state_clause}"
-            ))
-            .bind(env_id)
-            .fetch_one(&mut *conn)
-            .await
-            .map(|count| count as usize)
-            .map_err(storage)
+        let mut count = async |statement: &'static str| -> Result<usize, WorkQueueError> {
+            sqlx::query_scalar::<_, i64>(statement)
+                .bind(env_id)
+                .fetch_one(&mut *conn)
+                .await
+                .map(|count| count as usize)
+                .map_err(storage)
         };
-        let depth = count("state = 'queued'").await?;
-        let pending = count("state IN ('starting', 'active', 'stopping')").await?;
+        let depth = count(
+            "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND state = 'queued'",
+        )
+        .await?;
+        let pending = count("SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND state IN ('starting', 'active', 'stopping')").await?;
         drop(conn);
         // Parity with the in-memory queue: oldest stays set while an item is still
         // processing (queued OR pending), and pollers are counted from the liveness
@@ -627,9 +631,12 @@ pub struct PostgresWorkQueue {
 #[async_trait]
 impl WorkQueries for PostgresWorkQueue {
     async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
-        sqlx::query(&format!(
-            "SELECT {COLS} FROM work_queue_item WHERE environment_id = $1 ORDER BY seq ASC"
-        ))
+        sqlx::query(
+            // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {COLS} FROM work_queue_item WHERE environment_id = $1 ORDER BY seq ASC"
+            )),
+        )
         .bind(env_id)
         .fetch_all(&self.pool)
         .await
@@ -644,22 +651,23 @@ impl WorkQueries for PostgresWorkQueue {
     }
 
     async fn stats(&self, env_id: &str) -> Result<QueueStats, WorkQueueError> {
-        let count = |clause: &'static str| {
+        let count = |statement: &'static str| {
             let pool = self.pool.clone();
             let env = env_id.to_string();
             async move {
-                sqlx::query_scalar::<_, i64>(&format!(
-                    "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND {clause}"
-                ))
-                .bind(env)
-                .fetch_one(&pool)
-                .await
-                .map_err(storage)
-                .map(|count| count as usize)
+                sqlx::query_scalar::<_, i64>(statement)
+                    .bind(env)
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(storage)
+                    .map(|count| count as usize)
             }
         };
-        let depth = count("state = 'queued'").await?;
-        let pending = count("state IN ('starting', 'active', 'stopping')").await?;
+        let depth = count(
+            "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND state = 'queued'",
+        )
+        .await?;
+        let pending = count("SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND state IN ('starting', 'active', 'stopping')").await?;
         // Parity with the in-memory queue: oldest is the oldest unfinished item's
         // own durable acceptance instant, and pollers come from the liveness book
         // (not the active-count proxy).

@@ -12,12 +12,15 @@ async fn sqlite_recovery_cursor_is_an_index_range_for_each_selection() {
     let repo = memory_repository().await;
     for preparation_only in [false, true] {
         let sql = reconciliation_scan_sql(preparation_only, true, "?1");
-        let rows =
-            sqlx::query_as::<_, (i64, i64, i64, String)>(&format!("EXPLAIN QUERY PLAN {sql}"))
-                .bind("plan-after")
-                .fetch_all(&repo.pool)
-                .await
-                .unwrap();
+        // SQL safety: explain the production compiler's closed template;
+        // the exclusive key remains a bound value.
+        let rows = sqlx::query_as::<_, (i64, i64, i64, String)>(sqlx::AssertSqlSafe(format!(
+            "EXPLAIN QUERY PLAN {sql}"
+        )))
+        .bind("plan-after")
+        .fetch_all(&repo.pool)
+        .await
+        .unwrap();
         let plan = rows
             .into_iter()
             .map(|row| row.3)
@@ -46,7 +49,8 @@ async fn postgres_cached_recovery_and_startup_cursors_keep_the_index_condition()
     };
     let schema = format!("t_session_keyset_{}", uuid::Uuid::new_v4().simple());
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .unwrap();
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -80,12 +84,17 @@ async fn postgres_cached_recovery_and_startup_cursors_keep_the_index_condition()
             "keyset_general"
         };
         let sql = reconciliation_scan_sql(preparation_only, true, "$1::text");
-        pool.execute(format!("PREPARE {name}(text) AS {sql}").as_str())
-            .await
-            .unwrap();
-        let plan = sqlx::query_scalar::<_, String>(&format!(
+        // SQL safety: `name` is one of two fixed literals and `sql` comes from
+        // the closed reconciliation compiler with a fixed placeholder.
+        pool.execute(sqlx::AssertSqlSafe(format!(
+            "PREPARE {name}(text) AS {sql}"
+        )))
+        .await
+        .unwrap();
+        // SQL safety: the prepared statement name is a closed literal above.
+        let plan = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(format!(
             "EXPLAIN (COSTS OFF) EXECUTE {name}('plan-after')"
-        ))
+        )))
         .fetch_all(&pool)
         .await
         .unwrap()
@@ -112,9 +121,10 @@ async fn postgres_cached_recovery_and_startup_cursors_keep_the_index_condition()
             name.chars()
                 .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         );
-        let plan = sqlx::query_scalar::<_, String>(&format!(
+        // SQL safety: the database-produced name passed the identifier check.
+        let plan = sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(format!(
             "EXPLAIN (COSTS OFF) EXECUTE \"{name}\"('plan-after')"
-        ))
+        )))
         .fetch_all(&pool)
         .await
         .unwrap()
@@ -129,7 +139,8 @@ async fn postgres_cached_recovery_and_startup_cursors_keep_the_index_condition()
     drop(repo);
     pool.close().await;
     admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .await
         .unwrap();
     admin.close().await;

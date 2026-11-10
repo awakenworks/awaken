@@ -215,7 +215,8 @@ async fn postgres_clients(url: &str) -> PgClients {
     let tag = uuid::Uuid::new_v4().simple().to_string();
     let schema = format!("t_session_t05_{tag}");
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .expect("create owned T05 schema");
     admin.close().await;
@@ -231,8 +232,9 @@ async fn postgres_clients(url: &str) -> PgClients {
                 .after_connect(move |connection, _| {
                     let schema = owned_schema.clone();
                     Box::pin(async move {
-                        connection
-                            .execute(format!("SET search_path = {schema}").as_str())
+                        sqlx::query("SELECT set_config('search_path', $1, false)")
+                            .bind(&schema)
+                            .execute(&mut *connection)
                             .await?;
                         Ok(())
                     })
@@ -275,8 +277,9 @@ impl PgClients {
             .after_connect(move |connection, _| {
                 let schema = schema.clone();
                 Box::pin(async move {
-                    connection
-                        .execute(format!("SET search_path = {schema}").as_str())
+                    sqlx::query("SELECT set_config('search_path', $1, false)")
+                        .bind(&schema)
+                        .execute(&mut *connection)
                         .await?;
                     Ok(())
                 })
@@ -323,7 +326,11 @@ impl PgClients {
             .await
             .expect("T05 cleanup connection");
         admin
-            .execute(format!("DROP SCHEMA {} CASCADE", self.schema).as_str())
+            // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+            .execute(sqlx::AssertSqlSafe(format!(
+                "DROP SCHEMA {} CASCADE",
+                self.schema
+            )))
             .await
             .expect("drop exact owned T05 schema");
         admin.close().await;

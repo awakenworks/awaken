@@ -99,8 +99,12 @@ fn storage(err: impl std::fmt::Display) -> RepoError {
     RepoError::Invariant(CatalogError::Storage(err.to_string()))
 }
 
-async fn row_exists(conn: &mut SqliteConnection, table: &str, id: &str) -> Result<bool, RepoError> {
-    sqlx::query_scalar::<_, i64>(&format!("SELECT 1 FROM {table} WHERE id = ?1"))
+async fn row_exists(
+    conn: &mut SqliteConnection,
+    sql: &'static str,
+    id: &str,
+) -> Result<bool, RepoError> {
+    sqlx::query_scalar::<_, i64>(sql)
         .bind(id)
         .fetch_optional(conn)
         .await
@@ -114,22 +118,17 @@ async fn row_exists(conn: &mut SqliteConnection, table: &str, id: &str) -> Resul
 /// reproducible and identical on both backends (portable, not rowid-dependent).
 async fn load_catalog(conn: &mut SqliteConnection) -> Result<ProviderCatalog, RepoError> {
     let mut cat = ProviderCatalog::default();
-    for data in select_data(&mut *conn, &format!("SELECT data FROM {NS}_provider")).await? {
+    for data in select_data(&mut *conn, "SELECT data FROM catalog_provider").await? {
         let provider: Provider = serde_json::from_str(&data).map_err(storage)?;
         cat.providers.insert(provider.id.0.clone(), provider);
     }
-    for data in select_data(
-        &mut *conn,
-        &format!("SELECT data FROM {NS}_protocol_endpoint"),
-    )
-    .await?
-    {
+    for data in select_data(&mut *conn, "SELECT data FROM catalog_protocol_endpoint").await? {
         let endpoint: ProtocolEndpoint = serde_json::from_str(&data).map_err(storage)?;
         cat.endpoints.insert(endpoint.id.0.clone(), endpoint);
     }
     for data in select_data(
         &mut *conn,
-        &format!("SELECT data FROM {NS}_offering ORDER BY model_id, protocol_endpoint_id"),
+        "SELECT data FROM catalog_offering ORDER BY model_id, protocol_endpoint_id",
     )
     .await?
     {
@@ -138,7 +137,7 @@ async fn load_catalog(conn: &mut SqliteConnection) -> Result<ProviderCatalog, Re
     }
     for (model_id, data) in select_keyed(
         &mut *conn,
-        &format!("SELECT model_id, data FROM {NS}_model_attributes"),
+        "SELECT model_id, data FROM catalog_model_attributes",
     )
     .await?
     {
@@ -148,7 +147,10 @@ async fn load_catalog(conn: &mut SqliteConnection) -> Result<ProviderCatalog, Re
     Ok(cat)
 }
 
-async fn select_data(conn: &mut SqliteConnection, sql: &str) -> Result<Vec<String>, RepoError> {
+async fn select_data(
+    conn: &mut SqliteConnection,
+    sql: &'static str,
+) -> Result<Vec<String>, RepoError> {
     sqlx::query_scalar::<_, String>(sql)
         .fetch_all(conn)
         .await
@@ -159,7 +161,7 @@ async fn select_data(conn: &mut SqliteConnection, sql: &str) -> Result<Vec<Strin
 /// on their own id column (e.g. `_model_attributes` keyed on `model_id`).
 async fn select_keyed(
     conn: &mut SqliteConnection,
-    sql: &str,
+    sql: &'static str,
 ) -> Result<Vec<(String, String)>, RepoError> {
     sqlx::query_as::<_, (String, String)>(sql)
         .fetch_all(conn)
@@ -172,10 +174,10 @@ async fn upsert_provider(
     id: &str,
     data: &str,
 ) -> Result<(), RepoError> {
-    sqlx::query(&format!(
-        "INSERT INTO {NS}_provider (id, data) VALUES (?1, ?2) \
-         ON CONFLICT(id) DO UPDATE SET data = excluded.data"
-    ))
+    sqlx::query(
+        "INSERT INTO catalog_provider (id, data) VALUES (?1, ?2) \
+         ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+    )
     .bind(id)
     .bind(data)
     .execute(conn)
@@ -190,11 +192,11 @@ async fn upsert_endpoint(
     provider_id: &str,
     data: &str,
 ) -> Result<(), RepoError> {
-    sqlx::query(&format!(
-        "INSERT INTO {NS}_protocol_endpoint (id, provider_id, data) \
+    sqlx::query(
+        "INSERT INTO catalog_protocol_endpoint (id, provider_id, data) \
          VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET \
-         provider_id = excluded.provider_id, data = excluded.data"
-    ))
+         provider_id = excluded.provider_id, data = excluded.data",
+    )
     .bind(id)
     .bind(provider_id)
     .bind(data)
@@ -210,11 +212,11 @@ async fn upsert_offering(
     endpoint_id: &str,
     data: &str,
 ) -> Result<(), RepoError> {
-    sqlx::query(&format!(
-        "INSERT INTO {NS}_offering (model_id, protocol_endpoint_id, data) \
+    sqlx::query(
+        "INSERT INTO catalog_offering (model_id, protocol_endpoint_id, data) \
          VALUES (?1, ?2, ?3) ON CONFLICT(model_id, protocol_endpoint_id) \
-         DO UPDATE SET data = excluded.data"
-    ))
+         DO UPDATE SET data = excluded.data",
+    )
     .bind(model_id)
     .bind(endpoint_id)
     .bind(data)
@@ -272,7 +274,13 @@ impl CatalogRepo for SqliteCatalogRepo {
         let provider_id = endpoint.provider_id.0.clone();
         let data = serde_json::to_string(&endpoint).map_err(storage)?;
         let mut conn = self.pool.acquire().await.map_err(storage)?;
-        if !row_exists(&mut conn, &format!("{NS}_provider"), &provider_id).await? {
+        if !row_exists(
+            &mut conn,
+            "SELECT 1 FROM catalog_provider WHERE id = ?1",
+            &provider_id,
+        )
+        .await?
+        {
             return Err(RepoError::ProviderNotFound(provider_id));
         }
         upsert_endpoint(&mut conn, &endpoint.id.0, &provider_id, &data).await
@@ -288,7 +296,13 @@ impl CatalogRepo for SqliteCatalogRepo {
         // a rejected offering rolls back and leaves no trace — same no-trace
         // semantics as the in-memory repo's push-then-pop.
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        if !row_exists(&mut tx, &format!("{NS}_protocol_endpoint"), &endpoint_id).await? {
+        if !row_exists(
+            &mut tx,
+            "SELECT 1 FROM catalog_protocol_endpoint WHERE id = ?1",
+            &endpoint_id,
+        )
+        .await?
+        {
             return Err(RepoError::EndpointNotFound(endpoint_id));
         }
         upsert_offering(&mut tx, &offering.model_id, &endpoint_id, &data).await?;
@@ -307,7 +321,13 @@ impl CatalogRepo for SqliteCatalogRepo {
     ) -> Result<CatalogSyncResult, RepoError> {
         let endpoint_id = endpoint_id.0.clone();
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        if !row_exists(&mut tx, &format!("{NS}_protocol_endpoint"), &endpoint_id).await? {
+        if !row_exists(
+            &mut tx,
+            "SELECT 1 FROM catalog_protocol_endpoint WHERE id = ?1",
+            &endpoint_id,
+        )
+        .await?
+        {
             return Err(RepoError::EndpointNotFound(endpoint_id));
         }
         let mut catalog = load_catalog(&mut tx).await?;
@@ -369,20 +389,18 @@ impl CatalogRepo for SqliteCatalogRepo {
         // authoritative local facts. Persist that complete attribute view in
         // the same transaction so stale Brokered-only values disappear while
         // Manual/Provider API values survive the refresh.
-        sqlx::query(&format!("DELETE FROM {NS}_model_attributes"))
+        sqlx::query("DELETE FROM catalog_model_attributes")
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
         for (model_id, attributes) in &catalog.model_attributes {
             let data = serde_json::to_string(attributes).map_err(storage)?;
-            sqlx::query(&format!(
-                "INSERT INTO {NS}_model_attributes (model_id, data) VALUES (?1, ?2)"
-            ))
-            .bind(model_id)
-            .bind(&data)
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
+            sqlx::query("INSERT INTO catalog_model_attributes (model_id, data) VALUES (?1, ?2)")
+                .bind(model_id)
+                .bind(&data)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage)?;
         }
         ValidCatalog::parse(load_catalog(&mut tx).await?)?;
         tx.commit().await.map_err(storage)?;
@@ -396,10 +414,10 @@ impl CatalogRepo for SqliteCatalogRepo {
     ) -> Result<(), RepoError> {
         attrs.validate(&model_id)?;
         let data = serde_json::to_string(&attrs).map_err(storage)?;
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_model_attributes (model_id, data) VALUES (?1, ?2) \
-             ON CONFLICT(model_id) DO UPDATE SET data = excluded.data"
-        ))
+        sqlx::query(
+            "INSERT INTO catalog_model_attributes (model_id, data) VALUES (?1, ?2) \
+             ON CONFLICT(model_id) DO UPDATE SET data = excluded.data",
+        )
         .bind(&model_id)
         .bind(&data)
         .execute(&self.pool)
@@ -409,21 +427,20 @@ impl CatalogRepo for SqliteCatalogRepo {
     }
 
     async fn get_provider(&self, id: &ProviderId) -> Result<Provider, RepoError> {
-        let data = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT data FROM {NS}_provider WHERE id = ?1"
-        ))
-        .bind(&id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
+        let data =
+            sqlx::query_scalar::<_, String>("SELECT data FROM catalog_provider WHERE id = ?1")
+                .bind(&id.0)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(storage)?;
         let data = data.ok_or_else(|| RepoError::ProviderNotFound(id.0.clone()))?;
         serde_json::from_str(&data).map_err(storage)
     }
 
     async fn get_endpoint(&self, id: &ProtocolEndpointId) -> Result<ProtocolEndpoint, RepoError> {
-        let data = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT data FROM {NS}_protocol_endpoint WHERE id = ?1"
-        ))
+        let data = sqlx::query_scalar::<_, String>(
+            "SELECT data FROM catalog_protocol_endpoint WHERE id = ?1",
+        )
         .bind(&id.0)
         .fetch_optional(&self.pool)
         .await

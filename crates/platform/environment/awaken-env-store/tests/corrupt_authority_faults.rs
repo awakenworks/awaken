@@ -75,9 +75,12 @@ async fn file_sqlite_corrupt_rows_fail_closed_on_every_handle_without_repair() {
             .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
             .await
             .unwrap();
-        sqlx::query(&format!(
-            "UPDATE env_registry_env SET {column} = 'not-json' WHERE env_id = ?1"
-        ))
+        sqlx::query(
+            // Columns are the fixed COLUMNS fault matrix; schema names contain only integer fixture coordinates.
+            sqlx::AssertSqlSafe(format!(
+                "UPDATE env_registry_env SET {column} = 'not-json' WHERE env_id = ?1"
+            )),
+        )
         .bind(&committed.id)
         .execute(&raw)
         .await
@@ -98,9 +101,12 @@ async fn file_sqlite_corrupt_rows_fail_closed_on_every_handle_without_repair() {
             .unwrap_or_else(|failure| panic!("{column} reopen: {failure}"));
         assert_eq!(on_writer, on_observer, "{column} E1 stable across handles");
         assert_eq!(on_writer, on_reopen, "{column} E1 stable across reopen");
-        let stored: String = sqlx::query_scalar(&format!(
-            "SELECT {column} FROM env_registry_env WHERE env_id = ?1"
-        ))
+        let stored: String = sqlx::query_scalar(
+            // Columns are the fixed COLUMNS fault matrix; schema names contain only integer fixture coordinates.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {column} FROM env_registry_env WHERE env_id = ?1"
+            )),
+        )
         .bind(&committed.id)
         .fetch_one(&raw)
         .await
@@ -130,7 +136,10 @@ async fn postgres_corrupt_rows_fail_closed_on_independent_pools_without_repair()
             .as_nanos();
         let schema = format!("t_env_t37_corrupt_{}_{nonce:x}", std::process::id());
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(
+                // Columns are the fixed COLUMNS fault matrix; schema names contain only integer fixture coordinates.
+                sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+            )
             .await
             .unwrap();
         let connect = || {
@@ -164,9 +173,12 @@ async fn postgres_corrupt_rows_fail_closed_on_independent_pools_without_repair()
             .unwrap();
         let raw = connect().await;
         // The registry stores these facts as TEXT on both backends.
-        sqlx::query(&format!(
-            "UPDATE env_registry_env SET {column} = 'not-json' WHERE env_id = $1"
-        ))
+        sqlx::query(
+            // Columns are the fixed COLUMNS fault matrix; schema names contain only integer fixture coordinates.
+            sqlx::AssertSqlSafe(format!(
+                "UPDATE env_registry_env SET {column} = 'not-json' WHERE env_id = $1"
+            )),
+        )
         .bind(&committed.id)
         .execute(&raw)
         .await
@@ -182,9 +194,12 @@ async fn postgres_corrupt_rows_fail_closed_on_independent_pools_without_repair()
         let on_observer = fail_closed_verdict(&reads(&observer, &committed.id).await)
             .unwrap_or_else(|failure| panic!("{column} observer: {failure}"));
         assert_eq!(on_writer, on_observer, "{column} E1 stable across pools");
-        let stored: String = sqlx::query_scalar(&format!(
-            "SELECT {column}::text FROM env_registry_env WHERE env_id = $1"
-        ))
+        let stored: String = sqlx::query_scalar(
+            // Columns are the fixed COLUMNS fault matrix; schema names contain only integer fixture coordinates.
+            sqlx::AssertSqlSafe(format!(
+                "SELECT {column}::text FROM env_registry_env WHERE env_id = $1"
+            )),
+        )
         .bind(&committed.id)
         .fetch_one(&raw)
         .await
@@ -194,7 +209,10 @@ async fn postgres_corrupt_rows_fail_closed_on_independent_pools_without_repair()
         drop((writer, observer));
         raw.close().await;
         admin
-            .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+            .execute(
+                // Columns are the fixed COLUMNS fault matrix; schema names contain only integer fixture coordinates.
+                sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")),
+            )
             .await
             .expect("drop only this run's schema");
     }

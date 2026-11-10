@@ -96,10 +96,12 @@ async fn overwrite_postgres_aggregate<'c>(
 
 /// Execute one parameterless fixture statement on any store's connection,
 /// writing a row or state the repository itself never produces.
-async fn execute_fixture<'c, DB>(executor: impl sqlx::Executor<'c, Database = DB>, sql: &str)
-where
+async fn execute_fixture<'c, DB>(
+    executor: impl sqlx::Executor<'c, Database = DB>,
+    sql: &'static str,
+) where
     DB: sqlx::Database,
-    for<'q> <DB as sqlx::Database>::Arguments<'q>: sqlx::IntoArguments<'q, DB>,
+    <DB as sqlx::Database>::Arguments: sqlx::IntoArguments<DB>,
 {
     sqlx::query(sql)
         .execute(executor)
@@ -930,12 +932,23 @@ async fn materialize_foundation_ledger_generation(
     let ledger = awaken_scoped_migration::LedgerSchema::with_prefix(NS).unwrap();
     let [create_ledger, create_meta, stamp_version] =
         ledger.create_statements(awaken_scoped_migration::Dialect::Sqlite);
+    // SQL safety: Foundation owns these DDL producers and validates the ledger
+    // identifiers before constructing the statements. There is no caller SQL.
     if ledger_exists {
-        sqlx::raw_sql(&create_ledger).execute(conn).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(create_ledger))
+            .execute(conn)
+            .await
+            .unwrap();
     }
     if meta_exists {
-        sqlx::raw_sql(&create_meta).execute(conn).await.unwrap();
-        sqlx::raw_sql(&stamp_version).execute(conn).await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(create_meta))
+            .execute(conn)
+            .await
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(stamp_version))
+            .execute(conn)
+            .await
+            .unwrap();
     }
 }
 
@@ -975,7 +988,8 @@ async fn postgres_normalization_and_index_repair_share_one_crash_boundary() {
             .as_nanos();
         let schema = format!("t_session_atomic_{suffix}");
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+            .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .await
             .unwrap();
         let pool = sqlx::postgres::PgPool::connect(&scoped_postgres_url(&url, &schema))
@@ -1047,7 +1061,8 @@ async fn postgres_normalization_and_index_repair_share_one_crash_boundary() {
         );
         pool.close().await;
         admin
-            .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+            // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+            .execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .await
             .unwrap();
     }
@@ -1691,10 +1706,14 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
         ("PGV6", "t_session_compacted_v20", &compacted, 20, true, 27),
     ] {
         let _ = admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+            .execute(sqlx::AssertSqlSafe(format!(
+                "DROP SCHEMA IF EXISTS {schema} CASCADE"
+            )))
             .await;
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+            .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .await
             .unwrap_or_else(|error| panic!("{rule} create schema: {error}"));
         let scoped_url = scoped_postgres_url(&url, schema);
@@ -1863,17 +1882,24 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
 
         pool.close().await;
         admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+            .execute(sqlx::AssertSqlSafe(format!(
+                "DROP SCHEMA IF EXISTS {schema} CASCADE"
+            )))
             .await
             .unwrap_or_else(|error| panic!("{rule} drop schema: {error}"));
     }
 
     let schema = "t_session_original_v12_with_row";
     let _ = admin
-        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE"
+        )))
         .await;
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .unwrap();
     let scoped_url = scoped_postgres_url(&url, schema);
@@ -1912,7 +1938,10 @@ async fn postgres_published_prefixes_converge_and_server_open_is_read_only() {
     );
     pool.close().await;
     admin
-        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE"
+        )))
         .await
         .unwrap();
     admin.close().await;

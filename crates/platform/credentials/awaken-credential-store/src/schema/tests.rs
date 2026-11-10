@@ -397,11 +397,11 @@ async fn postgres_backfills_legacy_managed_timestamps_from_insert_time() {
         .await
         .expect("configured PostgreSQL backfill fixture must connect");
     admin
-        .execute(format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE").as_str())
+        .execute("DROP SCHEMA IF EXISTS credential_timestamp_backfill CASCADE")
         .await
         .unwrap();
     admin
-        .execute(format!("CREATE SCHEMA {SCHEMA}").as_str())
+        .execute("CREATE SCHEMA credential_timestamp_backfill")
         .await
         .unwrap();
     admin.close().await;
@@ -409,7 +409,9 @@ async fn postgres_backfills_legacy_managed_timestamps_from_insert_time() {
         .max_connections(1)
         .after_connect(|conn, _meta| {
             Box::pin(async move {
-                conn.execute(format!("SET search_path = {SCHEMA}").as_str())
+                sqlx::query("SELECT set_config('search_path', $1, false)")
+                    .bind(SCHEMA)
+                    .execute(conn)
                     .await?;
                 Ok(())
             })

@@ -84,7 +84,7 @@ fn candidate_epoch_not_exhausted() -> &'static str {
 /// The remaining scan uses the same order with an exclusive lower bound and
 /// no SQL limit. The outer flags skip ineligible members in either mode;
 /// the exact transaction remains the sole mutation/eligibility authority.
-fn candidate_page_sql(local: bool) -> String {
+fn candidate_page_sql(local: bool) -> sqlx::SqlStr {
     let p = NS;
     let thread_available = thread_available_for_claim(p);
     let local_filter = if local {
@@ -96,7 +96,9 @@ fn candidate_page_sql(local: bool) -> String {
     let state_rank = candidate_state_rank(local);
     let retry_due = candidate_retry_due();
     let epoch_not_exhausted = candidate_epoch_not_exhausted();
-    format!(
+    // Only closed literal branches and helpers using the built-in namespace
+    // compose this query. Clock, page and cursor values are bound below.
+    sqlx::SqlSafeStr::into_sql_str(sqlx::AssertSqlSafe(format!(
         "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, \
                 d.status, d.cancel_requested, d.lease_epoch, \
                 d.physical_rank, d.state_rank, d.priority, d.created_at, \
@@ -136,7 +138,7 @@ fn candidate_page_sql(local: bool) -> String {
              LIMIT $2 \
          ) d ORDER BY d.physical_rank, d.state_rank, d.priority DESC, \
                       d.created_at, d.run_id"
-    )
+    )))
 }
 
 /// Exclusive position in the original discovery order. This is a per-call
@@ -289,7 +291,7 @@ impl PostgresDispatchStore {
             refuse_untrustworthy_expired_leases(&self.pool).await?;
             let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
             let sql = candidate_page_sql(audience.local());
-            let first = sqlx::query(&sql)
+            let first = sqlx::query(sql.clone())
                 .bind(crate::clock::db_millis(now_ms))
                 .bind(Some(CANDIDATE_PAGE_SIZE))
                 .bind(None::<i32>)
@@ -326,7 +328,7 @@ impl PostgresDispatchStore {
             }
             loop {
                 let lower = position.take();
-                let mut stream = sqlx::query(&sql)
+                let mut stream = sqlx::query(sql.clone())
                     .bind(crate::clock::db_millis(now_ms))
                     // PostgreSQL LIMIT NULL means the remaining ordered scan.
                     // Buffer admissible ids, not every incompatible payload.
@@ -423,25 +425,21 @@ async fn lock_dispatch_thread(
     run_id: &RunId,
     mode: ThreadLock,
 ) -> Result<Option<String>, DispatchError> {
-    let thread: Option<String> = sqlx::query_scalar(&format!(
-        "SELECT thread_id FROM {NS}_dispatch WHERE run_id = $1"
-    ))
-    .bind(&run_id.0)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(store_error)?;
+    let thread: Option<String> =
+        sqlx::query_scalar("SELECT thread_id FROM runtime_dispatch WHERE run_id = $1")
+            .bind(&run_id.0)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_error)?;
     if let Some(thread) = &thread {
         // One Thread-before-row ordering for claim and physical admission.
         // The resolved dispatch relation is the authority namespace. Independent
         // schemas must not contend, while different search_path prefixes that
         // resolve this SAME table must retain one fence. current_schema() alone
         // would split that fence. Hash collisions only over-serialize.
-        let key = format!(
-            "hashtextextended(jsonb_build_array('{NS}_dispatch'::regclass::oid, $1::text)::text, 0)"
-        );
         match mode {
             ThreadLock::Wait => {
-                sqlx::query(&format!("SELECT pg_advisory_xact_lock({key})"))
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array('runtime_dispatch'::regclass::oid, $1::text)::text, 0))")
                     .bind(thread)
                     .execute(&mut **tx)
                     .await
@@ -449,7 +447,7 @@ async fn lock_dispatch_thread(
             }
             ThreadLock::SkipBusy => {
                 let acquired: bool =
-                    sqlx::query_scalar(&format!("SELECT pg_try_advisory_xact_lock({key})"))
+                    sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended(jsonb_build_array('runtime_dispatch'::regclass::oid, $1::text)::text, 0))")
                         .bind(thread)
                         .fetch_one(&mut **tx)
                         .await
@@ -473,13 +471,11 @@ async fn claim_exact_transaction(
     capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
     let now_ms = crate::postgres_helpers::postgres_now_ms(&mut **tx).await?;
-    let phase = sqlx::query(&format!(
-        "SELECT status, lease_until FROM {NS}_dispatch WHERE run_id = $1"
-    ))
-    .bind(&requested_run.0)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(store_error)?;
+    let phase = sqlx::query("SELECT status, lease_until FROM runtime_dispatch WHERE run_id = $1")
+        .bind(&requested_run.0)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(store_error)?;
     let mode = if let Some(row) = phase {
         let status = row.try_get::<String, _>("status").map_err(store_error)?;
         let state = DispatchState::from_db(&status).ok_or_else(|| {
@@ -573,7 +569,9 @@ async fn claim_exact_transaction_with_mode(
         .retry_limit()
         .map(|limit| durable_i64("dispatch retry limit", limit))
         .transpose()?;
-    let Some(row) = sqlx::query(&sql)
+    // eligibility is the closed ExactClaimMode match; p is the built-in
+    // namespace. Run id, time and retry limits remain bind parameters.
+    let Some(row) = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&requested_run.0)
         .bind(crate::clock::db_millis(now_ms))
         .bind(retry_limit)
@@ -656,12 +654,12 @@ async fn claim_exact_transaction_with_mode(
     })?;
     let expires = crate::clock::deadline_millis(now_ms, lease_ms);
     let claimed_status = crate::dispatch_state_db(claimed_transition.state);
-    sqlx::query(&format!(
-        "UPDATE {p}_dispatch SET status = $9, lease_owner = $1, lease_until = $2, \
+    sqlx::query(
+        "UPDATE runtime_dispatch SET status = $9, lease_owner = $1, lease_until = $2, \
          attempt_count = attempt_count + $3, lease_epoch = $5, worker_assignment = $6, \
          credential_bindings = $7, credential_receipts = $8, retry_not_before = NULL \
-         WHERE run_id = $4"
-    ))
+         WHERE run_id = $4",
+    )
     .bind(owner)
     .bind(crate::clock::db_millis(expires))
     .bind(i64::from(status == "running"))
@@ -724,11 +722,11 @@ async fn claim_exact_transaction_with_mode(
         )
         .await?;
     }
-    let rows = sqlx::query(&format!(
+    let rows = sqlx::query(
         "SELECT message_id, thread_id, correlation_id, result, context_messages, available_at \
-         FROM {p}_pending WHERE run_id = $1 \
-         AND (available_at IS NULL OR available_at <= $2) ORDER BY created_at"
-    ))
+         FROM runtime_pending WHERE run_id = $1 \
+         AND (available_at IS NULL OR available_at <= $2) ORDER BY created_at",
+    )
     .bind(&requested_run.0)
     .bind(crate::clock::db_millis(now_ms))
     .fetch_all(&mut **tx)

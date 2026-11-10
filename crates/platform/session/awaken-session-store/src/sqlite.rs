@@ -433,7 +433,9 @@ impl SqliteManagedSessionRepository {
             "SELECT version,checksum FROM {} WHERE bundle_id=?1 ORDER BY version",
             ledger.ledger_table()
         );
-        sqlx::query_as::<_, (i64, String)>(&sql)
+        // SQL safety: LedgerSchema validates its table identifiers. Bundle id
+        // is a bound value, never an interpolated identifier.
+        sqlx::query_as::<_, (i64, String)>(sqlx::AssertSqlSafe(sql))
             .bind(bundle_id)
             .fetch_all(&mut *conn)
             .await
@@ -461,7 +463,8 @@ impl SqliteManagedSessionRepository {
             .verify_presence(ledger_exists, meta_exists)
             .map_err(|error| error.to_string())?;
         let sql = format!("SELECT ledger_version FROM {}", ledger.meta_table());
-        let versions = sqlx::query_scalar::<_, i64>(&sql)
+        // SQL safety: this metadata identifier is validated by LedgerSchema.
+        let versions = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .fetch_all(&mut *conn)
             .await
             .map_err(|error| error.to_string())?;
@@ -1299,26 +1302,29 @@ impl SqliteManagedSessionRepository {
             .map_err(|error| storage(format!("invalid recovery batch size: {error}")))?;
         let mut scan = SessionScan::default();
         let sql = reconciliation_scan_sql(preparation_only, after.is_some(), "?1");
-        let rows = sqlx::query_as::<_, (String, String, String, i64, i64)>(&sql)
-            .bind(&after)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(storage)?
-            .into_iter()
-            .map(
-                |(workspace_id, session_id, aggregate_json, revision, observed_revision)| {
-                    (
-                        workspace_id,
-                        session_id,
-                        EncodedSessionRow {
-                            aggregate_json,
-                            revision,
-                        },
-                        observed_revision,
-                    )
-                },
-            )
-            .collect::<Vec<_>>();
+        // SQL safety: the reconciliation producer has closed identifiers and
+        // placeholders; the actual exclusive cursor remains a bound value.
+        let rows =
+            sqlx::query_as::<_, (String, String, String, i64, i64)>(sqlx::AssertSqlSafe(sql))
+                .bind(&after)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(storage)?
+                .into_iter()
+                .map(
+                    |(workspace_id, session_id, aggregate_json, revision, observed_revision)| {
+                        (
+                            workspace_id,
+                            session_id,
+                            EncodedSessionRow {
+                                aggregate_json,
+                                revision,
+                            },
+                            observed_revision,
+                        )
+                    },
+                )
+                .collect::<Vec<_>>();
         let has_more = rows.len() > page_size;
         let mut rows = rows;
         rows.truncate(page_size);

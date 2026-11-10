@@ -34,10 +34,13 @@ pub async fn postgres_crash_pool(identity: &str) -> Option<sqlx::PgPool> {
         .connect(&url)
         .await
         .expect("connect crash fixture");
-    sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {schema}"))
-        .execute(&admin)
-        .await
-        .expect("create isolated crash schema");
+    // schema_name encodes only a fixed prefix and a hexadecimal identity hash.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE SCHEMA IF NOT EXISTS {schema}"
+    )))
+    .execute(&admin)
+    .await
+    .expect("create isolated crash schema");
     admin.close().await;
     // Connection startup selects the schema without replacing the canonical
     // checkout callbacks; cancelled transactions must still be retired.

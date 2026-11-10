@@ -134,7 +134,8 @@ async fn postgres_extraction_execution_selection_and_first_claim_share_one_revis
     };
     let schema = format!("t_extraction_select_{}", uuid::Uuid::new_v4().simple());
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .unwrap();
     let scoped = crate::tests::scoped_postgres_url(&url, &schema);
@@ -192,7 +193,8 @@ async fn postgres_extraction_execution_selection_and_first_claim_share_one_revis
     }
     reopened.pool.close().await;
     admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .await
         .unwrap();
     admin.close().await;

@@ -14,6 +14,9 @@
 //! adapters opening the same file cannot silently disagree about locking or
 //! foreign-key enforcement. Stores reach SQLite only through
 //! [`EmbeddedSqlite`] and the [`EmbeddedPool`] handle it opens.
+//!
+//! This owner qualifies the bundled SQLite build. Replacing it with an external
+//! system library is outside this connection policy's supported build contract.
 
 use std::time::Duration;
 
@@ -27,3 +30,46 @@ pub use embedded_pool::{EmbeddedConnection, EmbeddedPool, EmbeddedTransaction};
 pub use pool::{EmbeddedSqlite, SqlitePoolError};
 
 pub(crate) const WRITE_WAIT: Duration = Duration::from_secs(30);
+
+// The direct native dependency makes the floor part of standalone consumers'
+// graphs as well as the complete process graph. No IAM dependency is required.
+const SQLITE_VERSION_FLOOR: i32 = 3_054_001;
+const _: () = assert!(libsqlite3_sys::SQLITE_VERSION_NUMBER >= SQLITE_VERSION_FLOOR);
+
+#[cfg(test)]
+mod version_tests {
+    #[tokio::test]
+    async fn bundled_driver_matches_the_security_qualified_headers() {
+        let pool = super::EmbeddedSqlite::memory().open().await.unwrap();
+        let version: String = sqlx::query_scalar("SELECT sqlite_version()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let parts = version
+            .split('.')
+            .map(str::parse::<i32>)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            parts.len(),
+            3,
+            "SQLite must report its exact library version"
+        );
+        let number = parts[0]
+            .checked_mul(1_000_000)
+            .and_then(|major| {
+                parts[1]
+                    .checked_mul(1_000)
+                    .and_then(|minor| major.checked_add(minor))
+            })
+            .and_then(|value| value.checked_add(parts[2]))
+            .unwrap();
+        assert!(number >= super::SQLITE_VERSION_FLOOR);
+        assert_eq!(
+            number,
+            libsqlite3_sys::SQLITE_VERSION_NUMBER,
+            "bundled headers and loaded library must be the same version"
+        );
+        pool.close().await;
+    }
+}

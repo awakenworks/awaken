@@ -50,12 +50,16 @@ async fn missing_permission_and_blocked_health_check_fail_within_their_boundary(
     let mut database_created = false;
     let mut isolated = None;
     let outcome = async {
+        // Both SQL identifiers and the fixture password consist only of a
+        // fixed ASCII prefix and the database-supplied integer backend PID.
         admin
-            .execute(format!("CREATE ROLE {name} LOGIN PASSWORD '{password}'").as_str())
+            .execute(sqlx::AssertSqlSafe(format!(
+                "CREATE ROLE {name} LOGIN PASSWORD '{password}'"
+            )))
             .await?;
         role_created = true;
         admin
-            .execute(format!("CREATE DATABASE {name}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
             .await?;
         database_created = true;
         let pool = PgPool::connect_with(options.clone().database(&name)).await?;
@@ -117,13 +121,13 @@ async fn missing_permission_and_blocked_health_check_fail_within_their_boundary(
     }
     if database_created {
         admin
-            .execute(format!("DROP DATABASE {name}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!("DROP DATABASE {name}")))
             .await
             .unwrap();
     }
     if role_created {
         admin
-            .execute(format!("DROP ROLE {name}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!("DROP ROLE {name}")))
             .await
             .unwrap();
     }

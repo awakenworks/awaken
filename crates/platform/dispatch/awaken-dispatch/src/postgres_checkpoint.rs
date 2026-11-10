@@ -10,7 +10,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
-use crate::postgres::{NS, StoreError, migrate, verify_schema};
+use crate::postgres::{StoreError, migrate, verify_schema};
 
 /// PostgreSQL storage for an interrupted inference stream.
 ///
@@ -63,18 +63,17 @@ impl PostgresStreamCheckpointStore {
 #[async_trait]
 impl StreamCheckpointStore for PostgresStreamCheckpointStore {
     async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
-        let row = match sqlx::query(&format!(
-            "SELECT checkpoint FROM {NS}_stream_checkpoint WHERE run_id = $1"
-        ))
-        .bind(run_id)
-        .fetch_optional(&self.pool)
-        .await
-        {
-            // Only a query that ran and returned no row is evidence of absence.
-            Ok(None) => return Observed::Absent,
-            Ok(Some(row)) => row,
-            Err(error) => return Observed::Unknown(UnknownCause::Storage(error.to_string())),
-        };
+        let row =
+            match sqlx::query("SELECT checkpoint FROM runtime_stream_checkpoint WHERE run_id = $1")
+                .bind(run_id)
+                .fetch_optional(&self.pool)
+                .await
+            {
+                // Only a query that ran and returned no row is evidence of absence.
+                Ok(None) => return Observed::Absent,
+                Ok(Some(row)) => row,
+                Err(error) => return Observed::Unknown(UnknownCause::Storage(error.to_string())),
+            };
         // The row exists; a column that will not decode is corruption, not
         // emptiness, so it must not read as "no checkpoint".
         match row.try_get::<Json<StreamCheckpoint>, _>("checkpoint") {
@@ -85,10 +84,10 @@ impl StreamCheckpointStore for PostgresStreamCheckpointStore {
 
     async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError> {
         let run_id = checkpoint.run_id.clone();
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_stream_checkpoint (run_id, checkpoint) VALUES ($1, $2) \
-             ON CONFLICT (run_id) DO UPDATE SET checkpoint = EXCLUDED.checkpoint"
-        ))
+        sqlx::query(
+            "INSERT INTO runtime_stream_checkpoint (run_id, checkpoint) VALUES ($1, $2) \
+             ON CONFLICT (run_id) DO UPDATE SET checkpoint = EXCLUDED.checkpoint",
+        )
         .bind(run_id)
         .bind(Json(checkpoint))
         .execute(&self.pool)
@@ -98,13 +97,11 @@ impl StreamCheckpointStore for PostgresStreamCheckpointStore {
     }
 
     async fn delete(&self, run_id: &str) -> Result<(), StreamCheckpointError> {
-        sqlx::query(&format!(
-            "DELETE FROM {NS}_stream_checkpoint WHERE run_id = $1"
-        ))
-        .bind(run_id)
-        .execute(&self.pool)
-        .await
-        .map(|_| ())
-        .map_err(|error| StreamCheckpointError::Storage(error.to_string()))
+        sqlx::query("DELETE FROM runtime_stream_checkpoint WHERE run_id = $1")
+            .bind(run_id)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|error| StreamCheckpointError::Storage(error.to_string()))
     }
 }

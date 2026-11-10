@@ -44,21 +44,57 @@ fn expected(generation: u64) -> RegisteredWorker {
     }
 }
 
-fn seed_sql(generation: u64) -> String {
-    let row = expected(generation);
-    let manifest = serde_json::to_string(&row.snapshot.manifest)
-        .unwrap()
-        .replace('\'', "''");
-    format!(
+fn seed_sql(legacy_conflict: bool) -> &'static str {
+    // SQLite also supports the named $1/$2/$3 parameters. The old writer shape
+    // is a closed alternative; fixture values never enter SQL text.
+    if legacy_conflict {
         "INSERT INTO worker_registry_worker (
          worker_id, incarnation_id, generation, state, manifest_json,
          capability_fingerprint, in_flight, warm_environment_shapes_json,
          credential_observations_json, acp_capability_observations_json,
          expires_at_ms, heartbeat_sequence, observation_sequence,
          registered_at_ms, heartbeat_at_ms, drain_deadline_ms) VALUES \
-        ('migrated','A',{generation},'dead','{manifest}','{}',2,'[]','[]','[]',150,3,4,100,101,120)",
-        row.snapshot.capability_fingerprint
-    )
+        ('migrated','A',$1,'dead',$2,$3,2,'[]','[]','[]',150,3,4,100,101,120) \
+        ON CONFLICT(worker_id) DO NOTHING"
+    } else {
+        "INSERT INTO worker_registry_worker (
+         worker_id, incarnation_id, generation, state, manifest_json,
+         capability_fingerprint, in_flight, warm_environment_shapes_json,
+         credential_observations_json, acp_capability_observations_json,
+         expires_at_ms, heartbeat_sequence, observation_sequence,
+         registered_at_ms, heartbeat_at_ms, drain_deadline_ms) VALUES \
+        ('migrated','A',$1,'dead',$2,$3,2,'[]','[]','[]',150,3,4,100,101,120)"
+    }
+}
+
+async fn sqlite_seed(
+    connection: &awaken_sqlite_pool::EmbeddedPool,
+    generation: u64,
+    legacy_conflict: bool,
+) -> Result<(), sqlx::Error> {
+    let row = expected(generation);
+    sqlx::query(seed_sql(legacy_conflict))
+        .bind(i64::try_from(generation).unwrap())
+        .bind(serde_json::to_string(&row.snapshot.manifest).unwrap())
+        .bind(row.snapshot.capability_fingerprint)
+        .execute(connection)
+        .await
+        .map(|_| ())
+}
+
+async fn postgres_seed(
+    pool: &sqlx::PgPool,
+    generation: u64,
+    legacy_conflict: bool,
+) -> Result<(), sqlx::Error> {
+    let row = expected(generation);
+    sqlx::query(seed_sql(legacy_conflict))
+        .bind(i64::try_from(generation).unwrap())
+        .bind(serde_json::to_string(&row.snapshot.manifest).unwrap())
+        .bind(row.snapshot.capability_fingerprint)
+        .execute(pool)
+        .await
+        .map(|_| ())
 }
 
 async fn assert_migrated(directory: &dyn WorkerDirectory, generation: u64) {
@@ -153,10 +189,7 @@ async fn sqlite_retained_history_migrates_both_published_streams() {
             let conn = EmbeddedSqlite::file(&path).open().await.unwrap();
             let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).unwrap();
             runner.run_bundle(&published).await.unwrap();
-            sqlx::raw_sql(&seed_sql(generation))
-                .execute(&conn)
-                .await
-                .unwrap();
+            sqlite_seed(&conn, generation, false).await.unwrap();
             sqlx::raw_sql("CREATE TABLE worker_registry_worker_history (obstruction INTEGER)")
                 .execute(&conn)
                 .await
@@ -190,17 +223,11 @@ async fn sqlite_retained_history_migrates_both_published_streams() {
             let conn = EmbeddedSqlite::file(&path).open().await.unwrap();
             let runner = SqliteMigrationRunner::with_prefix(conn.sqlx().clone(), NS).unwrap();
             assert!(
-                sqlx::raw_sql(&format!(
-                    "{} ON CONFLICT(worker_id) DO NOTHING",
-                    seed_sql(99)
-                ))
-                .execute(&conn)
-                .await
-                .is_err(),
+                sqlite_seed(&conn, 99, true).await.is_err(),
                 "M4 old writer cannot overwrite history"
             );
             assert!(
-                sqlx::raw_sql(&seed_sql(99)).execute(&conn).await.is_err(),
+                sqlite_seed(&conn, 99, false).await.is_err(),
                 "M5 incarnation unique across generations"
             );
             assert!(
@@ -247,7 +274,9 @@ async fn postgres_retained_history_migrates_both_published_streams() {
                 stream,
                 generation
             );
-            sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            // schema contains only a fixed prefix and the integer process,
+            // stream and generation coordinates from the fixture above.
+            sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
                 .execute(&admin)
                 .await
                 .unwrap();
@@ -268,10 +297,7 @@ async fn postgres_retained_history_migrates_both_published_streams() {
             )
             .unwrap();
             runner.run_bundle(&published).await.unwrap();
-            sqlx::query(&seed_sql(generation))
-                .execute(&pool)
-                .await
-                .unwrap();
+            postgres_seed(&pool, generation, false).await.unwrap();
             // M6 same failing DDL prefix and retry under actual PG transactions.
             sqlx::query("CREATE TABLE worker_registry_worker_history (obstruction INTEGER)")
                 .execute(&pool)
@@ -310,17 +336,11 @@ async fn postgres_retained_history_migrates_both_published_streams() {
                 "M3 verify-only reopen"
             );
             assert!(
-                sqlx::query(&format!(
-                    "{} ON CONFLICT(worker_id) DO NOTHING",
-                    seed_sql(99)
-                ))
-                .execute(&pool)
-                .await
-                .is_err(),
+                postgres_seed(&pool, 99, true).await.is_err(),
                 "M4 old writer"
             );
             assert!(
-                sqlx::query(&seed_sql(99)).execute(&pool).await.is_err(),
+                postgres_seed(&pool, 99, false).await.is_err(),
                 "M5 incarnation uniqueness"
             );
             assert!(runner.run_bundle(&published).await.unwrap().is_empty());
@@ -334,7 +354,8 @@ async fn postgres_retained_history_migrates_both_published_streams() {
             drop(reopened);
             drop(runner);
             pool.close().await;
-            sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            // Same generated integer-only identifier as the CREATE above.
+            sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
                 .execute(&admin)
                 .await
                 .unwrap();

@@ -1148,12 +1148,15 @@ async fn dead_letter_ttl_gc_on_sqlite() {
         .await
         .unwrap();
     let raw = "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing FROM runtime_dispatch WHERE run_id = ?1";
-    for (name, mutation) in [
+    for (name, mutation_sql) in [
         (
             "purge-owner-only",
-            "active_attempt_owner = 'retained-original-owner'",
+            "UPDATE runtime_dispatch SET active_attempt_owner = 'retained-original-owner' WHERE run_id = ?1",
         ),
-        ("purge-epoch-only", "active_attempt_epoch = 1"),
+        (
+            "purge-epoch-only",
+            "UPDATE runtime_dispatch SET active_attempt_epoch = 1 WHERE run_id = ?1",
+        ),
     ] {
         let (run, _) = harness::attempt_retirement::dead_letter_empty(&store, name, &clock).await;
         let before: (Option<String>, Option<i64>, Option<String>, bool) = sqlx::query_as(raw)
@@ -1161,13 +1164,11 @@ async fn dead_letter_ttl_gc_on_sqlite() {
             .fetch_one(&connection)
             .await
             .unwrap();
-        let error = sqlx::query(&format!(
-            "UPDATE runtime_dispatch SET {mutation} WHERE run_id = ?1"
-        ))
-        .bind(&run.0)
-        .execute(&connection)
-        .await
-        .unwrap_err();
+        let error = sqlx::query(mutation_sql)
+            .bind(&run.0)
+            .execute(&connection)
+            .await
+            .unwrap_err();
         assert_eq!(
             error.as_database_error().unwrap().code().as_deref(),
             Some("1811"),
@@ -1200,12 +1201,18 @@ async fn dead_letter_ttl_gc_on_sqlite() {
     );
 
     let mut snapshots = Vec::new();
-    for (name, mutation) in [
-        ("purge-orphan-binding", "active_attempt_binding = '{}'"),
-        ("purge-closing-only", "active_attempt_closing = TRUE"),
+    for (name, mutation_sql) in [
+        (
+            "purge-orphan-binding",
+            "UPDATE runtime_dispatch SET active_attempt_binding = '{}' WHERE run_id = ?1",
+        ),
+        (
+            "purge-closing-only",
+            "UPDATE runtime_dispatch SET active_attempt_closing = TRUE WHERE run_id = ?1",
+        ),
         (
             "purge-malformed-binding",
-            "active_attempt_owner = 'retained-original-owner', active_attempt_epoch = 1, active_attempt_binding = '{}'",
+            "UPDATE runtime_dispatch SET active_attempt_owner = 'retained-original-owner', active_attempt_epoch = 1, active_attempt_binding = '{}' WHERE run_id = ?1",
         ),
     ] {
         let (run, _) = harness::attempt_retirement::dead_letter_empty(&store, name, &clock).await;
@@ -1217,12 +1224,10 @@ async fn dead_letter_ttl_gc_on_sqlite() {
                 .await
                 .unwrap();
         }
-        let write = sqlx::query(&format!(
-            "UPDATE runtime_dispatch SET {mutation} WHERE run_id = ?1"
-        ))
-        .bind(&run.0)
-        .execute(&connection)
-        .await;
+        let write = sqlx::query(mutation_sql)
+            .bind(&run.0)
+            .execute(&connection)
+            .await;
         if name == "purge-orphan-binding" {
             sqlx::query("PRAGMA ignore_check_constraints = OFF")
                 .execute(&connection)

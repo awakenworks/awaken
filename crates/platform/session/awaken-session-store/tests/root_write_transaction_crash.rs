@@ -167,6 +167,7 @@ fn assert_committed(command: &str, original: &Observed, current: &Observed) {
 }
 
 async fn fresh_schema(url: &str, tag: &str) -> String {
+    assert!(matches!(tag, "in" | "after"));
     let admin = PgPoolOptions::new()
         .max_connections(1)
         .acquire_timeout(Duration::from_secs(5))
@@ -175,7 +176,8 @@ async fn fresh_schema(url: &str, tag: &str) -> String {
         .expect("configured Session PostgreSQL fixture must connect");
     let schema = format!("t05_{tag}_{}", uuid::Uuid::new_v4().simple());
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .expect("create the owned schema");
     admin.close().await;
@@ -197,13 +199,20 @@ async fn connect(url: &str, schema: &str, application: &str) -> PgPool {
 }
 
 async fn drop_schema(url: &str, schema: &str) {
+    assert!(
+        schema.starts_with("t05_")
+            && schema
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
     let admin = PgPoolOptions::new()
         .max_connections(1)
         .connect(url)
         .await
         .unwrap();
     admin
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        .execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .await
         .expect("drop the owned schema");
     admin.close().await;
@@ -234,10 +243,9 @@ async fn install_cut(pool: &PgPool, table: &str, key: i64) {
     .unwrap();
     for target in ["managed_session_idempotency", "managed_lifecycle_outbox"] {
         pool.execute(
-            format!(
+            sqlx::AssertSqlSafe(format!(
                 "CREATE TRIGGER t05_cut BEFORE INSERT ON {target} FOR EACH ROW EXECUTE FUNCTION t05_cut()"
-            )
-            .as_str(),
+            )),
         )
         .await
         .unwrap();
@@ -246,9 +254,12 @@ async fn install_cut(pool: &PgPool, table: &str, key: i64) {
 
 async fn remove_cut(pool: &PgPool) {
     for target in ["managed_session_idempotency", "managed_lifecycle_outbox"] {
-        pool.execute(format!("DROP TRIGGER t05_cut ON {target}").as_str())
-            .await
-            .unwrap();
+        // SQL safety: fixture-owned identifiers are UUID/PID-derived or closed literals.
+        pool.execute(sqlx::AssertSqlSafe(format!(
+            "DROP TRIGGER t05_cut ON {target}"
+        )))
+        .await
+        .unwrap();
     }
     pool.execute("DROP FUNCTION t05_cut()").await.unwrap();
     pool.execute("DROP TABLE t05_cut_state").await.unwrap();

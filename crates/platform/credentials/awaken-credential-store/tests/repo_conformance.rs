@@ -1626,22 +1626,36 @@ async fn sqlite_legacy_mutation_recovery_conforms() {
             CredentialMaterialMutationPhase::ReclaimingAbort,
         ] {
             for (table, wire, source_field) in legacy_mutation_wires(retain_attempt, phase) {
-                sqlx::query(&format!(
-                    "INSERT INTO {table} (source_id, data) VALUES (?1, ?2)"
-                ))
-                .bind(wire[source_field]["id"].as_str().unwrap())
-                .bind(serde_json::to_string(&wire).unwrap())
-                .execute(&connection)
-                .await
-                .unwrap();
+                let statement = match table {
+                    "credential_creation_intent" => {
+                        "INSERT INTO credential_creation_intent (source_id, data) VALUES (?1, ?2)"
+                    }
+                    "credential_managed_credential_mutation" => {
+                        "INSERT INTO credential_managed_credential_mutation (source_id, data) VALUES (?1, ?2)"
+                    }
+                    _ => panic!("unknown legacy mutation fixture table"),
+                };
+                sqlx::query(statement)
+                    .bind(wire[source_field]["id"].as_str().unwrap())
+                    .bind(serde_json::to_string(&wire).unwrap())
+                    .execute(&connection)
+                    .await
+                    .unwrap();
             }
             legacy_mutation_recovery_conforms(&repo, retain_attempt).await;
         }
     }
     let (plain, managed) = prepare_root_encoding_updates(&repo).await;
     for (table, wire) in root_encoding_wires(&plain, &managed) {
+        let statement = match table {
+            "credential_source" => "UPDATE credential_source SET data = ?1 WHERE id = ?2",
+            "credential_managed_vault_credential" => {
+                "UPDATE credential_managed_vault_credential SET data = ?1 WHERE id = ?2"
+            }
+            _ => panic!("unknown root encoding fixture table"),
+        };
         assert_eq!(
-            sqlx::query(&format!("UPDATE {table} SET data = ?1 WHERE id = ?2"))
+            sqlx::query(statement)
                 .bind(serde_json::to_string_pretty(&wire).unwrap())
                 .bind(wire["id"].as_str().unwrap())
                 .execute(&connection)
@@ -1693,8 +1707,12 @@ mod postgres {
             schema.len() <= 63,
             "owned fixture schema must not be truncated"
         );
+        // Only this fixture's generated, quoted identifier enters DDL.
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!(
+                "CREATE SCHEMA \"{}\"",
+                schema.replace('"', "\"\"")
+            )))
             .await
             .expect("create schema");
         admin.close().await;
@@ -1707,9 +1725,13 @@ mod postgres {
             .after_connect(move |conn, _meta| {
                 let schema = schema.clone();
                 Box::pin(async move {
-                    conn.execute(format!("SET search_path = {schema}").as_str())
+                    sqlx::query("SELECT set_config('search_path',$1,false)")
+                        .bind(&schema)
+                        .execute(&mut *conn)
                         .await?;
-                    conn.execute(format!("SET application_name = '{schema}'").as_str())
+                    sqlx::query("SELECT set_config('application_name',$1,false)")
+                        .bind(&schema)
+                        .execute(&mut *conn)
                         .await?;
                     Ok(())
                 })
@@ -1923,22 +1945,36 @@ mod postgres {
                 CredentialMaterialMutationPhase::ReclaimingAbort,
             ] {
                 for (table, wire, source_field) in legacy_mutation_wires(retain_attempt, phase) {
-                    sqlx::query(&format!(
-                        "INSERT INTO {table} (source_id, data) VALUES ($1, $2)"
-                    ))
-                    .bind(wire[source_field]["id"].as_str().unwrap())
-                    .bind(sqlx::types::Json(&wire))
-                    .execute(&pool)
-                    .await
-                    .unwrap();
+                    let statement = match table {
+                        "credential_creation_intent" => {
+                            "INSERT INTO credential_creation_intent (source_id, data) VALUES ($1, $2)"
+                        }
+                        "credential_managed_credential_mutation" => {
+                            "INSERT INTO credential_managed_credential_mutation (source_id, data) VALUES ($1, $2)"
+                        }
+                        _ => panic!("unknown legacy mutation fixture table"),
+                    };
+                    sqlx::query(statement)
+                        .bind(wire[source_field]["id"].as_str().unwrap())
+                        .bind(sqlx::types::Json(&wire))
+                        .execute(&pool)
+                        .await
+                        .unwrap();
                 }
                 legacy_mutation_recovery_conforms(&repo, retain_attempt).await;
             }
         }
         let (plain, managed) = prepare_root_encoding_updates(&repo).await;
         for (table, wire) in root_encoding_wires(&plain, &managed) {
+            let statement = match table {
+                "credential_source" => "UPDATE credential_source SET data = $1 WHERE id = $2",
+                "credential_managed_vault_credential" => {
+                    "UPDATE credential_managed_vault_credential SET data = $1 WHERE id = $2"
+                }
+                _ => panic!("unknown root encoding fixture table"),
+            };
             assert_eq!(
-                sqlx::query(&format!("UPDATE {table} SET data = $1 WHERE id = $2"))
+                sqlx::query(statement)
                     .bind(sqlx::types::Json(&wire))
                     .bind(wire["id"].as_str().unwrap())
                     .execute(&pool)

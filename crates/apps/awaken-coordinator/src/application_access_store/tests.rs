@@ -651,12 +651,15 @@ async fn run_postgres_repository_conformance(url: &str) {
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
     async fn schema_pool(url: &str, schema: &str) -> PgPool {
-        let search_path = format!("SET search_path = {schema}");
+        let schema = schema.to_owned();
         PgPoolOptions::new()
             .after_connect(move |connection, _| {
-                let search_path = search_path.clone();
+                let schema = schema.clone();
                 Box::pin(async move {
-                    connection.execute(search_path.as_str()).await?;
+                    sqlx::query("SELECT set_config('search_path', $1, false)")
+                        .bind(schema)
+                        .execute(connection)
+                        .await?;
                     Ok(())
                 })
             })
@@ -671,8 +674,9 @@ async fn run_postgres_repository_conformance(url: &str) {
     // The convenience probe and required release gate may run concurrently.
     // Each invocation owns a separate schema; neither can drop a peer's tables.
     let schema = format!("t_application_access_{}", uuid::Uuid::new_v4().simple());
+    // This identifier is a fixed fixture prefix and simple hexadecimal UUID.
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .expect("create application access schema");
     admin.close().await;
@@ -784,7 +788,7 @@ async fn run_postgres_repository_conformance(url: &str) {
     drop(restarted_peer);
     let cleanup = PgPool::connect(url).await.expect("connect fixture cleanup");
     cleanup
-        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .await
         .expect("drop only this invocation's fixture schema");
     cleanup.close().await;

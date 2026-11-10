@@ -273,10 +273,13 @@ async fn sqlite_file_update_archive_race_faults_and_reopen_keep_one_legal_histor
                 operation,
                 || async move {
                     let mut conn = sqlx::SqliteConnection::connect(&arm_url).await.unwrap();
-                    sqlx::query(&format!(
-                        "CREATE TRIGGER t20_fault BEFORE {event} ON {table} \
+                    sqlx::query(
+                        // Table/event fragments are the closed STEPS fault matrix; schema coordinates are integers.
+                        sqlx::AssertSqlSafe(format!(
+                            "CREATE TRIGGER t20_fault BEFORE {event} ON {table} \
                          BEGIN SELECT RAISE(ABORT, 'injected t20 fault'); END"
-                    ))
+                        )),
+                    )
                     .execute(&mut conn)
                     .await
                     .unwrap();
@@ -345,7 +348,10 @@ mod postgres {
             .as_nanos();
         let schema = format!("t_env_t20_{}_{nonce:x}", std::process::id());
         admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .execute(
+                // Table/event fragments are the closed STEPS fault matrix; schema coordinates are integers.
+                sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")),
+            )
             .await
             .unwrap();
         admin.close().await;
@@ -379,18 +385,21 @@ mod postgres {
                     || async move {
                         arm_pool
                             .execute(
-                                format!(
+                                // Table/event fragments are the closed STEPS fault matrix; schema coordinates are integers.
+                                sqlx::AssertSqlSafe(format!(
                                     "CREATE TRIGGER t20_fault BEFORE {event} ON {table} \
                                      FOR EACH ROW EXECUTE FUNCTION t20_fault()"
-                                )
-                                .as_str(),
+                                )),
                             )
                             .await
                             .unwrap();
                     },
                     || async move {
                         disarm_pool
-                            .execute(format!("DROP TRIGGER t20_fault ON {table}").as_str())
+                            .execute(
+                                // Table/event fragments are the closed STEPS fault matrix; schema coordinates are integers.
+                                sqlx::AssertSqlSafe(format!("DROP TRIGGER t20_fault ON {table}")),
+                            )
                             .await
                             .unwrap();
                     },

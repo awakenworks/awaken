@@ -23,9 +23,9 @@ impl SqliteCredentialRepo {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage)?;
-        let row = sqlx::query_as::<_, (String, bool)>(&format!(
-            "SELECT data,delivered FROM {NS}_managed_credential_rollout WHERE event_id=?1"
-        ))
+        let row = sqlx::query_as::<_, (String, bool)>(
+            "SELECT data,delivered FROM credential_managed_credential_rollout WHERE event_id=?1",
+        )
         .bind(&event.id)
         .fetch_optional(&mut *tx)
         .await
@@ -51,9 +51,9 @@ impl SqliteCredentialRepo {
             ));
         }
         if was_delivered != delivered {
-            sqlx::query(&format!(
-                "UPDATE {NS}_managed_credential_rollout SET delivered=?2 WHERE event_id=?1"
-            ))
+            sqlx::query(
+                "UPDATE credential_managed_credential_rollout SET delivered=?2 WHERE event_id=?1",
+            )
             .bind(&event.id)
             .bind(delivered)
             .execute(&mut *tx)
@@ -61,18 +61,16 @@ impl SqliteCredentialRepo {
             .map_err(storage)?;
         }
         if delivered && !was_delivered {
-            let rows = sqlx::query_as::<_, (String, String)>(&format!(
-                "SELECT event_id,data FROM {NS}_managed_credential_rollout WHERE delivered=TRUE \
+            let rows = sqlx::query_as::<_, (String, String)>("SELECT event_id,data FROM credential_managed_credential_rollout WHERE delivered=TRUE \
                 AND (CASE WHEN json_valid(data) THEN json_extract(data,'$.workspace_id') END)=?1 \
-                AND (CASE WHEN json_valid(data) THEN json_extract(data,'$.source_id') END)=?2"
-            ))
+                AND (CASE WHEN json_valid(data) THEN json_extract(data,'$.source_id') END)=?2")
             .bind(&event.workspace_id)
             .bind(&event.source_id.0)
             .fetch_all(&mut *tx)
             .await
             .map_err(storage)?;
             for id in crate::rollout_receipts::obsolete_acknowledgements(rows) {
-                sqlx::query(&format!("DELETE FROM {NS}_managed_credential_rollout WHERE event_id=?1 AND delivered=TRUE"))
+                sqlx::query("DELETE FROM credential_managed_credential_rollout WHERE event_id=?1 AND delivered=TRUE")
                     .bind(id).execute(&mut *tx).await.map_err(storage)?;
             }
         }
@@ -84,17 +82,15 @@ async fn publish_rollout(
     tx: &mut sqlx::SqliteConnection,
     rollout: &ManagedCredentialRollout,
 ) -> Result<(), ManagedCredentialMutationError> {
-    sqlx::query(&format!(
-        "INSERT OR IGNORE INTO {NS}_managed_credential_rollout (event_id, data) VALUES (?1, ?2)"
-    ))
+    sqlx::query("INSERT OR IGNORE INTO credential_managed_credential_rollout (event_id, data) VALUES (?1, ?2)")
     .bind(&rollout.id)
     .bind(serde_json::to_string(rollout).map_err(storage)?)
     .execute(&mut *tx)
     .await
     .map_err(storage)?;
-    let (data, was_delivered) = sqlx::query_as::<_, (String, bool)>(&format!(
-        "SELECT data,delivered FROM {NS}_managed_credential_rollout WHERE event_id=?1"
-    ))
+    let (data, was_delivered) = sqlx::query_as::<_, (String, bool)>(
+        "SELECT data,delivered FROM credential_managed_credential_rollout WHERE event_id=?1",
+    )
     .bind(&rollout.id)
     .fetch_one(&mut *tx)
     .await
@@ -106,9 +102,7 @@ async fn publish_rollout(
         if !was_delivered {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
-        sqlx::query(&format!(
-            "UPDATE {NS}_managed_credential_rollout SET data=?2,delivered=FALSE WHERE event_id=?1"
-        ))
+        sqlx::query("UPDATE credential_managed_credential_rollout SET data=?2,delivered=FALSE WHERE event_id=?1")
         .bind(&rollout.id)
         .bind(serde_json::to_string(rollout).map_err(storage)?)
         .execute(&mut *tx)
@@ -130,7 +124,7 @@ fn invalid_pending(error: ManagedCredentialMutationError) -> CredentialError {
 /// The one `data` column selected by a single text key, if the row exists.
 async fn data_at(
     conn: &mut SqliteConnection,
-    sql: &str,
+    sql: &'static str,
     key: &str,
 ) -> Result<Option<String>, CredentialError> {
     sqlx::query_scalar(sql)
@@ -157,7 +151,6 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         pending
             .validate_for_begin(now_unix_ms)
             .map_err(invalid_pending)?;
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -166,7 +159,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let durable: Option<PendingManagedCredentialMutation> = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+                "SELECT data FROM credential_managed_credential_mutation WHERE source_id = ?1",
                 &pending.after_source.id.0,
             )
             .await?,
@@ -183,7 +176,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let current_source = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                "SELECT data FROM credential_source WHERE id = ?1",
                 &pending.after_source.id.0,
             )
             .await?,
@@ -191,7 +184,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let current_child = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
+                "SELECT data FROM credential_managed_vault_credential WHERE id = ?1",
                 &pending.after_credential.id,
             )
             .await?,
@@ -201,9 +194,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 "Managed credential changed before its mutation was prepared".into(),
             ));
         }
-        let inserted = sqlx::query(&format!(
-            "INSERT OR IGNORE INTO {p}_managed_credential_mutation (source_id, data) VALUES (?1, ?2)"
-        ))
+        let inserted = sqlx::query("INSERT OR IGNORE INTO credential_managed_credential_mutation (source_id, data) VALUES (?1, ?2)")
         .bind(&pending.after_source.id.0)
         .bind(serde_json::to_string(&pending).map_err(storage)?)
         .execute(&mut *tx)
@@ -212,7 +203,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         .rows_affected();
         let durable = data_at(
             &mut tx,
-            &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+            "SELECT data FROM credential_managed_credential_mutation WHERE source_id = ?1",
             &pending.after_source.id.0,
         )
         .await?
@@ -238,7 +229,6 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
     ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
         pending.validate()?;
         let plan = managed_credential_commit_plan(pending)?;
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -247,7 +237,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let durable: PendingManagedCredentialMutation = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+                "SELECT data FROM credential_managed_credential_mutation WHERE source_id = ?1",
                 &pending.after_source.id.0,
             )
             .await?,
@@ -271,7 +261,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let vault: Option<ManagedVault> = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_managed_vault WHERE id = ?1"),
+                "SELECT data FROM credential_managed_vault WHERE id = ?1",
                 &pending.after_credential.vault_id,
             )
             .await?,
@@ -279,7 +269,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let current_source: Option<CredentialSource> = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                "SELECT data FROM credential_source WHERE id = ?1",
                 &pending.after_source.id.0,
             )
             .await?,
@@ -287,7 +277,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let current_child: Option<ManagedVaultCredential> = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
+                "SELECT data FROM credential_managed_vault_credential WHERE id = ?1",
                 &pending.after_credential.id,
             )
             .await?,
@@ -305,10 +295,10 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         if !pending.is_unpublished_at(current_source.as_ref(), current_child.as_ref()) {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
-        let existing = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT data FROM {p}_managed_vault_credential \
-             WHERE workspace_id = ?1 AND vault_id = ?2 AND id <> ?3 ORDER BY id"
-        ))
+        let existing = sqlx::query_scalar::<_, String>(
+            "SELECT data FROM credential_managed_vault_credential \
+             WHERE workspace_id = ?1 AND vault_id = ?2 AND id <> ?3 ORDER BY id",
+        )
         .bind(&pending.after_credential.workspace_id)
         .bind(&pending.after_credential.vault_id)
         .bind(&pending.after_credential.id)
@@ -371,9 +361,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             }
         }
         let source_changed = if pending.operation == ManagedCredentialOperation::Create {
-            sqlx::query(&format!(
-                "INSERT OR IGNORE INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3)"
-            ))
+            sqlx::query("INSERT OR IGNORE INTO credential_source (id, workspace_id, data) VALUES (?1, ?2, ?3)")
             .bind(&pending.after_source.id.0)
             .bind(&pending.after_source.workspace_id)
             .bind(serde_json::to_string(&plan.source).map_err(storage)?)
@@ -386,10 +374,10 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .before_source
                 .as_ref()
                 .ok_or(ManagedCredentialMutationError::NotFound)?;
-            sqlx::query(&format!(
-                "UPDATE {p}_source SET workspace_id = ?1, data = ?2 \
-                 WHERE id = ?3 AND workspace_id = ?4"
-            ))
+            sqlx::query(
+                "UPDATE credential_source SET workspace_id = ?1, data = ?2 \
+                 WHERE id = ?3 AND workspace_id = ?4",
+            )
             .bind(&pending.after_source.workspace_id)
             .bind(serde_json::to_string(&plan.source).map_err(storage)?)
             .bind(&pending.after_source.id.0)
@@ -403,10 +391,10 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
         let child_changed = if pending.operation == ManagedCredentialOperation::Create {
-            sqlx::query(&format!(
-                "INSERT OR IGNORE INTO {p}_managed_vault_credential \
-                 (id, vault_id, workspace_id, source_id, data) VALUES (?1, ?2, ?3, ?4, ?5)"
-            ))
+            sqlx::query(
+                "INSERT OR IGNORE INTO credential_managed_vault_credential \
+                 (id, vault_id, workspace_id, source_id, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
             .bind(&pending.after_credential.id)
             .bind(&pending.after_credential.vault_id)
             .bind(&pending.after_credential.workspace_id)
@@ -421,11 +409,11 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .before_credential
                 .as_ref()
                 .ok_or(ManagedCredentialMutationError::NotFound)?;
-            sqlx::query(&format!(
-                "UPDATE {p}_managed_vault_credential SET vault_id = ?1, \
+            sqlx::query(
+                "UPDATE credential_managed_vault_credential SET vault_id = ?1, \
                  workspace_id = ?2, source_id = ?3, data = ?4 WHERE id = ?5 \
-                 AND vault_id = ?6 AND workspace_id = ?7 AND source_id = ?8"
-            ))
+                 AND vault_id = ?6 AND workspace_id = ?7 AND source_id = ?8",
+            )
             .bind(&pending.after_credential.vault_id)
             .bind(&pending.after_credential.workspace_id)
             .bind(&pending.after_credential.source_id.0)
@@ -442,9 +430,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         if child_changed != 1 {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
-        sqlx::query(&format!(
-            "UPDATE {p}_managed_credential_mutation SET data = ?1 WHERE source_id = ?2"
-        ))
+        sqlx::query(
+            "UPDATE credential_managed_credential_mutation SET data = ?1 WHERE source_id = ?2",
+        )
         .bind(serde_json::to_string(&plan.reclaiming_mutation).map_err(storage)?)
         .bind(&pending.after_source.id.0)
         .execute(&mut *tx)
@@ -462,7 +450,6 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<PendingManagedCredentialMutation, CredentialError> {
         pending.validate().map_err(invalid_pending)?;
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -470,7 +457,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             .map_err(storage)?;
         let data = data_at(
             &mut tx,
-            &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+            "SELECT data FROM credential_managed_credential_mutation WHERE source_id = ?1",
             &pending.after_source.id.0,
         )
         .await?
@@ -489,9 +476,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             ));
         }
         let ready = durable.with_material_ready()?;
-        sqlx::query(&format!(
-            "UPDATE {p}_managed_credential_mutation SET data = ?1 WHERE source_id = ?2"
-        ))
+        sqlx::query(
+            "UPDATE credential_managed_credential_mutation SET data = ?1 WHERE source_id = ?2",
+        )
         .bind(serde_json::to_string(&ready).map_err(storage)?)
         .bind(&pending.after_source.id.0)
         .execute(&mut *tx)
@@ -504,11 +491,10 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
     async fn pending_managed_mutations(
         &self,
     ) -> Result<Vec<PendingManagedCredentialMutation>, CredentialError> {
-        let p = NS;
-        let rows = sqlx::query_as::<_, (String, String)>(&format!(
-            "SELECT source_id, data FROM {p}_managed_credential_mutation \
-             ORDER BY created_at, source_id"
-        ))
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT source_id, data FROM credential_managed_credential_mutation \
+             ORDER BY created_at, source_id",
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
@@ -533,7 +519,6 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             return Ok(None);
         };
         claimed.validate().map_err(invalid_pending)?;
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -541,7 +526,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             .map_err(storage)?;
         let current = data_at(
             &mut tx,
-            &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+            "SELECT data FROM credential_managed_credential_mutation WHERE source_id = ?1",
             &pending.after_source.id.0,
         )
         .await?;
@@ -557,10 +542,10 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             tx.commit().await.map_err(storage)?;
             return Ok(None);
         }
-        let changed = sqlx::query(&format!(
-            "UPDATE {p}_managed_credential_mutation SET data = ?1 \
-                 WHERE source_id = ?2"
-        ))
+        let changed = sqlx::query(
+            "UPDATE credential_managed_credential_mutation SET data = ?1 \
+                 WHERE source_id = ?2",
+        )
         .bind(serde_json::to_string(&claimed).map_err(storage)?)
         .bind(&pending.after_source.id.0)
         .execute(&mut *tx)
@@ -579,7 +564,6 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<PendingManagedCredentialMutation, CredentialError> {
         pending.validate().map_err(invalid_pending)?;
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -588,7 +572,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let current_source: Option<CredentialSource> = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                "SELECT data FROM credential_source WHERE id = ?1",
                 &pending.after_source.id.0,
             )
             .await?,
@@ -596,14 +580,14 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let current_child: Option<ManagedVaultCredential> = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
+                "SELECT data FROM credential_managed_vault_credential WHERE id = ?1",
                 &pending.after_credential.id,
             )
             .await?,
         )?;
         let current = data_at(
             &mut tx,
-            &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+            "SELECT data FROM credential_managed_credential_mutation WHERE source_id = ?1",
             &pending.after_source.id.0,
         )
         .await?
@@ -616,10 +600,10 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             serde_json::from_str(&current).map_err(storage)?;
         let reclaiming =
             pending.admit_abort(&durable, current_source.as_ref(), current_child.as_ref())?;
-        let changed = sqlx::query(&format!(
-            "UPDATE {p}_managed_credential_mutation SET data = ?1 \
-                 WHERE source_id = ?2"
-        ))
+        let changed = sqlx::query(
+            "UPDATE credential_managed_credential_mutation SET data = ?1 \
+                 WHERE source_id = ?2",
+        )
         .bind(serde_json::to_string(&reclaiming).map_err(storage)?)
         .bind(&pending.after_source.id.0)
         .execute(&mut *tx)
@@ -640,7 +624,6 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<(), CredentialError> {
         pending.validate().map_err(invalid_pending)?;
-        let p = NS;
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -648,7 +631,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             .map_err(storage)?;
         let current = data_at(
             &mut tx,
-            &format!("SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"),
+            "SELECT data FROM credential_managed_credential_mutation WHERE source_id = ?1",
             &pending.after_source.id.0,
         )
         .await?;
@@ -661,7 +644,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let current_source: Option<CredentialSource> = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                "SELECT data FROM credential_source WHERE id = ?1",
                 &pending.after_source.id.0,
             )
             .await?,
@@ -669,16 +652,16 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         let current_child: Option<ManagedVaultCredential> = decode(
             data_at(
                 &mut tx,
-                &format!("SELECT data FROM {p}_managed_vault_credential WHERE id = ?1"),
+                "SELECT data FROM credential_managed_vault_credential WHERE id = ?1",
                 &pending.after_credential.id,
             )
             .await?,
         )?;
         pending.admit_completion(&durable, current_source.as_ref(), current_child.as_ref())?;
-        let changed = sqlx::query(&format!(
-            "DELETE FROM {p}_managed_credential_mutation \
-                 WHERE source_id = ?1"
-        ))
+        let changed = sqlx::query(
+            "DELETE FROM credential_managed_credential_mutation \
+                 WHERE source_id = ?1",
+        )
         .bind(&pending.after_source.id.0)
         .execute(&mut *tx)
         .await
@@ -696,12 +679,11 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         &self,
         event_id: &str,
     ) -> Result<Option<ManagedCredentialRollout>, CredentialError> {
-        let p = NS;
         let mut conn = self.pool.acquire().await.map_err(storage)?;
         decode(
             data_at(
                 &mut conn,
-                &format!("SELECT data FROM {p}_managed_credential_rollout WHERE event_id = ?1"),
+                "SELECT data FROM credential_managed_credential_rollout WHERE event_id = ?1",
                 event_id,
             )
             .await?,
@@ -711,11 +693,8 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
     async fn pending_managed_rollouts(
         &self,
     ) -> Result<Vec<ManagedCredentialRollout>, CredentialError> {
-        let p = NS;
-        let rows = sqlx::query_as::<_, (String, String)>(&format!(
-            "SELECT event_id, data FROM {p}_managed_credential_rollout WHERE delivered=FALSE \
-             ORDER BY created_at, event_id"
-        ))
+        let rows = sqlx::query_as::<_, (String, String)>("SELECT event_id, data FROM credential_managed_credential_rollout WHERE delivered=FALSE \
+             ORDER BY created_at, event_id")
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
@@ -749,10 +728,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
     }
 
     async fn pending_managed_vault_deletions(&self) -> Result<Vec<ManagedVault>, CredentialError> {
-        let p = NS;
-        let rows: Vec<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {p}_managed_vault ORDER BY workspace_id, id"
-        ))
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT data FROM credential_managed_vault ORDER BY workspace_id, id",
+        )
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;

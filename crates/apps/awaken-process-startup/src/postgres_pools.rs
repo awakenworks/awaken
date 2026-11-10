@@ -170,7 +170,8 @@ mod tests {
         let schema = format!("process_pool_{}", std::process::id());
         let tag = schema.clone();
         let admin = PgPool::connect(&base).await.unwrap();
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        // The fixture schema is a fixed prefix plus the integer process ID.
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin)
             .await
             .unwrap();
@@ -315,7 +316,7 @@ mod tests {
         assert!(awaken_executable_environment_catalog::PostgresExecutableEnvironmentRegistrar::with_existing_pool(pool.clone(), environments).await.is_err());
         assert!(awaken_environment_image_build::with_existing_postgres_pool_environment_image_build_store(pool).await.is_err());
         drop(stores);
-        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin)
             .await
             .unwrap();

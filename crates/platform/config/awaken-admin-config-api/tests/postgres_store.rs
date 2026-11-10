@@ -74,13 +74,23 @@ async fn postgres_agent_input_rollback_replay_and_corrupt_key_readback() {
 /// Drop+recreate `schema`, then return a connection URL whose `search_path` is
 /// that schema (via libpq `options`), or `None` for an absent optional fixture.
 async fn schema_url(schema: &str) -> Option<String> {
+    assert!(
+        !schema.is_empty()
+            && !schema.as_bytes()[0].is_ascii_digit()
+            && schema
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
     let url = awaken_reliability_testkit::postgres_fixture_url()?;
     let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
+    // Only the checked fixture schema identifier enters DDL.
     let _ = admin
-        .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+        .execute(sqlx::AssertSqlSafe(format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE"
+        )))
         .await;
     admin
-        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .expect("create schema");
     admin.close().await;

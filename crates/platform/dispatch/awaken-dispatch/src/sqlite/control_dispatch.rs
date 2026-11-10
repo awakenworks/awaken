@@ -55,14 +55,13 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
         let candidate = candidate.clone();
         let now_ms = self.clock.now_ms();
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
         let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let now_ms = durable_i64("dispatch store time", now_ms)?;
-        let bindings_json: Option<Option<String>> = sqlx::query_scalar(&format!(
-            "SELECT credential_bindings FROM {p}_dispatch WHERE run_id = ?1 \
+        let bindings_json: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT credential_bindings FROM runtime_dispatch WHERE run_id = ?1 \
              AND status = 'running' AND lease_owner = ?2 AND lease_epoch = ?3 \
-             AND lease_until > ?4"
-        ))
+             AND lease_until > ?4",
+        )
         .bind(&claim.run_id.0)
         .bind(&claim.owner)
         .bind(claim_epoch)
@@ -90,11 +89,8 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
     ) -> Result<Option<PhysicalAttempt>, DispatchError> {
         let run_id = run_id.clone();
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
         let row: Option<crate::dispatch::PhysicalAttemptStorageRow<String>> =
-            sqlx::query_as(&format!(
-                "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = ?1"
-            ))
+            sqlx::query_as("SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM runtime_dispatch WHERE run_id = ?1")
             .bind(&run_id.0)
             .fetch_optional(&mut *conn)
             .await
@@ -132,12 +128,11 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
         })?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(
             "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id, \
-             cancel_requested FROM {p}_dispatch_completion \
-             WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
-        ))
+             cancel_requested FROM runtime_dispatch_completion \
+             WHERE sequence > ?1 ORDER BY sequence LIMIT ?2",
+        )
         .bind(after_sequence)
         .bind(limit)
         .fetch_all(&mut *conn)
@@ -159,14 +154,12 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
         })?;
         let after = after.map(|id| id.0.clone());
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let clause = if after.is_some() {
-            "WHERE run_id > ?2"
+        let sql = if after.is_some() {
+            "SELECT run_id FROM runtime_dispatch WHERE run_id > ?2 ORDER BY run_id LIMIT ?1"
         } else {
-            ""
+            "SELECT run_id FROM runtime_dispatch ORDER BY run_id LIMIT ?1"
         };
-        let sql = format!("SELECT run_id FROM {p}_dispatch {clause} ORDER BY run_id LIMIT ?1");
-        let mut query = sqlx::query_scalar::<_, String>(&sql).bind(limit);
+        let mut query = sqlx::query_scalar::<_, String>(sql).bind(limit);
         if let Some(after) = after {
             query = query.bind(after);
         }
@@ -238,14 +231,11 @@ impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
             lease_ms,
         )?;
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
         let mut tx = immediate(&mut conn).await?;
-        let row = sqlx::query(&format!(
-            "SELECT request, status, lease_epoch, lease_owner, lease_until, cancel_requested, \
+        let row = sqlx::query("SELECT request, status, lease_epoch, lease_owner, lease_until, cancel_requested, \
              worker_assignment, credential_bindings, credential_receipts, \
              active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing \
-             FROM {p}_dispatch WHERE run_id = ?1"
-        ))
+             FROM runtime_dispatch WHERE run_id = ?1")
         .bind(&expected_original.run_id().0)
         .fetch_optional(&mut *tx)
         .await
@@ -314,10 +304,10 @@ impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
         };
         let epoch = durable_i64("dispatch lease epoch", next.lease_epoch)?;
         let deadline = crate::clock::deadline_millis(self.clock.now_ms(), lease_ms);
-        sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET request = ?1, status = 'reservation_running', \
-             lease_owner = ?2, lease_until = ?3, lease_epoch = ?4 WHERE run_id = ?5"
-        ))
+        sqlx::query(
+            "UPDATE runtime_dispatch SET request = ?1, status = 'reservation_running', \
+             lease_owner = ?2, lease_until = ?3, lease_epoch = ?4 WHERE run_id = ?5",
+        )
         .bind(json(&request)?)
         .bind(owner)
         .bind(crate::clock::db_millis(deadline))
@@ -396,25 +386,23 @@ impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
         let run_id = run_id.clone();
         let session_thread_id = session_thread_id.clone();
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
         let mut tx = immediate(&mut conn).await?;
-        let current: Option<(String, String, i64, i64)> = sqlx::query_as(&format!(
+        let current: Option<(String, String, i64, i64)> = sqlx::query_as(
             "SELECT status, request, lease_epoch, cancel_requested \
-             FROM {p}_dispatch WHERE run_id = ?1"
-        ))
+             FROM runtime_dispatch WHERE run_id = ?1",
+        )
         .bind(&run_id.0)
         .fetch_optional(&mut *tx)
         .await
         .map_err(store_error)?;
         let Some((status, request_json, lease_epoch, cancellation_requested)) = current else {
-            let completed = sqlx::query(&format!(
-                "SELECT 1 FROM {p}_dispatch_completion WHERE run_id = ?1"
-            ))
-            .bind(&run_id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(store_error)?
-            .is_some();
+            let completed =
+                sqlx::query("SELECT 1 FROM runtime_dispatch_completion WHERE run_id = ?1")
+                    .bind(&run_id.0)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(store_error)?
+                    .is_some();
             let outcome = classify_session_run_reservation_activation(
                 None,
                 completed,
@@ -446,11 +434,11 @@ impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
             .activate_reservation()
             .expect("the reservation classifier admitted only Reserved");
             request.session_activity_epoch = Some(session_activity_epoch);
-            let changed = sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET request = ?1, status = ?3, \
+            let changed = sqlx::query(
+                "UPDATE runtime_dispatch SET request = ?1, status = ?3, \
                  lease_owner = NULL, lease_until = NULL WHERE run_id = ?2 \
-                 AND status = 'reserved'"
-            ))
+                 AND status = 'reserved'",
+            )
             .bind(json(&request)?)
             .bind(&run_id.0)
             .bind(crate::dispatch_state_db(next.state))
@@ -471,12 +459,11 @@ impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
     async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let run_id = run_id.clone();
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
         let mut tx = immediate(&mut conn).await?;
-        let current: Option<(String, i64, i64)> = sqlx::query_as(&format!(
-            "SELECT status, lease_epoch, cancel_requested FROM {p}_dispatch \
-             WHERE run_id = ?1"
-        ))
+        let current: Option<(String, i64, i64)> = sqlx::query_as(
+            "SELECT status, lease_epoch, cancel_requested FROM runtime_dispatch \
+             WHERE run_id = ?1",
+        )
         .bind(&run_id.0)
         .fetch_optional(&mut *tx)
         .await
@@ -498,16 +485,15 @@ impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
             tx.commit().await.map_err(store_error)?;
             return Ok(false);
         }
-        let changed = sqlx::query(&format!(
-            "DELETE FROM {p}_dispatch WHERE run_id = ?1 AND status = 'reserved'"
-        ))
-        .bind(&run_id.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?
-        .rows_affected();
+        let changed =
+            sqlx::query("DELETE FROM runtime_dispatch WHERE run_id = ?1 AND status = 'reserved'")
+                .bind(&run_id.0)
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?
+                .rows_affected();
         if changed == 1 {
-            sqlx::query(&format!("DELETE FROM {p}_pending WHERE run_id = ?1"))
+            sqlx::query("DELETE FROM runtime_pending WHERE run_id = ?1")
                 .bind(&run_id.0)
                 .execute(&mut *tx)
                 .await
@@ -585,7 +571,9 @@ impl awaken_dispatch_contract::DispatchControlClaims for SqliteDispatchStore {
         );
         let capabilities = installed_worker_credential_capabilities(&requester)?;
         let selected = {
-            let mut rows = sqlx::query_as::<_, CompatibleCandidateRow>(&sql)
+            // Only fixed runtime identifiers and closed thread/peer predicates
+            // form SQL text. Time and worker facts never enter that text.
+            let mut rows = sqlx::query_as::<_, CompatibleCandidateRow>(sqlx::AssertSqlSafe(sql))
                 .bind(crate::clock::db_millis(now_ms))
                 .fetch(&mut *tx);
             let mut selected = None;

@@ -79,21 +79,17 @@ impl SqliteAdminStore {
     /// Upsert one JSON row by primary key.
     async fn put_row<T: serde::Serialize>(
         &self,
-        table: &str,
-        key_col: &str,
+        sql: &'static str,
         key: &str,
         value: &T,
     ) -> Result<(), ConfigRepositoryError> {
         let data = serde_json::to_string(value).map_err(storage_error)?;
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_{table} ({key_col}, data) VALUES (?1, ?2) \
-             ON CONFLICT({key_col}) DO UPDATE SET data = excluded.data"
-        ))
-        .bind(key)
-        .bind(data)
-        .execute(&self.pool)
-        .await
-        .map_err(storage_error)?;
+        sqlx::query(sql)
+            .bind(key)
+            .bind(data)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?;
         Ok(())
     }
 }
@@ -109,9 +105,9 @@ async fn migrate(pool: &EmbeddedPool) -> Result<(), StoreError> {
     .await
     .map_err(|error| StoreError::Migrate(error.to_string()))?;
     let v1_checksum: Option<String> = if ledger_exists {
-        sqlx::query_scalar(&format!(
-            "SELECT checksum FROM {NS}_schema_migrations WHERE bundle_id = ?1 AND version = 1"
-        ))
+        sqlx::query_scalar(
+            "SELECT checksum FROM admin_schema_migrations WHERE bundle_id = ?1 AND version = 1",
+        )
         .bind(BUNDLE_ID)
         .fetch_optional(pool)
         .await
@@ -134,24 +130,21 @@ async fn migrate(pool: &EmbeddedPool) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// One JSON row of `table` by primary key, deserialized; `None` when absent.
+/// One JSON row selected by static SQL, deserialized; `None` when absent.
 async fn fetch_row<'e, T, E>(
     executor: E,
-    table: &str,
-    key_col: &str,
+    sql: &'static str,
     key: &str,
 ) -> Result<Option<T>, ConfigRepositoryError>
 where
     T: serde::de::DeserializeOwned,
     E: sqlx::SqliteExecutor<'e>,
 {
-    let data: Option<String> = sqlx::query_scalar(&format!(
-        "SELECT data FROM {NS}_{table} WHERE {key_col} = ?1"
-    ))
-    .bind(key)
-    .fetch_optional(executor)
-    .await
-    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+    let data: Option<String> = sqlx::query_scalar(sql)
+        .bind(key)
+        .fetch_optional(executor)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
     data.map(|data| {
         serde_json::from_str(&data)
             .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
@@ -159,16 +152,15 @@ where
     .transpose()
 }
 
-/// Every `data` value of `table` ordered by `id`, deserialized.
+/// Every JSON value selected in the order declared by static SQL.
 async fn fetch_all_rows<T: serde::de::DeserializeOwned>(
     pool: &EmbeddedPool,
-    table: &str,
+    sql: &'static str,
 ) -> Result<Vec<T>, ConfigRepositoryError> {
-    let rows: Vec<String> =
-        sqlx::query_scalar(&format!("SELECT data FROM {NS}_{table} ORDER BY id"))
-            .fetch_all(pool)
-            .await
-            .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
+    let rows: Vec<String> = sqlx::query_scalar(sql)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))?;
     rows.iter()
         .map(|data| {
             serde_json::from_str(data)
@@ -181,13 +173,11 @@ async fn mutation_pending<'e>(
     executor: impl sqlx::SqliteExecutor<'e>,
     id: &str,
 ) -> Result<bool, ConfigRepositoryError> {
-    sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 FROM {NS}_webhook_mutation WHERE id = ?1)"
-    ))
-    .bind(id)
-    .fetch_one(executor)
-    .await
-    .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM admin_webhook_mutation WHERE id = ?1)")
+        .bind(id)
+        .fetch_one(executor)
+        .await
+        .map_err(|error| ConfigRepositoryError::Storage(error.to_string()))
 }
 
 fn storage_error(error: impl std::fmt::Display) -> ConfigRepositoryError {
@@ -211,13 +201,12 @@ impl AgentInputBindingRepository for SqliteAdminStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(input_storage_error)?;
-        let current: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT data FROM {NS}_agent_resource WHERE agent_id = ?1"
-        ))
-        .bind(&key)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(input_storage_error)?;
+        let current: Option<String> =
+            sqlx::query_scalar("SELECT data FROM admin_agent_resource WHERE agent_id = ?1")
+                .bind(&key)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(input_storage_error)?;
         let current = current
             .as_deref()
             .map(serde_json::from_str::<AgentInputConfig>)
@@ -230,16 +219,16 @@ impl AgentInputBindingRepository for SqliteAdminStore {
         };
         let data = serde_json::to_string(plan.config()).map_err(input_storage_error)?;
         let statement = match plan.expected_revision() {
-            None => format!(
-                "INSERT INTO {NS}_agent_resource (agent_id, data) \
+            None => {
+                "INSERT INTO admin_agent_resource (agent_id, data) \
                             SELECT ?1, ?2 WHERE ?3 IS NULL ON CONFLICT(agent_id) DO NOTHING"
-            ),
-            Some(_) => format!(
-                "UPDATE {NS}_agent_resource SET data = ?2 \
+            }
+            Some(_) => {
+                "UPDATE admin_agent_resource SET data = ?2 \
                                WHERE agent_id = ?1 AND json_extract(data, '$.revision') = ?3"
-            ),
+            }
         };
-        let changed = sqlx::query(&statement)
+        let changed = sqlx::query(statement)
             .bind(plan.storage_key())
             .bind(data)
             .bind(plan.expected_revision())
@@ -259,23 +248,26 @@ impl AgentInputBindingRepository for SqliteAdminStore {
         agent_id: &str,
     ) -> Result<Option<AgentInputConfig>, AgentInputRepositoryError> {
         let key = agent_input_storage_key(workspace_id, agent_id)?;
-        fetch_row(&self.pool, "agent_resource", "agent_id", &key)
-            .await
-            .map_err(input_storage_error)?
-            .map(|config| validate_stored_agent_inputs(workspace_id, &key, config))
-            .transpose()
+        fetch_row(
+            &self.pool,
+            "SELECT data FROM admin_agent_resource WHERE agent_id = ?1",
+            &key,
+        )
+        .await
+        .map_err(input_storage_error)?
+        .map(|config| validate_stored_agent_inputs(workspace_id, &key, config))
+        .transpose()
     }
     async fn list_agent_inputs(
         &self,
         workspace_id: &str,
     ) -> Result<Vec<AgentInputConfig>, AgentInputRepositoryError> {
         let prefix = agent_input_workspace_prefix(workspace_id)?;
-        let rows: Vec<(String, String)> = sqlx::query_as(&format!(
-            "SELECT agent_id, data FROM {NS}_agent_resource ORDER BY agent_id"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(input_storage_error)?;
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT agent_id, data FROM admin_agent_resource ORDER BY agent_id")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(input_storage_error)?;
         rows.into_iter()
             .filter(|(key, _)| key.starts_with(&prefix))
             .map(|(key, data)| {
@@ -293,17 +285,27 @@ impl InferenceProfileStore for SqliteAdminStore {
         id: String,
         profile: InferenceProfile,
     ) -> Result<(), ConfigRepositoryError> {
-        self.put_row("inference_profile", "id", &id, &profile).await
+        self.put_row("INSERT INTO admin_inference_profile (id, data) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET data = excluded.data", &id, &profile).await
     }
     async fn get(&self, id: &str) -> Result<Option<InferenceProfile>, ConfigRepositoryError> {
-        fetch_row(&self.pool, "inference_profile", "id", id).await
+        fetch_row(
+            &self.pool,
+            "SELECT data FROM admin_inference_profile WHERE id = ?1",
+            id,
+        )
+        .await
     }
 }
 
 #[async_trait::async_trait]
 impl WebhookStore for SqliteAdminStore {
     async fn get(&self, id: &str) -> Result<Option<WebhookEndpointDef>, ConfigRepositoryError> {
-        fetch_row(&self.pool, "webhook", "id", id).await
+        fetch_row(
+            &self.pool,
+            "SELECT data FROM admin_webhook WHERE id = ?1",
+            id,
+        )
+        .await
     }
     async fn list(
         &self,
@@ -311,11 +313,14 @@ impl WebhookStore for SqliteAdminStore {
     ) -> Result<Vec<WebhookEndpointDef>, ConfigRepositoryError> {
         // Scan the (low-cardinality) webhook rows and filter by owner in Rust —
         // the generic row helpers key by id; workspace lives inside the JSON.
-        Ok(fetch_all_rows::<WebhookEndpointDef>(&self.pool, "webhook")
-            .await?
-            .into_iter()
-            .filter(|definition| definition.workspace_id == workspace_id)
-            .collect())
+        Ok(fetch_all_rows::<WebhookEndpointDef>(
+            &self.pool,
+            "SELECT data FROM admin_webhook ORDER BY id",
+        )
+        .await?
+        .into_iter()
+        .filter(|definition| definition.workspace_id == workspace_id)
+        .collect())
     }
     async fn update_authored(
         &self,
@@ -332,8 +337,12 @@ impl WebhookStore for SqliteAdminStore {
                 patch.id
             )));
         }
-        let Some(mut definition) =
-            fetch_row::<WebhookEndpointDef, _>(&mut *tx, "webhook", "id", &patch.id).await?
+        let Some(mut definition) = fetch_row::<WebhookEndpointDef, _>(
+            &mut *tx,
+            "SELECT data FROM admin_webhook WHERE id = ?1",
+            &patch.id,
+        )
+        .await?
         else {
             return Ok(WebhookAuthoringState::Missing);
         };
@@ -349,7 +358,7 @@ impl WebhookStore for SqliteAdminStore {
             }
         }
         let data = serde_json::to_string(&definition).map_err(storage_error)?;
-        sqlx::query(&format!("UPDATE {NS}_webhook SET data = ?2 WHERE id = ?1"))
+        sqlx::query("UPDATE admin_webhook SET data = ?2 WHERE id = ?1")
             .bind(&patch.id)
             .bind(data)
             .execute(&mut *tx)
@@ -369,8 +378,12 @@ impl WebhookStore for SqliteAdminStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage_error)?;
-        let pending =
-            fetch_row::<WebhookMutationIntent, _>(&mut *tx, "webhook_mutation", "id", id).await?;
+        let pending = fetch_row::<WebhookMutationIntent, _>(
+            &mut *tx,
+            "SELECT data FROM admin_webhook_mutation WHERE id = ?1",
+            id,
+        )
+        .await?;
         if let Some(pending) = pending {
             return if pending == intent {
                 Ok(())
@@ -380,21 +393,24 @@ impl WebhookStore for SqliteAdminStore {
                 )))
             };
         }
-        let current = fetch_row::<WebhookEndpointDef, _>(&mut *tx, "webhook", "id", id).await?;
+        let current = fetch_row::<WebhookEndpointDef, _>(
+            &mut *tx,
+            "SELECT data FROM admin_webhook WHERE id = ?1",
+            id,
+        )
+        .await?;
         if current != intent.before {
             return Err(ConfigRepositoryError::MutationConflict(format!(
                 "webhook {id} changed before mutation admission"
             )));
         }
         let data = serde_json::to_string(&intent).map_err(storage_error)?;
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_webhook_mutation(id,data) VALUES (?1,?2)"
-        ))
-        .bind(id)
-        .bind(data)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage_error)?;
+        sqlx::query("INSERT INTO admin_webhook_mutation(id,data) VALUES (?1,?2)")
+            .bind(id)
+            .bind(data)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_error)?;
         tx.commit().await.map_err(storage_error)
     }
 
@@ -408,9 +424,18 @@ impl WebhookStore for SqliteAdminStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage_error)?;
-        let pending =
-            fetch_row::<WebhookMutationIntent, _>(&mut *tx, "webhook_mutation", "id", id).await?;
-        let current = fetch_row::<WebhookEndpointDef, _>(&mut *tx, "webhook", "id", id).await?;
+        let pending = fetch_row::<WebhookMutationIntent, _>(
+            &mut *tx,
+            "SELECT data FROM admin_webhook_mutation WHERE id = ?1",
+            id,
+        )
+        .await?;
+        let current = fetch_row::<WebhookEndpointDef, _>(
+            &mut *tx,
+            "SELECT data FROM admin_webhook WHERE id = ?1",
+            id,
+        )
+        .await?;
         if pending.as_ref() != Some(intent) || current != intent.before {
             return Err(ConfigRepositoryError::MutationConflict(format!(
                 "webhook {id} no longer matches its pending mutation"
@@ -419,7 +444,7 @@ impl WebhookStore for SqliteAdminStore {
         match &intent.after {
             Some(after) => {
                 let data = serde_json::to_string(after).map_err(storage_error)?;
-                sqlx::query(&format!("INSERT INTO {NS}_webhook(id,data) VALUES (?1,?2)"))
+                sqlx::query("INSERT INTO admin_webhook(id,data) VALUES (?1,?2)")
                     .bind(id)
                     .bind(data)
                     .execute(&mut *tx)
@@ -427,7 +452,7 @@ impl WebhookStore for SqliteAdminStore {
                     .map_err(storage_error)?;
             }
             None => {
-                sqlx::query(&format!("DELETE FROM {NS}_webhook WHERE id = ?1"))
+                sqlx::query("DELETE FROM admin_webhook WHERE id = ?1")
                     .bind(id)
                     .execute(&mut *tx)
                     .await
@@ -438,7 +463,11 @@ impl WebhookStore for SqliteAdminStore {
     }
 
     async fn pending_mutations(&self) -> Result<Vec<WebhookMutationIntent>, ConfigRepositoryError> {
-        fetch_all_rows(&self.pool, "webhook_mutation").await
+        fetch_all_rows(
+            &self.pool,
+            "SELECT data FROM admin_webhook_mutation ORDER BY id",
+        )
+        .await
     }
 
     async fn complete_mutation(
@@ -451,8 +480,12 @@ impl WebhookStore for SqliteAdminStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage_error)?;
-        let Some(pending) =
-            fetch_row::<WebhookMutationIntent, _>(&mut *tx, "webhook_mutation", "id", id).await?
+        let Some(pending) = fetch_row::<WebhookMutationIntent, _>(
+            &mut *tx,
+            "SELECT data FROM admin_webhook_mutation WHERE id = ?1",
+            id,
+        )
+        .await?
         else {
             return Ok(());
         };
@@ -461,7 +494,7 @@ impl WebhookStore for SqliteAdminStore {
                 "webhook {id} has a different pending mutation"
             )));
         }
-        sqlx::query(&format!("DELETE FROM {NS}_webhook_mutation WHERE id = ?1"))
+        sqlx::query("DELETE FROM admin_webhook_mutation WHERE id = ?1")
             .bind(id)
             .execute(&mut *tx)
             .await
@@ -473,11 +506,14 @@ impl WebhookStore for SqliteAdminStore {
     async fn material_refs(
         &self,
     ) -> Result<Vec<awaken_credential_vault::SecretRef>, ConfigRepositoryError> {
-        Ok(fetch_all_rows::<WebhookEndpointDef>(&self.pool, "webhook")
-            .await?
-            .into_iter()
-            .map(|definition| definition.secret_ref)
-            .collect())
+        Ok(fetch_all_rows::<WebhookEndpointDef>(
+            &self.pool,
+            "SELECT data FROM admin_webhook ORDER BY id",
+        )
+        .await?
+        .into_iter()
+        .map(|definition| definition.secret_ref)
+        .collect())
     }
 
     async fn record_delivery(
@@ -496,14 +532,18 @@ impl WebhookStore for SqliteAdminStore {
                 "webhook {id} has a pending material mutation"
             )));
         }
-        let Some(mut definition) =
-            fetch_row::<WebhookEndpointDef, _>(&mut *tx, "webhook", "id", id).await?
+        let Some(mut definition) = fetch_row::<WebhookEndpointDef, _>(
+            &mut *tx,
+            "SELECT data FROM admin_webhook WHERE id = ?1",
+            id,
+        )
+        .await?
         else {
             return Ok(WebhookDeliveryState::Missing);
         };
         let state = definition.record_delivery(outcome, failure_threshold);
         let data = serde_json::to_string(&definition).map_err(storage_error)?;
-        sqlx::query(&format!("UPDATE {NS}_webhook SET data = ?2 WHERE id = ?1"))
+        sqlx::query("UPDATE admin_webhook SET data = ?2 WHERE id = ?1")
             .bind(id)
             .bind(data)
             .execute(&mut *tx)
@@ -983,14 +1023,12 @@ mod tests {
             inputs: Vec::new(),
             revision: i64::MAX,
         };
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_agent_resource(agent_id, data) VALUES (?1, ?2)"
-        ))
-        .bind("workspace\u{1f}agent")
-        .bind(serde_json::to_string(&current).unwrap())
-        .execute(&store.pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO admin_agent_resource(agent_id, data) VALUES (?1, ?2)")
+            .bind("workspace\u{1f}agent")
+            .bind(serde_json::to_string(&current).unwrap())
+            .execute(&store.pool)
+            .await
+            .unwrap();
         store
             .put_agent_inputs("workspace", current.clone())
             .await
@@ -1041,12 +1079,10 @@ mod tests {
     #[tokio::test]
     async fn malformed_profile_row_uses_the_repository_error_channel() {
         let store = SqliteAdminStore::open_in_memory().await.unwrap();
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_inference_profile(id, data) VALUES ('bad', '{{')"
-        ))
-        .execute(&store.pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO admin_inference_profile(id, data) VALUES ('bad', '{')")
+            .execute(&store.pool)
+            .await
+            .unwrap();
         assert!(matches!(
             InferenceProfileStore::get(&store, "bad").await,
             Err(ConfigRepositoryError::Storage(_))
