@@ -393,6 +393,7 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
                 .realization_executor.environments().begin_session_environment_adoption(host.realization_executor.peers(), thread, environment, Some(&intent))
                 .expect("O2 adoption candidate"),
             awaken_session_contract::SessionEnvironmentEffectKind::Rebuild { .. }
+            | awaken_session_contract::SessionEnvironmentEffectKind::Restore { .. }
             | awaken_session_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                 ..
             } => unreachable!("O1/O2 enumerate only direct Create and Adopt effects"),

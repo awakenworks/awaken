@@ -17,6 +17,13 @@ use super::SessionEnvironmentReceiptError;
 pub enum SessionEnvironmentEffectKind {
     Create,
     Adopt,
+    /// Materialize the exact checkpoint target already requested by the root.
+    /// Its logical operation id is reused; the intent's lease records the
+    /// target's first physical admission, independently of later delivery.
+    Restore {
+        operation: Box<super::SessionEnvironmentOperation>,
+        checkpoint_id: String,
+    },
     /// Replace one unavailable substrate after the exact prior binding and
     /// immutable generation have been fenced by recovery policy.
     Rebuild {
@@ -40,6 +47,7 @@ impl SessionEnvironmentEffectKind {
             Self::Create => super::MaterializationKind::Create,
             Self::Adopt => super::MaterializationKind::Adopt,
             Self::Rebuild { .. } => super::MaterializationKind::Rebuild,
+            Self::Restore { .. } => super::MaterializationKind::Restore,
             Self::ResourceProjectionReservation { .. } => {
                 super::MaterializationKind::ReserveResources
             }
@@ -248,6 +256,10 @@ impl SessionEnvironmentEffectIntent {
     }
 
     fn refresh_effect_id(&mut self) {
+        if let SessionEnvironmentEffectKind::Restore { operation, .. } = &self.kind {
+            self.effect_id = operation.effect_id().to_owned();
+            return;
+        }
         self.effect_id = crate::state::stable_fingerprint(&(
             "session-environment-v1",
             &self.session_id,

@@ -185,6 +185,7 @@ pub enum MaterializationKind {
     Create,
     Adopt,
     Rebuild,
+    Restore,
     ReserveResources,
 }
 
@@ -256,8 +257,11 @@ impl SessionEnvironmentInstruction {
     pub const fn requires_fenced_lease(self) -> bool {
         matches!(
             self,
-            Self::Materialize(MaterializationKind::Create | MaterializationKind::Rebuild)
-                | Self::PrepareSourceRelease
+            Self::Materialize(
+                MaterializationKind::Create
+                    | MaterializationKind::Rebuild
+                    | MaterializationKind::Restore
+            ) | Self::PrepareSourceRelease
                 | Self::DisposeSource
                 | Self::Retire
         )
@@ -455,7 +459,11 @@ const fn admit_materialization(
     }
     match kind {
         _ if already_applied => stay(facts),
-        MaterializationKind::Create | MaterializationKind::Rebuild if !is_fenced(facts) => {
+        MaterializationKind::Create
+        | MaterializationKind::Rebuild
+        | MaterializationKind::Restore
+            if !is_fenced(facts) =>
+        {
             Err(SessionEnvironmentRejection::LeaseNotCurrent)
         }
         MaterializationKind::Rebuild => admit_rebuild(facts),
@@ -490,16 +498,19 @@ const fn materialization_admitted(
     use MaterializationKind as K;
     use SessionEnvironmentStep as S;
     match (step, kind) {
+        (S::Restoring, K::Restore) => Ok(()),
         (S::Suspending(_) | S::Hibernated | S::Restoring, _) => {
             Err(SessionEnvironmentRejection::ContinuationInProgress)
         }
         (S::Resident, _) if already_applied => Ok(()),
         (S::Unmaterialized, K::Create | K::Adopt) => Ok(()),
-        (S::Unmaterialized, K::Rebuild | K::ReserveResources) => {
+        (S::Unmaterialized, K::Rebuild | K::Restore | K::ReserveResources) => {
             Err(SessionEnvironmentRejection::RequiresResident)
         }
         (S::Resident, K::Adopt | K::Rebuild | K::ReserveResources) => Ok(()),
-        (S::Resident, K::Create) => Err(SessionEnvironmentRejection::InvalidTransition),
+        (S::Resident, K::Create | K::Restore) => {
+            Err(SessionEnvironmentRejection::InvalidTransition)
+        }
     }
 }
 
@@ -512,6 +523,11 @@ const fn materialized(
 ) -> Outcome {
     if matches!(facts.terminality, SessionTerminality::Terminal) {
         return Err(SessionEnvironmentRejection::Terminal);
+    }
+    // Restore byte/generation/checkpoint observations enter through Restored,
+    // never the ordinary Create/Adopt receipt endpoint.
+    if matches!(kind, MaterializationKind::Restore) {
+        return Err(SessionEnvironmentRejection::InvalidTransition);
     }
     if is_stale(facts) {
         return Err(SessionEnvironmentRejection::LeaseNotCurrent);
@@ -881,9 +897,11 @@ impl SessionEnvironmentFacts {
 
     /// Project the facts for a continuation command (advance or require
     /// resident). The asserted lease is the one whose fence the step's next
-    /// effect presents: a committed quiesce, checkpoint or restore operation
+    /// effect presents: a committed quiesce or checkpoint operation
     /// presents the lease it captured, so a root that no longer authorizes it
-    /// refuses the effect before provider I/O. Every other step acts under the
+    /// refuses the effect before provider I/O. Restore uses current delivery;
+    /// origin/pending separately retains its first physical target assertion.
+    /// Every other step acts under the
     /// root's current lease: source release and disposal lower it (a
     /// higher-epoch successor may finish them), and Resident and Hibernated
     /// commit a new operation under it.
@@ -897,10 +915,7 @@ impl SessionEnvironmentFacts {
                 operation,
                 suspend_phase: SuspendPhase::Quiescing | SuspendPhase::Uploading,
                 ..
-            }
-            | SessionEnvironmentState::Restoring { operation, .. } => {
-                operation.realization.as_ref()
-            }
+            } => operation.realization.as_ref(),
             _ => None,
         };
         Self::project(session, now_unix_ms, asserted)
@@ -1053,6 +1068,7 @@ mod laws {
         S::Restoring,
     ];
 
+    // Preserve the original event coordinates; Restore events are appended.
     const KINDS: [MaterializationKind; 4] = [
         MaterializationKind::Create,
         MaterializationKind::Adopt,
@@ -1090,11 +1106,27 @@ mod laws {
                 already_recorded: true,
             },
             30 => E::LegacyCleanupNormalized,
+            32 => E::AdmitMaterialization {
+                kind: MaterializationKind::Restore,
+                already_applied: false,
+            },
+            33 => E::AdmitMaterialization {
+                kind: MaterializationKind::Restore,
+                already_applied: true,
+            },
+            34 => E::Materialized {
+                kind: MaterializationKind::Restore,
+                already_applied: false,
+            },
+            35 => E::Materialized {
+                kind: MaterializationKind::Restore,
+                already_applied: true,
+            },
             _ => E::EffectFailed,
         }
     }
 
-    pub(super) const EVENT_COUNT: usize = 32;
+    pub(super) const EVENT_COUNT: usize = 36;
 
     /// L1: a terminal Session never re-enters a live Environment step. Outside
     /// the cleanup's Fenced join it only retires to Unmaterialized (by its

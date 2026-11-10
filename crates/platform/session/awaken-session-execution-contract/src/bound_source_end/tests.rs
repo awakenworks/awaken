@@ -71,6 +71,31 @@ fn coordinator_projects_only_the_recorded_end_of_the_materializing_incarnation()
         Some(lease("worker-b", "worker-b:1:boot-b")),
     );
     let unleased = intent(SessionEnvironmentEffectKind::Create, None);
+    // BE7: a restored source's physical creator is the first target grant,
+    // not the historical logical operation's creator. Root-validated intent
+    // provenance is reused by this same Registry observation reader.
+    let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+        "workspace",
+        &"session-1".into(),
+        "restore",
+        &awaken_session_contract::SandboxGeneration::new(
+            &"session-1".into(),
+            1,
+            u64::MAX,
+            "fp",
+            "image",
+        ),
+        0,
+        Some(lease("logical-owner", "old-boot")),
+        None,
+    );
+    let restore = intent(
+        SessionEnvironmentEffectKind::Restore {
+            operation: Box::new(operation),
+            checkpoint_id: "checkpoint".into(),
+        },
+        Some(lease("worker-r", "restore-boot")),
+    );
     let adopt = intent(
         SessionEnvironmentEffectKind::Adopt,
         Some(lease("worker-c", "worker-c:1:boot-c")),
@@ -121,6 +146,12 @@ fn coordinator_projects_only_the_recorded_end_of_the_materializing_incarnation()
             resident(Some(rebuild.effect_id())),
             Some(&facts),
             b,
+        ),
+        (
+            "BE7 restored source",
+            resident(Some(restore.effect_id())),
+            Some(&materialization(Some(&restore), None)),
+            Some(("worker-r".into(), "restore-boot".into())),
         ),
     ] {
         assert_eq!(

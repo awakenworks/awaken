@@ -2394,7 +2394,9 @@ async fn terminal_cleanup_delegates_checkpoint_to_the_one_runtime_effect() {
 // | Rule | committed step | cause | effect |
 // | O1 | ReadyToDispose without its checkpoint | inconsistent evidence | refused (was: silently "no work"); zero effects; root unchanged |
 // | O2 | Uploading whose operation lease the root superseded | stale lease | refused before the checkpoint effect (was: effect attempted) |
-// | O3 | Restoring whose operation lease the root superseded | stale lease | refused before the restore effect (was: effect attempted) |
+// | O3 | legacy Restoring with a superseded operation lease | first target unknown | refused without inventing a creator |
+// | O4 | Restoring without a current delivery lease | no grant | stays pending; zero restore effects |
+// | O5 | tracked Restoring with successor delivery | write-ahead protocol known | restore; logical operation unchanged; first target grant recorded |
 #[tokio::test]
 async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_leases() {
     let superseded = crate::session_resource::SessionRealizationLease {
@@ -2459,10 +2461,42 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
             "workspace",
             &awaken_session_types::SessionId::from("stale-restore"),
             1,
+            Some(superseded.clone()),
+            1_000,
+        )
+        .unwrap();
+    let mut unfenced_restore = hibernated_session("unfenced-restore", 100_000);
+    unfenced_restore
+        .environment
+        .begin_restore(
+            "workspace",
+            &SessionId::from("unfenced-restore"),
+            1,
             Some(superseded),
             1_000,
         )
         .unwrap();
+    unfenced_restore.realization = None;
+    // The new root command marks prospective target admission before a
+    // successor exists. Raw legacy Restoring above intentionally lacks it.
+    let mut tracked = awaken_session_contract::SessionAggregate::try_from(hibernated_session(
+        "tracked-restore",
+        100_000,
+    ))
+    .unwrap();
+    tracked
+        .environment()
+        .begin_restore("workspace", 1_000)
+        .unwrap();
+    let mut tracked = tracked.into_snapshot();
+    let mut delivery = tracked.realization.clone().unwrap();
+    delivery.epoch =
+        awaken_lease_contract::fence::Epoch::successor_of_granted(Some(delivery.epoch))
+            .expect("fixture successor grant")
+            .get();
+    delivery.owner.push_str("-next");
+    delivery.runtime_incarnation.push_str("-next");
+    tracked.realization = Some(delivery);
 
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -2473,6 +2507,8 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
         inconsistent.clone(),
         stale_upload.clone(),
         stale_restore.clone(),
+        unfenced_restore.clone(),
+        tracked.clone(),
     ] {
         create(repo.as_ref(), session).await;
     }
@@ -2505,7 +2541,7 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
             .ensure_environment_resident(&SessionId::from("stale-restore"), 1_000)
             .await
             .is_err(),
-        "O3 refused"
+        "O3 unknown legacy target creator is refused"
     );
     assert_eq!(
         repo.get(&SessionId::from("stale-restore"))
@@ -2514,6 +2550,48 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
             .environment,
         stale_restore.environment,
         "O3 root unchanged"
+    );
+    app.continuations
+        .reconcile_environment_continuation(&SessionId::from("unfenced-restore"), 2_000)
+        .await
+        .expect("O4 remains pending without I/O");
+    assert_eq!(
+        repo.get(&SessionId::from("unfenced-restore"))
+            .await
+            .unwrap()
+            .environment,
+        unfenced_restore.environment,
+        "O4 root unchanged"
+    );
+    let restored = app
+        .continuations
+        .ensure_environment_resident(&SessionId::from("tracked-restore"), 1_000)
+        .await
+        .expect("O5 current root delivery restores");
+    assert_eq!(
+        restored.environment.binding(),
+        Some("restored-binding"),
+        "O5"
+    );
+    let origin = restored
+        .environment_materialization()
+        .unwrap()
+        .origin()
+        .unwrap();
+    assert_eq!(
+        origin.realization(),
+        tracked.realization.as_ref(),
+        "O5 first physical grant"
+    );
+    let awaken_session_contract::SessionEnvironmentState::Restoring { operation, .. } =
+        &tracked.environment
+    else {
+        unreachable!()
+    };
+    assert!(
+        matches!(origin.kind(), awaken_session_contract::SessionEnvironmentEffectKind::Restore { operation: original, .. }
+        if original.as_ref() == operation),
+        "O5 immutable logical operation"
     );
     assert_eq!(
         runtime.checkpoints.load(Ordering::SeqCst),
@@ -2526,7 +2604,11 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
         "O1 no effect"
     );
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 0, "O1 no effect");
-    assert_eq!(runtime.restores.load(Ordering::SeqCst), 0, "O3 no effect");
+    assert_eq!(
+        runtime.restores.load(Ordering::SeqCst),
+        1,
+        "O5 one restore; O3/O4 no extra effect"
+    );
 }
 
 mod backend_takeover;

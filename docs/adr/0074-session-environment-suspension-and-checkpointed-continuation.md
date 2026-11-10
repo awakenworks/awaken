@@ -971,3 +971,32 @@ live-input installation retains its acquisition scope. Response-loss recovery
 cannot change the target while admitting a subsequent effect. Failure tests cross
 target absence/presence, response positions, authority revocation/replacement/
 expiry/renewal, failed start, unchanged bytes and zero inline disposal.
+
+## Amendment 2026-11-10: restored materialization keeps the existing provenance owner
+
+The existing Session materialization `origin/pending` record also owns the
+physical target of a checkpoint restore. A restore's logical operation and
+checkpoint identity remain frozen in `SessionEnvironmentState::Restoring`.
+Before target I/O, the root admits its first physical materialization assertion
+under the current delivery lease. Later delivery may renew or succeed that
+lease without replacing the admitted target assertion. This extends the existing
+effect-intent vocabulary; it does not introduce a second restore identity,
+receipt store, queue or lifecycle authority.
+
+Only the exact restore receipt may move that pending assertion to `origin`, in
+the same Session root CAS that publishes the restored Resident binding. Source
+capture retains its original-generation checks. Restore delivery and terminal
+cleanup distinguish the immutable target's first materialization fence from
+current authority. Cold observation therefore names the new target, and a late
+receipt or superseded delivery cannot redirect its cleanup to another Sandbox.
+Legacy provenance may become known only through this admitted new target, never
+by guessing the old source's creator. The external-Worker activation gate stays
+closed until the complete delivery protocol and scoped recovery tests pass.
+
+A prospective restore marks its admission protocol in this same materialization
+record when Hibernated enters Restoring. The existing strict materialization
+codec makes that a reader floor: an older reader cannot silently discard the
+new protocol while writing a target. Missing pending provenance in an older
+in-flight restore remains unknown. Its exact original live grant may establish
+the same creator; a successor cannot invent a first target assertion. This
+version marker grants no physical effect and adds no second lifecycle state.

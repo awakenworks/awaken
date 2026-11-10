@@ -178,6 +178,30 @@ impl SessionContinuations {
             });
         };
         let reason = match instruction {
+            SessionEnvironmentInstruction::Restore
+                if decision.next() == session.environment.step() =>
+            {
+                let admitted = session
+                    .environment()
+                    .admit_restore_materialization(&owner_scope, now_unix_ms)
+                    .map_err(|error| {
+                        unavailable("session_environment_restore_materialization_refused", error)
+                    })?;
+                if admitted {
+                    "environment-restore-materialization-intent"
+                } else {
+                    let colocated = self.placement.require_colocated()?;
+                    carry_out_effect(
+                        colocated.environment.as_ref(),
+                        colocated.realization_effects.as_ref(),
+                        &owner_scope,
+                        &mut session,
+                        instruction,
+                        now_unix_ms,
+                    )
+                    .await?
+                }
+            }
             _ if decision.next() == session.environment.step() => {
                 let colocated = self.placement.require_colocated()?;
                 carry_out_effect(

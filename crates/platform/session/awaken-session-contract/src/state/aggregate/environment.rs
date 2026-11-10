@@ -11,6 +11,53 @@ use super::{
 };
 
 impl SessionEnvironmentOperations<'_> {
+    /// Admit the existing restoring target through the one materialization
+    /// law. Local continuation and registered delivery derive identical input
+    /// coordinates here; neither maintains another target projection.
+    pub fn admit_restore_materialization(
+        &mut self,
+        owner_scope: &str,
+        now_unix_ms: u64,
+    ) -> Result<bool, crate::state::SessionEnvironmentReceiptError> {
+        let state = &self.aggregate.state;
+        let crate::state::SessionEnvironmentState::Restoring {
+            operation,
+            checkpoint,
+            ..
+        } = &state.environment
+        else {
+            return Err(SessionEnvironmentRejection::WrongStep.into());
+        };
+        let baseline = state
+            .frozen_baseline()
+            .ok_or(crate::state::SessionEnvironmentReceiptError::EnvironmentMismatch)?;
+        let lease = state
+            .realization
+            .clone()
+            .ok_or(crate::state::SessionEnvironmentReceiptError::RealizationStale)?;
+        let facts = state.environment_materialization.as_deref();
+        if facts.is_none_or(|facts| {
+            !facts.tracks_restore_materialization() && facts.pending().is_none()
+        }) && operation.realization() != Some(&lease)
+        {
+            // Older writers could create a target without pending provenance.
+            // Only their exact original live grant proves the same creator;
+            // a successor must not fabricate a new first target assertion.
+            return Err(crate::state::SessionEnvironmentReceiptError::MaterializationUnknown);
+        }
+        let intent = crate::state::SessionEnvironmentEffectIntent::new(
+            state.session_id.clone(),
+            crate::state::SessionEnvironmentEffectKind::Restore {
+                operation: Box::new(operation.clone()),
+                checkpoint_id: checkpoint.id.clone(),
+            },
+            Some(lease),
+        )
+        .for_environment(baseline.environment.config_fingerprint.0.clone());
+        self.admit_environment_effect(owner_scope, &intent, now_unix_ms)
+            .map(|(changed, _)| changed)
+    }
+
     /// Decide one Environment event over this candidate's projected facts.
     /// Every law below applies state only after this decision admitted it, so
     /// the terminality, lease and evidence rules hold on every path.
@@ -94,6 +141,33 @@ impl SessionEnvironmentOperations<'_> {
         let authorization =
             session.authorize_environment_effect(owner_scope, intent, now_unix_ms)?;
         match intent.kind() {
+            crate::state::SessionEnvironmentEffectKind::Restore { .. } => {
+                if matches!(
+                    authorization,
+                    crate::state::SessionEnvironmentEffectAuthorization::AlreadyApplied { .. }
+                ) {
+                    return Ok((false, authorization));
+                }
+                let facts = session.environment_materialization.get_or_insert_with(|| {
+                    Box::new(super::super::SessionEnvironmentMaterialization::fresh())
+                });
+                if let Some(first) = facts.pending() {
+                    if first.kind() != intent.kind()
+                        || first.session_id() != intent.session_id()
+                        || first.source_binding() != intent.source_binding()
+                        || first.environment_fingerprint() != intent.environment_fingerprint()
+                    {
+                        return Err(crate::state::SessionEnvironmentReceiptError::Mismatch);
+                    }
+                    return Ok((false, authorization));
+                }
+                session
+                    .environment_materialization
+                    .as_deref_mut()
+                    .expect("restore materialization was established")
+                    .admit_first(intent);
+                Ok((true, authorization))
+            }
             crate::state::SessionEnvironmentEffectKind::Rebuild { .. } => {
                 // The decision admitted a closed, accessible source under the
                 // current lease, or the replay of a recorded Rebuild. The
@@ -271,6 +345,8 @@ impl SessionEnvironmentOperations<'_> {
         workspace_id: &str,
         now_unix_ms: u64,
     ) -> Result<&SessionEnvironmentOperation, SessionEnvironmentTransitionError> {
+        let new_restore =
+            self.aggregate.state.environment.step() == SessionEnvironmentStep::Hibernated;
         self.decide_intent(
             SessionEnvironmentEvent::RequireResident,
             now_unix_ms,
@@ -288,7 +364,20 @@ impl SessionEnvironmentOperations<'_> {
             activity_epoch,
             self.aggregate.state.realization.clone(),
             now_unix_ms,
-        )
+        )?;
+        if new_restore {
+            self.aggregate
+                .state
+                .environment_materialization
+                .get_or_insert_with(|| {
+                    Box::new(super::super::SessionEnvironmentMaterialization::fresh())
+                })
+                .begin_tracked_restore();
+        }
+        match &self.aggregate.state.environment {
+            super::super::SessionEnvironmentState::Restoring { operation, .. } => Ok(operation),
+            _ => unreachable!("restore data law entered Restoring"),
+        }
     }
 
     /// Apply the canonical SessionEnvironmentState::complete_restore law.
@@ -298,7 +387,41 @@ impl SessionEnvironmentOperations<'_> {
         now_unix_ms: u64,
     ) -> Result<bool, SessionEnvironmentTransitionError> {
         let decision = self.decide(SessionEnvironmentEvent::Restored, now_unix_ms, None)?;
+        let materializing = self
+            .aggregate
+            .state
+            .environment_materialization
+            .as_deref()
+            .and_then(|facts| facts.pending())
+            .cloned();
+        if let Some(intent) = &materializing {
+            match intent.kind() {
+                crate::state::SessionEnvironmentEffectKind::Restore {
+                    operation,
+                    checkpoint_id,
+                } if intent.effect_id() == receipt.effect_id
+                    && operation.effect_id() == receipt.effect_id
+                    && checkpoint_id == &receipt.checkpoint_id => {}
+                _ => return Err(SessionEnvironmentTransitionError::ReceiptMismatch),
+            }
+        } else if self
+            .aggregate
+            .state
+            .environment_materialization
+            .as_deref()
+            .is_some_and(|facts| facts.has_admitted())
+        {
+            return Err(SessionEnvironmentRejection::MaterializationPending.into());
+        }
         let changed = self.aggregate.state.environment.complete_restore(receipt)?;
+        if let Some(intent) = materializing {
+            self.aggregate
+                .state
+                .environment_materialization
+                .as_deref_mut()
+                .expect("restore pending assertion was present")
+                .record_receipt(&intent);
+        }
         self.settled(decision);
         Ok(changed)
     }
