@@ -254,7 +254,10 @@ async fn immutable_agent_reads_do_not_repeat_published_table_loads() {
     );
     // R6 native read retains exact visible publication r2 despite draft r3,
     // with one publication read per needed scope, no secrets or SDK wire change.
-    let rows = reader.execution_evidence("workspace-a").await.unwrap();
+    let rows = reader
+        .execution_evidence("workspace-a", None)
+        .await
+        .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].agent_id, agent.id);
     assert_eq!(rows[0].version, 2);
@@ -263,6 +266,17 @@ async fn immutable_agent_reads_do_not_repeat_published_table_loads() {
     assert_eq!(execution["provisioning"], "provider");
     assert_eq!(execution.as_object().unwrap().len(), 3);
     assert_eq!(probe.take_reads(), expected_reads);
+    // R7 selecting the older Project pin uses that same one lazy publication
+    // view: one owning-scope read, no repeat Agent lookup or platform scan.
+    let pinned = reader
+        .execution_evidence("workspace-a", Some((&agent.id, 1)))
+        .await
+        .unwrap();
+    assert_eq!(pinned[0].version, 1);
+    assert_eq!(
+        probe.take_reads(),
+        BTreeMap::from([("workspace-a".into(), 1)])
+    );
     assert!(
         serde_json::to_value(&exact)
             .unwrap()

@@ -381,3 +381,92 @@ async fn execution_evidence_native_read_is_scoped_immutable_and_has_no_effects()
         agent.version
     );
 }
+
+#[tokio::test]
+async fn execution_evidence_can_select_a_frozen_project_publication() {
+    // E graph: C1 current/older exact publication; C2 owner/foreign/reserved;
+    // C3 complete/missing/invalid selector. E1 exact version remains readable
+    // after a new publication; E2 foreign/missing gives no evidence; E3 partial
+    // zero or unknown selector refuses before reads. All rules are GET-only and leave
+    // the existing publication revision and cascade untouched.
+    let temp = tempfile::tempdir().unwrap();
+    let (plane, _) = plane_with_catalog(temp.path().join("config.sqlite").to_str().unwrap()).await;
+    let repository = Arc::new(ConfigPlaneManagedAgentRepository::new(
+        plane.clone(),
+        "workspace-a",
+        awaken_time::system_clock(),
+    ));
+    let old = repository
+        .create("workspace-a", create_params("pinned project"))
+        .await
+        .unwrap();
+    let current = repository
+        .update(
+            "workspace-a",
+            &old.id,
+            super::test_support::update_params(old.version),
+        )
+        .await
+        .unwrap();
+    assert!(current.version > old.version);
+    let cascade = Arc::new(CascadeProbe::default());
+    let app = crate::config_routes::configuration_lifecycle_router(Arc::new(
+        AgentRegistryState::from_repository(repository.clone())
+            .with_archive_cascade(cascade.clone()),
+    ));
+    for workspace in ["workspace-a", "workspace-b", RESERVED_ADMIN_SCOPE] {
+        for version in [old.version, current.version, current.version + 100] {
+            let response = app
+                .clone()
+                .layer(Extension(WorkspaceScope(workspace.into())))
+                .oneshot(
+                    Request::get(format!(
+                        "/v1/awaken/agents/execution-evidence?agent_id={}&version={version}",
+                        old.id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            if workspace == "workspace-a" && version <= current.version {
+                assert_eq!(body["data"].as_array().unwrap().len(), 1);
+                assert_eq!(body["data"][0]["agent_id"], old.id);
+                assert_eq!(body["data"][0]["version"], version);
+                assert_eq!(body["data"][0]["execution"]["backend_ref"], "genai");
+            } else {
+                assert!(body["data"].as_array().unwrap().is_empty());
+            }
+        }
+    }
+    for query in [
+        format!("agent_id={}", old.id),
+        "version=1".into(),
+        format!("agent_id={}&version=0", old.id),
+        format!("agent_id={}&version=1&unknown_revision=2", old.id),
+    ] {
+        let response = app
+            .clone()
+            .layer(Extension(WorkspaceScope("workspace-a".into())))
+            .oneshot(
+                Request::get(format!("/v1/awaken/agents/execution-evidence?{query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    assert!(cascade.calls.lock().unwrap().is_empty());
+    assert_eq!(
+        repository
+            .retrieve("workspace-a", &old.id, None)
+            .await
+            .unwrap()
+            .version,
+        current.version
+    );
+}

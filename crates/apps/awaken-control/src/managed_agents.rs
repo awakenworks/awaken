@@ -229,6 +229,7 @@ impl ConfigPlaneManagedAgentRepository {
         workspace_id: &str,
         id: &str,
         requested_version: Option<u64>,
+        retained_publications: Option<&ManagedAgentPublications>,
     ) -> Result<Vec<Agent>, ManagedAgentError> {
         if workspace_id == RESERVED_ADMIN_SCOPE {
             return Err(ManagedAgentError::NotFound);
@@ -248,7 +249,13 @@ impl ConfigPlaneManagedAgentRepository {
         if revisions.is_empty() {
             return Err(ManagedAgentError::NotFound);
         }
-        let publications = self.publications_for_read(workspace_id).await?;
+        let owned_publications;
+        let publications = if let Some(publications) = retained_publications {
+            publications
+        } else {
+            owned_publications = self.publications_for_read(workspace_id).await?;
+            &owned_publications
+        };
         let latest_revision = revisions.iter().map(|revision| revision.revision).max();
         let mut visible = Vec::new();
         for revision in revisions.into_iter().filter(|revision| {
@@ -261,7 +268,7 @@ impl ConfigPlaneManagedAgentRepository {
                 published,
                 Some(revision.revision) == latest_revision,
             ) {
-                visible.push(self.project_current(&publications, revision).await?);
+                visible.push(self.project_current(publications, revision).await?);
             }
         }
         if visible.is_empty() {
@@ -429,7 +436,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
     ) -> Result<Agent, ManagedAgentError> {
         if let Some(version) = version {
             return self
-                .versions_for_read(workspace_id, id, Some(version))
+                .versions_for_read(workspace_id, id, Some(version), None)
                 .await?
                 .into_iter()
                 .next()
@@ -462,6 +469,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
     async fn execution_evidence(
         &self,
         workspace_id: &str,
+        publication: Option<(&str, u64)>,
     ) -> Result<Vec<awaken_protocol_managed::AgentExecutionEvidence>, ManagedAgentError> {
         use awaken_protocol_managed::{
             AgentExecution, AgentExecutionEvidence, AgentModelProvisioning,
@@ -471,9 +479,19 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             return Ok(Vec::new());
         }
         let publications = self.publications_for_read(workspace_id).await?;
-        let agents = self
-            .list_projected(workspace_id, &AgentListParams::default(), &publications)
-            .await?;
+        let agents = if let Some((id, version)) = publication {
+            match self
+                .versions_for_read(workspace_id, id, Some(version), Some(&publications))
+                .await
+            {
+                Ok(agents) => agents,
+                Err(ManagedAgentError::NotFound) => Vec::new(),
+                Err(error) => return Err(error),
+            }
+        } else {
+            self.list_projected(workspace_id, &AgentListParams::default(), &publications)
+                .await?
+        };
         let mut evidence = Vec::with_capacity(agents.len());
         for agent in agents {
             let execution = publications
@@ -754,7 +772,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         workspace_id: &str,
         id: &str,
     ) -> Result<Vec<Agent>, ManagedAgentError> {
-        self.versions_for_read(workspace_id, id, None).await
+        self.versions_for_read(workspace_id, id, None, None).await
     }
 }
 
