@@ -187,10 +187,10 @@ pub use session_realization::{
     FrozenSessionProjection, ObservedSessionRealizationLease, ProjectionReceiptRefusal,
     RealizationFailureOutcome, RenewSessionRealization,
     SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE, SESSION_REALIZATION_NOT_READY_CODE,
-    STALE_PROJECTION_CODE, SessionCheckpointArtifactControl, SessionFileReadAuthorization,
-    SessionPreparationAssignment, SessionPreparationControl, SessionPreparationPlacement,
-    SessionProjectionInstallMode, SessionProjectionSynchronizer, SessionRealizationAction,
-    SessionRealizationControl, SessionRealizationControlDisposition,
+    STALE_PROJECTION_CODE, SessionCheckpointArtifactControl, SessionContinuationReceipt,
+    SessionFileReadAuthorization, SessionPreparationAssignment, SessionPreparationControl,
+    SessionPreparationPlacement, SessionProjectionInstallMode, SessionProjectionSynchronizer,
+    SessionRealizationAction, SessionRealizationControl, SessionRealizationControlDisposition,
     SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationDriveError,
     SessionRealizationEffectFailure, SessionRealizationExclusionDecision,
     SessionRealizationLeaseReceipt, SessionRealizationPermit, SessionRealizationTarget,
@@ -230,3 +230,7 @@ mod mcp_attachment {
         )
     }
 }
+
+pub use session::continuation::execute_environment_provider_continuation;
+
+pub use session_realization::realization_generation_set_authorizes;

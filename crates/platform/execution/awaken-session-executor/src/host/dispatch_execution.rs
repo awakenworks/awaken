@@ -473,6 +473,54 @@ impl ClaimedRunWorkers for ClaimedRunAssembly {
 
 #[async_trait::async_trait]
 impl SessionProjectionExecution for crate::RunAssembly {
+    async fn execute_environment_continuation(
+        &self,
+        permit: &awaken_session_execution_contract::SessionRealizationPermit,
+        projection: &FrozenSessionProjection,
+        lease: &crate::session_resource::SessionRealizationLease,
+        instruction: awaken_session_contract::SessionEnvironmentInstruction,
+    ) -> Result<
+        awaken_session_execution_contract::SessionContinuationReceipt,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        if instruction == awaken_session_contract::SessionEnvironmentInstruction::Quiesce {
+            let (operation, effect_id, binding, generation) =
+                projection.environment.suspend_source().ok_or_else(|| {
+                    awaken_runtime_contract::runs::RunError::unavailable("quiescence source moved")
+                })?;
+            let mcp = awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet {
+                attachments: projection.mcp.clone(),
+                ..Default::default()
+            }
+            .active_generation_refs(permit.session_id())
+            .map_err(|error| {
+                awaken_runtime_contract::runs::RunError::unavailable(error.to_string())
+            })?;
+            return super::session::quiescence::quiesce_environment_continuation_with_permit(
+                self,
+                permit.session_id().as_str(),
+                operation,
+                effect_id,
+                binding,
+                generation,
+                &mcp,
+                permit,
+            )
+            .await
+            .map(awaken_session_execution_contract::SessionContinuationReceipt::Quiesced);
+        }
+        awaken_session_execution_contract::execute_environment_provider_continuation(
+            &projection.workspace_id,
+            permit.session_id(),
+            &projection.environment,
+            &projection.baseline.environment.idle_retention,
+            Some(lease),
+            instruction,
+            self.realization_executor.as_ref(),
+        )
+        .await
+    }
+
     fn sessions(&self) -> crate::session_realizations::SessionRealizations {
         // Projection execution consumes the constructor-bound view of the same
         // original installed Sessions as realization, publication, staging, and terminal cleanup.

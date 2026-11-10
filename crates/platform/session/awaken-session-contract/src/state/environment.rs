@@ -427,6 +427,28 @@ impl SessionEnvironmentState {
         if intent.environment_fingerprint() != Some(expected_environment_fingerprint) {
             return Err(SessionEnvironmentReceiptError::EnvironmentMismatch);
         }
+        if let (
+            Self::Restoring {
+                operation,
+                checkpoint,
+                ..
+            },
+            SessionEnvironmentEffectKind::Restore {
+                operation: asserted,
+                checkpoint_id,
+            },
+        ) = (self, intent.kind())
+        {
+            if operation == asserted.as_ref()
+                && checkpoint.id == *checkpoint_id
+                && intent.source_binding().is_none()
+            {
+                return Ok(SessionEnvironmentEffectAuthorization::Authorized {
+                    intent: Box::new(intent.clone()),
+                });
+            }
+            return Err(SessionEnvironmentReceiptError::Mismatch);
+        }
         if matches!(
             self,
             Self::Suspending { .. } | Self::Hibernated { .. } | Self::Restoring { .. }

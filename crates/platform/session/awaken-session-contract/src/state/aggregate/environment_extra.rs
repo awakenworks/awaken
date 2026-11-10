@@ -21,6 +21,13 @@ impl SessionEnvironmentOperations<'_> {
             crate::state::SessionEnvironmentFacts::project(&self.aggregate.state, now, None),
             crate::state::SessionEnvironmentEvent::ExpiredCheckpointDeleted,
         )?;
+        self.aggregate
+            .state
+            .environment_materialization
+            .get_or_insert_with(|| {
+                Box::new(crate::state::SessionEnvironmentMaterialization::fresh())
+            })
+            .retire_expired_generation();
         self.aggregate.state.environment = SessionEnvironmentState::Unmaterialized;
         Ok(true)
     }

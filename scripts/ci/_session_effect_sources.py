@@ -119,6 +119,8 @@ REQUIRED = {
         "publish_mcp_generation_receipt",
         "drain_mcp_generation_receipt",
         "DelegatedRunSnapshot",
+        "McpProjectionEffectKind::Publish",
+        "McpProjectionEffectKind::Drain",
     ),
     SESSION_RUNTIME_ROLES: (
         "prepare_terminal_cleanup_for_effect",
@@ -202,8 +204,6 @@ REQUIRED = {
     SESSION_REALIZATION_DRIVER: (
         "publish_mcp_generation_receipt",
         "drain_mcp_generation_receipt",
-        "McpProjectionEffectKind::Publish",
-        "McpProjectionEffectKind::Drain",
     ),
     SESSION_REALIZATION: (
         "SessionTerminalCleanupPreparationAuthorization",

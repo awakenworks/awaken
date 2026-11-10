@@ -4369,6 +4369,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     Arc::new(RecordingEnvironmentSource::default()),
                 );
                 let ack = awaken_session_execution_contract::AcknowledgeSessionRealization {
+                    continuation: None,
                     session_id: SessionId::from(&id),
                     lease: directive.authority.lease,
                     published: publish,
@@ -4485,6 +4486,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     .realizations
                     .acknowledge_session_realization(
                         awaken_session_execution_contract::AcknowledgeSessionRealization {
+                            continuation: None,
                             session_id: id.into(),
                             lease: directive.authority.lease,
                             published: publish,
@@ -4494,7 +4496,9 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     .await
                     .unwrap()
             }
-            Action::Complete => unreachable!(),
+            Action::Complete | Action::Continue { .. } | Action::Released => {
+                unreachable!("MCP heartbeat fixture has no continuation")
+            }
         };
     }
     assert!(
@@ -4695,6 +4699,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                 .realizations
                 .acknowledge_session_realization(
                     awaken_session_execution_contract::AcknowledgeSessionRealization {
+                        continuation: None,
                         session_id: SessionId::from(&id),
                         lease,
                         published,
@@ -4730,6 +4735,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         create(repo.as_ref(), original).await;
         let before = repo.get(&SessionId::from(&id)).await.unwrap();
         let command = awaken_session_execution_contract::AcknowledgeSessionRealization {
+            continuation: None,
             session_id: SessionId::from(&id),
             lease,
             published: vec![generation.clone()],
@@ -4773,6 +4779,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         awaken_session_execution_contract::SessionRealizationControl::acknowledge_session_realization(
             application.realizations.as_ref(),
             awaken_session_execution_contract::AcknowledgeSessionRealization {
+continuation: None,
                 session_id: "ack-exact".into(),
                 lease: exact_lease,
                 published: vec![exact_generation],
@@ -4807,6 +4814,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         awaken_session_execution_contract::SessionRealizationControl::acknowledge_session_realization(
             application.realizations.as_ref(),
             awaken_session_execution_contract::AcknowledgeSessionRealization {
+continuation: None,
                 session_id: "ack-renewed".into(),
                 lease: predecessor_lease,
                 published: vec![predecessor],
@@ -4842,6 +4850,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         awaken_session_execution_contract::SessionRealizationControl::acknowledge_session_realization(
             application.realizations.as_ref(),
             awaken_session_execution_contract::AcknowledgeSessionRealization {
+continuation: None,
                 session_id: "ack-replaced".into(),
                 lease: replacement_lease,
                 published: vec![wrong_generation],
@@ -4970,6 +4979,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
     awaken_session_execution_contract::SessionRealizationControl::acknowledge_session_realization(
         application.realizations.as_ref(),
         awaken_session_execution_contract::AcknowledgeSessionRealization {
+            continuation: None,
             session_id: "running-realization".into(),
             lease: lease.clone(),
             published: Vec::new(),

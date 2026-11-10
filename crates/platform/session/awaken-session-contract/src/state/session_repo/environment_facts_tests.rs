@@ -306,10 +306,10 @@ fn placed(
 #[test]
 fn continuation_topology_follows_the_frozen_placement_and_retention() {
     // P1 Coordinator-local placement + checkpoint-and-release => supported;
-    // P2 external Worker + checkpoint-and-release => unsupported (no
-    // claim-fenced continuation transport); P3 external Worker + default
-    // retention => supported; P4 no frozen baseline => supported (the guard
-    // reads only a frozen topology).
+    // P2 registered cloud Worker + checkpoint-and-release => supported by
+    // claim-fenced continuation; P3 external Worker + default retention =>
+    // supported; P4 no frozen baseline => supported; P5 self-hosted Worker
+    // + checkpoint-and-release => refused (WorkQueue has no continuation claim).
     let local = placed(
         crate::state::SessionRuntimePlacement::Local,
         checkpoint_and_release(),
@@ -322,12 +322,18 @@ fn continuation_topology_follows_the_frozen_placement_and_retention() {
         crate::state::SessionRuntimePlacement::Worker,
         crate::state::SandboxIdleRetentionPolicy::default(),
     );
+    let mut self_hosted = external.clone();
+    let crate::state::SessionBaselineState::Frozen(baseline) = &mut self_hosted.baseline else {
+        unreachable!("fixture baseline is frozen")
+    };
+    baseline.environment.self_hosted = true;
     let preparing = mutation_tests::session("facts", SessionRevision(1));
     for (rule, session, expected) in [
         ("P1", &local, true),
-        ("P2", &external, false),
+        ("P2", &external, true),
         ("P3", &external_default, true),
         ("P4", &preparing, true),
+        ("P5", &self_hosted, false),
     ] {
         assert_eq!(
             facts(session, NOW, None).continuation_topology_supported,
@@ -387,12 +393,13 @@ fn suspend_memory_admission_reads_the_resident_binding_evidence() {
 
 #[test]
 fn continuation_facts_assert_the_lease_the_next_effect_presents() {
-    // C1 Quiescing/Uploading/Restoring assert their operation's captured lease:
+    // C1 Quiescing/Uploading assert their operation's captured lease:
     // the same live lease is Fenced, a superseded one is Stale; C2 a legacy
     // operation without a lease acts under the root lease (Fenced); C3
     // ReadyToDispose and Disposing act under the root lease, so a higher-epoch
     // successor still finishes the release; C4 Resident and Hibernated act
-    // under the root lease.
+    // under the root lease; C5 Restore uses current delivery while its
+    // immutable target's first materialization stays in origin/pending.
     let operation = |realization| SessionEnvironmentOperation {
         effect_id: "suspend".into(),
         activity_epoch: 1,
@@ -432,9 +439,9 @@ fn continuation_facts_assert_the_lease_the_next_effect_presents() {
             RealizationLeaseStanding::Stale,
         ),
         (
-            "C1 restoring superseded",
+            "C5 restoring successor delivery",
             restoring(Some(superseded.clone())),
-            RealizationLeaseStanding::Stale,
+            RealizationLeaseStanding::Fenced,
         ),
         (
             "C1 restoring current",
@@ -639,6 +646,272 @@ fn aggregate_laws_apply_only_what_the_environment_decision_admits() {
         "W10"
     );
     assert_eq!(root_, before, "W10 unchanged");
+}
+
+#[test]
+fn restore_target_admission_preserves_first_materialization_across_delivery_and_receipt() {
+    // Causes: C1 provenance legacy/fresh/known; C2 exact restoring operation,
+    // checkpoint and frozen Environment; C3 first/current-successor delivery;
+    // C4 receipt effect/generation/checkpoint/binding exact or mismatched.
+    // Effects: RP1 C1+C2+first -> pending target before I/O; RP2 successor ->
+    // same pending original assertion, no retarget; RP3 any !C4 -> unchanged;
+    // RP4 exact receipt -> Resident+origin in one root mutation; RP5 cold codec
+    // reads the new target's first fence, never the disposed source's fence.
+    use crate::state::{
+        RestoreReceipt, SessionAggregate, SessionEnvironmentEffectIntent as Intent,
+        SessionEnvironmentEffectKind as Kind, SessionEnvironmentMaterialization as Materialization,
+    };
+    for provenance in ["legacy", "fresh", "known"] {
+        let mut initial = root(Some(checkpoint_and_release()));
+        initial.execution = crate::state::SessionExecutionState::Idle;
+        let fingerprint = initial
+            .frozen_baseline()
+            .unwrap()
+            .environment
+            .config_fingerprint
+            .0
+            .clone();
+        let generation =
+            SandboxGeneration::new(&initial.session_id, 1, NOW + 10_000, &fingerprint, "image");
+        let mut checkpoint = checkpoint(NOW + 10_000);
+        checkpoint.environment_fingerprint = fingerprint.clone();
+        let first = lease(NOW + 1_000);
+        let operation = SessionEnvironmentOperation::new(
+            "w",
+            &initial.session_id,
+            "restore",
+            &generation,
+            1,
+            Some(first.clone()),
+            Some(&checkpoint),
+        );
+        let source = Intent::new(
+            initial.session_id.clone(),
+            Kind::Create,
+            Some(first.clone()),
+        )
+        .for_environment(fingerprint.clone());
+        initial.realization = Some(first.clone());
+        initial.environment = SessionEnvironmentState::Restoring {
+            operation: operation.clone(),
+            checkpoint: checkpoint.clone(),
+            generation: generation.clone(),
+        };
+        initial.environment_materialization = match provenance {
+            "legacy" => None,
+            "fresh" => Some(Box::new(Materialization::fresh())),
+            _ => Some(Box::new(
+                serde_json::from_value(serde_json::json!({"origin": source})).unwrap(),
+            )),
+        };
+        // RP7: a new logical restore records its reader/admission floor in
+        // the SAME intent mutation. Legacy in-flight records remain distinct;
+        // neither a silent marker drop nor an unsupported version is valid.
+        let mut hibernated = initial.clone();
+        hibernated.environment = SessionEnvironmentState::Hibernated {
+            checkpoint: checkpoint.clone(),
+            generation: generation.clone(),
+        };
+        let mut prospective = SessionAggregate::try_from(hibernated.clone()).unwrap();
+        prospective.environment().begin_restore("w", NOW).unwrap();
+        let tracked = prospective.snapshot();
+        assert!(
+            tracked
+                .environment_materialization
+                .as_deref()
+                .unwrap()
+                .tracks_restore_materialization(),
+            "RP7"
+        );
+        Materialization::validate_replacement(&hibernated, tracked).unwrap();
+        let mut bad = tracked.clone();
+        let mut wire =
+            serde_json::to_value(bad.environment_materialization.as_deref().unwrap()).unwrap();
+        wire["restore_admission_version"] = 2.into();
+        bad.environment_materialization =
+            Some(Box::new(serde_json::from_value(wire.clone()).unwrap()));
+        assert!(
+            Materialization::validate_for(&bad).is_err(),
+            "RP7 unsupported version"
+        );
+        wire.as_object_mut()
+            .unwrap()
+            .remove("restore_admission_version");
+        bad.environment_materialization = Some(Box::new(serde_json::from_value(wire).unwrap()));
+        assert!(
+            Materialization::validate_replacement(tracked, &bad).is_err(),
+            "RP7 no reader floor drop"
+        );
+        let mut aggregate = SessionAggregate::try_from(initial.clone()).unwrap();
+        assert!(
+            aggregate
+                .environment()
+                .admit_restore_materialization("w", NOW)
+                .unwrap(),
+            "RP1 {provenance}"
+        );
+        let admitted = aggregate.snapshot().clone();
+        Materialization::validate_replacement(&initial, &admitted).unwrap();
+        Materialization::validate_for(&admitted).unwrap();
+        let target = admitted
+            .environment_materialization
+            .as_deref()
+            .unwrap()
+            .pending()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            target.effect_id(),
+            operation.effect_id(),
+            "RP1 logical identity reused"
+        );
+        assert_eq!(
+            target.realization(),
+            Some(&first),
+            "RP1 first physical grant"
+        );
+        assert_ne!(target.effect_id(), source.effect_id(), "RP1 new target");
+
+        // RP6: C2 is a conjunction. Independently change each coordinate or
+        // delivery lease; every refusal leaves the admitted target unchanged.
+        for axis in 0..5 {
+            let wrong = Intent::new(
+                if axis == 2 {
+                    crate::state::SessionId::from("other")
+                } else {
+                    admitted.session_id.clone()
+                },
+                Kind::Restore {
+                    operation: Box::new(if axis == 0 {
+                        SessionEnvironmentOperation::new(
+                            "other",
+                            &admitted.session_id,
+                            "restore",
+                            &generation,
+                            1,
+                            Some(first.clone()),
+                            Some(&checkpoint),
+                        )
+                    } else {
+                        operation.clone()
+                    }),
+                    checkpoint_id: if axis == 1 {
+                        "other".into()
+                    } else {
+                        checkpoint.id.clone()
+                    },
+                },
+                Some(if axis == 3 {
+                    superseded_lease()
+                } else {
+                    first.clone()
+                }),
+            )
+            .for_environment(if axis == 4 {
+                "other".into()
+            } else {
+                fingerprint.clone()
+            });
+            let before = aggregate.snapshot().clone();
+            assert!(
+                aggregate
+                    .environment()
+                    .admit_environment_effect("w", &wrong, NOW)
+                    .is_err(),
+                "RP6 axis {axis}"
+            );
+            assert_eq!(aggregate.snapshot(), &before, "RP6 no mutation");
+        }
+        let mut wrong_phase = admitted.clone();
+        wrong_phase.environment = resident(None, true);
+        assert!(
+            Materialization::validate_for(&wrong_phase).is_err(),
+            "RP6 pending target needs Restoring"
+        );
+
+        let mut successor_root = admitted.clone();
+        successor_root.realization = Some(crate::state::SessionRealizationLease {
+            owner: "worker-b".into(),
+            runtime_incarnation: "boot-b".into(),
+            epoch: awaken_lease_contract::fence::Epoch::successor_of_granted(Some(first.epoch))
+                .expect("fixture successor grant")
+                .get(),
+            expires_at_unix_ms: NOW + 2_000,
+        });
+        let mut successor = SessionAggregate::try_from(successor_root).unwrap();
+        assert!(
+            !successor
+                .environment()
+                .admit_restore_materialization("w", NOW)
+                .unwrap(),
+            "RP2"
+        );
+        assert_eq!(
+            successor
+                .environment_materialization
+                .as_deref()
+                .unwrap()
+                .pending(),
+            Some(&target),
+            "RP2"
+        );
+
+        let receipt = RestoreReceipt {
+            effect_id: operation.effect_id().into(),
+            generation_id: generation.id().into(),
+            checkpoint_id: checkpoint.id.clone(),
+            binding: "restored-binding".into(),
+        };
+        for axis in 0..4 {
+            let mut wrong = receipt.clone();
+            match axis {
+                0 => wrong.effect_id = "other".into(),
+                1 => wrong.generation_id = "other".into(),
+                2 => wrong.checkpoint_id = "other".into(),
+                _ => wrong.binding.clear(),
+            }
+            let before = successor.snapshot().clone();
+            assert!(
+                successor
+                    .environment()
+                    .complete_restore(&wrong, NOW)
+                    .is_err(),
+                "RP3 axis {axis}"
+            );
+            assert_eq!(successor.snapshot(), &before, "RP3 no partial mutation");
+        }
+        let before = successor.snapshot().clone();
+        assert!(
+            successor
+                .environment()
+                .complete_restore(&receipt, NOW)
+                .unwrap(),
+            "RP4"
+        );
+        let landed = successor.snapshot();
+        assert_eq!(
+            landed.environment.binding(),
+            Some("restored-binding"),
+            "RP4"
+        );
+        let materialization = landed.environment_materialization.as_deref().unwrap();
+        assert_eq!(materialization.origin(), Some(&target), "RP4");
+        assert!(materialization.pending().is_none(), "RP4");
+        Materialization::validate_replacement(&before, landed).unwrap();
+        Materialization::validate_for(landed).unwrap();
+        let cold: PersistedSession =
+            serde_json::from_slice(&serde_json::to_vec(landed).unwrap()).unwrap();
+        let fence = Materialization::materializing_effect_fence(
+            cold.environment_materialization.as_deref(),
+            cold.session_id.as_str(),
+        )
+        .unwrap();
+        assert_eq!(
+            fence,
+            first.sandbox_effect_fence(operation.effect_id()).unwrap(),
+            "RP5"
+        );
+    }
 }
 
 #[test]

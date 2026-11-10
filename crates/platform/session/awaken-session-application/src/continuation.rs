@@ -16,7 +16,6 @@ use awaken_session_contract::{
     SessionEnvironmentInstruction, SessionEnvironmentRejection, SessionEnvironmentStep,
     SessionEnvironmentTransitionError, transition_environment,
 };
-use awaken_session_execution_contract::EnvironmentRuntime;
 
 use std::sync::Arc;
 
@@ -178,11 +177,88 @@ impl SessionContinuations {
             });
         };
         let reason = match instruction {
+            _ if decision.next() == session.environment.step()
+                && session.requires_external_environment_owner() =>
+            {
+                // The committed root/index wakes its registered owner. The
+                // Coordinator never invokes local physical effects for it.
+                return Ok(ContinuationStep {
+                    owner_scope,
+                    root: session.into_snapshot(),
+                    advanced: false,
+                });
+            }
+            SessionEnvironmentInstruction::Restore
+                if decision.next() == session.environment.step() =>
+            {
+                let tracked = session
+                    .environment_materialization()
+                    .is_some_and(|facts| facts.tracks_restore_materialization());
+                let live = session.realization.as_ref().is_some_and(|lease| {
+                    use awaken_time::WallClockExt as _;
+                    awaken_session_configuration_contract::resource::realization_lease_is_live_at(
+                        lease.expires_at_unix_ms,
+                        self.realizations.clock.now_ms(),
+                    )
+                });
+                let unbound = session
+                    .environment_materialization()
+                    .is_some_and(|facts| facts.target_not_admitted(&session.environment));
+                let reassigned = tracked && (unbound || !live);
+                if reassigned {
+                    use awaken_time::WallClockExt as _;
+                    let lease_now = self.realizations.clock.now_ms();
+                    let expiry = lease_now
+                        .checked_add(crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS)
+                        .ok_or_else(|| {
+                            unavailable(
+                                "session_environment_restore_assignment_refused",
+                                "lease expiry overflow",
+                            )
+                        })?;
+                    session
+                        .assignment()
+                        .begin(
+                            awaken_session_contract::SessionRealizationBeginRequest::new(
+                                &owner_scope,
+                                self.realizations.local_realization_owner(),
+                                self.realizations.runtime_incarnation(),
+                                expiry,
+                                false,
+                                None,
+                            ),
+                            lease_now,
+                        )
+                        .map_err(|error| {
+                            unavailable("session_environment_restore_assignment_refused", error)
+                        })?;
+                }
+                let admitted = session
+                    .environment()
+                    .admit_restore_materialization(&owner_scope, now_unix_ms)
+                    .map_err(|error| {
+                        unavailable("session_environment_restore_materialization_refused", error)
+                    })?;
+                if admitted || reassigned {
+                    "environment-restore-materialization-intent"
+                } else {
+                    let colocated = self.placement.require_colocated()?;
+                    carry_out_effect(
+                        colocated,
+                        self.realizations.as_ref(),
+                        &owner_scope,
+                        &mut session,
+                        instruction,
+                        now_unix_ms,
+                    )
+                    .await?
+                }
+            }
             _ if decision.next() == session.environment.step() => {
                 let colocated = self.placement.require_colocated()?;
                 carry_out_effect(
-                    colocated.environment.as_ref(),
-                    colocated.realization_effects.as_ref(),
+                    colocated,
+                    self.realizations.as_ref(),
                     &owner_scope,
                     &mut session,
                     instruction,
@@ -285,47 +361,18 @@ struct ContinuationStep {
 
 /// Carry out one decided effect through the Runtime and apply its observation
 /// to the candidate; returns the commit reason.
-async fn carry_out_effect(
-    runtime: &dyn EnvironmentRuntime,
-    effects: &dyn awaken_session_execution_contract::RealizationEffects,
-    owner_scope: &str,
+pub(crate) fn apply_continuation_receipt(
     session: &mut SessionAggregate,
-    instruction: SessionEnvironmentInstruction,
+    receipt: &awaken_session_execution_contract::SessionContinuationReceipt,
     now: u64,
 ) -> Result<&'static str, SessionContinuationError> {
-    let session_id = session.session_id.clone();
-    let thread = session_id.as_str();
-    let suspend_source = || {
-        session
-            .environment
-            .suspend_source()
-            .map(|(operation, effect, binding, generation)| {
-                (
-                    operation.clone(),
-                    effect.to_owned(),
-                    binding.to_owned(),
-                    generation.clone(),
-                )
-            })
-            .ok_or_else(SessionContinuationError::step_moved)
-    };
-    match instruction {
-        SessionEnvironmentInstruction::Quiesce => {
-            let (operation, source_effect_id, source_binding, generation) = suspend_source()?;
+    use awaken_session_execution_contract::SessionContinuationReceipt as R;
+    match receipt {
+        R::Quiesced(receipt) => {
             let expected = expected_mcp_generations(session)?;
-            let receipt = runtime
-                .quiesce_session_environment(
-                    thread,
-                    &operation,
-                    &source_effect_id,
-                    &source_binding,
-                    &generation,
-                    &expected,
-                )
-                .await?;
             session
                 .environment()
-                .record_quiescence(&receipt, &expected, now)?;
+                .record_quiescence(receipt, &expected, now)?;
             session
                 .mcp()
                 .require_reprojection_after_quiescence(&receipt.mcp_generations)
@@ -336,105 +383,258 @@ async fn carry_out_effect(
                 })?;
             Ok("environment-quiesced")
         }
-        SessionEnvironmentInstruction::Checkpoint => {
-            let policy = session
-                .frozen_baseline()
-                .ok_or_else(|| {
-                    SessionContinuationError::Repository("baseline is not frozen".into())
-                })?
-                .environment
-                .idle_retention
-                .clone();
-            let request = session
-                .environment
-                .checkpoint_request(owner_scope, &session_id, &policy)?
-                .ok_or_else(SessionContinuationError::step_moved)?;
-            let bound = std::time::Duration::from_secs(policy.max_checkpoint_duration_secs);
-            let receipt = tokio::time::timeout(
-                bound,
-                effects.checkpoint_session_environment(thread, request),
-            )
-            .await
-            .map_err(|_| {
-                SessionContinuationError::Runtime(RunError::unavailable_classified(
-                    "session_environment_checkpoint_timeout",
-                    "Session environment checkpoint exceeded its frozen duration bound",
-                ))
-            })??;
-            session.environment().record_checkpoint(&receipt, now)?;
+        R::Checkpointed(receipt) => {
+            session.environment().record_checkpoint(receipt, now)?;
             Ok("environment-checkpointed")
         }
-        SessionEnvironmentInstruction::PrepareSourceRelease => {
-            let (_, _, source_binding, generation) = suspend_source()?;
-            let preparation = session
-                .source_release_preparation_effect()
-                .map_err(|error| {
-                    unavailable("session_environment_source_preparation_unauthorized", error)
-                })?;
-            let receipt = effects
-                .prepare_checkpoint_source_disposal(
-                    thread,
-                    &preparation,
-                    &generation,
-                    &source_binding,
-                )
-                .await?;
+        R::SourceReleasePrepared(receipt) => {
             session
                 .environment()
-                .record_source_release_prepared(&receipt, now)
-                .map_err(|error| {
-                    unavailable("session_environment_source_preparation_stale", error)
-                })?;
+                .record_source_release_prepared(receipt, now)
+                .map_err(|e| unavailable("session_environment_source_preparation_stale", e))?;
             Ok("environment-source-release-prepared")
         }
-        SessionEnvironmentInstruction::DisposeSource => {
-            let disposal = session.source_release_disposal().map_err(|error| {
-                unavailable("session_environment_source_disposal_unauthorized", error)
-            })?;
-            let receipt = effects
-                .dispose_prepared_checkpoint_source(thread, &disposal)
-                .await?;
-            session.environment().complete_suspend(&receipt, now)?;
+        R::SourceDisposed(receipt) => {
+            session.environment().complete_suspend(receipt, now)?;
             Ok("environment-hibernated")
         }
-        SessionEnvironmentInstruction::Restore => {
-            let request = session
-                .environment
-                .restoring_request(owner_scope, &session_id)
-                .ok_or_else(SessionContinuationError::step_moved)?;
-            let realization = session.realization.clone().ok_or_else(|| {
-                unavailable(
-                    "session_environment_restore_unfenced",
-                    "Restore requires its current realization grant",
-                )
-            })?;
-            let receipt = effects
-                .restore_checkpointed_session_environment(request, &realization)
-                .await?;
-            session.environment().complete_restore(&receipt, now)?;
+        R::Restored(receipt) => {
+            session.environment().complete_restore(receipt, now)?;
             Ok("environment-restored")
         }
-        // Expiry authorizes a fresh Sandbox from the frozen Environment. The
-        // idempotent delete precedes the CAS, so a failed delete keeps the
-        // reference for retry and a crash after it replays the same delete.
-        SessionEnvironmentInstruction::DeleteExpiredCheckpoint => {
-            let checkpoint = session
+        R::ExpiredCheckpointDeleted { checkpoint_id } => {
+            if session
                 .environment
                 .checkpoint()
-                .cloned()
-                .ok_or_else(SessionContinuationError::step_moved)?;
-            effects
-                .delete_session_checkpoint(thread, &checkpoint)
-                .await?;
+                .is_none_or(|checkpoint| &checkpoint.id != checkpoint_id)
+            {
+                return Err(SessionContinuationError::step_moved());
+            }
             session.environment().discard_expired_checkpoint(now)?;
             Ok("environment-checkpoint-expired")
-        }
-        SessionEnvironmentInstruction::Materialize(_) | SessionEnvironmentInstruction::Retire => {
-            Err(SessionContinuationError::not_a_continuation(instruction))
         }
     }
 }
 
+async fn carry_out_effect(
+    roles: &awaken_session_execution_contract::ColocatedRealizationRoles,
+    realizations: &crate::SessionRealizations,
+    owner_scope: &str,
+    session: &mut SessionAggregate,
+    instruction: SessionEnvironmentInstruction,
+    now: u64,
+) -> Result<&'static str, SessionContinuationError> {
+    let runtime = roles.environment.as_ref();
+    let effects = roles.realization_effects.as_ref();
+    if instruction == SessionEnvironmentInstruction::Restore {
+        let directive = realizations
+            .realization_directive(
+                owner_scope.to_owned(),
+                session.snapshot(),
+                awaken_session_execution_contract::SessionRealizationAction::Continue {
+                    instruction,
+                },
+                false,
+            )
+            .await
+            .map_err(|error| {
+                unavailable("session_environment_restore_projection_refused", error)
+            })?;
+        let request_started = roles.realization.observe_realization_request()?;
+        roles
+            .realization
+            .install_session_projection(
+                session.session_id.as_str(),
+                directive.projection,
+                awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
+                    lease: directive.authority.observed(request_started),
+                    prepare_session: false,
+                },
+            )
+            .await
+            .map_err(|error| SessionContinuationError::Runtime(RunError::from(error)))?;
+    }
+    let receipt = if instruction == SessionEnvironmentInstruction::Quiesce {
+        let (operation, effect, binding, generation) = session
+            .environment
+            .suspend_source()
+            .map(|(op, effect, binding, generation)| {
+                (
+                    op.clone(),
+                    effect.to_owned(),
+                    binding.to_owned(),
+                    generation.clone(),
+                )
+            })
+            .ok_or_else(SessionContinuationError::step_moved)?;
+        let expected = expected_mcp_generations(session)?;
+        awaken_session_execution_contract::SessionContinuationReceipt::Quiesced(
+            runtime
+                .quiesce_session_environment(
+                    session.session_id.as_str(),
+                    &operation,
+                    &effect,
+                    &binding,
+                    &generation,
+                    &expected,
+                )
+                .await?,
+        )
+    } else {
+        let baseline = session
+            .frozen_baseline()
+            .ok_or_else(SessionContinuationError::step_moved)?;
+        awaken_session_execution_contract::execute_environment_provider_continuation(
+            owner_scope,
+            &session.session_id,
+            &session.environment,
+            &baseline.environment.idle_retention,
+            session.realization.as_ref(),
+            instruction,
+            effects,
+        )
+        .await?
+    };
+    apply_continuation_receipt(session, &receipt, now)
+}
+
 fn unavailable(code: &'static str, error: impl std::fmt::Display) -> SessionContinuationError {
     SessionContinuationError::Runtime(RunError::unavailable_classified(code, error.to_string()))
+}
+
+/// Commit one Worker observation through the same continuation receipt laws.
+/// The existing Session mutation kernel is the only persistence/CAS authority.
+pub(crate) async fn commit_worker_receipt(
+    mutations: &crate::SessionMutations,
+    command: &awaken_session_execution_contract::AcknowledgeSessionRealization,
+    clock: &dyn awaken_time::WallClock,
+) -> Result<
+    (String, PersistedSession),
+    awaken_session_execution_contract::SessionRealizationControlFailure,
+> {
+    use awaken_session_execution_contract::SessionRealizationControlFailure;
+    use awaken_time::WallClockExt as _;
+    if !command.published.is_empty() || !command.drained.is_empty() {
+        return Err(SessionRealizationControlFailure::Invalid(
+            "continuation acknowledgement cannot publish or drain MCP".into(),
+        ));
+    }
+    let receipt = command
+        .continuation
+        .as_ref()
+        .expect("continuation dispatch checked");
+    for _ in 0..crate::mutation::ROOT_CAS_ATTEMPTS {
+        let owner_scope = mutations
+            .owner(&command.session_id)
+            .await
+            .map_err(crate::realization::mutation_control)?;
+        let root = mutations
+            .repository()
+            .get(&command.session_id)
+            .await
+            .map_err(crate::realization::repository_control)?;
+        if root.is_terminal() {
+            return Err(SessionRealizationControlFailure::Terminal);
+        }
+        let mut session = crate::mutation::aggregate_from_snapshot(root)
+            .map_err(crate::realization::repository_control)?;
+        crate::realization::verify_lease(&session, &command.lease, clock.now_ms())?;
+        let reason =
+            crate::continuation::apply_continuation_receipt(&mut session, receipt, clock.now_ms())
+                .map_err(crate::realization::unavailable)?;
+        let restored = matches!(
+            receipt,
+            awaken_session_execution_contract::SessionContinuationReceipt::Restored(_)
+        );
+        if restored {
+            // The same root claims reprojection after restoring bytes;
+            // no model Run is invented to activate the frozen inputs.
+            let lease = session
+                .realization
+                .clone()
+                .ok_or(SessionRealizationControlFailure::NotReady)?;
+            session
+                .assignment()
+                .begin(
+                    awaken_session_contract::SessionRealizationBeginRequest::new(
+                        &owner_scope,
+                        &lease.owner,
+                        &lease.runtime_incarnation,
+                        lease.expires_at_unix_ms,
+                        false,
+                        None,
+                    ),
+                    clock.now_ms(),
+                )
+                .map_err(|e| crate::realization::begin_refusal(command.session_id.as_str(), e))?;
+        }
+        match mutations
+            .commit_session_snapshot_with_outcome(&owner_scope, session, reason, Vec::new())
+            .await
+        {
+            Ok(commit) => return Ok((owner_scope, commit.into_session())),
+            Err(SessionMutationError::Conflict) => continue,
+            Err(error) => return Err(crate::realization::unavailable(error)),
+        }
+    }
+    Err(SessionRealizationControlFailure::Conflict)
+}
+
+pub(crate) async fn verify_registered_target(
+    admission: &crate::SessionExecutionAdmission,
+    target: &awaken_session_execution_contract::SessionRealizationTarget,
+    session: &PersistedSession,
+    now: u64,
+) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
+    use awaken_session_execution_contract::SessionRealizationControlFailure as E;
+    let worker = admission
+        .worker_for_target(target, now)
+        .await?
+        .ok_or(E::NotReady)?;
+    let mut requirements = admission.placement.requirements(session)?;
+    requirements
+        .required_capabilities
+        .insert(awaken_worker_contract::SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY.to_owned());
+    if worker.state != awaken_worker_contract::WorkerState::Ready
+        || awaken_worker_contract::can_claim(&worker.manifest, &requirements).is_err()
+    {
+        return Err(E::NotReady);
+    }
+    Ok(())
+}
+
+/// Project only the continuation action. The Environment FSM still decides it.
+pub(crate) fn realization_action(
+    session: &PersistedSession,
+    now: u64,
+) -> Result<
+    Option<awaken_session_execution_contract::SessionRealizationAction>,
+    awaken_session_execution_contract::SessionRealizationControlFailure,
+> {
+    use awaken_session_execution_contract::{
+        SessionRealizationAction as A, SessionRealizationControlFailure as E,
+    };
+    if session.environment.admits_realization_effects() {
+        return Ok(None);
+    }
+    if matches!(&session.environment, awaken_session_contract::SessionEnvironmentState::Hibernated { checkpoint, generation } if !checkpoint.expired_at(now) && !generation.expired_at(now))
+    {
+        return Ok(Some(A::Released));
+    }
+    let event = if matches!(
+        session.environment,
+        awaken_session_contract::SessionEnvironmentState::Restoring { .. }
+            | awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
+    ) {
+        SessionEnvironmentEvent::RequireResident
+    } else {
+        SessionEnvironmentEvent::AdvanceContinuation
+    };
+    let decision = transition_environment(
+        SessionEnvironmentFacts::project_continuation(session, now),
+        event,
+    )
+    .map_err(|e| E::Unavailable(e.to_string()))?;
+    let instruction = decision.instruction().ok_or(E::NotReady)?;
+    Ok(Some(A::Continue { instruction }))
 }

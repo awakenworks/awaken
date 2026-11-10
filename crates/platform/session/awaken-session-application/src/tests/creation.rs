@@ -811,14 +811,15 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
 
 #[tokio::test]
 async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
-    // Creation-topology decision table: C1 frozen placement is Local/Worker;
+    // Creation-topology decision table for a self-hosted WorkQueue Environment:
+    // C1 frozen placement is Local/Worker;
     // C2 retention is Resident/CheckpointAndRelease. Only Worker+checkpoint
-    // requires a remote continuation transport that does not exist. Effect E1
+    // requires a WorkQueue continuation transport that does not exist. Effect E1
     // rejects before root insert or Runtime projection; the other three rules
-    // retain their existing create paths. Constraint K1: the registered-Worker
-    // authorize/persist channel is closed over Create/Adopt/Rebuild/Resource
-    // reservation, while claimed resume ends at realization projection/MCP and
-    // rejects continuation phases; neither is a checkpoint/restore transport.
+    // retain their existing create paths. Constraint K1: self-hosted WorkQueue
+    // dispatch has no run-free continuation claim. Registered cloud Worker
+    // creation is the positive boundary in continuation/worker_protocol.rs;
+    // it uses the root-owned continuation protocol instead of WorkQueue.
     //
     // | Rule | placement | retention | Effect |
     // | T1 | Worker | CheckpointAndRelease | E1 reject, zero root/effect |

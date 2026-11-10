@@ -314,7 +314,11 @@ impl SessionTerminalCleanups {
             awaken_session_execution_contract::SessionSourceDispatchObservation::Settled
         );
         let admission = if source_admitted {
-            match self.realizations.worker_for_target(target).await {
+            match self
+                .execution_admission
+                .worker_for_target(target, self.clock.now_ms())
+                .await
+            {
                 Ok(Some(worker)) if !target.admits_terminal_cleanup_generation(&worker, prior) => {
                     Ok(false)
                 }
@@ -537,7 +541,10 @@ impl SessionTerminalCleanups {
             // Re-read the canonical Worker registry on every root-CAS attempt.
             // A conflict never carries eligibility from the older Session or
             // Worker snapshot into the retry.
-            let worker = self.realizations.worker_for_target(&target).await;
+            let worker = self
+                .execution_admission
+                .worker_for_target(&target, self.clock.now_ms())
+                .await;
             if !matches!(&worker, Ok(Some(_))) {
                 if let Some(conflict) = conflicted_claim.as_deref() {
                     self.compensate_terminal_cleanup_claim(conflict, None)

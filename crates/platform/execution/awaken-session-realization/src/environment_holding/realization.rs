@@ -320,6 +320,11 @@ impl crate::environment_holding::EnvironmentHolding {
         let realizations = self.sessions.clone();
         let exec = &self;
         let candidate = match effect.authorization.intent().kind() {
+            awaken_session_contract::SessionEnvironmentEffectKind::Restore { .. } => {
+                return Err(RealizationError::invariant(
+                    "checkpoint restore publishes only through its exact continuation receipt",
+                ));
+            }
             awaken_session_contract::SessionEnvironmentEffectKind::Adopt => {
                 exec.begin_session_environment_adoption(peers, thread, environment.clone(), Some(effect.authorization.intent()))?
             }

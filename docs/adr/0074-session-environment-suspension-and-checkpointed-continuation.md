@@ -971,3 +971,76 @@ live-input installation retains its acquisition scope. Response-loss recovery
 cannot change the target while admitting a subsequent effect. Failure tests cross
 target absence/presence, response positions, authority revocation/replacement/
 expiry/renewal, failed start, unchanged bytes and zero inline disposal.
+
+## Amendment 2026-11-10: restored materialization keeps the existing provenance owner
+
+The existing Session materialization `origin/pending` record also owns the
+physical target of a checkpoint restore. A restore's logical operation and
+checkpoint identity remain frozen in `SessionEnvironmentState::Restoring`.
+Before target I/O, the root admits its first physical materialization assertion
+under the current delivery lease. Later delivery may renew or succeed that
+lease without replacing the admitted target assertion. This extends the existing
+effect-intent vocabulary; it does not introduce a second restore identity,
+receipt store, queue or lifecycle authority.
+
+Only the exact restore receipt may move that pending assertion to `origin`, in
+the same Session root CAS that publishes the restored Resident binding. Source
+capture retains its original-generation checks. Restore delivery and terminal
+cleanup distinguish the immutable target's first materialization fence from
+current authority. Cold observation therefore names the new target, and a late
+receipt or superseded delivery cannot redirect its cleanup to another Sandbox.
+Legacy provenance may become known only through this admitted new target, never
+by guessing the old source's creator. The external-Worker activation gate stays
+closed until the complete delivery protocol and scoped recovery tests pass.
+
+A prospective restore marks its admission protocol in this same materialization
+record when Hibernated enters Restoring. The existing strict materialization
+codec makes that a reader floor: an older reader cannot silently discard the
+new protocol while writing a target. Missing pending provenance in an older
+in-flight restore remains unknown. Its exact original live grant may establish
+the same creator; a successor cannot invent a first target assertion. This
+version marker grants no physical effect and adds no second lifecycle state.
+
+## Amendment 2026-11-10: continuation uses the existing registered realization protocol
+
+Extend the existing realization directive and acknowledgement with continuation
+instructions and their existing domain receipts. The complete frozen projection,
+Session root CAS, preparation reconciliation index and realization lease remain
+their sole owners. A dedicated capability string prevents older Workers from
+receiving these added phases; no queue, polling service or lifecycle snapshot is
+added. Both topologies share provider-effect execution and root receipt laws.
+
+Host-owned quiescence coordinates Memory, MCP and delegated Runs through its
+existing body. Registered delivery borrows the phase permit already held by the
+driver, checked against the current installed Session identity, instead of
+recursively acquiring that lock or changing the public Environment Runtime role.
+Source capture retains its original lease generation. Restore uses current
+delivery while retaining its admitted first target assertion. A released action
+invalidates only the exact disposable local lease and performs no provider I/O.
+Hibernated roots contribute no Worker holding demand; requested restoration is
+claimed through the existing root-owned preparation lane.
+
+The same preparation index may retain a Hibernated root as a time-dependent
+expiry hint. A live checkpoint grants no preparation lease and contributes no
+holding or unbound capacity demand. After fixed expiry, a compatible Worker may
+claim a successor only to execute the existing exact-object deletion port.
+Its receipt retires the disposed generation's current materialization while
+retaining the versioned history marker; that is not historical no-Create
+proof. A subsequent first Create uses a new grant. Terminality before a tracked
+restore target admission likewise proves that specific target absent, without
+weakening protection of legacy in-flight targets. Neither projection nor
+provider failure in continuation expires the source grant as an ordinary Stage
+failure would.
+
+Co-located restore uses the same assignment owner to admit a successor and
+first target before I/O, including after the historical hibernated lease
+expires. It installs the complete Restoring projection in authority-only mode
+before Restore, then adopts the committed Resident after receipt CAS. Source
+Quiescing/Uploading cannot change owner, incarnation or epoch; a replacement
+is refused before claim/CAS. Ordinary Stage/Publish/failure callbacks remain
+closed during continuation and cannot reuse its typed acknowledgement lane.
+
+Known filesystem absence and actor retirement remain separate facts. Hibernated
+or tracked unadmitted-target terminal cleanup may skip provider I/O, but a
+foreign cleanup actor still requires the existing exact predecessor-exit
+observation after lease expiry; terminal demand retains that responsibility.

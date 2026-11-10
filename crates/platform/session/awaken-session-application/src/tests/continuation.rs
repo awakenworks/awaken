@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[derive(Default)]
 struct ContinuationRuntime {
+    require_restore_projection: AtomicBool,
     fail_quiesce_once: AtomicBool,
     fail_checkpoint_once: AtomicBool,
     fail_prepare_once: AtomicBool,
@@ -382,9 +383,21 @@ impl awaken_session_execution_contract::RealizationEffects for ContinuationRunti
     async fn restore_checkpointed_session_environment(
         &self,
         request: awaken_provisioning_contract::SandboxRestoreRequest,
-        _realization: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+        realization: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
         self.restores.fetch_add(1, Ordering::SeqCst);
+        if self.require_restore_projection.load(Ordering::SeqCst) {
+            let installs = self.projection_installs.lock().unwrap();
+            let installed = installs.iter().any(|(_, projection, mode)| {
+                matches!(&projection.environment, awaken_session_contract::SessionEnvironmentState::Restoring { operation, .. } if operation.effect_id() == request.effect_id)
+                    && matches!(mode, awaken_session_execution_contract::SessionProjectionInstallMode::Realization { lease, prepare_session: false } if &lease.lease == realization)
+            });
+            if !installed {
+                return Err(RunError::unavailable(
+                    "restore target grant was not installed before provider I/O",
+                ));
+            }
+        }
         if self.fail_restore_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected restore crash"));
         }
@@ -1157,10 +1170,20 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         "D2 no early publication"
     );
 
-    app.continuations
+    let restored = app
+        .continuations
         .ensure_environment_resident(&SessionId::from("suspend-with-mcp"), 2_000)
         .await
         .unwrap();
+    // D3 retains the content generation and rebinds its projection to the
+    // newly admitted physical target's grant, not the disposed source owner.
+    let restored_lease = restored.realization.as_ref().unwrap();
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
+        owner: restored_lease.owner.clone(),
+        runtime_incarnation: restored_lease.runtime_incarnation.clone(),
+        lease_expires_at_unix_ms: restored_lease.expires_at_unix_ms,
+        reassign_existing_lease: false,
+    };
     let staged =
         awaken_session_execution_contract::SessionRealizationControl::begin_session_realization(
             app.realizations.as_ref(),
@@ -1182,7 +1205,17 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     assert!(!prepare_session, "D3 reuses the restored Environment");
     assert_eq!(mcp_stages.len(), 1, "D3 exact Stage");
     let request = &mcp_stages[0];
-    assert_eq!(request.generation, generation, "D3 exact Stage");
+    assert_eq!(
+        request.generation.generation(),
+        generation.generation(),
+        "D3 unchanged MCP content witness"
+    );
+    assert_eq!(
+        request.generation.lease_epoch().get(),
+        restored_lease.epoch,
+        "D3 new physical grant"
+    );
+    let generation = request.generation.clone();
     let receipt = crate::session_mcp::McpRealizationReceipt {
         generation: request.generation.clone(),
         realization_id: request.realization_id.clone(),
@@ -1217,6 +1250,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
         awaken_session_execution_contract::SessionRealizationControl::acknowledge_session_realization(
             app.realizations.as_ref(),
             awaken_session_execution_contract::AcknowledgeSessionRealization {
+                continuation: None,
                 session_id: "suspend-with-mcp".into(),
                 lease: staged.authority.lease,
                 published: vec![generation],
@@ -1911,7 +1945,25 @@ async fn driving_ingress_restores_once_before_activity() {
     );
     {
         let installs = runtime.projection_installs.lock().unwrap();
-        assert_eq!(installs.len(), 1, "R1/E2");
+        assert_eq!(installs.len(), 2, "R1 authority then Resident");
+        assert!(
+            matches!(
+                installs[0].1.environment,
+                awaken_session_contract::SessionEnvironmentState::Restoring { .. }
+            ),
+            "R1 committed target intent installed before Restore"
+        );
+        assert!(
+            matches!(
+                &installs[0].2,
+                awaken_session_execution_contract::SessionProjectionInstallMode::Realization {
+                    prepare_session: false,
+                    ..
+                }
+            ),
+            "R1 authority-only mode"
+        );
+        let installs = &installs[1..];
         assert_eq!(installs[0].0, "restore", "R1/E2 exact Session");
         assert_eq!(installs[0].1.environment, restored.environment, "R1/E2");
         assert_eq!(installs[0].1.revision, restored.revision, "R1/E2");
@@ -1938,7 +1990,7 @@ async fn driving_ingress_restores_once_before_activity() {
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "R2/E3");
     assert_eq!(
         runtime.projection_attempts.load(Ordering::SeqCst),
-        2,
+        3,
         "R2/E3"
     );
     app.activities
@@ -1948,19 +2000,20 @@ async fn driving_ingress_restores_once_before_activity() {
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "R2/E3");
     assert_eq!(
         runtime.projection_attempts.load(Ordering::SeqCst),
-        3,
+        4,
         "R2/E3"
     );
 }
 
 // Failure decision table: C1 restore fails while the root is Restoring; C2
 // restore succeeds and Resident commits; C3 the post-CAS adoption fails.
-// Effects: E1 C1 retains Restoring and performs zero projection; E2 C2+C3
-// retains durable Resident and performs no successful projection; E3 a later
+// Effects: E1 C1 retains Restoring with its authority-only projection and no
+// adoption; E2 C2+C3 retains durable Resident with no successful Resident
+// adoption; E3 a later
 // Resident ensure retries the same complete projection without restoring again.
 //
 // | Rule | restore | durable state after call | projection | Effect |
-// | F1 | fails | Restoring | zero attempts | E1 |
+// | F1 | fails | Restoring | authority only, no adoption | E1 |
 // | F2 | succeeds | Resident | exact adoption fails once | E2 |
 // | F3 | not repeated | Resident | succeeds on retry | E3 |
 #[tokio::test]
@@ -1993,8 +2046,8 @@ async fn restore_failure_retries_the_committed_restore_operation() {
     ));
     assert_eq!(
         runtime.projection_attempts.load(Ordering::SeqCst),
-        0,
-        "F1/E1 no projection before a Resident CAS",
+        1,
+        "F1/E1 target authority installed, no Resident adoption",
     );
     app.continuations
         .ensure_environment_resident(&SessionId::from("restore-retry"), 1_000)
@@ -2003,8 +2056,8 @@ async fn restore_failure_retries_the_committed_restore_operation() {
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 2, "F1 retry");
     assert_eq!(
         runtime.projection_attempts.load(Ordering::SeqCst),
-        1,
-        "F1 retry"
+        3,
+        "F1 retry: authority twice, Resident once"
     );
     assert_eq!(
         repo.get(&SessionId::from("restore-retry"))
@@ -2060,13 +2113,21 @@ async fn resident_projection_failure_retries_without_restoring_again() {
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "F2/E2");
     assert_eq!(
         runtime.projection_attempts.load(Ordering::SeqCst),
-        1,
-        "F2/E2"
+        2,
+        "F2/E2 target authority then failed adoption"
     );
     assert_eq!(runtime.adoption_attempts.load(Ordering::SeqCst), 1, "F2/E2");
     assert!(
-        runtime.projection_installs.lock().unwrap().is_empty(),
-        "F2/E2"
+        runtime
+            .projection_installs
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, projection, _)| matches!(
+                projection.environment,
+                awaken_session_contract::SessionEnvironmentState::Restoring { .. }
+            )),
+        "F2/E2 only authority-only projection succeeded"
     );
 
     app.continuations
@@ -2076,13 +2137,17 @@ async fn resident_projection_failure_retries_without_restoring_again() {
     assert_eq!(runtime.restores.load(Ordering::SeqCst), 1, "F3/E3");
     assert_eq!(
         runtime.projection_attempts.load(Ordering::SeqCst),
-        2,
+        3,
         "F3/E3"
     );
     assert_eq!(runtime.adoption_attempts.load(Ordering::SeqCst), 2, "F3/E3");
     let installs = runtime.projection_installs.lock().unwrap();
-    assert_eq!(installs.len(), 1, "F3/E3 one successful handoff");
-    assert_eq!(installs[0].1.environment, resident.environment, "F3/E3");
+    assert_eq!(
+        installs.len(),
+        2,
+        "F3/E3 authority plus one successful handoff"
+    );
+    assert_eq!(installs[1].1.environment, resident.environment, "F3/E3");
     assert_eq!(
         runtime.adoptions.lock().unwrap().as_slice(),
         [(
@@ -2096,18 +2161,12 @@ async fn resident_projection_failure_retries_without_restoring_again() {
 
 #[tokio::test]
 async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
-    // Frozen-topology cause/effect graph: C1 placement is external Worker; C2
-    // retention is CheckpointAndRelease; C3 a historical root is Resident or
-    // Hibernated. C1+C2 means Coordinator has no claim-fenced continuation
-    // effect transport. Effects: E1 Resident remains unchanged with zero local
-    // quiesce/checkpoint; E2 Hibernated remains unchanged with zero local
-    // restore/projection. Local placement is the only supported positive rule
-    // and is covered by the adjacent restore/suspend tests.
-    //
-    // | Rule | placement | phase | Coordinator effect | durable phase |
-    // | X1 | Worker | Resident | none | Resident |
-    // | X2 | Worker | Hibernated | none | Hibernated |
-    // | X3 | Local | either | canonical continuation | adjacent tests |
+    // Frozen-topology decision table: C1 registered cloud Worker; C2
+    // checkpoint-and-release; C3 Resident idle due / Hibernated driving ingress.
+    // X1 C1+C2+Resident commits Suspending; X2 C1+C2+Hibernated commits
+    // Restoring. Both publish run-free preparation demand and perform zero
+    // Coordinator physical effects. The exact Worker owns those effects.
+    // Local effects and self-hosted refusal have separate positive/negative tests.
     let resident_repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -2125,21 +2184,18 @@ async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
 
-    assert!(
-        resident_app
-            .continuations
-            .reconcile_environment_continuation(&SessionId::from("external-resident"), 2_000)
-            .await
-            .is_err(),
-        "X1 unsupported remote continuation fails closed",
-    );
+    resident_app
+        .continuations
+        .reconcile_environment_continuation(&SessionId::from("external-resident"), 2_000)
+        .await
+        .unwrap();
     assert!(matches!(
         resident_repo
             .get(&SessionId::from("external-resident"))
             .await
             .unwrap()
             .environment,
-        awaken_session_contract::SessionEnvironmentState::Resident { .. }
+        awaken_session_contract::SessionEnvironmentState::Suspending { .. }
     ));
     assert_eq!(resident_runtime.quiesces.load(Ordering::SeqCst), 0, "X1/E1");
     assert_eq!(
@@ -2165,22 +2221,23 @@ async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
 
-    assert!(
-        hibernated_app
-            .continuations
-            .ensure_environment_resident(&SessionId::from("external-hibernated"), 1_000)
-            .await
-            .is_err(),
-        "X2 unsupported remote restore fails closed",
-    );
+    let restoring = hibernated_app
+        .continuations
+        .ensure_environment_resident(&SessionId::from("external-hibernated"), 1_000)
+        .await
+        .unwrap();
     assert!(matches!(
-        hibernated_repo
-            .get(&SessionId::from("external-hibernated"))
-            .await
-            .unwrap()
-            .environment,
-        awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
+        restoring.environment,
+        awaken_session_contract::SessionEnvironmentState::Restoring { .. }
     ));
+    assert!(
+        restoring.needs_run_free_preparation_worker(),
+        "X2 unbound target"
+    );
+    assert!(
+        !restoring.has_unfinished_worker_realization().unwrap(),
+        "X2 old source released"
+    );
     assert_eq!(
         hibernated_runtime.restores.load(Ordering::SeqCst),
         0,
@@ -2394,7 +2451,9 @@ async fn terminal_cleanup_delegates_checkpoint_to_the_one_runtime_effect() {
 // | Rule | committed step | cause | effect |
 // | O1 | ReadyToDispose without its checkpoint | inconsistent evidence | refused (was: silently "no work"); zero effects; root unchanged |
 // | O2 | Uploading whose operation lease the root superseded | stale lease | refused before the checkpoint effect (was: effect attempted) |
-// | O3 | Restoring whose operation lease the root superseded | stale lease | refused before the restore effect (was: effect attempted) |
+// | O3 | legacy Restoring with a superseded operation lease | first target unknown | refused without inventing a creator |
+// | O4 | Restoring without a current delivery lease | no grant | stays pending; zero restore effects |
+// | O5 | tracked Restoring with successor delivery | write-ahead protocol known | restore; logical operation unchanged; first target grant recorded |
 #[tokio::test]
 async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_leases() {
     let superseded = crate::session_resource::SessionRealizationLease {
@@ -2459,10 +2518,42 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
             "workspace",
             &awaken_session_types::SessionId::from("stale-restore"),
             1,
+            Some(superseded.clone()),
+            1_000,
+        )
+        .unwrap();
+    let mut unfenced_restore = hibernated_session("unfenced-restore", 100_000);
+    unfenced_restore
+        .environment
+        .begin_restore(
+            "workspace",
+            &SessionId::from("unfenced-restore"),
+            1,
             Some(superseded),
             1_000,
         )
         .unwrap();
+    unfenced_restore.realization = None;
+    // The new root command marks prospective target admission before a
+    // successor exists. Raw legacy Restoring above intentionally lacks it.
+    let mut tracked = awaken_session_contract::SessionAggregate::try_from(hibernated_session(
+        "tracked-restore",
+        100_000,
+    ))
+    .unwrap();
+    tracked
+        .environment()
+        .begin_restore("workspace", 1_000)
+        .unwrap();
+    let mut tracked = tracked.into_snapshot();
+    let mut delivery = tracked.realization.clone().unwrap();
+    delivery.epoch =
+        awaken_lease_contract::fence::Epoch::successor_of_granted(Some(delivery.epoch))
+            .expect("fixture successor grant")
+            .get();
+    delivery.owner.push_str("-next");
+    delivery.runtime_incarnation.push_str("-next");
+    tracked.realization = Some(delivery);
 
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -2473,6 +2564,8 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
         inconsistent.clone(),
         stale_upload.clone(),
         stale_restore.clone(),
+        unfenced_restore.clone(),
+        tracked.clone(),
     ] {
         create(repo.as_ref(), session).await;
     }
@@ -2505,7 +2598,7 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
             .ensure_environment_resident(&SessionId::from("stale-restore"), 1_000)
             .await
             .is_err(),
-        "O3 refused"
+        "O3 unknown legacy target creator is refused"
     );
     assert_eq!(
         repo.get(&SessionId::from("stale-restore"))
@@ -2514,6 +2607,48 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
             .environment,
         stale_restore.environment,
         "O3 root unchanged"
+    );
+    app.continuations
+        .reconcile_environment_continuation(&SessionId::from("unfenced-restore"), 2_000)
+        .await
+        .expect("O4 remains pending without I/O");
+    assert_eq!(
+        repo.get(&SessionId::from("unfenced-restore"))
+            .await
+            .unwrap()
+            .environment,
+        unfenced_restore.environment,
+        "O4 root unchanged"
+    );
+    let restored = app
+        .continuations
+        .ensure_environment_resident(&SessionId::from("tracked-restore"), 1_000)
+        .await
+        .expect("O5 current root delivery restores");
+    assert_eq!(
+        restored.environment.binding(),
+        Some("restored-binding"),
+        "O5"
+    );
+    let origin = restored
+        .environment_materialization()
+        .unwrap()
+        .origin()
+        .unwrap();
+    assert_eq!(
+        origin.realization(),
+        restored.realization.as_ref(),
+        "O5 first physical grant is the local Runtime's newly admitted target"
+    );
+    let awaken_session_contract::SessionEnvironmentState::Restoring { operation, .. } =
+        &tracked.environment
+    else {
+        unreachable!()
+    };
+    assert!(
+        matches!(origin.kind(), awaken_session_contract::SessionEnvironmentEffectKind::Restore { operation: original, .. }
+        if original.as_ref() == operation),
+        "O5 immutable logical operation"
     );
     assert_eq!(
         runtime.checkpoints.load(Ordering::SeqCst),
@@ -2526,7 +2661,13 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
         "O1 no effect"
     );
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 0, "O1 no effect");
-    assert_eq!(runtime.restores.load(Ordering::SeqCst), 0, "O3 no effect");
+    assert_eq!(
+        runtime.restores.load(Ordering::SeqCst),
+        1,
+        "O5 one restore; O3/O4 no extra effect"
+    );
 }
 
 mod backend_takeover;
+
+mod worker_protocol;

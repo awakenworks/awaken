@@ -108,6 +108,8 @@ mod run_control;
 pub(crate) use credential_capabilities::acp_mcp_client_injection_capabilities;
 mod run;
 mod session;
+#[cfg(test)]
+pub(crate) use session::quiescence::borrowed_permit_is_current;
 mod session_ctx;
 
 #[cfg(test)]

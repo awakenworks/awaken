@@ -7006,6 +7006,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
             let complete = app
                 .realizations
                 .acknowledge_session_realization(AcknowledgeSessionRealization {
+                    continuation: None,
                     session_id: command.session_id.clone(),
                     lease: activated.authority.lease,
                     published: publish.clone(),

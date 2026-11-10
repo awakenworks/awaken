@@ -19,6 +19,10 @@ use crate::state::{PersistedSession, SessionMutationValidationError};
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionEnvironmentMaterialization {
+    /// A prospective restore obeys write-ahead target admission. Absence is
+    /// legacy unknown, not evidence that its target was never created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restore_admission_version: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     origin: Option<Box<SessionEnvironmentEffectIntent>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -42,7 +46,9 @@ impl SessionEnvironmentMaterialization {
         if intent.session_id().as_str() != session_id
             || !matches!(
                 intent.kind(),
-                SessionEnvironmentEffectKind::Create | SessionEnvironmentEffectKind::Rebuild { .. }
+                SessionEnvironmentEffectKind::Create
+                    | SessionEnvironmentEffectKind::Rebuild { .. }
+                    | SessionEnvironmentEffectKind::Restore { .. }
             )
         {
             return Err(SessionEnvironmentReceiptError::Mismatch);
@@ -56,6 +62,7 @@ impl SessionEnvironmentMaterialization {
 
     pub(crate) const fn fresh() -> Self {
         Self {
+            restore_admission_version: None,
             origin: None,
             pending: None,
         }
@@ -78,7 +85,54 @@ impl SessionEnvironmentMaterialization {
 
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        !self.has_admitted()
+        !self.has_admitted() && self.restore_admission_version.is_none()
+    }
+
+    #[must_use]
+    pub const fn tracks_restore_materialization(&self) -> bool {
+        matches!(self.restore_admission_version, Some(1))
+    }
+
+    /// Positive write-ahead evidence for this restore target only. An old
+    /// origin remains history; absent legacy facts never prove target absence.
+    #[must_use]
+    pub fn restore_target_not_admitted(
+        &self,
+        environment: &super::SessionEnvironmentState,
+    ) -> bool {
+        matches!(
+            environment,
+            super::SessionEnvironmentState::Restoring { .. }
+        ) && self.tracks_restore_materialization()
+            && self.pending().is_none()
+    }
+
+    /// The disposed generation no longer has a physical source/target. Keep
+    /// a reader-floor/history marker so this is never fresh no-Create proof.
+    pub(crate) fn retire_expired_generation(&mut self) {
+        self.origin = None;
+        self.pending = None;
+        self.restore_admission_version = Some(1);
+    }
+
+    #[must_use]
+    pub fn expired_generation_is_unmaterialized(
+        &self,
+        environment: &super::SessionEnvironmentState,
+    ) -> bool {
+        matches!(environment, super::SessionEnvironmentState::Unmaterialized)
+            && self.tracks_restore_materialization()
+            && !self.has_admitted()
+    }
+
+    #[must_use]
+    pub fn target_not_admitted(&self, environment: &super::SessionEnvironmentState) -> bool {
+        self.restore_target_not_admitted(environment)
+            || self.expired_generation_is_unmaterialized(environment)
+    }
+
+    pub(crate) fn begin_tracked_restore(&mut self) {
+        self.restore_admission_version = Some(1);
     }
 
     /// Shared intrinsic law for aggregate import/mutation and the one Store
@@ -87,9 +141,24 @@ impl SessionEnvironmentMaterialization {
         let Some(facts) = session.environment_materialization.as_deref() else {
             return Ok(());
         };
+        if facts
+            .restore_admission_version
+            .is_some_and(|version| version != 1)
+        {
+            return Err(SessionMutationValidationError::EnvironmentMaterializationMismatch);
+        }
         for intent in [facts.origin(), facts.pending()].into_iter().flatten() {
             let valid_source = match intent.kind() {
                 SessionEnvironmentEffectKind::Create => intent.source_binding().is_none(),
+                SessionEnvironmentEffectKind::Restore {
+                    operation,
+                    checkpoint_id,
+                } => {
+                    intent.source_binding().is_none()
+                        && !checkpoint_id.trim().is_empty()
+                        && !operation.effect_id().trim().is_empty()
+                        && intent.effect_id() == operation.effect_id()
+                }
                 SessionEnvironmentEffectKind::Rebuild {
                     source_generation_id,
                 } => {
@@ -121,7 +190,22 @@ impl SessionEnvironmentMaterialization {
         }
         if let (Some(origin), Some(pending)) = (facts.origin(), facts.pending())
             && (origin.effect_id() == pending.effect_id()
-                || !matches!(pending.kind(), SessionEnvironmentEffectKind::Rebuild { .. }))
+                || !matches!(
+                    pending.kind(),
+                    SessionEnvironmentEffectKind::Rebuild { .. }
+                        | SessionEnvironmentEffectKind::Restore { .. }
+                ))
+        {
+            return Err(SessionMutationValidationError::EnvironmentMaterializationMismatch);
+        }
+        if let Some(pending) = facts.pending()
+            && let SessionEnvironmentEffectKind::Restore {
+                operation,
+                checkpoint_id,
+            } = pending.kind()
+            && !matches!(&session.environment, super::SessionEnvironmentState::Restoring {
+                operation: expected, checkpoint, ..
+            } if expected == operation.as_ref() && &checkpoint.id == checkpoint_id)
         {
             return Err(SessionMutationValidationError::EnvironmentMaterializationMismatch);
         }
@@ -147,6 +231,7 @@ impl SessionEnvironmentMaterialization {
                 self.origin.is_none() || self.pending.is_some()
             }
             SessionEnvironmentEffectKind::Rebuild { .. } => self.origin.is_none() || pending_other,
+            SessionEnvironmentEffectKind::Restore { .. } => pending_other,
             SessionEnvironmentEffectKind::Create => false,
         };
         if refused {
@@ -172,7 +257,8 @@ impl SessionEnvironmentMaterialization {
             // Only the admitted Rebuild may land: its pending value, or the
             // origin it became (the exact replay). The receipt carries the
             // operation identity, not the admission evidence.
-            SessionEnvironmentEffectKind::Rebuild { .. } => {
+            SessionEnvironmentEffectKind::Rebuild { .. }
+            | SessionEnvironmentEffectKind::Restore { .. } => {
                 if self
                     .pending()
                     .or_else(|| self.origin())
@@ -193,7 +279,8 @@ impl SessionEnvironmentMaterialization {
     pub(crate) fn record_receipt(&mut self, intent: &SessionEnvironmentEffectIntent) {
         let lands = match intent.kind() {
             SessionEnvironmentEffectKind::Create => self.pending() == Some(intent),
-            SessionEnvironmentEffectKind::Rebuild { .. } => self
+            SessionEnvironmentEffectKind::Rebuild { .. }
+            | SessionEnvironmentEffectKind::Restore { .. } => self
                 .pending()
                 .is_some_and(|pending| pending.effect_id() == intent.effect_id()),
             SessionEnvironmentEffectKind::Adopt
@@ -209,6 +296,70 @@ impl SessionEnvironmentMaterialization {
         replacement: &PersistedSession,
     ) -> Result<(), SessionMutationValidationError> {
         let invalid = || SessionMutationValidationError::EnvironmentMaterializationChanged;
+        // Restoring already retains the immutable logical operation. The
+        // existing pending intent adds only its first physical admission.
+        // Later delivery never replaces that assertion with a new lease.
+        let before = session.environment_materialization.as_deref();
+        let after = replacement.environment_materialization.as_deref();
+        let expired_generation_retired = !session.is_terminal()
+            && matches!(
+                session.environment,
+                super::SessionEnvironmentState::Hibernated { .. }
+            )
+            && before.is_none_or(|facts| facts.pending().is_none())
+            && after.is_some_and(|facts| {
+                facts.expired_generation_is_unmaterialized(&replacement.environment)
+            });
+        if expired_generation_retired {
+            return Ok(());
+        }
+        let restore_started = matches!((&session.environment, &replacement.environment),
+            (super::SessionEnvironmentState::Hibernated { checkpoint, generation },
+             super::SessionEnvironmentState::Restoring { checkpoint: next_checkpoint, generation: next_generation, .. })
+                if checkpoint == next_checkpoint && generation == next_generation);
+        if restore_started
+            && !session.is_terminal()
+            && before.is_none_or(|facts| facts.pending().is_none())
+            && let Some(after) = after
+            && after.tracks_restore_materialization()
+            && after.pending().is_none()
+            && after.origin() == before.and_then(Self::origin)
+        {
+            return Ok(());
+        }
+        if before.and_then(|facts| facts.restore_admission_version)
+            != after.and_then(|facts| facts.restore_admission_version)
+        {
+            return Err(invalid());
+        }
+        if before.is_none_or(|facts| facts.pending().is_none())
+            && let Some(after) = after
+            && after.origin() == before.and_then(Self::origin)
+            && let Some(pending) = after.pending()
+            && let SessionEnvironmentEffectKind::Restore {
+                operation,
+                checkpoint_id,
+            } = pending.kind()
+            && let super::SessionEnvironmentState::Restoring {
+                operation: expected,
+                checkpoint,
+                ..
+            } = &session.environment
+            && session.environment == replacement.environment
+            && operation.as_ref() == expected
+            && checkpoint_id == &checkpoint.id
+            && pending.session_id() == session.session_id
+            && replacement
+                .realization
+                .as_ref()
+                .zip(pending.realization())
+                .is_some_and(|(current, first)| {
+                    crate::state::realization_lease_generation_authorizes(current, first)
+                })
+            && !session.is_terminal()
+        {
+            return Ok(());
+        }
         match (
             session.environment_materialization.as_deref(),
             replacement.environment_materialization.as_deref(),
@@ -216,7 +367,7 @@ impl SessionEnvironmentMaterialization {
             (None, None) => Ok(()),
             (None, Some(_)) | (Some(_), None) => Err(invalid()),
             (Some(before), Some(after)) if before == after => Ok(()),
-            (Some(before), Some(after)) if before.is_empty() => {
+            (Some(before), Some(after)) if !before.has_admitted() => {
                 if after.origin().is_none()
                     && after.pending().is_some_and(|intent| {
                         matches!(intent.kind(), SessionEnvironmentEffectKind::Create)
@@ -247,6 +398,10 @@ impl SessionEnvironmentMaterialization {
                 let lands = before.pending().is_some_and(|intent| match intent.kind() {
                     SessionEnvironmentEffectKind::Create => before.origin().is_none(),
                     SessionEnvironmentEffectKind::Rebuild { .. } => before.origin().is_some(),
+                    SessionEnvironmentEffectKind::Restore { .. } => matches!(
+                        session.environment,
+                        super::SessionEnvironmentState::Restoring { .. }
+                    ),
                     SessionEnvironmentEffectKind::Adopt
                     | SessionEnvironmentEffectKind::ResourceProjectionReservation { .. } => false,
                 }) && after.pending().is_none()

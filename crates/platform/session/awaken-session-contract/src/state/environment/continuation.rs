@@ -477,7 +477,7 @@ impl SessionEnvironmentState {
     /// Project live preparation only from ReadyToDispose and the aggregate's
     /// exact current realization generation. The returned closed value is the
     /// only preparation fence the Runtime may lower.
-    pub(crate) fn source_release_preparation_effect(
+    pub fn source_release_preparation_effect(
         &self,
         current_realization: &crate::state::SessionRealizationLease,
     ) -> Result<SourceReleasePreparationEffect, SessionEnvironmentReceiptError> {
@@ -499,7 +499,7 @@ impl SessionEnvironmentState {
     /// Project physical disposal only from the durable Disposing phase. The
     /// aggregate root supplies its current realization; the prepared fence A
     /// is read exclusively from the persisted receipt.
-    pub(crate) fn source_release_disposal(
+    pub fn source_release_disposal(
         &self,
         current_realization: &crate::state::SessionRealizationLease,
     ) -> Result<SourceReleaseDisposal, SessionEnvironmentReceiptError> {

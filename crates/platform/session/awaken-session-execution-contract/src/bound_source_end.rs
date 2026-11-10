@@ -90,6 +90,7 @@ impl BoundSourceEnd {
             intent.kind(),
             awaken_session_contract::SessionEnvironmentEffectKind::Create
                 | awaken_session_contract::SessionEnvironmentEffectKind::Rebuild { .. }
+                | awaken_session_contract::SessionEnvironmentEffectKind::Restore { .. }
         ) {
             return None;
         }

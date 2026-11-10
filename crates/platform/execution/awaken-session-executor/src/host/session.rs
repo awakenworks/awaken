@@ -15,7 +15,7 @@ mod environment_lifecycle;
 #[cfg(test)]
 mod environment_realization;
 mod input_projection;
-mod quiescence;
+pub(crate) mod quiescence;
 
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;

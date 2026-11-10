@@ -644,6 +644,7 @@ mod tests {
             .application
             .realizations()
             .acknowledge_session_realization(AcknowledgeSessionRealization {
+                continuation: None,
                 session_id: "session-phase".into(),
                 lease: staged.authority.lease.clone(),
                 published: Vec::new(),
@@ -667,6 +668,7 @@ mod tests {
             .application
             .realizations()
             .acknowledge_session_realization(AcknowledgeSessionRealization {
+                continuation: None,
                 session_id: "session-phase".into(),
                 lease: staged.authority.lease.clone(),
                 published: vec![publish[0].clone(), publish[0].clone()],
@@ -690,6 +692,7 @@ mod tests {
         );
 
         let acknowledgement = AcknowledgeSessionRealization {
+            continuation: None,
             session_id: "session-phase".into(),
             lease: staged.authority.lease,
             published: publish,
@@ -1080,6 +1083,7 @@ mod tests {
             .application
             .realizations()
             .acknowledge_session_realization(AcknowledgeSessionRealization {
+                continuation: None,
                 session_id: "session-empty".into(),
                 lease: staged.authority.lease,
                 published: Vec::new(),

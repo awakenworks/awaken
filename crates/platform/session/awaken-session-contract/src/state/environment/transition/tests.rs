@@ -116,16 +116,16 @@ fn t1_every_step_and_event_under_ready_facts() {
     // Columns: U, R, Suspending{Quiescing, Uploading, ReadyToDispose,
     // Disposing}, Hibernated, Restoring. Sources per row are named in the
     // transition module; this table is the complete closed cell set.
-    let rows: [(&str, E, [Cell; 8]); 32] = [
+    let rows: [(&str, E, [Cell; 8]); 36] = [
         (
             "begin",
             E::BeginRealization,
-            [Stay, Stay, CONT, CONT, CONT, CONT, CONT, CONT],
+            [Stay, Stay, Stay, Stay, Stay, Stay, CONT, Stay],
         ),
         (
             "renew",
             E::RenewRealization,
-            [Stay, Stay, CONT, CONT, CONT, CONT, CONT, CONT],
+            [Stay, Stay, Stay, Stay, Stay, Stay, CONT, Stay],
         ),
         (
             "admit create",
@@ -386,6 +386,47 @@ fn t1_every_step_and_event_under_ready_facts() {
             [No(X::NotTerminal); 8],
         ),
         ("effect failed", E::EffectFailed, [Stay; 8]),
+        // Restore materialization admission retains the existing Restoring
+        // phase. Completion requires the checkpoint-specific Restored receipt;
+        // the ordinary materialized endpoint cannot publish restored bytes.
+        (
+            "admit restore",
+            admit(K::Restore, false),
+            [
+                No(X::RequiresResident),
+                No(X::InvalidTransition),
+                CONT,
+                CONT,
+                CONT,
+                CONT,
+                CONT,
+                DoHere(I::Materialize(K::Restore)),
+            ],
+        ),
+        (
+            "admit restore replay",
+            admit(K::Restore, true),
+            [
+                No(X::RequiresResident),
+                Stay,
+                CONT,
+                CONT,
+                CONT,
+                CONT,
+                CONT,
+                Stay,
+            ],
+        ),
+        (
+            "generic restore receipt",
+            materialized(K::Restore, false),
+            [No(X::InvalidTransition); 8],
+        ),
+        (
+            "generic restore receipt replay",
+            materialized(K::Restore, true),
+            [No(X::InvalidTransition); 8],
+        ),
     ];
     // Every event value appears exactly once.
     for index in 0..EVENT_COUNT {
@@ -787,11 +828,20 @@ const fn listed_kind(kind: MaterializationKind) -> usize {
         K::Adopt => 1,
         K::Rebuild => 2,
         K::ReserveResources => 3,
+        K::Restore => 4,
     }
 }
 
 const fn listed_event(event: SessionEnvironmentEvent) -> usize {
     match event {
+        E::AdmitMaterialization {
+            kind: K::Restore,
+            already_applied,
+        } => 32 + already_applied as usize,
+        E::Materialized {
+            kind: K::Restore,
+            already_applied,
+        } => 34 + already_applied as usize,
         E::BeginRealization => 0,
         E::RenewRealization => 1,
         E::AdmitMaterialization {
@@ -842,7 +892,7 @@ fn t8_domain_lists_every_step_terminality_lease_and_event() {
     }
 }
 
-/// @exhaustive SessionEnvironmentStep(8) x SessionTerminality(3) x RealizationLeaseStanding(3) x bool^12(4096) x SessionEnvironmentEvent(32) = 9437184
+/// @exhaustive SessionEnvironmentStep(8) x SessionTerminality(3) x RealizationLeaseStanding(3) x bool^12(4096) x SessionEnvironmentEvent(36) = 10616832
 /// @obligation session_environment.terminal_session_never_reenters_a_live_environment
 /// @obligation session_environment.resident_is_entered_only_by_materialization_or_restore
 /// @obligation session_environment.effect_instructions_require_a_current_realization_lease
@@ -1253,6 +1303,49 @@ fn t13_rebuild_admission_reads_source_closure_and_access() {
                     transition_environment(ready(step), event),
                     "RB8 {step:?} {event:?}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn worker_continuation_assignment_retains_source_fence_and_idle_boundary() {
+    // C1 continuation phase; C2 Idle; C3 no open activities; C4 original
+    // source fence current. B1 Quiescing/Uploading need all C2/C3/C4;
+    // B2 later disposal/restore may acquire successor but still need C2/C3;
+    // B3 Hibernated never grants effects. Renew preserves exact generation;
+    // missing/stale fences cannot become source capture authority.
+    for step in [SQ, SU, SR, SD, H, RS] {
+        for idle in [false, true] {
+            for activities in [false, true] {
+                for lease in [
+                    RealizationLeaseStanding::Unfenced,
+                    RealizationLeaseStanding::Fenced,
+                    RealizationLeaseStanding::Stale,
+                ] {
+                    for (checkpoint_live, generation_live) in
+                        [(true, true), (true, false), (false, true), (false, false)]
+                    {
+                        let facts = SessionEnvironmentFacts {
+                            checkpoint_live,
+                            generation_live,
+                            execution_idle: idle,
+                            activities_open: activities,
+                            lease,
+                            ..ready(step)
+                        };
+                        let requires_original = matches!(step, SQ | SU);
+                        let allowed = (step != H || !(checkpoint_live && generation_live))
+                            && idle
+                            && !activities
+                            && (!requires_original || lease == RealizationLeaseStanding::Fenced);
+                        assert_eq!(
+                            transition_environment(facts, E::BeginRealization).is_ok(),
+                            allowed,
+                            "step={step:?} idle={idle} activities={activities} lease={lease:?}"
+                        );
+                    }
+                }
             }
         }
     }

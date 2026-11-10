@@ -138,3 +138,37 @@ mod tests {
         );
     }
 }
+
+/// One exact directive trace; formatting remains with the observation owner.
+pub async fn observe_directive(
+    session_id: &SessionId,
+    directive: &crate::SessionRealizationDirective,
+) {
+    use crate::SessionRealizationAction;
+    // Observe the existing directive's complete generation coordinates;
+    // policy/credential payloads are outside this trace contract.
+    let action = match &directive.action {
+        SessionRealizationAction::Continue { instruction } => {
+            serde_json::json!({"phase":"continue","instruction":instruction})
+        }
+        SessionRealizationAction::Released => serde_json::json!({"phase":"released"}),
+        SessionRealizationAction::Stage { mcp_stages, .. } => serde_json::json!({
+                    "phase": "stage",
+                    "generations": mcp_stages.iter().map(|r| observed_generation(&r.generation)).collect::<Vec<_>>() }),
+        SessionRealizationAction::Publish { publish, drain } => serde_json::json!({
+                    "phase": "publish",
+                    "publish": publish.iter().map(observed_generation).collect::<Vec<_>>(),
+                    "drain": drain.iter().map(observed_generation).collect::<Vec<_>>() }),
+        SessionRealizationAction::Complete => serde_json::json!({"phase": "complete"}),
+    };
+    checkpoint(
+        "projection",
+        session_id,
+        serde_json::json!({"lease": directive.authority.lease, "action": action}),
+    )
+    .await;
+}
+
+pub async fn observe_completed(session_id: &SessionId, lease: &crate::SessionRealizationLease) {
+    checkpoint("complete", session_id, serde_json::json!({"lease": lease})).await;
+}

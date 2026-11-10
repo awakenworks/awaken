@@ -13,6 +13,16 @@ use awaken_worker_contract::RunClaim;
 /// Installs frozen inputs through the existing Runtime projection boundary.
 #[async_trait::async_trait]
 pub trait SessionProjectionExecution: Send + Sync {
+    async fn execute_environment_continuation(
+        &self,
+        _permit: &awaken_session_execution_contract::SessionRealizationPermit,
+        _projection: &FrozenSessionProjection,
+        _lease: &SessionRealizationLease,
+        _instruction: awaken_session_contract::SessionEnvironmentInstruction,
+    ) -> Result<
+        awaken_session_execution_contract::SessionContinuationReceipt,
+        awaken_runtime_contract::runs::RunError,
+    >;
     fn sessions(&self) -> SessionRealizations;
     fn realization_executor(&self) -> &RealizationExecutor;
     async fn ensure_session_substrate(

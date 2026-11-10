@@ -346,29 +346,43 @@ impl crate::terminal_effects::TerminalEffects {
         self.disposal_authorization(&effect)?;
         let lifecycle = sessions.lock_lifecycle(session_id.as_str()).await?;
         let authorization = self.disposal_authorization(&effect)?;
-        let prepared_environment = if effect.command.restore_target.is_none() {
-            // Disposal decision table TD0. Causes: C1 the aggregate has
-            // durably admitted one exact Preparation; C2 the process-local
-            // terminal owner is retained, cold, or provider-proved absent; C3
-            // the current successor fence is live. Effects: E1 re-observe the
-            // exact physical identity with zero Artifact/Memory/checkpoint/Hand
-            // work; E2 retain an existing terminal Retiring owner, reconstruct
-            // a cold owner, or preserve exact absence; E3 only the typed
-            // Disposal authorization may delete. Rules: retained=>E1+E3;
-            // cold=>E1+E2+E3; absent=>E1+E2 without a guessed delete.
-            Some(
-                self.prepare_terminal_environment_under_lifecycle(
-                    lifecycle.held(),
-                    peers,
-                    session_id.as_str(),
-                    authorization.effect_fence(),
-                    BoundEnvironmentPreparationMode::TerminalDisposal,
+        let restore_target_not_admitted = sessions
+            .read_realization(session_id.as_str(), |r| {
+                r.effects().assignment.as_ref().is_some_and(|assignment| {
+                    assignment
+                        .projection
+                        .environment_materialization
+                        .as_deref()
+                        .is_some_and(|facts| {
+                            facts.restore_target_not_admitted(&assignment.projection.environment)
+                        })
+                })
+            })?
+            .unwrap_or(false);
+        let prepared_environment =
+            if effect.command.restore_target.is_none() || restore_target_not_admitted {
+                // Disposal decision table TD0. Causes: C1 the aggregate has
+                // durably admitted one exact Preparation; C2 the process-local
+                // terminal owner is retained, cold, or provider-proved absent; C3
+                // the current successor fence is live. Effects: E1 re-observe the
+                // exact physical identity with zero Artifact/Memory/checkpoint/Hand
+                // work; E2 retain an existing terminal Retiring owner, reconstruct
+                // a cold owner, or preserve exact absence; E3 only the typed
+                // Disposal authorization may delete. Rules: retained=>E1+E3;
+                // cold=>E1+E2+E3; absent=>E1+E2 without a guessed delete.
+                Some(
+                    self.prepare_terminal_environment_under_lifecycle(
+                        lifecycle.held(),
+                        peers,
+                        session_id.as_str(),
+                        authorization.effect_fence(),
+                        BoundEnvironmentPreparationMode::TerminalDisposal,
+                    )
+                    .await?,
                 )
-                .await?,
-            )
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         let provider_proved_absence = prepared_environment
             .as_ref()
             .is_some_and(|prepared| prepared.environment.environment.is_none());
@@ -387,31 +401,37 @@ impl crate::terminal_effects::TerminalEffects {
                 ),
                 Some(expected),
             ) if &request == expected => {
-                let provider = environments
-                    .projected_session_environment_provider(session_id.as_str(), None)?;
-                let previous_resources = sessions
-                    .read_realization(session_id.as_str(), |r| r.previous_resources())?
-                    .flatten();
-                let spec = environments.session_environment_adoption_spec(
-                    peers,
-                    session_id.as_str(),
-                    provider,
-                    previous_resources.as_ref(),
-                )?;
-                let authority = peers
-                    .authority
-                    .provider_effect_authority(session_id.as_str(), authorization.effect_fence())?;
-                provider
-                    .terminal()
-                    .dispose_restored(&spec, expected, &authorization, &authority)
-                    .await
+                if restore_target_not_admitted && provider_proved_absence {
+                    // Exact terminal root and original request prove no target
+                    // admission. No provider lookup/Create/disposal is needed.
+                } else {
+                    let provider = environments
+                        .projected_session_environment_provider(session_id.as_str(), None)?;
+                    let previous_resources = sessions
+                        .read_realization(session_id.as_str(), |r| r.previous_resources())?
+                        .flatten();
+                    let spec = environments.session_environment_adoption_spec(
+                        peers,
+                        session_id.as_str(),
+                        provider,
+                        previous_resources.as_ref(),
+                    )?;
+                    let authority = peers.authority.provider_effect_authority(
+                        session_id.as_str(),
+                        authorization.effect_fence(),
+                    )?;
+                    provider
+                        .terminal()
+                        .dispose_restored(&spec, expected, &authorization, &authority)
+                        .await
+                        .map_err(RealizationError::terminal_effect_pending)?;
+                    awaken_provisioning_contract::with_current_sandbox_effect(
+                        authorization.effect_fence(),
+                        &authority,
+                        |_| Ok(()),
+                    )
                     .map_err(RealizationError::terminal_effect_pending)?;
-                awaken_provisioning_contract::with_current_sandbox_effect(
-                    authorization.effect_fence(),
-                    &authority,
-                    |_| Ok(()),
-                )
-                .map_err(RealizationError::terminal_effect_pending)?;
+                }
                 // Keep the exact Restoring request as the response-loss fence.
                 // The provider port treats proved absence as success, so an
                 // identical Disposal can replay until aggregate acknowledgement

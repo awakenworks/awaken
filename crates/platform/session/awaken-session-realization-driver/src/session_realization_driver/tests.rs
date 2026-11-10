@@ -66,6 +66,19 @@ struct InvalidatingProjection {
 
 #[async_trait::async_trait]
 impl SessionProjectionSynchronizer for InvalidatingProjection {
+    async fn execute_environment_continuation(
+        &self,
+        _: &SessionRealizationPermit,
+        _: &awaken_session_execution_contract::FrozenSessionProjection,
+        _: &SessionRealizationLease,
+        _: awaken_session_contract::SessionEnvironmentInstruction,
+    ) -> Result<
+        awaken_session_execution_contract::SessionContinuationReceipt,
+        SessionRealizationEffectFailure,
+    > {
+        unreachable!("reporting starts no continuation")
+    }
+
     fn observe_realization_request(
         &self,
     ) -> Result<

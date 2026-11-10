@@ -229,6 +229,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::SessionProjectionSynchronizer for Refusing {
+        async fn execute_environment_continuation(
+            &self,
+            _: &crate::SessionRealizationPermit,
+            _: &FrozenSessionProjection,
+            _: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+            _: awaken_session_contract::SessionEnvironmentInstruction,
+        ) -> Result<crate::SessionContinuationReceipt, crate::SessionRealizationEffectFailure>
+        {
+            unreachable!("supersession executes no continuation")
+        }
+
         fn observe_realization_request(
             &self,
         ) -> Result<
