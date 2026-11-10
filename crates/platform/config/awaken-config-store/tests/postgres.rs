@@ -1482,3 +1482,12 @@ async fn postgres_catalog_corrupt_publication_is_not_a_usable_manifest() {
         );
     }
 }
+
+#[tokio::test]
+async fn postgres_owner_selection_snapshot_retains_bounded_orphans_and_original_receipt() {
+    let Some(pool) = schema_pool("t_owner_orphans").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool).await.unwrap();
+    catalog_snapshot::owner_preferences_without_definition(&store).await;
+}

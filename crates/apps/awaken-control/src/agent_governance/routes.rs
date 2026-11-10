@@ -35,6 +35,7 @@ pub(crate) fn router(
 ) -> Router {
     Router::new()
         .route("/v1/agent-directory", get(directory))
+        .route("/v1/me/agent-selections", get(super::selection_reads::list))
         .route("/v1/me/agent-selections/{id}", axum::routing::put(select))
         .route("/v1/me/agent-selections/{id}/outcomes/{key}", get(outcome))
         .with_state(Ingress { stores, iam })
@@ -344,7 +345,7 @@ async fn directory(
     }))
 }
 
-fn decode_cursor(value: &str) -> Result<String, Failure> {
+pub(super) fn decode_cursor(value: &str) -> Result<String, Failure> {
     if value.len() > 1024 {
         return Err(Failure::Invalid);
     }

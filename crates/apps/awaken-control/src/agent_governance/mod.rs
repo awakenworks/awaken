@@ -12,6 +12,7 @@ mod authority;
 pub(crate) mod legacy;
 pub(crate) mod managed_definition_reads;
 mod routes;
+mod selection_reads;
 
 /// Explicit product registration selected by deployment. Omission grants no
 /// legacy Workspace role any new Agent authority and leaves this surface closed.

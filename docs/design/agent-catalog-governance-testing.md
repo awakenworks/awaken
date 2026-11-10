@@ -226,3 +226,55 @@ the author, preview qualification and governed publication require their native
 lifecycle contract before those UI actions can be enabled. This test design also
 does not claim that directory selection alone qualifies engine execution or any
 Desk Market/MyAgents journey.
+
+## Current-owner selection list qualification
+
+`GET /v1/me/agent-selections` observes persisted preferences for the current
+verified issuer and Account in the trusted Workspace. It accepts only `limit`
+(1 through 100, default 25), an opaque `after` cursor, and optional boolean
+`selected`. Its whitelist is `data: [{agent_id, generation, selected}]`,
+`next_page`, and `visibility=current-owner-authorized-selection-subset`.
+It returns no name, definition, publication, executable version, permission flag,
+or global total. An empty authorized subset does not prove global absence.
+
+Each row independently requires current `agent.selection.read`; Agent use,
+definition read and selection write confer none of that authority. Selection
+read also confers no write or use. Filtering precedes pagination. A stale or
+unreadable cursor is invalid rather than a way to discover hidden identifiers.
+Each request reobserves the current snapshot and authority; multiple page reads
+are not a frozen cross-request snapshot. Consumers refresh after a cursor becomes
+invalid. Dependency failure rejects the whole page with 503.
+
+The existing Config snapshot and its transactional scope epoch remain the read
+owner. Its bounded preference query includes records whose definition no longer
+exists; no second preference table or frontend selection truth is introduced.
+Both definition heads and owner preferences retain independent limits of 4096;
+overflow is unavailable, never silent truncation. Preference triggers already
+advance the same epoch, including same-value updates and delete/reinsert.
+The endpoint checks that epoch and current identity/authorization fence again
+before returning. Corrupt identifiers or persisted zero generations are
+unavailable rather than repaired into invented state.
+
+A current generation can prepare an independently authorized deselection using
+the original command protocol. It cannot resolve an earlier unknown write:
+only the original-key outcome read observes that immutable receipt. A receipt's
+applied generation may be older than the current preference generation. Neither
+observation may substitute for the other or authorize a replacement key.
+
+| Case | Setup and cause | Required effect | Executable owner |
+| --- | --- | --- | --- |
+| L1 | Select, revoke actual native use, retain independent read, reuse same JWT | Market hides manifest; owner list returns current preference without hidden definition | `selection_list_tests` SQLite/PostgreSQL HTTP matrices |
+| L2 | Persisted preference without a current definition/publication | Minimal preference remains discoverable and independently removable; read exposes no definition | Both HTTP matrices and Config adapter orphan snapshot cases |
+| L3 | Same ids under other Account, issuer or Workspace | Only current exact-owner rows, no caller-selected owner or fallback Workspace | Both HTTP matrices and shared Config orphan snapshot conformance |
+| L4 | Hidden preference between two readable ids; limit one; unreadable/stale cursor | Filter before pagination, no hidden id/name/total or extra empty page; invalid cursor is 400 | Both HTTP matrices |
+| L5 | Read revoked while write remains; write absent while read remains | Current list omits unreadable rows without claiming global absence; receipt GET denied; ungranted PUT denied | Both HTTP matrices |
+| L6 | Deselect generation one; read current state and old original receipt | Current false generation two, immutable original true generation one; GET never changes epoch | Both HTTP matrices and orphan snapshot cases |
+| L7 | Service/delegated/bad credential, missing trusted context or product declaration, malformed query | Current Account or explicit context required; finite 401/403/503/400, no new state | Both HTTP matrices |
+| L8 | Strict PDP failure, failed observation, missing registration/freshness, mid-page policy drift | Whole request 503, no partial success or default false | Both HTTP matrices using actual Native IAM routes |
+| L9 | Config changes and restores the same definition during row admission | Transactional epoch detects ABA and discards the captured page | Both HTTP matrices and existing adapter epoch conformance |
+| L10 | Orphan preferences exceed requested native snapshot bound | Explicit store error, no truncated successful snapshot; owner and original receipt remain exact | SQLite/PostgreSQL Config adapter orphan snapshot cases |
+
+These are required executable cases, not a claim of completed qualification.
+Portable compilation, real adapters, actual Native IAM HTTP, prepared prefixed
+router composition, browser journeys and deployed ingress remain separate test
+layers. Unavailable PostgreSQL or a skipped fixture cannot qualify that layer.

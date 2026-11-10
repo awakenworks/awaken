@@ -1822,3 +1822,9 @@ async fn sqlite_catalog_corrupt_publication_is_not_a_usable_manifest() {
         );
     }
 }
+
+#[tokio::test]
+async fn sqlite_owner_selection_snapshot_retains_bounded_orphans_and_original_receipt() {
+    let store = SqliteConfigStore::open_in_memory().await.unwrap();
+    catalog_snapshot::owner_preferences_without_definition(&store).await;
+}

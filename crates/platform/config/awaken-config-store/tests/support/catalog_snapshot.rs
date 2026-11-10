@@ -164,3 +164,93 @@ pub(super) async fn read_frame(
         2
     );
 }
+
+/// Persisted owner preferences outlive definition visibility and existence.
+pub(super) async fn owner_preferences_without_definition(
+    store: &(impl PersonalAgentSelectionRepository + AgentCatalogSnapshotRepository),
+) {
+    let scope = ScopeId::from("owner-orphans");
+    let person = owner();
+    let intent = AgentSelectionIntent {
+        request_key: "original".into(),
+        expected_generation: 0,
+        selected: true,
+    };
+    for id in ["a-orphan", "b-orphan"] {
+        store
+            .set_personal_agent_selection(&scope, &person, id, &intent)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    let snapshot = store
+        .agent_catalog_snapshot(&scope, &person, 2)
+        .await
+        .unwrap();
+    assert!(snapshot.entries.is_empty());
+    assert!(snapshot.epoch.is_some());
+    assert_eq!(
+        snapshot
+            .preferences
+            .iter()
+            .map(|row| row.agent_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a-orphan", "b-orphan"]
+    );
+    assert!(
+        snapshot
+            .preferences
+            .iter()
+            .all(|row| row.state.generation == 1 && row.state.selected)
+    );
+    assert!(
+        store
+            .agent_catalog_snapshot(&scope, &person, 1)
+            .await
+            .is_err(),
+        "orphan preferences retain the independent finite native bound"
+    );
+    for foreign in [
+        AgentSelectionOwner::new("https://native.example".into(), "person-b".into()).unwrap(),
+        AgentSelectionOwner::new("https://other.example".into(), "person-a".into()).unwrap(),
+    ] {
+        assert!(
+            store
+                .agent_catalog_snapshot(&scope, &foreign, 2)
+                .await
+                .unwrap()
+                .preferences
+                .is_empty()
+        );
+    }
+    store
+        .set_personal_agent_selection(
+            &scope,
+            &person,
+            "a-orphan",
+            &AgentSelectionIntent {
+                request_key: "remove".into(),
+                expected_generation: 1,
+                selected: false,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let current = store
+        .agent_catalog_snapshot(&scope, &person, 2)
+        .await
+        .unwrap();
+    assert!(current.epoch > snapshot.epoch);
+    assert_eq!(current.preferences[0].state.generation, 2);
+    assert!(!current.preferences[0].state.selected);
+    assert!(
+        store
+            .personal_agent_selection_outcome(&scope, &person, "a-orphan", "original")
+            .await
+            .unwrap()
+            .unwrap()
+            .intent
+            .selected
+    );
+}

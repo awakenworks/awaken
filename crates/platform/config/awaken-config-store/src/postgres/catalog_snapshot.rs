@@ -114,7 +114,7 @@ impl AgentCatalogSnapshotRepository for PostgresConfigStore {
                 row.try_get("order_verified").map_err(reject)?,
             )?);
         }
-        let rows = sqlx::query("SELECT p.agent_id, p.generation, p.selected FROM config_personal_agent_selection p JOIN config_agent a ON a.scope_id=p.scope_id AND a.id=p.agent_id WHERE p.scope_id=$1 AND p.issuer=$2 AND p.account_id=$3 ORDER BY p.agent_id LIMIT $4").bind(&scope.0).bind(owner.issuer()).bind(owner.account()).bind(bound).fetch_all(&mut *tx).await.map_err(reject)?;
+        let rows = sqlx::query("SELECT p.agent_id, p.generation, p.selected FROM config_personal_agent_selection p WHERE p.scope_id=$1 AND p.issuer=$2 AND p.account_id=$3 ORDER BY p.agent_id LIMIT $4").bind(&scope.0).bind(owner.issuer()).bind(owner.account()).bind(bound).fetch_all(&mut *tx).await.map_err(reject)?;
         let mut preferences = Vec::with_capacity(rows.len());
         for row in rows {
             preferences.push(AgentCatalogPreference {

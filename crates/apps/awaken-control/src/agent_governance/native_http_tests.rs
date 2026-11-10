@@ -1179,3 +1179,6 @@ async fn postgres_native_directory_and_owner_selection_current_authority_matrix(
 
 #[path = "definition_http_tests.rs"]
 mod definition_http_tests;
+
+#[path = "selection_list_tests.rs"]
+mod selection_list_tests;
