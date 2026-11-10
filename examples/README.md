@@ -51,24 +51,30 @@ protocol fixture. Real-provider success does not turn those fixture results
 into provider execution evidence. Product recordings have not been rerun for
 this change.
 
-The separately owned applications were repaired and checked against Native
-`a95f392e0243899fab673defb38c5366dadd0bc0` on Linux, using real DeepSeek
-`deepseek-flash` for the provider journeys below. Each repair stays in its own
-`fix/current-native-examples-20261110` branch. Original checkout work was preserved;
-these branches and public case/source archives have not been published.
+The separately owned repairs below are integrated into each application's local
+main; original checkout work was preserved. No branch or public case/source
+archive was pushed or published. Provider journeys use real DeepSeek
+`deepseek-flash` on Linux.
+
+Cowork, Pilot and Harness were checked against Native
+`a95f392e0243899fab673defb38c5366dadd0bc0`. Design was rebased over its newer
+main `297522b` and rechecked against Native `9d2b32d988`, whose intervening change
+is documentation only. The Design check retains main's transient-history
+recovery and the shared smoke/corpus terminal guard.
 
 | Application | Repair revision | Source and controlled checks | Real-provider check |
 |---|---|---|---|
 | Cowork | `b378ede` | 214 unit, 54 oracle/helper tests, 62 browser journeys and build | Short and explicit headcount input both deliver verified Files on Namespace; independent arithmetic/status and approval limits retained |
 | Pilot | `14d831e` | 137 unit/runner tests, typecheck and build | Complete schedule/resources, desktop/mobile browser, both research children, Plan, satisfied Outcome, artifact and real IAM share/revoke journey on Namespace |
 | DeepSeek Harness | `c670e1f` | 46 unit tests, typecheck/build and 12 browser/video journeys | Complete preset/Skill/reconnect/plan/question/creator journey; approved child Bash, cross-Thread reply and later parent report on Namespace |
-| Design | `665e410` | 465 source tests and build; 43 PostgreSQL/MinIO/controlled-browser tests (live case explicitly skipped in that lane) | Separate real Docker initial/child generation, verified Preview, acceptance and ZIP export; missing-browser negative fails promptly |
+| Design | `7725193` | 487 source tests and build; 53 PostgreSQL/MinIO/controlled-browser tests (live case explicitly skipped in that lane) | Rebased real Docker gate passed 29 checks, including initial/child generation, verified Preview, acceptance and ZIP export; missing-browser negative fails promptly |
 
 The application READMEs own preparation, the first useful result and verification
 commands; detailed records retain exact runtime and failure boundaries. Repair
 coverage includes refused child confirmation/retry, wrong output keys before
 publication, Native initialization refusal, missing model selection, invalid
-Project event order, SDK capability-header conflicts and unsuccessful Web tools.
+Project event order, SDK capability-header conflicts, unsuccessful Web tools and
+a transient history read followed by exact terminal evidence.
 Tests keep their cause/effect design beside the assertions.
 
 When changing a Managed contract, Skill, model selection or Sandbox toolchain,
