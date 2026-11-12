@@ -193,6 +193,7 @@ fn e(x: impl ToString) -> FileStoreError {
 pub struct ObjectFileStore {
     store: Arc<dyn ObjectStore>,
     prefix: String,
+    conditional_copy: bool,
 }
 
 impl ObjectFileStore {
@@ -201,6 +202,7 @@ impl ObjectFileStore {
         Self {
             store,
             prefix: prefix.into(),
+            conditional_copy: false,
         }
     }
 
@@ -208,6 +210,7 @@ impl ObjectFileStore {
     /// SDK environment/metadata discovery supplies short-lived credentials.
     pub fn from_config(config: ObjectFileStoreConfig) -> Result<Self, FileStoreError> {
         config.validate()?;
+        let mut conditional_copy = false;
         let store: Arc<dyn ObjectStore> = match config.provider {
             ObjectStoreProvider::S3 => {
                 let region = config.region.as_deref().ok_or_else(|| {
@@ -220,7 +223,27 @@ impl ObjectFileStore {
                     .with_region(region);
                 if let Some(endpoint) = &config.endpoint {
                     builder = builder.with_endpoint(endpoint);
+                    if let Some(endpoint) = oss_endpoint_with_bucket(endpoint, &config.bucket) {
+                        use object_store::aws::AmazonS3ConfigKey;
+                        builder = builder
+                            .with_endpoint(endpoint)
+                            .with_virtual_hosted_style_request(true)
+                            .with_config(AmazonS3ConfigKey::ConditionalPut, "disabled")
+                            .with_config(
+                                AmazonS3ConfigKey::CopyIfNotExists,
+                                "header-with-status:x-oss-forbid-overwrite:true:409",
+                            );
+                    }
                 }
+                use object_store::aws::AmazonS3ConfigKey;
+                conditional_copy = conditional_copy_configuration(
+                    builder
+                        .get_config_value(&AmazonS3ConfigKey::ConditionalPut)
+                        .as_deref(),
+                    builder
+                        .get_config_value(&AmazonS3ConfigKey::CopyIfNotExists)
+                        .as_deref(),
+                )?;
                 Arc::new(builder.build().map_err(e)?)
             }
             ObjectStoreProvider::Gcs => Arc::new(
@@ -230,12 +253,75 @@ impl ObjectFileStore {
                     .map_err(e)?,
             ),
         };
-        Ok(Self::new(store, config.prefix))
+        Ok(Self {
+            store,
+            prefix: config.prefix,
+            conditional_copy,
+        })
     }
 
     fn key(&self, id: &str) -> ObjPath {
         ObjPath::from(format!("{}/{}", self.prefix, id))
     }
+
+    async fn commit(&self, key: &ObjPath, bytes: &[u8]) -> object_store::Result<()> {
+        let payload = PutPayload::from(bytes.to_vec());
+        if !self.conditional_copy {
+            return self
+                .store
+                .put_opts(
+                    key,
+                    payload,
+                    PutOptions {
+                        mode: PutMode::Create,
+                        ..PutOptions::default()
+                    },
+                )
+                .await
+                .map(|_| ());
+        }
+        let staging = ObjPath::from(format!(
+            "{}/.staging/{}.upload",
+            self.prefix,
+            uuid::Uuid::new_v4()
+        ));
+        let result = match self.store.put(&staging, payload).await {
+            Ok(_) => self.store.copy_if_not_exists(&staging, key).await,
+            Err(error) => Err(error),
+        };
+        // Even a transport error can follow a completed upload/copy. Reclaim only
+        // our unique temporary key; never roll back or overwrite the content key.
+        self.store.delete(&staging).await?;
+        result
+    }
+}
+
+fn conditional_copy_configuration(
+    put: Option<&str>,
+    copy: Option<&str>,
+) -> Result<bool, FileStoreError> {
+    let disabled = put.is_some_and(|value| value.trim() == "disabled");
+    if disabled && copy.is_none_or(|value| value.trim().is_empty()) {
+        return Err(FileStoreError::InvalidConfiguration {
+            detail: "S3 conditional PUT is disabled without conditional copy support".into(),
+        });
+    }
+    Ok(disabled)
+}
+
+fn oss_endpoint_with_bucket(endpoint: &str, bucket: &str) -> Option<String> {
+    let region = endpoint
+        .trim_end_matches('/')
+        .strip_prefix("https://s3.oss-")?
+        .strip_suffix(".aliyuncs.com")?;
+    if region.is_empty()
+        || !region
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return None;
+    }
+    Some(format!("https://{bucket}.s3.oss-{region}.aliyuncs.com"))
 }
 
 #[async_trait]
@@ -243,15 +329,7 @@ impl FileStore for ObjectFileStore {
     async fn put(&self, bytes: &[u8]) -> Result<String, FileStoreError> {
         let id = content_id(bytes);
         let key = self.key(&id);
-        let options = PutOptions {
-            mode: PutMode::Create,
-            ..PutOptions::default()
-        };
-        match self
-            .store
-            .put_opts(&key, PutPayload::from(bytes.to_vec()), options)
-            .await
-        {
+        match self.commit(&key, bytes).await {
             Ok(_) => Ok(id),
             Err(object_store::Error::AlreadyExists { .. }) => {
                 let existing = self.get(&id).await?.ok_or_else(|| {
@@ -313,6 +391,10 @@ impl FileStore for ObjectFileStore {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/conditional_copy.rs"]
+mod conditional_copy_tests;
 
 #[cfg(test)]
 #[path = "../tests/support/s3_fixture.rs"]
@@ -451,9 +533,10 @@ mod tests {
         minio_backend(&secret_key)
     }
 
-    async fn object_store_conformance(
+    pub(super) async fn object_store_conformance(
         backend: Arc<dyn ObjectStore>,
         prefix: &str,
+        conditional_copy: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Cause/effect graph: C1=create immutable content-addressed object;
         // C2=exact replay; C3=foreign/in-flight key under the allocation;
@@ -462,7 +545,8 @@ mod tests {
         // never projected as a File; E4=get and put fail closed; E5=one visible
         // delete followed by an idempotent absence. The same graph executes on
         // the in-memory adapter and mandatory MinIO substrate.
-        let store = ObjectFileStore::new(Arc::clone(&backend), prefix);
+        let mut store = ObjectFileStore::new(Arc::clone(&backend), prefix);
+        store.conditional_copy = conditional_copy;
         let bytes = b"hello object store";
         let id = store.put(bytes).await?;
         assert_eq!(id, store.put(bytes).await?, "idempotent");
@@ -498,7 +582,8 @@ mod tests {
         // shared FileStore set/empty rules both run on memory and MinIO.
         // F1 distinct/replayed bytes -> exact ordered set; F2 zero bytes ->
         // stable id, readable empty payload, then absence after deletion.
-        let set_store = ObjectFileStore::new(Arc::clone(&backend), format!("{prefix}/set"));
+        let mut set_store = ObjectFileStore::new(Arc::clone(&backend), format!("{prefix}/set"));
+        set_store.conditional_copy = conditional_copy;
         crate::tests::list_sorted_and_dedup(&set_store).await;
         crate::tests::empty_bytes_round_trip(&store).await;
         Ok(())
@@ -510,7 +595,7 @@ mod tests {
         // existing F1/F2 content-id, replay, exact-set, empty-read and delete
         // effects below. The shared table owns those assertions; no replacement
         // object-store or cryptographic implementation is introduced here.
-        object_store_conformance(Arc::new(InMemory::new()), "blobs").await
+        object_store_conformance(Arc::new(InMemory::new()), "blobs", false).await
     }
 
     #[test]
@@ -767,7 +852,7 @@ mod tests {
             "least-privilege identity must receive authorization denial outside its prefixes"
         );
         let prefix = format!("contract/{}", std::process::id());
-        object_store_conformance(s3, &prefix).await?;
+        object_store_conformance(s3, &prefix, false).await?;
         s3_fixture::report_exercised();
         Ok(())
     }
