@@ -1069,3 +1069,21 @@ their immutable Pod specification. The same current grant is checked before
 each underlying stdin/stdout/shutdown poll, including multiple Ready-partial
 dispatches within one outer poll. These checks qualify this input projection,
 not atomic Kubernetes GET/exec routing or arbitrary process helpers.
+
+
+## Amendment 2026-11-11: retirement and Suspend share one issued source grant
+
+Suspend intent and ordinary projection retirement compete through the existing
+Session root CAS. If retirement commits first, its explicitly expired grant
+cannot become a new source operation. If Suspend commits first, retirement
+preserves the source. Losing an acknowledgement response does not change this
+ordering; the root disposition, not the driver's initial or last local phase,
+decides whether the local grant can be abandoned. A restored continuation may
+enter ordinary Stage in the same driver and uses that same root decision.
+
+The existing registered-Worker continuation capability advances to v2. Its
+manifest and exact-format admission are reused before a new Suspend intent as
+well as before delivery, so an old v1 source that closes on an unknown reply
+cannot be handed the operation. Legacy unleased local roots retain their
+existing unfenced rule; self-hosted WorkQueue restrictions remain unchanged.
+This adds no continuation state, Worker registry or alternative transport.

@@ -226,6 +226,7 @@ pub enum SessionArchiveWithRepositoryPublicationError {
 impl From<SessionMutationError> for SessionArchiveWithRepositoryPublicationError {
     fn from(error: SessionMutationError) -> Self {
         match error {
+            SessionMutationError::Admission(error) => Self::Rejected(error.into()),
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
                 Self::Conflict

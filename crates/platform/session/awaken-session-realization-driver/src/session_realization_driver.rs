@@ -24,6 +24,31 @@ use awaken_session_execution_contract::{
 };
 use awaken_session_types::SessionId;
 
+/// Only the Session root may authorize abandoning an issued local grant.
+/// Failed/missing responses preserve it; the caller still holds the same permit.
+async fn retire_projection(
+    session_id: &SessionId,
+    lease: &SessionRealizationLease,
+    control: &dyn SessionRealizationControl,
+    synchronizer: &dyn SessionProjectionSynchronizer,
+) {
+    if matches!(
+        control
+            .retire_session_realization(
+                awaken_session_execution_contract::RetireSessionRealization {
+                    session_id: session_id.clone(),
+                    lease: lease.clone(),
+                }
+            )
+            .await,
+        Ok(awaken_session_contract::SessionRealizationRetirement::Retired {})
+    ) {
+        let _ = synchronizer
+            .invalidate_session_realization_lease(session_id, lease)
+            .await;
+    }
+}
+
 /// Close the one repeated effect-failure path. Control owns the durable failure
 /// transition; the synchronizer owns only invalidation of its disposable lease
 /// projection. Both are best-effort because the original effect error remains
@@ -49,9 +74,7 @@ async fn fail_realization_effect(
             error.run_error(),
         ))
         .await;
-    let _ = synchronizer
-        .invalidate_session_realization_lease(session_id, lease)
-        .await;
+    retire_projection(session_id, lease, control, synchronizer).await;
     SessionRealizationDriveError::Effect(error.after_wait(reporting.elapsed()))
 }
 
@@ -67,6 +90,46 @@ pub async fn drive_session_realization(
     synchronizer: &dyn SessionProjectionSynchronizer,
     mcp: &dyn McpAttachmentRealizer,
     mut directive: SessionRealizationDirective,
+    request_started: awaken_lease_contract::authority::AuthorityProofStarted,
+) -> Result<(), SessionRealizationDriveError> {
+    let run_free = source_run_id.is_none();
+    let result = drive_phases(
+        permit,
+        source_run_id,
+        control,
+        synchronizer,
+        mcp,
+        &mut directive,
+        request_started,
+    )
+    .await;
+    if run_free
+        && matches!(
+            &result,
+            Err(SessionRealizationDriveError::Control(_)
+                | SessionRealizationDriveError::DidNotConverge)
+        )
+    {
+        // Use the actual last directive's grant, not the entry phase. A root
+        // may have committed continuation while an ordinary ACK was in flight.
+        retire_projection(
+            permit.session_id(),
+            &directive.authority.lease,
+            control,
+            synchronizer,
+        )
+        .await;
+    }
+    result
+}
+
+async fn drive_phases(
+    permit: &SessionRealizationPermit,
+    source_run_id: Option<awaken_agent_contract::agent::run::Id>,
+    control: &dyn SessionRealizationControl,
+    synchronizer: &dyn SessionProjectionSynchronizer,
+    mcp: &dyn McpAttachmentRealizer,
+    directive: &mut SessionRealizationDirective,
     mut request_started: awaken_lease_contract::authority::AuthorityProofStarted,
 ) -> Result<(), SessionRealizationDriveError> {
     // The Session is taken from the exclusion the caller holds, never passed
@@ -88,7 +151,7 @@ pub async fn drive_session_realization(
             synchronizer,
             session_id,
             source_run_id.as_ref(),
-            &directive,
+            directive,
             request_started,
         )
         .await
@@ -115,7 +178,7 @@ pub async fn drive_session_realization(
         }
         #[cfg(feature = "test-support")]
         awaken_session_execution_contract::realization_observation::observe_directive(
-            session_id, &directive,
+            session_id, directive,
         )
         .await;
         match directive.action.clone() {
@@ -133,10 +196,10 @@ pub async fn drive_session_realization(
                     .await
                     .map_err(SessionRealizationDriveError::Effect)?;
                 request_started = synchronizer.observe_realization_request()?;
-                directive = control
+                *directive = control
                     .acknowledge_session_realization(AcknowledgeSessionRealization {
                         session_id: session_id.clone(),
-                        lease: directive.authority.lease,
+                        lease: directive.authority.lease.clone(),
                         published: Vec::new(),
                         drained: Vec::new(),
                         continuation: Some(receipt),
@@ -189,10 +252,10 @@ pub async fn drive_session_realization(
                     serde_json::json!({"lease": directive.authority.lease,
                         "generations": receipts.iter().map(|r| awaken_session_execution_contract::realization_observation::observed_generation(&r.generation)).collect::<Vec<_>>()})).await;
                 request_started = synchronizer.observe_realization_request()?;
-                directive = match control
+                *directive = match control
                     .activate_session_realization(ActivateSessionRealization {
                         session_id: session_id.clone(),
-                        lease: directive.authority.lease,
+                        lease: directive.authority.lease.clone(),
                         prepared_resource_revision: prepare_session
                             .then_some(directive.projection.resource_revision),
                         mcp_receipts: receipts.clone(),
@@ -260,11 +323,11 @@ pub async fn drive_session_realization(
                         "published": publish.iter().map(awaken_session_execution_contract::realization_observation::observed_generation).collect::<Vec<_>>(),
                         "drained": drain.iter().map(awaken_session_execution_contract::realization_observation::observed_generation).collect::<Vec<_>>()})).await;
                 request_started = synchronizer.observe_realization_request()?;
-                directive = control
+                *directive = control
                     .acknowledge_session_realization(AcknowledgeSessionRealization {
                         continuation: None,
                         session_id: session_id.clone(),
-                        lease: directive.authority.lease,
+                        lease: directive.authority.lease.clone(),
                         published: publish,
                         drained: drain,
                     })

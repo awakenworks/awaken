@@ -338,15 +338,13 @@ mod tests {
             ("S2 row id", wrong_id, false),
             ("S2 history", wrong_history, false),
         ] {
-            sqlx::query(&format!(
-                "UPDATE {REGISTRY_NS}_entry SET data = ?1 WHERE kind = ?2 AND id = ?3"
-            ))
-            .bind(wire.to_string())
-            .bind(MEMORY)
-            .bind("memory-cas")
-            .execute(&store.pool)
-            .await
-            .unwrap();
+            sqlx::query("UPDATE resource_catalog_entry SET data = ?1 WHERE kind = ?2 AND id = ?3")
+                .bind(wire.to_string())
+                .bind(MEMORY)
+                .bind("memory-cas")
+                .execute(&store.pool)
+                .await
+                .unwrap();
             let RegistryRepositoryError::CorruptData(facts) =
                 store.load_memory_store("memory-cas").await.unwrap_err()
             else {

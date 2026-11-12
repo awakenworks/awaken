@@ -218,6 +218,18 @@ impl awaken_session_execution_contract::SessionRealizationControl for WorkerCont
             .fail_session_realization(&self.identity, command)
             .await
     }
+
+    async fn retire_session_realization(
+        &self,
+        command: awaken_session_execution_contract::RetireSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationRetirement,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        self.control
+            .retire_session_realization(&self.identity, command)
+            .await
+    }
 }
 
 #[async_trait::async_trait]

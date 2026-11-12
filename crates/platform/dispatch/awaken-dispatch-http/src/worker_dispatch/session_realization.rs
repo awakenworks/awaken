@@ -261,6 +261,26 @@ pub(super) async fn session_resume(
                 "authenticated worker does not own the Session resume claim",
             )));
         }
+        let registry_expiry = authority.snapshot.expires_at_ms;
+        let realization_expiry = authority.now_ms.saturating_add(authority.lease_ms).min(registry_expiry);
+        let command = crate::WorkerSessionResumeCommand {
+            claim: request.claim.clone(),
+            session_id: awaken_session_types::SessionId::from(&request.session_id),
+            work_authority: request.session_work_authority.clone(),
+            continuation: request.continuation.clone(),
+            target: awaken_session_execution_contract::SessionRealizationTarget {
+                owner: request.identity.worker_id.clone(),
+                runtime_incarnation: request.identity.lease_owner(),
+                lease_expires_at_unix_ms: realization_expiry,
+                reassign_existing_lease: request.continuation.is_none(),
+            },
+            registry_expires_at_unix_ms: registry_expiry,
+        };
+        if let crate::WorkerClaimPersistence::Postgres { sessions, .. } = &service.claim_persistence {
+            let realization = sessions.resume(command).await
+                .map_err(crate::worker_application_error).map_err(RealizationHttpError::from)?;
+            return Ok(json!({ "realization": realization }));
+        }
         let mut guard = service
             .dispatch
             .lock_commit_epoch(&request.claim)
@@ -275,37 +295,10 @@ pub(super) async fn session_resume(
                 "Session resume claim lease has expired",
             )));
         }
-        let dispatch = guard.request().clone();
-        if dispatch.run_id() != &request.claim.run_id {
-            return Err(RealizationHttpError::from(ApplicationError::invalid(
-                "guarded dispatch does not match the Session resume claim",
-            )));
-        }
-        if dispatch.session_thread_id().0 != request.session_id {
-            return Err(RealizationHttpError::from(ApplicationError::invalid(
-                "Session resume target does not match the claimed Run",
-            )));
-        }
-        let expected_resources = dispatch
-            .session_resources
-            .as_ref()
-            .map(|envelope| envelope.decode_with(SessionResourceManifest::decode_resources))
-            .transpose()
-            .map_err(|error| {
-                RealizationHttpError::from(ApplicationError::invalid(error.to_string()))
-            })?;
-        let receipt = request.session_work_authority.as_ref().ok_or_else(|| {
-            RealizationHttpError::from(ApplicationError::invalid(
-                "Session resume requires exact Work authority",
-            ))
-        })?;
-        if receipt.session_id().as_str() != request.session_id
-            || receipt.worker_owner() != request.identity.lease_owner()
-        {
-            return Err(RealizationHttpError::from(ApplicationError::invalid(
-                "Session resume Work authority identity does not match the claim",
-            )));
-        }
+        let expected_resources = command.resources_for(guard.request())
+            .map_err(crate::worker_application_error).map_err(RealizationHttpError::from)?;
+        let receipt = command.work_receipt()
+            .map_err(crate::worker_application_error).map_err(RealizationHttpError::from)?;
         let observed = session_work_ownership(
             &service,
             &awaken_session_types::SessionId::from(&request.session_id),
@@ -320,20 +313,9 @@ pub(super) async fn session_resume(
             )));
         }
         let control = &service.session_control;
-        let registry_expiry = authority.snapshot.expires_at_ms;
-        let realization_expiry = authority
-            .now_ms
-            .saturating_add(authority.lease_ms)
-            .min(registry_expiry);
+        command.validate_continuation()
+            .map_err(crate::worker_application_error).map_err(RealizationHttpError::from)?;
         if let Some(asserted) = request.continuation.as_ref() {
-            if asserted.owner != request.identity.worker_id
-                || asserted.runtime_incarnation != request.identity.lease_owner()
-                || asserted.expires_at_unix_ms > registry_expiry
-            {
-                return Err(RealizationHttpError::from(ApplicationError::invalid(
-                    "Session continuation exceeds authenticated Worker authority",
-                )));
-            }
             // Reuse the existing exact-fence renewal CAS. Stale continuation is
             // never converted into a reassignment; a cold/retired Worker must
             // explicitly take the ordinary assignment path without this proof.
@@ -539,6 +521,36 @@ pub(super) fn terminal_cleanup_control(
     service: &WorkerDispatchService,
 ) -> &Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl> {
     &service.terminal_cleanup_control
+}
+
+/// Retiring an issued phase grants no new effect. Authenticate the current
+/// Worker incarnation and exact lease owner, then let the Root CAS decide the
+/// typed outcome. Expired realization/retired Work are valid retirement inputs.
+pub(super) async fn retire_session_realization(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<
+        SessionRealizationReq<awaken_session_execution_contract::RetireSessionRealization>,
+    >,
+) -> (StatusCode, Json<Value>) {
+    let result: Result<Value, RealizationHttpError> = async {
+        verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
+        claim_authority(&service, &worker, Some(&request.identity), false).await?;
+        if request.command.lease.owner != request.identity.worker_id
+            || request.command.lease.runtime_incarnation != request.identity.lease_owner()
+        {
+            return Err(RealizationHttpError::from(ApplicationError::invalid(
+                "Session retirement lease is not owned by the authenticated Worker incarnation",
+            )));
+        }
+        let retired = service
+            .session_control
+            .retire_session_realization(request.command)
+            .await?;
+        Ok(json!(retired))
+    }
+    .await;
+    respond_realization(result)
 }
 
 #[tracing::instrument(name = "worker.session.realization.renew", skip_all, fields(session_id = %request.command.session_id, worker_id = %request.identity.worker_id, epoch = request.command.asserted_lease.epoch))]

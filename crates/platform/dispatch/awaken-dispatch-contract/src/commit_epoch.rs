@@ -215,18 +215,7 @@ impl CommitEpochGuard {
                         )
                         .await
                         .map_err(|error| failure(error.to_string()))?;
-                    if snapshot.thread_id != *request.thread_id()
-                        || snapshot.claimed_run_id != *request.run_id()
-                        || snapshot
-                            .run_record(request.run_id())
-                            .map_err(|error| failure(error.to_string()))?
-                            .is_some()
-                    {
-                        return Err(failure(
-                            "prepared reservation already has committed or conflicting Run truth; admission remains uncertain".into(),
-                        ));
-                    }
-                    snapshot.store_cursor
+                    prepared_session_run_admission_cursor(&request, &snapshot).map_err(&failure)?
                 }
                 PreparedRunRecovery::ReceiptOnly => 0,
             };
@@ -291,6 +280,24 @@ impl CommitEpochGuard {
     pub fn cancellation_requested(&self) -> bool {
         self.observation.cancellation_requested
     }
+}
+
+/// A guarded prepared reservation can use only its original uncommitted prefix.
+/// The caller must keep its claim protected while consuming these read facts.
+pub fn prepared_session_run_admission_cursor(
+    request: &crate::RunDispatch,
+    snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+) -> Result<u64, String> {
+    if snapshot.thread_id != *request.thread_id()
+        || snapshot.claimed_run_id != *request.run_id()
+        || snapshot
+            .run_record(request.run_id())
+            .map_err(|error| error.to_string())?
+            .is_some()
+    {
+        return Err("prepared reservation already has committed or conflicting Run truth; admission remains uncertain".into());
+    }
+    Ok(snapshot.store_cursor)
 }
 
 #[cfg(test)]

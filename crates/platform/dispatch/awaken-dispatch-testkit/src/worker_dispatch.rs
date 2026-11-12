@@ -63,6 +63,7 @@ pub fn worker_dispatch_dependencies(
 ) -> RegisteredDispatchDependencies {
     let unconfigured = Arc::new(UnconfiguredCollaborators);
     RegisteredDispatchDependencies {
+        claim_persistence: awaken_dispatch_http::WorkerClaimPersistence::Independent,
         execution_bindings: None,
         execution_stops: None,
         worker_work_release: Arc::new(awaken_dispatch::ClaimGuardedSessionWorkRelease::new(
@@ -229,6 +230,16 @@ impl SessionWorkerLeaseAuthority for UnconfiguredCollaborators {
 
 #[async_trait]
 impl session::SessionRealizationControl for UnconfiguredCollaborators {
+    async fn retire_session_realization(
+        &self,
+        _command: session::RetireSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationRetirement,
+        SessionRealizationControlFailure,
+    > {
+        Err(refused())
+    }
+
     async fn begin_session_realization(
         &self,
         _command: session::BeginSessionRealization,

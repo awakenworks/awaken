@@ -58,6 +58,7 @@ pub(crate) fn mutation_error(error: SessionMutationError) -> RunError {
 
 pub(crate) fn preparation_error(error: SessionPreparationError) -> RunError {
     match error {
+        SessionPreparationError::Admission(error) => error.into(),
         SessionPreparationError::Rejected(error) => error,
         SessionPreparationError::Unavailable(message) => RunError::unavailable(message),
         SessionPreparationError::NotFound => RunError::bad_request("Session was not found"),

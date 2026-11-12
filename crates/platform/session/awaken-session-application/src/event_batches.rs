@@ -1923,6 +1923,7 @@ fn repository_run_error(error: awaken_session_contract::SessionRepositoryError) 
 
 fn mutation_run_error(error: SessionMutationError) -> RunError {
     match error {
+        SessionMutationError::Admission(error) => error.into(),
         SessionMutationError::NotFound => RunError::bad_request("Session was not found"),
         SessionMutationError::Conflict => {
             RunError::unavailable("Session Event state changed concurrently")

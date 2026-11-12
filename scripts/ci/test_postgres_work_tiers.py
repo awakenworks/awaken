@@ -27,7 +27,7 @@ class WorkParitySelectionTests(unittest.TestCase):
         cls.source = (ROOT / 'scripts/ci/pg_tests.sh').read_text(encoding='utf-8')
         cls.table = (ROOT / 'scripts/ci/service_suites.toml').read_text(encoding='utf-8')
 
-    def verify(self, source=None, table=None):
+    def verify(self, source=None, table=None, scope="core"):
         # The suite rows live in the table; pg_tests.sh keeps the checked wrappers.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -35,7 +35,7 @@ class WorkParitySelectionTests(unittest.TestCase):
             script.parent.mkdir(parents=True)
             script.write_text(self.source if source is None else source, encoding='utf-8')
             (root / 'scripts/ci/service_suites.toml').write_text(self.table if table is None else table, encoding='utf-8')
-            return postgres_phases('core', root)
+            return postgres_phases(scope, root)
 
     def changed_work(self, transform):
         return edit_row(self.table, 'postgres.parity.work-store', transform)
@@ -323,14 +323,40 @@ class SessionWorkReleaseSelectionTests(unittest.TestCase):
         'session_work_release::tests::live_postgres_rejects_stale_claim_and_changed_physical_evidence',
         'session_work_release::tests::live_postgres_work_release_rollback_and_epoch_owner_fences',
         'session_work_release::tests::live_postgres_shared_root_and_separate_work_database',
+        'session_work_release::tests::http::live_postgres_http_cap_one_resumes_the_selected_session',
+        'session_work_release::tests::http::live_postgres_http_cap_two_resumes_distinct_claims',
+        'session_work_release::tests::http::live_postgres_http_cap_one_checkpoint_and_recovery_keep_exact_fences',
+        'session_work_release::tests::http::live_postgres_http_resume_partial_affinity_keeps_original_owners',
+        'session_work_release::tests::http::settlement::live_postgres_http_cap_one_settles_real_memory_once_without_held_guard',
+        'session_work_release::tests::http::races::live_postgres_http_same_claim_cold_absence_recovers_the_one_accepted_receipt',
+        'session_work_release::tests::http::races::live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_root_write',
+        'session_work_release::tests::http::settlement::live_postgres_http_memory_observer_release_preserves_a_successor_before_settlement_cas',
     )
+
+    def test_borrowed_root_cases_stay_in_the_original_storage_phase(self):
+        # R5 the nested SQL-kernel cases must match postgres_ and be required,
+        # never merely listed by an unrelated whole-lib or ignored suite.
+        cases = (
+            'postgres::mutation::tests::postgres_borrowed_commit_keeps_caller_transaction_and_rolls_back_late_sql_failure',
+            'postgres::mutation::tests::postgres_borrowed_commit_replays_exact_receipt_after_lost_acknowledgement',
+            'postgres::mutation::tests::postgres_borrowed_commit_preserves_private_binding_noop_and_delete_receipts',
+        )
+        phases = self.verify(scope="storage")
+        phase = next(p for p in phases if p.package == "awaken-session-store")
+        for case in cases:
+            self.assertIn("--require-case=" + case, phase.arguments)
+            self.assertIn("postgres_", case)
+            for replacement in ("", "--require-case=unrelated"):
+                table = edit_row(self.table, "postgres.storage.session-store", lambda text: text.replace("--require-case=" + case, replacement, 1))
+                with self.subTest(case=case), self.assertRaisesRegex(ValueError, "independent Session extraction outcomes"):
+                    self.verify(table=table, scope="storage")
 
     def changed_release(self, transform):
         return edit_row(self.table, 'postgres.critical.process-startup-work-release', transform)
 
-    def test_additive_six_case_floor_preserves_the_original_eighteen_domains(self):
+    def test_additive_release_and_http_floor_preserves_the_original_eighteen_domains(self):
         # R1 original 18 + startup Work + three exact claimed rows => admit 22; all
-        # six independently named outcomes. The old binding/pool rows remain.
+        # fourteen independently named outcomes. The old binding/pool rows remain.
         phases = self.verify()
         self.assertEqual(len(phases), 22)
         startup = [p for p in phases if p.package == 'awaken-process-startup']
@@ -340,7 +366,7 @@ class SessionWorkReleaseSelectionTests(unittest.TestCase):
             'postgres_pools::tests::live_coordinator_adapters_share_the_process_connection_ceiling',
         ):
             self.assertTrue(any('--require-case=' + original in p.arguments for p in startup))
-        selected = [p for p in startup if 'session_work_release::tests::live_postgres_' in p.arguments]
+        selected = [p for p in startup if 'session_work_release::tests::' in p.arguments]
         self.assertEqual(len(selected), 1)
         actual = tuple(a.removeprefix('--require-case=') for a in selected[0].arguments
                        if a.startswith('--require-case='))
@@ -360,11 +386,11 @@ class SessionWorkReleaseSelectionTests(unittest.TestCase):
 
     def test_new_scope_cannot_broaden_or_hide_ignored_cases(self):
         # R3 wrong lib/filter/runtime mode/thread policy => refuse, even while
-        # all six names are present. R4 another package cannot supply this row.
+        # all independently named outcomes are present. R4 another package cannot supply this row.
         mutations = (
             lambda s: s.replace('--lib', '--tests', 1),
             lambda s: s.replace('--lib', '--lib --all-targets', 1),
-            lambda s: s.replace('session_work_release::tests::live_postgres_ ', 'some_other_filter ', 1),
+            lambda s: s.replace('session_work_release::tests:: ', 'some_other_filter ', 1),
             lambda s: s.replace('--ignored', '--include-ignored', 1),
             lambda s: s.replace('--ignored', '--ignored --exact', 1),
             lambda s: s.replace('--test-threads=1', '--test-threads=2', 1),

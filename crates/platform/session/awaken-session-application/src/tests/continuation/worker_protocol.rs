@@ -95,25 +95,41 @@ async fn worker_continuation_reloads_root_receipts_and_releases_then_restores_on
     // W3 C5 => reload committed next phase (no second queue or receipt store).
     // W4 source disposed => E3; driving ingress+C6 => unbound demand.
     // W5 restore claim => E4; exact restore receipt => E5 + frozen reprojection.
-    let repo = Arc::new(
+    let durable = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
     );
+    let repo =
+        Arc::new(super::super::run_admission::response_loss_store::ResponseLossStore::new(durable));
     let id = SessionId::from("worker-continuation");
     let mut source = externally_placed(generated_session(id.as_str()));
+    add_acknowledged_active_mcp(&mut source, "docs", 3);
+    let source_lease = source.realization.clone().unwrap();
     let target = SessionRealizationTarget {
-        owner: "worker".into(),
-        runtime_incarnation: "worker:1:boot".into(),
+        owner: source_lease.owner.clone(),
+        runtime_incarnation: source_lease.runtime_incarnation.clone(),
         lease_expires_at_unix_ms: u64::MAX,
         reassign_existing_lease: false,
     };
     source.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: target.owner.clone(),
         runtime_incarnation: target.runtime_incarnation.clone(),
-        epoch: 4,
+        epoch: source_lease.epoch,
         expires_at_unix_ms: u64::MAX,
     });
+    // R0 reverse-CAS oracle: explicit retirement wins before Suspend intent.
+    // Its expiry-zero grant must never be copied into a new source operation;
+    // otherwise a delayed ordinary ACK can retire the very grant Suspend needs.
+    let mut retired = awaken_session_contract::SessionAggregate::try_from(source.clone()).unwrap();
+    retired.assignment().expire();
+    assert!(
+        retired
+            .environment()
+            .begin_suspend_at("workspace", 2_000)
+            .is_err(),
+        "R0 an explicitly retired grant cannot admit a new Suspend source"
+    );
     create(repo.as_ref(), source).await;
     let runtime = Arc::new(ContinuationRuntime::default());
     let workers = Arc::new(RecordingWorkerObservations::default());
@@ -137,6 +153,32 @@ async fn worker_continuation_reloads_root_receipts_and_releases_then_restores_on
         )
     };
     let application = app();
+    // W0 the old v1 implementation closes on an unknown ACK. It must not be
+    // admitted as the source of a new continuation, before any root CAS.
+    let mut old_manifest = terminal_cleanup_manifest();
+    old_manifest
+        .capabilities
+        .insert("session-environment-continuation/v1".into());
+    workers.replace(vec![terminal_cleanup_worker(&target, old_manifest)]);
+    let before_intent = repo.get(&id).await.unwrap();
+    assert!(
+        application
+            .continuations
+            .reconcile_environment_continuation(&id, 2_000)
+            .await
+            .is_err(),
+        "W0 old Worker cannot mint a source intent"
+    );
+    assert_eq!(
+        repo.get(&id).await.unwrap(),
+        before_intent,
+        "W0 zero root CAS"
+    );
+    let mut current_manifest = terminal_cleanup_manifest();
+    current_manifest
+        .capabilities
+        .insert(awaken_worker_contract::SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY.into());
+    workers.replace(vec![terminal_cleanup_worker(&target, current_manifest)]);
     application
         .continuations
         .reconcile_environment_continuation(&id, 2_000)
@@ -260,6 +302,8 @@ async fn worker_continuation_reloads_root_receipts_and_releases_then_restores_on
         fail_install: AtomicBool::new(false),
         installed: AtomicUsize::new(0),
         invalidated: AtomicUsize::new(0),
+        continuation_receipt: std::sync::Mutex::new(None),
+        prepared: AtomicUsize::new(0),
     };
     for fail_install in [false, true] {
         projection
@@ -267,6 +311,7 @@ async fn worker_continuation_reloads_root_receipts_and_releases_then_restores_on
             .store(fail_install, Ordering::SeqCst);
         assert!(
             crate::realization::drive_test_directive(
+                application.realizations.as_ref(),
                 application.realizations.as_ref(),
                 &id,
                 &projection,
@@ -304,6 +349,25 @@ async fn worker_continuation_reloads_root_receipts_and_releases_then_restores_on
             "W2 exact next effect"
         );
         let root = repo.get(&id).await.unwrap();
+        assert_eq!(
+            application
+                .realizations
+                .retire_session_realization(
+                    awaken_session_execution_contract::RetireSessionRealization {
+                        session_id: id.clone(),
+                        lease: directive.authority.lease.clone(),
+                    }
+                )
+                .await
+                .unwrap(),
+            awaken_session_contract::SessionRealizationRetirement::Preserved {},
+            "W10 unknown ACK cannot abandon its retained source"
+        );
+        assert_eq!(
+            repo.get(&id).await.unwrap(),
+            root,
+            "W10 no budget or root mutation"
+        );
         let receipt = if expected == awaken_session_contract::SessionEnvironmentInstruction::Quiesce
         {
             let (operation, effect, binding, generation) =
@@ -316,7 +380,7 @@ async fn worker_continuation_reloads_root_receipts_and_releases_then_restores_on
                         effect,
                         binding,
                         generation,
-                        &[],
+                        &root.mcp.active_generation_refs(&id).unwrap(),
                     )
                     .await
                     .unwrap(),
@@ -355,17 +419,69 @@ async fn worker_continuation_reloads_root_receipts_and_releases_then_restores_on
             root,
             "W1 receipt refusal has no mutation"
         );
-        directive = application
-            .realizations
-            .acknowledge_session_realization(AcknowledgeSessionRealization {
-                session_id: id.clone(),
-                lease: directive.authority.lease.clone(),
-                published: vec![],
-                drained: vec![],
-                continuation: Some(receipt),
-            })
+        if expected == awaken_session_contract::SessionEnvironmentInstruction::Quiesce {
+            // W11 real root CAS commits, then the original repository fixture
+            // loses its response. The canonical driver must reload, not retire
+            // the still-needed source grant or record a fake effect failure.
+            // Use the existing response-loss owner: a real committed write
+            // followed by Unavailable. A CAS conflict is transparently replayed
+            // by Control and cannot stand in for a lost HTTP response here.
+            repo.commit_then_unavailable_once("environment-quiesced");
+            *projection.continuation_receipt.lock().unwrap() = Some(receipt);
+            let error = crate::realization::drive_test_directive(
+                application.realizations.as_ref(),
+                application.realizations.as_ref(),
+                &id,
+                &projection,
+                directive.clone(),
+                &NoopMcpRealizer,
+            )
             .await
-            .unwrap();
+            .expect_err("W11 committed ACK response was lost");
+            assert!(
+                matches!(
+                    error,
+                    awaken_session_execution_contract::SessionRealizationDriveError::Control(_)
+                ),
+                "W11 original Control error: {error:?}"
+            );
+            assert_eq!(
+                projection.invalidated.load(Ordering::SeqCst),
+                0,
+                "W11 no unproved local close"
+            );
+            let committed = repo.get(&id).await.unwrap();
+            assert_eq!(
+                committed.realization, root.realization,
+                "W11 source generation retained"
+            );
+            assert_eq!(
+                committed.realization_progress(),
+                root.realization_progress(),
+                "W11 budget unchanged"
+            );
+            directive = app()
+                .realizations
+                .begin_session_realization(BeginSessionRealization {
+                    session_id: id.clone(),
+                    target: target.clone(),
+                    expected_resources: None,
+                })
+                .await
+                .unwrap();
+        } else {
+            directive = application
+                .realizations
+                .acknowledge_session_realization(AcknowledgeSessionRealization {
+                    session_id: id.clone(),
+                    lease: directive.authority.lease.clone(),
+                    published: vec![],
+                    drained: vec![],
+                    continuation: Some(receipt),
+                })
+                .await
+                .unwrap();
+        }
         if expected == awaken_session_contract::SessionEnvironmentInstruction::Checkpoint {
             // Drop the successful response; a fresh Control reconstructs it.
             directive = app()
@@ -390,6 +506,7 @@ async fn worker_continuation_reloads_root_receipts_and_releases_then_restores_on
     // W8 Released is processed before any projection install or provider work.
     let before_installs = projection.installed.load(Ordering::SeqCst);
     crate::realization::drive_test_directive(
+        application.realizations.as_ref(),
         application.realizations.as_ref(),
         &id,
         &projection,
@@ -505,26 +622,41 @@ async fn worker_continuation_reloads_root_receipts_and_releases_then_restores_on
     )
     .await
     .unwrap();
-    let completed = application
-        .realizations
-        .acknowledge_session_realization(AcknowledgeSessionRealization {
-            session_id: id.clone(),
-            lease: restore.authority.lease,
-            published: vec![],
-            drained: vec![],
-            continuation: Some(receipt),
-        })
-        .await
-        .unwrap();
-    assert!(
-        matches!(
-            completed.action,
-            Action::Stage {
-                prepare_session: true,
-                ..
-            }
-        ),
-        "W5 complete frozen projection"
+    // W12 Continue(Restored)->ordinary Stage is one actual drive. An entry
+    // Continue flag would incorrectly suppress retirement after this Stage's
+    // accepted activation response is lost. Activation may be a legitimate
+    // no-op, so lose the Control response after real delegation, not at a
+    // nonexistent repository commit. Only the current root decides retirement.
+    *projection.continuation_receipt.lock().unwrap() = Some(receipt);
+    let lossy = LoseFirstActivationResponse {
+        inner: application.realizations.as_ref(),
+        activation_calls: AtomicUsize::new(0),
+    };
+    let before_retirement = projection.invalidated.load(Ordering::SeqCst);
+    let error = crate::realization::drive_test_directive(
+        application.realizations.as_ref(),
+        &lossy,
+        &id,
+        &projection,
+        restore,
+        &NoopMcpRealizer,
+    )
+    .await
+    .expect_err("W12 ordinary activation response was lost");
+    assert_eq!(lossy.activation_calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        error,
+        awaken_session_execution_contract::SessionRealizationDriveError::Control(_)
+    ));
+    assert_eq!(
+        projection.prepared.load(Ordering::SeqCst),
+        1,
+        "W12 ordinary complete projection followed Restore"
+    );
+    assert_eq!(
+        projection.invalidated.load(Ordering::SeqCst),
+        before_retirement + 1,
+        "W12 root-confirmed ordinary retirement"
     );
     let resident = repo.get(&id).await.unwrap();
     assert_eq!(resident.environment.binding(), Some("restored-binding"));
@@ -548,6 +680,83 @@ struct DriverProjection {
     fail_install: AtomicBool,
     installed: AtomicUsize,
     invalidated: AtomicUsize,
+    continuation_receipt: std::sync::Mutex<Option<Receipt>>,
+    prepared: AtomicUsize,
+}
+
+/// Transport-only response loss. All phase/root/retirement decisions remain
+/// with the real Control; this fixture adds no alternate realization policy.
+struct LoseFirstActivationResponse<'a> {
+    inner: &'a dyn SessionRealizationControl,
+    activation_calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl SessionRealizationControl for LoseFirstActivationResponse<'_> {
+    async fn begin_session_realization(
+        &self,
+        command: BeginSessionRealization,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        self.inner.begin_session_realization(command).await
+    }
+
+    async fn renew_session_realization(
+        &self,
+        command: awaken_session_execution_contract::RenewSessionRealization,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        self.inner.renew_session_realization(command).await
+    }
+
+    async fn activate_session_realization(
+        &self,
+        command: awaken_session_execution_contract::ActivateSessionRealization,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        let response = self.inner.activate_session_realization(command).await?;
+        if self.activation_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+                    "injected loss after real activation response".into(),
+                ),
+            );
+        }
+        Ok(response)
+    }
+
+    async fn acknowledge_session_realization(
+        &self,
+        command: AcknowledgeSessionRealization,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        self.inner.acknowledge_session_realization(command).await
+    }
+
+    async fn fail_session_realization(
+        &self,
+        command: awaken_session_execution_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
+        self.inner.fail_session_realization(command).await
+    }
+
+    async fn retire_session_realization(
+        &self,
+        command: awaken_session_execution_contract::RetireSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationRetirement,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        self.inner.retire_session_realization(command).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -565,9 +774,12 @@ impl awaken_session_execution_contract::SessionProjectionSynchronizer for Driver
         _: &SessionId,
         _: &awaken_session_execution_contract::FrozenSessionProjection,
         _: &awaken_session_execution_contract::ObservedSessionRealizationLease,
-        _: bool,
+        prepare_session: bool,
     ) -> Result<(), awaken_session_execution_contract::SessionRealizationEffectFailure> {
         self.installed.fetch_add(1, Ordering::SeqCst);
+        if prepare_session {
+            self.prepared.fetch_add(1, Ordering::SeqCst);
+        }
         if self.fail_install.load(Ordering::SeqCst) {
             return Err(RunError::unavailable("injected projection install failure").into());
         }
@@ -580,7 +792,11 @@ impl awaken_session_execution_contract::SessionProjectionSynchronizer for Driver
         _: &crate::session_resource::SessionRealizationLease,
         _: awaken_session_contract::SessionEnvironmentInstruction,
     ) -> Result<Receipt, awaken_session_execution_contract::SessionRealizationEffectFailure> {
-        Err(RunError::unavailable("injected continuation transport failure").into())
+        self.continuation_receipt
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| RunError::unavailable("injected continuation transport failure").into())
     }
     async fn invalidate_session_realization_lease(
         &self,
@@ -779,4 +995,239 @@ async fn local_restore_assigns_and_installs_a_fresh_target_after_hibernated_leas
         1,
         "L1/L3 exactly one restore"
     );
+}
+
+#[tokio::test]
+async fn retirement_and_suspend_use_one_root_fence_without_failure_accounting() {
+    use awaken_session_contract::SessionRealizationRetirement as Outcome;
+    use awaken_session_execution_contract::RetireSessionRealization;
+    // Cause/effect graph: C1 issued exact ordinary grant; C2 Suspend intent;
+    // C3 retirement/ACK response loss; C4 successor/renewal/ABA. R1 retirement
+    // CAS wins => expiry0, Suspend refuses. R2 Suspend CAS wins => Preserved,
+    // exact source remains live. R3 concurrent CAS => only R1 or R2, never a
+    // retired source operation. R4 replay/response loss spends no budget and
+    // creates no second root revision. R5 changed expiry/identity => Superseded.
+    // These are original SQLite root commits; no fixture retirement policy.
+    for order in ["retire-first", "suspend-first", "concurrent"] {
+        let durable = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let repo = Arc::new(FaultingSessionRepository::new(durable));
+        let id = SessionId::from(format!("retirement-{order}"));
+        let mut root = generated_session(id.as_str());
+        root.realization.as_mut().unwrap().expires_at_unix_ms = 100_000;
+        let lease = root.realization.clone().unwrap();
+        create(repo.as_ref(), root).await;
+        let runtime = Arc::new(ContinuationRuntime::default());
+        let app = configured_application(
+            runtime.clone(),
+            crate::SessionPersistence::new(
+                repo.clone(),
+                Arc::new(awaken_lease_testkit::ManualClock::new(2_000)),
+            ),
+            Arc::new(RecordingEnvironmentSource::default()),
+            Default::default(),
+            None,
+            {
+                let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+            },
+        );
+        let command = RetireSessionRealization {
+            session_id: id.clone(),
+            lease: lease.clone(),
+        };
+        let before = repo.get(&id).await.unwrap();
+        // R5: even a same-epoch newer expiry is a newer observation. A forged
+        // future assertion also cannot retire the current issued grant.
+        let mut changed = command.clone();
+        changed.lease.expires_at_unix_ms -= 1;
+        assert_eq!(
+            app.realizations
+                .retire_session_realization(changed)
+                .await
+                .unwrap(),
+            Outcome::Superseded {}
+        );
+        assert_eq!(repo.get(&id).await.unwrap(), before);
+        for axis in ["owner", "incarnation", "epoch"] {
+            let mut changed = command.clone();
+            match axis {
+                "owner" => changed.lease.owner.push_str("-old"),
+                "incarnation" => changed.lease.runtime_incarnation.push_str("-old"),
+                _ => changed.lease.epoch -= 1,
+            }
+            assert_eq!(
+                app.realizations
+                    .retire_session_realization(changed)
+                    .await
+                    .unwrap(),
+                Outcome::Superseded {},
+                "R5 {axis}"
+            );
+            assert_eq!(repo.get(&id).await.unwrap(), before);
+        }
+        let outcome = match order {
+            "retire-first" => {
+                repo.commit_then_conflict_once("retire-issued-session-realization");
+                let outcome = app
+                    .realizations
+                    .retire_session_realization(command.clone())
+                    .await
+                    .unwrap();
+                assert!(
+                    app.continuations
+                        .reconcile_environment_continuation(&id, 2_000)
+                        .await
+                        .is_err(),
+                    "R1 no retired Suspend source"
+                );
+                outcome
+            }
+            "suspend-first" => {
+                // Execute only the already-existing root intent command here;
+                // a simulated lost ordinary ACK must consult this committed root.
+                let mut suspended =
+                    awaken_session_contract::SessionAggregate::try_from(before.clone()).unwrap();
+                suspended
+                    .environment()
+                    .begin_suspend_at("workspace", 2_000)
+                    .unwrap();
+                let committed = app
+                    .mutations()
+                    .commit_session_snapshot_with_outcome(
+                        "workspace",
+                        suspended,
+                        "environment-suspend-intent",
+                        Vec::new(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(committed.transitioned(), "R2 Suspend owns the root CAS");
+                app.realizations
+                    .retire_session_realization(command.clone())
+                    .await
+                    .unwrap()
+            }
+            _ => {
+                let retire = app.realizations.retire_session_realization(command.clone());
+                let suspend = async {
+                    let mut suspended =
+                        awaken_session_contract::SessionAggregate::try_from(before.clone())
+                            .unwrap();
+                    suspended
+                        .environment()
+                        .begin_suspend_at("workspace", 2_000)
+                        .unwrap();
+                    app.mutations()
+                        .commit_session_snapshot_with_outcome(
+                            "workspace",
+                            suspended,
+                            "environment-suspend-intent",
+                            Vec::new(),
+                        )
+                        .await
+                };
+                let (retired, _) = tokio::join!(retire, suspend);
+                retired.unwrap()
+            }
+        };
+        let after = repo.get(&id).await.unwrap();
+        assert_eq!(
+            after.realization_progress(),
+            before.realization_progress(),
+            "R1-R4 no failure/budget accounting"
+        );
+        assert_eq!(after.mcp, before.mcp, "R1-R4 frozen MCP unchanged");
+        match outcome {
+            Outcome::Retired {} => {
+                assert!(
+                    after.environment.admits_realization_effects(),
+                    "R1 still ordinary"
+                );
+                assert_eq!(after.realization.as_ref().unwrap().expires_at_unix_ms, 0);
+                assert_eq!(
+                    app.realizations
+                        .retire_session_realization(command.clone())
+                        .await
+                        .unwrap(),
+                    Outcome::Retired {},
+                    "R4 replay"
+                );
+                assert_eq!(
+                    repo.get(&id).await.unwrap(),
+                    after,
+                    "R4 no repeated root CAS"
+                );
+                let observed = awaken_session_contract::transition_environment(
+                    awaken_session_contract::SessionEnvironmentFacts::project_continuation(
+                        &after, 2_000,
+                    ),
+                    awaken_session_contract::SessionEnvironmentEvent::RequireResident,
+                )
+                .expect("R6 observing Resident needs no source effect");
+                assert!(
+                    observed.instruction().is_none(),
+                    "R6 no permission to materialize"
+                );
+                // Observation is not authority: the real local ensure path
+                // refuses the retired root proof before any projection/provider I/O.
+                assert!(
+                    app.continuations
+                        .ensure_environment_resident(&id, 2_000)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(runtime.projection_attempts.load(Ordering::SeqCst), 0);
+                assert_eq!(runtime.adoption_attempts.load(Ordering::SeqCst), 0);
+                assert_eq!(runtime.restores.load(Ordering::SeqCst), 0);
+                assert!(
+                    !awaken_session_configuration_contract::resource::realization_lease_authorizes(
+                        after.realization.as_ref().unwrap(),
+                        &lease,
+                        2_000,
+                    ),
+                    "R6 an old assertion cannot authorize a materialization"
+                );
+                let successor = app
+                    .realizations
+                    .begin_session_realization(BeginSessionRealization {
+                        session_id: id.clone(),
+                        expected_resources: None,
+                        target: SessionRealizationTarget {
+                            owner: lease.owner.clone(),
+                            runtime_incarnation: lease.runtime_incarnation.clone(),
+                            lease_expires_at_unix_ms: 100_000,
+                            reassign_existing_lease: false,
+                        },
+                    })
+                    .await
+                    .unwrap();
+                assert!(
+                    successor.authority.lease.epoch > lease.epoch,
+                    "R6 real Begin owns the new grant"
+                );
+                let replacement = repo.get(&id).await.unwrap();
+                assert_eq!(
+                    app.realizations
+                        .retire_session_realization(command)
+                        .await
+                        .unwrap(),
+                    Outcome::Superseded {},
+                    "R6 delayed old receipt cannot retire a successor"
+                );
+                assert_eq!(repo.get(&id).await.unwrap(), replacement);
+            }
+            Outcome::Preserved {} => {
+                assert!(matches!(
+                    after.environment,
+                    awaken_session_contract::SessionEnvironmentState::Suspending { .. }
+                ));
+                assert_eq!(after.realization, Some(lease), "R2 source retained");
+            }
+            Outcome::Superseded {} => panic!("R1-R3 no replacement was issued"),
+        }
+    }
 }

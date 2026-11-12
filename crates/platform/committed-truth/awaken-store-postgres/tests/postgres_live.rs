@@ -2607,3 +2607,152 @@ async fn dependency_reads_survive_an_exhausted_authority_pool() {
     );
     authority.close().await;
 }
+
+#[tokio::test]
+async fn borrowed_recovery_keeps_one_snapshot_and_the_callers_transaction() {
+    // Causes: B1 caller-owned RR/RW transaction and sentinel; B2 peer appends
+    // to another Thread and then this Thread between reads; B3 cached/uncached
+    // recovery. Effects: B1+B3 use the original same txid; B2 cannot enter its
+    // frozen prefix (Full and Reuse agree); caller rollback removes the sentinel.
+    // After rollback, the ordinary reader sees the peer's new complete prefix.
+    // This distinguishes a borrowed consistent reader from either another pool
+    // checkout or an inner commit, without timing as a correctness oracle.
+    use awaken_agent_contract::thread::read::recovery::LoadedRunRecovery;
+    use awaken_store_postgres::load_postgres_recovery_on;
+    let Some(pool) = schema_pool("t_borrowed_recovery_snapshot").await else {
+        return;
+    };
+    let store = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let thread = ThreadId("borrowed-recovery".into());
+    let target = RunId("pending-target".into());
+    let commit = |thread: &ThreadId, run: &str, id: &str| ThreadCommit {
+        thread_id: thread.clone(),
+        run: ended(run),
+        messages: vec![message(id, id)],
+        state: Vec::new(),
+        events: Vec::new(),
+    };
+    store.commit(commit(&thread, "first", "one")).await.unwrap();
+    sqlx::query("CREATE TABLE recovery_borrowed_sentinel (value INTEGER NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ WRITE")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let txid: i64 = sqlx::query_scalar("SELECT txid_current()")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO recovery_borrowed_sentinel VALUES (1)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let LoadedRunRecovery::Full {
+        prefix: Some(prefix),
+        snapshot,
+    } = load_postgres_recovery_on(&mut tx, &thread, &target, None)
+        .await
+        .unwrap()
+    else {
+        panic!("B1 cold borrowed recovery must return a complete prefix");
+    };
+    let original = *snapshot;
+    store
+        .commit(commit(&ThreadId("unrelated".into()), "other", "other"))
+        .await
+        .unwrap();
+    store.commit(commit(&thread, "later", "two")).await.unwrap();
+    let LoadedRunRecovery::Reuse { reused } =
+        load_postgres_recovery_on(&mut tx, &thread, &target, Some(prefix))
+            .await
+            .unwrap()
+    else {
+        panic!("B2 a peer's later writes cannot invalidate the frozen borrowed prefix");
+    };
+    assert_eq!(reused.prefix, prefix);
+    assert_eq!(
+        reused.store_cursor, original.store_cursor,
+        "B2 one snapshot includes global cursor"
+    );
+    assert_eq!(reused.next_commit_ordinal, original.next_commit_ordinal);
+    let LoadedRunRecovery::Full { snapshot, .. } =
+        load_postgres_recovery_on(&mut tx, &thread, &target, None)
+            .await
+            .unwrap()
+    else {
+        panic!("B3 an uncached read must still return the same complete prefix");
+    };
+    assert_eq!(*snapshot, original, "B2/B3 exact same caller snapshot");
+    let same_txid: i64 = sqlx::query_scalar("SELECT txid_current()")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(same_txid, txid, "B1 no reader-owned transaction completion");
+    tx.rollback().await.unwrap();
+    let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM recovery_borrowed_sentinel")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(retained, 0, "B1 rollback belongs to the caller");
+    let latest = store.recovery_snapshot(&thread, &target).await.unwrap();
+    assert_eq!(
+        latest.messages.len(),
+        2,
+        "B2 ordinary reader sees the peer commit after rollback"
+    );
+    assert_eq!(latest.messages[1].id.0, "two");
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn borrowed_recovery_late_query_failure_never_returns_a_partial_snapshot() {
+    // E1 correct committed Thread + a late message query failure => Err, never
+    // the earlier successful head/Run queries as a partial snapshot. E2 caller
+    // rollback restores its temporary schema change, and ordinary recovery then
+    // reads the complete original truth. No cleanup/error is classified as
+    // missing committed data or as a successful empty recovery.
+    use awaken_store_postgres::load_postgres_recovery_on;
+    let Some(pool) = schema_pool("t_borrowed_recovery_query_failure").await else {
+        return;
+    };
+    let store = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let thread = ThreadId("borrowed-failure".into());
+    let run = RunId("borrowed-failure-run".into());
+    store
+        .commit(ThreadCommit {
+            thread_id: thread.clone(),
+            run: ended(&run.0),
+            messages: vec![message("retained", "retained")],
+            state: Vec::new(),
+            events: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ WRITE")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE runtime_message RENAME TO borrowed_unreadable_messages")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        load_postgres_recovery_on(&mut tx, &thread, &run, None)
+            .await
+            .is_err(),
+        "E1 the original late SQL error remains a failure"
+    );
+    tx.rollback().await.unwrap();
+    let recovered = store.recovery_snapshot(&thread, &run).await.unwrap();
+    assert_eq!(recovered.messages.len(), 1, "E2 complete original recovery");
+    assert_eq!(recovered.messages[0].id.0, "retained");
+    pool.close().await;
+}

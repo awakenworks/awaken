@@ -281,6 +281,26 @@ impl SessionLifecycle {
         operation_id: &str,
         usage: SessionUsage,
     ) -> Result<BudgetSettlementOutcome, SessionMutationError> {
+        self.reconcile_managed_budget_usage_with_commit(
+            session_id,
+            operation_id,
+            usage,
+            self.mutations.as_ref(),
+        )
+        .await
+    }
+
+    /// Reconcile through the supplied final root admission while keeping the
+    /// existing cold reads, aggregate budget law and bounded CAS retry owner.
+    /// A replay or no-change result must validate its observed revision too;
+    /// it cannot publish success merely because no new write was necessary.
+    pub async fn reconcile_managed_budget_usage_with_commit(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        operation_id: &str,
+        usage: SessionUsage,
+        commit: &dyn crate::SessionRootCommit,
+    ) -> Result<BudgetSettlementOutcome, SessionMutationError> {
         if operation_id.trim().is_empty() {
             return Err(SessionMutationError::Internal(
                 "budget settlement requires its original operation identity".into(),
@@ -328,6 +348,12 @@ impl SessionLifecycle {
                     // Retry the same operation against a Root that includes it.
                     continue;
                 }
+                if !commit
+                    .validate(&session.session_id, session.revision)
+                    .await?
+                {
+                    continue;
+                }
                 return Ok(BudgetSettlementOutcome {
                     session: session.into_snapshot(),
                     reached_now: false,
@@ -371,6 +397,12 @@ impl SessionLifecycle {
                 None
             };
             if !usage_changed && !budget_usage_changed && !reached_now {
+                if !commit
+                    .validate(&session.session_id, session.revision)
+                    .await?
+                {
+                    continue;
+                }
                 return Ok(BudgetSettlementOutcome {
                     session: session.into_snapshot(),
                     reached_now: false,
@@ -389,7 +421,13 @@ impl SessionLifecycle {
                 Vec::new()
             };
             match mutations
-                .commit_session_snapshot_with_record(&owner_scope, session, record, lifecycle_facts)
+                .commit_session_snapshot_with_record_using(
+                    commit,
+                    &owner_scope,
+                    session,
+                    record,
+                    lifecycle_facts,
+                )
                 .await
             {
                 Ok(commit) => {
@@ -714,6 +752,162 @@ impl SessionLifecycle {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    enum FinalAdmission {
+        Current,
+        Moved,
+        Refused(crate::SessionMutationError),
+    }
+
+    struct ReadOnlyBudgetGate {
+        admission: FinalAdmission,
+        validations: std::sync::atomic::AtomicUsize,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::SessionRootCommit for ReadOnlyBudgetGate {
+        async fn validate_claim(&self) -> Result<(), crate::SessionMutationError> {
+            Ok(())
+        }
+
+        async fn commit(
+            &self,
+            _: &str,
+            _: awaken_session_contract::SessionMutation,
+        ) -> Result<awaken_session_contract::SessionMutationResult, crate::SessionMutationError>
+        {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::SessionMutationError::Internal(
+                "a read-only budget outcome unexpectedly attempted a mutation".into(),
+            ))
+        }
+
+        async fn validate(
+            &self,
+            _: &awaken_session_types::SessionId,
+            _: awaken_session_types::SessionRevision,
+        ) -> Result<bool, crate::SessionMutationError> {
+            self.validations
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match &self.admission {
+                FinalAdmission::Current => Ok(true),
+                FinalAdmission::Moved => Ok(false),
+                FinalAdmission::Refused(error) => Err(error.clone()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn read_only_budget_outcomes_require_current_final_admission() {
+        // Causes: G1 original SQLite root has no usage change or the exact
+        // accepted usage receipt; G2 final admission is current, root-moved,
+        // or a typed claim/Work refusal. G1+current => success without writes;
+        // G1+moved => only the original ROOT_CAS_ATTEMPTS then Conflict;
+        // G1+refusal => the first exact error, never success or CAS retry.
+        // Every row compares the durable root/outbox, independently of gate
+        // counters. This tests final authority on read-only branches; original
+        // budget-settlement tests retain write/response-loss/ledger coverage.
+        use awaken_runtime_contract::runs::RunError;
+        use awaken_session_contract::{
+            LifecycleOutbox as _, SessionRepositoryReads as _, SessionUsage,
+        };
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for replay in [false, true] {
+            let store = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .await
+                    .unwrap(),
+            );
+            let id = awaken_session_types::SessionId::from(format!("budget-final-{replay}"));
+            crate::tests::create(
+                store.as_ref(),
+                crate::tests::persisted(id.as_str(), false, "idle"),
+            )
+            .await;
+            let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+            let mutations = Arc::new(crate::SessionMutations::new(store.clone(), clock.clone()));
+            let lifecycle = super::SessionLifecycle::new(mutations, clock, store.clone());
+            let usage = SessionUsage {
+                input_tokens: u64::from(replay),
+                ..Default::default()
+            };
+            if replay {
+                lifecycle
+                    .reconcile_managed_budget_usage(&id, "same-usage", usage.clone())
+                    .await
+                    .unwrap();
+            }
+            let before = store.get(&id).await.unwrap();
+            let before_facts = store.pending_lifecycle().await.unwrap();
+            for admission in [
+                FinalAdmission::Current,
+                FinalAdmission::Moved,
+                FinalAdmission::Refused(crate::SessionMutationError::admission(
+                    RunError::bad_request_classified("fixture_claim", "exact refusal"),
+                )),
+                FinalAdmission::Refused(crate::SessionMutationError::admission(
+                    RunError::conflict_classified("fixture_claim", "exact refusal"),
+                )),
+                FinalAdmission::Refused(crate::SessionMutationError::admission(
+                    RunError::classified("fixture_claim", "exact refusal"),
+                )),
+                FinalAdmission::Refused(crate::SessionMutationError::admission(
+                    RunError::unavailable_classified("fixture_claim", "exact refusal"),
+                )),
+            ] {
+                let gate = ReadOnlyBudgetGate {
+                    admission,
+                    validations: AtomicUsize::new(0),
+                    writes: AtomicUsize::new(0),
+                };
+                let result = lifecycle
+                    .reconcile_managed_budget_usage_with_commit(
+                        &id,
+                        "same-usage",
+                        usage.clone(),
+                        &gate,
+                    )
+                    .await;
+                match &gate.admission {
+                    FinalAdmission::Current => {
+                        let outcome = result.unwrap();
+                        assert_eq!(outcome.session, before);
+                        assert!(!outcome.reached_now);
+                        assert_eq!(gate.validations.load(Ordering::SeqCst), 1);
+                    }
+                    FinalAdmission::Moved => {
+                        assert!(matches!(result, Err(crate::SessionMutationError::Conflict)));
+                        assert_eq!(
+                            gate.validations.load(Ordering::SeqCst),
+                            crate::mutation::ROOT_CAS_ATTEMPTS
+                        );
+                    }
+                    FinalAdmission::Refused(expected) => {
+                        assert_eq!(result.unwrap_err(), *expected, "G2 exact typed refusal");
+                        assert_eq!(gate.validations.load(Ordering::SeqCst), 1);
+                    }
+                }
+                assert_eq!(
+                    gate.writes.load(Ordering::SeqCst),
+                    0,
+                    "G1 no alternate mutation path"
+                );
+                assert_eq!(
+                    store.get(&id).await.unwrap(),
+                    before,
+                    "G1 durable root unchanged"
+                );
+                assert_eq!(
+                    store.pending_lifecycle().await.unwrap(),
+                    before_facts,
+                    "G1 outbox unchanged"
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn retained_reconciliation_hint_keeps_only_the_original_signal() {

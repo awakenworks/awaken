@@ -15,7 +15,7 @@ pub const SESSION_RESOURCES_CAPABILITY: &str = "session-resources/v1";
 /// This does not grant credentials or promise application-specific renewal.
 pub const SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY: &str = "session-mcp-credential-validity/v1";
 /// Worker executes root-authored nonterminal Environment continuation phases.
-pub const SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY: &str = "session-environment-continuation/v1";
+pub const SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY: &str = "session-environment-continuation/v2";
 /// Terminal preparation decodes and enforces Control's source-I/O admission.
 pub const SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY: &str =
     "session-terminal-source-admission/v1";

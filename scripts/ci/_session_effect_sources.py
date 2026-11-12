@@ -70,6 +70,7 @@ PROTOCOL_SESSIONS = "crates/platform/protocols/awaken-protocol-managed/src/state
 SESSION_STORE = "crates/platform/session/awaken-session-store/src/lib.rs"
 SQLITE_SESSION_STORE = "crates/platform/session/awaken-session-store/src/sqlite.rs"
 POSTGRES_SESSION_STORE = "crates/platform/session/awaken-session-store/src/postgres.rs"
+POSTGRES_SESSION_MUTATION = "crates/platform/session/awaken-session-store/src/postgres/mutation.rs"
 RUNTIME_HOST = "crates/platform/execution/awaken-session-executor/src/run_assembly/roles.rs"
 REALIZATION_EFFECTS_ROLE = (
     "crates/platform/execution/awaken-session-realization/src/realization_executor/effects_role.rs"
@@ -292,7 +293,8 @@ REQUIRED = {
         ".validate_observation_replacement(replacement)",
     ),
     SQLITE_SESSION_STORE: ("validate_current_mutation(",),
-    POSTGRES_SESSION_STORE: ("validate_current_mutation(",),
+    POSTGRES_SESSION_STORE: ("self.commit_owned(owner_scope, mutation).await",),
+    POSTGRES_SESSION_MUTATION: ("validate_current_mutation(",),
     INSTALLED_SESSION_PROJECTION: (),
     RUNTIME_HOST: (
         "async fn prepare_terminal_cleanup_for_effect",

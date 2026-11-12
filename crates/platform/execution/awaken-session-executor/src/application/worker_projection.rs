@@ -85,9 +85,7 @@ pub(crate) async fn drive_session_realization_with_synchronizer(
     realization: &awaken_session_execution_contract::SessionRealizationPermit,
 ) -> Result<(), awaken_session_execution_contract::SessionRealizationDriveError> {
     let host = synchronizer.execution;
-    let run_free = synchronizer.claim.is_none();
-    let lease = directive.authority.lease.clone();
-    let result = awaken_session_realization_driver::drive_session_realization(
+    awaken_session_realization_driver::drive_session_realization(
         realization,
         synchronizer.claim.map(|claim| claim.run_id.clone()),
         control,
@@ -96,20 +94,5 @@ pub(crate) async fn drive_session_realization_with_synchronizer(
         directive,
         request_started,
     )
-    .await;
-    // A refused or stalled run-free preparation has no Run retry to close its
-    // disposable lease. Invalidate under this same canonical permit: cleanup
-    // after the caller releases it could close a later projection of the same
-    // generation. A claimed Run retains its own existing retry/failure path.
-    if run_free
-        && matches!(
-            &result,
-            Err(awaken_session_execution_contract::SessionRealizationDriveError::Control(_)
-                | awaken_session_execution_contract::SessionRealizationDriveError::DidNotConverge)
-        )
-    {
-        let _ =
-            host.invalidate_session_realization_lease(realization.session_id().as_str(), &lease);
-    }
-    result
+    .await
 }

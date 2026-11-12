@@ -55,6 +55,7 @@ pub fn coordinator_execution(
     host: &Arc<ExecutorComponents>,
     sessions: &Arc<SessionApplication>,
     worker_work_release: Arc<dyn awaken_dispatch::ConditionalSessionWorkRelease>,
+    worker_claim_persistence: awaken_coordinator::WorkerClaimPersistence,
 ) -> Result<awaken_coordinator::ExecutionPorts, CoordinatorExecutionError> {
     let dispatch = host.coordination().dispatch_observation_source()?;
     verify_composition(host.dispatch(), &dispatch, sessions)?;
@@ -106,6 +107,7 @@ pub fn coordinator_execution(
         coordinator_dispatch,
         worker_recovery: host.worker_recovery_source(),
         worker_work_release,
+        worker_claim_persistence,
         worker_completion: completion,
         worker_settlement: host.worker_memory_settlement_observer(),
         worker_stream: host.worker_stream_sink(),

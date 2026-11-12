@@ -342,6 +342,17 @@ impl awaken_session_execution_contract::SessionRealizationControl
         .await
     }
 
+    async fn retire_session_realization(
+        &self,
+        command: awaken_session_execution_contract::RetireSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationRetirement,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        self.call("retire", self.inner.retire_session_realization(command))
+            .await
+    }
+
     async fn fail_session_realization(
         &self,
         command: awaken_session_execution_contract::FailSessionRealization,

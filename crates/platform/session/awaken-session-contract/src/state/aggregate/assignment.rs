@@ -117,6 +117,16 @@ pub enum SessionRealizationBegin {
     },
 }
 
+/// The root's disposition of an already-issued local realization grant.
+/// This is a command result, never another persisted phase or failure budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "disposition", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SessionRealizationRetirement {
+    Retired {},
+    Preserved {},
+    Superseded {},
+}
+
 /// Why `begin` refused. A refusal leaves the candidate unchanged except for
 /// the three command failures, which the caller discards with the candidate.
 /// `reassign` refuses with the `LeaseIntegrity` and `Assignment` subset.
@@ -561,6 +571,39 @@ impl SessionAssignmentOperations<'_> {
             .checked_sub(1)
             .ok_or(SessionAggregateCommandError::MissingCapacityAttempt)?;
         Ok(())
+    }
+
+    /// Retire only the exact issued ordinary grant. Continuation and terminal
+    /// cleanup retain their source; a monotonic renewal is already a different
+    /// observation. The caller commits Retired through the same root CAS as
+    /// Suspend intent, without recording a failed effect or spending budget.
+    pub fn retire_issued(
+        &mut self,
+        asserted: &SessionRealizationLease,
+    ) -> SessionRealizationRetirement {
+        let state = &self.aggregate.state;
+        if !state.environment.admits_realization_effects() {
+            return SessionRealizationRetirement::Preserved {};
+        }
+        let Some(current) = state.realization.as_ref() else {
+            return SessionRealizationRetirement::Superseded {};
+        };
+        if current.expires_at_unix_ms == 0
+            && realization_lease_generation_authorizes(asserted, current)
+        {
+            // An ordinary failure may already have made the root terminal and
+            // explicitly expired this grant. That root closure is replayable;
+            // a still-live terminal grant remains the cleanup owner's below.
+            return SessionRealizationRetirement::Retired {};
+        }
+        if state.is_terminal() {
+            return SessionRealizationRetirement::Preserved {};
+        }
+        if current != asserted {
+            return SessionRealizationRetirement::Superseded {};
+        }
+        self.expire();
+        SessionRealizationRetirement::Retired {}
     }
 
     /// Close the current disposable assignment while retaining its generation.

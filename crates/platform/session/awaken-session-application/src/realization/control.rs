@@ -199,12 +199,44 @@ impl SessionRealizations {
         'a,
         Result<SessionRealizationDirective, SessionRealizationControlFailure>,
     > {
+        self.begin_session_realization_after_refresh_using(command, self.mutations.as_ref())
+    }
+
+    pub fn begin_session_realization_with_commit<'a>(
+        &'a self,
+        command: BeginSessionRealization,
+        commit: &'a dyn crate::SessionRootCommit,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<SessionRealizationDirective, SessionRealizationControlFailure>,
+    > {
+        Box::pin(async move {
+            validate_target(&command, self.clock.now_ms())?;
+            let admission = self
+                .executable_projections
+                .refresh()
+                .await
+                .map_err(unavailable)?;
+            admission
+                .enter(|| self.begin_session_realization_after_refresh_using(command, commit))
+                .await
+        })
+    }
+
+    fn begin_session_realization_after_refresh_using<'a>(
+        &'a self,
+        command: BeginSessionRealization,
+        commit: &'a dyn crate::SessionRootCommit,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<SessionRealizationDirective, SessionRealizationControlFailure>,
+    > {
         Box::pin(async move {
             #[cfg(feature = "test-support")]
             let id = command.session_id.clone();
             #[cfg(feature = "test-support")]
             self.observe_realization_root("begin-before", &id).await;
-            let result = self.begin_session_realization_inner(command).await;
+            let result = self.begin_session_realization_inner(command, commit).await;
             #[cfg(feature = "test-support")]
             self.observe_realization_root(
                 if result.is_ok() {
@@ -281,6 +313,15 @@ impl SessionRealizations {
         &self,
         command: RenewSessionRealization,
     ) -> Result<SessionRealizationLease, SessionRealizationControlFailure> {
+        self.renew_session_realization_with_commit(command, self.mutations.as_ref())
+            .await
+    }
+
+    pub async fn renew_session_realization_with_commit(
+        &self,
+        command: RenewSessionRealization,
+        commit: &dyn crate::SessionRootCommit,
+    ) -> Result<SessionRealizationLease, SessionRealizationControlFailure> {
         if command.session_id.as_str().trim().is_empty()
             || command.asserted_lease.owner.trim().is_empty()
             || command.asserted_lease.runtime_incarnation.trim().is_empty()
@@ -319,6 +360,13 @@ impl SessionRealizations {
                 .clone()
                 .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
             if command.requested_expires_at_unix_ms <= current.expires_at_unix_ms {
+                if !commit
+                    .validate(&session.session_id, session.revision)
+                    .await
+                    .map_err(mutation_control)?
+                {
+                    return Err(SessionRealizationControlFailure::Conflict);
+                }
                 return Ok(current);
             }
             let mut renewed = current;
@@ -326,7 +374,8 @@ impl SessionRealizations {
             session.assignment().renew(renewed).map_err(unavailable)?;
             match self
                 .mutations
-                .commit_session_snapshot_with_outcome(
+                .commit_session_snapshot_with_outcome_using(
+                    commit,
                     &owner_scope,
                     session,
                     "renew-session-realization-lease",
@@ -346,15 +395,19 @@ impl SessionRealizations {
                 // The existing bounded loop owns every retry; exhaustion
                 // returns the same Conflict below, without a second last-row path.
                 Err(SessionMutationError::Conflict) => {}
+                Err(SessionMutationError::Admission(error)) => {
+                    return Err(mutation_control(SessionMutationError::Admission(error)));
+                }
                 Err(error) => return Err(unavailable(error)),
             }
         }
         Err(SessionRealizationControlFailure::Conflict)
     }
 
-    pub(super) fn begin_session_realization_inner<'a>(
+    fn begin_session_realization_inner<'a>(
         &'a self,
         command: BeginSessionRealization,
+        gate: &'a dyn crate::SessionRootCommit,
     ) -> futures_util::future::BoxFuture<
         'a,
         Result<SessionRealizationDirective, SessionRealizationControlFailure>,
@@ -363,7 +416,7 @@ impl SessionRealizations {
             validate_target(&command, self.clock.now_ms())?;
             for attempt in 0..ROOT_CAS_ATTEMPTS {
                 let (owner_scope, mut session) = self
-                    .session_for_realization(&command.session_id, true)
+                    .session_for_realization_using(gate, &command.session_id, true)
                     .await?;
                 // Exact MCP successor adoption belongs to ordinary realization.
                 // Continuation retains its frozen credential pins and generations.
@@ -408,7 +461,13 @@ impl SessionRealizations {
                         activate_pending_resources,
                     } if !adopted => {
                         return self
-                            .next_action(owner_scope, &session, false, activate_pending_resources)
+                            .next_action_using(
+                                gate,
+                                owner_scope,
+                                &session,
+                                false,
+                                activate_pending_resources,
+                            )
                             .await;
                     }
                     awaken_session_contract::SessionRealizationBegin::Unchanged {
@@ -430,7 +489,8 @@ impl SessionRealizations {
                 }
                 match self
                     .mutations
-                    .commit_session_snapshot_with_outcome(
+                    .commit_session_snapshot_with_outcome_using(
+                        gate,
                         &owner_scope,
                         session,
                         "begin-session-realization",
@@ -440,7 +500,8 @@ impl SessionRealizations {
                 {
                     Ok(commit) => {
                         return self
-                            .next_action(
+                            .next_action_using(
+                                gate,
                                 owner_scope,
                                 &commit.into_session(),
                                 assigned,
@@ -453,6 +514,9 @@ impl SessionRealizations {
                     }
                     Err(SessionMutationError::Conflict) => {
                         return Err(SessionRealizationControlFailure::Conflict);
+                    }
+                    Err(SessionMutationError::Admission(error)) => {
+                        return Err(mutation_control(SessionMutationError::Admission(error)));
                     }
                     Err(error) => return Err(unavailable(error)),
                 }
@@ -923,6 +987,16 @@ pub(super) struct RefreshedSessionRealizationControl<'a>(pub(super) &'a SessionR
 
 #[async_trait::async_trait]
 impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
+    async fn retire_session_realization(
+        &self,
+        command: awaken_session_execution_contract::RetireSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationRetirement,
+        SessionRealizationControlFailure,
+    > {
+        self.0.retire_session_realization(command).await
+    }
+
     async fn begin_session_realization(
         &self,
         command: BeginSessionRealization,
@@ -969,6 +1043,59 @@ impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
 
 #[async_trait::async_trait]
 impl SessionRealizationControl for SessionRealizations {
+    async fn retire_session_realization(
+        &self,
+        command: awaken_session_execution_contract::RetireSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationRetirement,
+        SessionRealizationControlFailure,
+    > {
+        if command.session_id.as_str().trim().is_empty()
+            || command.lease.owner.trim().is_empty()
+            || command.lease.runtime_incarnation.trim().is_empty()
+            || command.lease.epoch == 0
+            || command.lease.expires_at_unix_ms == 0
+        {
+            return Err(SessionRealizationControlFailure::Invalid(
+                "issued realization grant is invalid".into(),
+            ));
+        }
+        for _ in 0..ROOT_CAS_ATTEMPTS {
+            let owner = self
+                .mutations
+                .owner(&command.session_id)
+                .await
+                .map_err(mutation_control)?;
+            let mut session = self
+                .mutations
+                .session_aggregate(&command.session_id)
+                .await
+                .map_err(repository_control)?;
+            let before = session.realization.clone();
+            let outcome = session.assignment().retire_issued(&command.lease);
+            if outcome != (awaken_session_contract::SessionRealizationRetirement::Retired {})
+                || session.realization == before
+            {
+                return Ok(outcome);
+            }
+            match self
+                .mutations
+                .commit_session_snapshot_with_outcome(
+                    &owner,
+                    session,
+                    "retire-issued-session-realization",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(_) => return Ok(outcome),
+                Err(SessionMutationError::Conflict) => continue,
+                Err(error) => return Err(mutation_control(error)),
+            }
+        }
+        Err(SessionRealizationControlFailure::Conflict)
+    }
+
     async fn begin_claimed_session_realization(
         &self,
         context: &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
@@ -982,10 +1109,7 @@ impl SessionRealizationControl for SessionRealizations {
         &self,
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        validate_target(&command, self.clock.now_ms())?;
-        self.refresh_executable_admission()
-            .await?
-            .enter(|| self.begin_session_realization_after_refresh(command))
+        self.begin_session_realization_with_commit(command, self.mutations.as_ref())
             .await
     }
 

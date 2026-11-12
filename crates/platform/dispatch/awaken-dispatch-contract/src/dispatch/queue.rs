@@ -13,22 +13,25 @@
 /// not a second checkpoint store: the Coordinator endpoint applies the same
 /// Dispatch claim guard to its canonical stores.
 #[async_trait]
-pub trait ClaimedCheckpointTransport: Send + Sync {
+pub trait ClaimedCheckpointTransport<OperationError = DispatchError>: Send + Sync
+where
+    OperationError: From<DispatchError>,
+{
     async fn load_stream_checkpoint(
         &self,
         claim: &RunClaim,
-    ) -> Result<Option<StreamCheckpoint>, DispatchError>;
+    ) -> Result<Option<StreamCheckpoint>, OperationError>;
 
     async fn put_stream_checkpoint(
         &self,
         claim: &RunClaim,
         checkpoint: StreamCheckpoint,
-    ) -> Result<SettleOutcome, DispatchError>;
+    ) -> Result<SettleOutcome, OperationError>;
 
     async fn delete_stream_checkpoint(
         &self,
         claim: &RunClaim,
-    ) -> Result<SettleOutcome, DispatchError>;
+    ) -> Result<SettleOutcome, OperationError>;
 
     /// A cached prefix is a hint. Return a full snapshot if it cannot be reused.
     async fn load_recovery(
@@ -38,7 +41,7 @@ pub trait ClaimedCheckpointTransport: Send + Sync {
             &awaken_session_application_contract::SessionWorkAuthorityReceipt,
         >,
         cached: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
-    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, DispatchError>;
+    ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, OperationError>;
 
     async fn load_recovery_snapshot(
         &self,
@@ -46,7 +49,7 @@ pub trait ClaimedCheckpointTransport: Send + Sync {
         session_work_authority: Option<
             &awaken_session_application_contract::SessionWorkAuthorityReceipt,
         >,
-    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
+    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, OperationError>
     {
         use awaken_agent_contract::thread::read::recovery::LoadedRunRecovery;
 
@@ -57,7 +60,8 @@ pub trait ClaimedCheckpointTransport: Send + Sync {
             LoadedRunRecovery::Full { snapshot, .. } => Ok(*snapshot),
             LoadedRunRecovery::Reuse { .. } => Err(DispatchError::Rejected(
                 "recovery attempted to reuse a prefix that was not supplied".into(),
-            )),
+            )
+            .into()),
         }
     }
 }

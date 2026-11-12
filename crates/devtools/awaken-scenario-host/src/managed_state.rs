@@ -363,8 +363,13 @@ async fn local_managed_state_over(
         application.work_assignments(),
         clock.clone(),
     );
-    let execution = awaken_cli::coordinator_execution(&host, &application, worker_work_release)
-        .expect("scenario Session application binds into its executor once");
+    let execution = awaken_cli::coordinator_execution(
+        &host,
+        &application,
+        worker_work_release,
+        awaken_coordinator::WorkerClaimPersistence::Independent,
+    )
+    .expect("scenario Session application binds into its executor once");
     let managed = awaken_protocol_managed::ManagedState::from_application(
         application.clone(),
         host.content_capture_policy(),

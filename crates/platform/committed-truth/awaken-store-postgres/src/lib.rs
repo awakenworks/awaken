@@ -1233,7 +1233,7 @@ impl RunRecoverySource for PostgresCommitCoordinator {
 }
 
 async fn recovery_tickets(
-    tx: &mut Transaction<'_, Postgres>,
+    connection: &mut sqlx::PgConnection,
     thread_id: &ThreadId,
 ) -> Result<Vec<RunResumeTicket>, RecoveryError> {
     let rows = sqlx::query(
@@ -1245,7 +1245,7 @@ async fn recovery_tickets(
          ORDER BY w.run_id",
     )
     .bind(&thread_id.0)
-    .fetch_all(&mut **tx)
+    .fetch_all(&mut *connection)
     .await
     .map_err(recovery_reject)?;
     let mut tickets = Vec::with_capacity(rows.len());
@@ -1276,206 +1276,223 @@ impl PostgresCommitCoordinator {
         cached: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
     ) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, RecoveryError>
     {
-        use awaken_agent_contract::thread::read::recovery::{
-            LoadedRunRecovery, ReusedRunRecovery, ThreadPrefixRef,
-        };
         let mut tx = self.read_pool.begin().await.map_err(recovery_reject)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
             .map_err(recovery_reject)?;
+        let recovery =
+            load_postgres_recovery_on(&mut tx, thread_id, claimed_run_id, cached).await?;
+        tx.commit().await.map_err(recovery_reject)?;
+        Ok(recovery)
+    }
+}
 
-        let store_cursor: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(sequence), 0) FROM runtime_commit")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(recovery_reject)?;
-        let last_commit: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(sequence), 0) FROM runtime_commit WHERE thread_id = $1",
-        )
-        .bind(&thread_id.0)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(recovery_reject)?;
-        let last_commit = decode_authority(last_commit)
-            .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
-        let store_cursor = decode_authority(store_cursor)
-            .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
-        let next_commit_ordinal: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit WHERE run_id = $1")
-                .bind(&claimed_run_id.0)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(recovery_reject)?;
-
-        let next_commit_ordinal = decode_authority(next_commit_ordinal)
-            .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
-        if let Some(prefix) = cached.filter(|prefix| prefix.last_commit == last_commit) {
-            let version: Option<i64> = sqlx::query_scalar(
-                "SELECT version FROM runtime_thread_version WHERE thread_id = $1",
-            )
-            .bind(&thread_id.0)
-            .fetch_optional(&mut *tx)
+/// Read one authoritative recovery prefix on the caller's existing transaction.
+///
+/// The caller owns transaction completion and must establish Repeatable Read or
+/// Serializable isolation before its first query. Read-write mode is permitted
+/// so the same transaction can retain its Dispatch claim fence; this reader
+/// never changes isolation, checks out a connection, writes, commits or rolls
+/// back. All prefix queries therefore observe one snapshot, including when the
+/// caller has already locked its claim.
+pub async fn load_postgres_recovery_on(
+    connection: &mut sqlx::PgConnection,
+    thread_id: &ThreadId,
+    claimed_run_id: &RunId,
+    cached: Option<awaken_agent_contract::thread::read::recovery::ThreadPrefixRef>,
+) -> Result<awaken_agent_contract::thread::read::recovery::LoadedRunRecovery, RecoveryError> {
+    use awaken_agent_contract::thread::read::recovery::{
+        LoadedRunRecovery, ReusedRunRecovery, ThreadPrefixRef,
+    };
+    let store_cursor: i64 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(sequence), 0) FROM runtime_commit")
+            .fetch_one(&mut *connection)
             .await
             .map_err(recovery_reject)?;
-            let version = version
-                .or_else(|| (last_commit == 0).then_some(0))
-                .and_then(|value| u64::try_from(value).ok());
-            if version == Some(prefix.thread_version) {
-                let resume_tickets = recovery_tickets(&mut tx, thread_id).await?;
-                tx.commit().await.map_err(recovery_reject)?;
-                return Ok(LoadedRunRecovery::Reuse {
-                    reused: ReusedRunRecovery {
-                        prefix,
-                        thread_id: thread_id.clone(),
-                        run_id: claimed_run_id.clone(),
-                        store_cursor,
-                        next_commit_ordinal,
-                        resume_tickets,
-                    },
-                });
-            }
-        }
-        let thread_version: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit WHERE thread_id = $1")
+    let last_commit: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(sequence), 0) FROM runtime_commit WHERE thread_id = $1",
+    )
+    .bind(&thread_id.0)
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(recovery_reject)?;
+    let last_commit = decode_authority(last_commit)
+        .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
+    let store_cursor = decode_authority(store_cursor)
+        .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
+    let next_commit_ordinal: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit WHERE run_id = $1")
+            .bind(&claimed_run_id.0)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(recovery_reject)?;
+
+    let next_commit_ordinal = decode_authority(next_commit_ordinal)
+        .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
+    if let Some(prefix) = cached.filter(|prefix| prefix.last_commit == last_commit) {
+        let version: Option<i64> =
+            sqlx::query_scalar("SELECT version FROM runtime_thread_version WHERE thread_id = $1")
                 .bind(&thread_id.0)
-                .fetch_one(&mut *tx)
+                .fetch_optional(&mut *connection)
                 .await
                 .map_err(recovery_reject)?;
-        let thread_version = decode_authority(thread_version)
-            .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
-
-        let commit_rows = sqlx::query(
-            "SELECT run_id, phase FROM runtime_commit WHERE thread_id = $1 ORDER BY sequence",
-        )
-        .bind(&thread_id.0)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(recovery_reject)?;
-        let (runs, latest_run_id) = project_committed_run_records(
-            thread_id,
-            commit_rows.into_iter().map(|row| {
-                let run_id = RunId(
-                    row.try_get::<String, _>("run_id")
-                        .map_err(recovery_reject)?,
-                );
-                let Json(state): Json<RunState> = row.try_get("phase").map_err(recovery_reject)?;
-                Ok::<_, RecoveryError>((run_id, state))
-            }),
-        )?;
-
-        let message_rows = sqlx::query(
-            "SELECT commit_sequence, data FROM runtime_message WHERE thread_id = $1 ORDER BY id",
-        )
-        .bind(&thread_id.0)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(recovery_reject)?;
-        let mut messages = Vec::with_capacity(message_rows.len());
-        let mut message_commit_cursors = Vec::with_capacity(message_rows.len());
-        for row in message_rows {
-            let sequence = row
-                .try_get::<i64, _>("commit_sequence")
-                .map_err(recovery_reject)?;
-            let Json(message): Json<Message> = row.try_get("data").map_err(recovery_reject)?;
-            message_commit_cursors.push(
-                decode_authority(sequence)
-                    .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
-            );
-            messages.push(message);
-        }
-
-        let state_rows = sqlx::query("SELECT commit_sequence, data FROM runtime_state_command WHERE thread_id = $1 ORDER BY id")
-        .bind(&thread_id.0)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(recovery_reject)?;
-        let mut committed_state = Vec::with_capacity(state_rows.len());
-        let mut state_commit_cursors = Vec::with_capacity(state_rows.len());
-        for row in state_rows {
-            let sequence = row
-                .try_get::<i64, _>("commit_sequence")
-                .map_err(recovery_reject)?;
-            let Json(command): Json<StateCommand> = row.try_get("data").map_err(recovery_reject)?;
-            state_commit_cursors.push(
-                decode_authority(sequence)
-                    .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
-            );
-            committed_state.push(command);
-        }
-
-        // Scope event/ticket reads with the Run set from this transaction's
-        // committed Thread prefix. This permits direct use of the Run index
-        // and prevents a damaged cache owner from misattributing committed facts.
-        // One array bind preserves index access without one query per Run.
-        let committed_run_ids = runs.iter().map(|run| run.id.0.as_str()).collect::<Vec<_>>();
-        let event_rows = sqlx::query(
-            "SELECT sequence, run_id, kind, payload FROM runtime_event \
-             WHERE run_id = ANY($1) ORDER BY sequence",
-        )
-        .bind(&committed_run_ids)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(recovery_reject)?;
-        let mut events = Vec::with_capacity(event_rows.len());
-        for row in event_rows {
-            let sequence = row.try_get::<i64, _>("sequence").map_err(recovery_reject)?;
-            let run_id = row
-                .try_get::<String, _>("run_id")
-                .map_err(recovery_reject)?;
-            let Json(kind) = row
-                .try_get::<Json<awaken_agent_contract::audit::kind::Kind>, _>("kind")
-                .map_err(recovery_reject)?;
-            let Json(payload) = row
-                .try_get::<Json<serde_json::Value>, _>("payload")
-                .map_err(recovery_reject)?;
-            events.push(EventRecord {
-                sequence: decode_authority(sequence)
-                    .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
-                run_id: RunId(run_id),
-                kind,
-                payload,
+        let version = version
+            .or_else(|| (last_commit == 0).then_some(0))
+            .and_then(|value| u64::try_from(value).ok());
+        if version == Some(prefix.thread_version) {
+            let resume_tickets = recovery_tickets(connection, thread_id).await?;
+            return Ok(LoadedRunRecovery::Reuse {
+                reused: ReusedRunRecovery {
+                    prefix,
+                    thread_id: thread_id.clone(),
+                    run_id: claimed_run_id.clone(),
+                    store_cursor,
+                    next_commit_ordinal,
+                    resume_tickets,
+                },
             });
         }
-
-        let resume_tickets = recovery_tickets(&mut tx, thread_id).await?;
-
-        let timestamp_rows = sqlx::query("SELECT sequence, FLOOR(EXTRACT(EPOCH FROM committed_at) * 1000)::BIGINT AS millis FROM runtime_commit WHERE thread_id = $1 ORDER BY sequence").bind(&thread_id.0).fetch_all(&mut *tx).await.map_err(recovery_reject)?;
-        let mut commit_timestamps = std::collections::BTreeMap::new();
-        for row in timestamp_rows {
-            let sequence: i64 = row.try_get("sequence").map_err(recovery_reject)?;
-            let millis: i64 = row.try_get("millis").map_err(recovery_reject)?;
-            commit_timestamps.insert(
-                decode_authority(sequence)
-                    .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
-                decode_authority(millis)
-                    .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
-            );
-        }
-        tx.commit().await.map_err(recovery_reject)?;
-        Ok(LoadedRunRecovery::Full {
-            prefix: Some(ThreadPrefixRef {
-                last_commit,
-                thread_version,
-            }),
-            snapshot: Box::new(RunRecoverySnapshot {
-                commit_timestamps,
-                thread_id: thread_id.clone(),
-                claimed_run_id: claimed_run_id.clone(),
-                runs,
-                latest_run_id,
-                messages,
-                message_commit_cursors,
-                state: committed_state,
-                state_commit_cursors,
-                events,
-                resume_tickets,
-                thread_version,
-                store_cursor,
-                next_commit_ordinal,
-            }),
-        })
     }
+    let thread_version: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit WHERE thread_id = $1")
+            .bind(&thread_id.0)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(recovery_reject)?;
+    let thread_version = decode_authority(thread_version)
+        .map_err(|error| RecoveryError::Rejected(error.to_string()))?;
+
+    let commit_rows = sqlx::query(
+        "SELECT run_id, phase FROM runtime_commit WHERE thread_id = $1 ORDER BY sequence",
+    )
+    .bind(&thread_id.0)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(recovery_reject)?;
+    let (runs, latest_run_id) = project_committed_run_records(
+        thread_id,
+        commit_rows.into_iter().map(|row| {
+            let run_id = RunId(
+                row.try_get::<String, _>("run_id")
+                    .map_err(recovery_reject)?,
+            );
+            let Json(state): Json<RunState> = row.try_get("phase").map_err(recovery_reject)?;
+            Ok::<_, RecoveryError>((run_id, state))
+        }),
+    )?;
+
+    let message_rows = sqlx::query(
+        "SELECT commit_sequence, data FROM runtime_message WHERE thread_id = $1 ORDER BY id",
+    )
+    .bind(&thread_id.0)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(recovery_reject)?;
+    let mut messages = Vec::with_capacity(message_rows.len());
+    let mut message_commit_cursors = Vec::with_capacity(message_rows.len());
+    for row in message_rows {
+        let sequence = row
+            .try_get::<i64, _>("commit_sequence")
+            .map_err(recovery_reject)?;
+        let Json(message): Json<Message> = row.try_get("data").map_err(recovery_reject)?;
+        message_commit_cursors.push(
+            decode_authority(sequence)
+                .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+        );
+        messages.push(message);
+    }
+
+    let state_rows = sqlx::query(
+        "SELECT commit_sequence, data FROM runtime_state_command WHERE thread_id = $1 ORDER BY id",
+    )
+    .bind(&thread_id.0)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(recovery_reject)?;
+    let mut committed_state = Vec::with_capacity(state_rows.len());
+    let mut state_commit_cursors = Vec::with_capacity(state_rows.len());
+    for row in state_rows {
+        let sequence = row
+            .try_get::<i64, _>("commit_sequence")
+            .map_err(recovery_reject)?;
+        let Json(command): Json<StateCommand> = row.try_get("data").map_err(recovery_reject)?;
+        state_commit_cursors.push(
+            decode_authority(sequence)
+                .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+        );
+        committed_state.push(command);
+    }
+
+    // Scope event/ticket reads with the Run set from this transaction's
+    // committed Thread prefix. This permits direct use of the Run index
+    // and prevents a damaged cache owner from misattributing committed facts.
+    // One array bind preserves index access without one query per Run.
+    let committed_run_ids = runs.iter().map(|run| run.id.0.as_str()).collect::<Vec<_>>();
+    let event_rows = sqlx::query(
+        "SELECT sequence, run_id, kind, payload FROM runtime_event \
+         WHERE run_id = ANY($1) ORDER BY sequence",
+    )
+    .bind(&committed_run_ids)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(recovery_reject)?;
+    let mut events = Vec::with_capacity(event_rows.len());
+    for row in event_rows {
+        let sequence = row.try_get::<i64, _>("sequence").map_err(recovery_reject)?;
+        let run_id = row
+            .try_get::<String, _>("run_id")
+            .map_err(recovery_reject)?;
+        let Json(kind) = row
+            .try_get::<Json<awaken_agent_contract::audit::kind::Kind>, _>("kind")
+            .map_err(recovery_reject)?;
+        let Json(payload) = row
+            .try_get::<Json<serde_json::Value>, _>("payload")
+            .map_err(recovery_reject)?;
+        events.push(EventRecord {
+            sequence: decode_authority(sequence)
+                .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+            run_id: RunId(run_id),
+            kind,
+            payload,
+        });
+    }
+
+    let resume_tickets = recovery_tickets(connection, thread_id).await?;
+
+    let timestamp_rows = sqlx::query("SELECT sequence, FLOOR(EXTRACT(EPOCH FROM committed_at) * 1000)::BIGINT AS millis FROM runtime_commit WHERE thread_id = $1 ORDER BY sequence").bind(&thread_id.0).fetch_all(&mut *connection).await.map_err(recovery_reject)?;
+    let mut commit_timestamps = std::collections::BTreeMap::new();
+    for row in timestamp_rows {
+        let sequence: i64 = row.try_get("sequence").map_err(recovery_reject)?;
+        let millis: i64 = row.try_get("millis").map_err(recovery_reject)?;
+        commit_timestamps.insert(
+            decode_authority(sequence)
+                .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+            decode_authority(millis).map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+        );
+    }
+    Ok(LoadedRunRecovery::Full {
+        prefix: Some(ThreadPrefixRef {
+            last_commit,
+            thread_version,
+        }),
+        snapshot: Box::new(RunRecoverySnapshot {
+            commit_timestamps,
+            thread_id: thread_id.clone(),
+            claimed_run_id: claimed_run_id.clone(),
+            runs,
+            latest_run_id,
+            messages,
+            message_commit_cursors,
+            state: committed_state,
+            state_commit_cursors,
+            events,
+            resume_tickets,
+            thread_version,
+            store_cursor,
+            next_commit_ordinal,
+        }),
+    })
 }
 
 /// Authoritative lifecycle feed for active-active PostgreSQL Control Nodes.

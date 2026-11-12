@@ -14,8 +14,12 @@ mod attempt_binding;
 mod cursor_protocol;
 #[path = "signed_worker_transport_http/error_classes.rs"]
 mod error_classes;
+#[path = "signed_worker_transport_http/realization_control.rs"]
+mod realization_control;
 #[path = "signed_worker_transport_http/registry_incarnation.rs"]
 mod registry_incarnation;
+#[path = "signed_worker_transport_http/retirement.rs"]
+mod retirement;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -60,6 +64,7 @@ struct RecordingSessionControl {
     failures: Mutex<usize>,
     begins: Mutex<Vec<awaken_session_execution_contract::BeginSessionRealization>>,
     renewals: Mutex<Vec<awaken_session_execution_contract::RenewSessionRealization>>,
+    retirements: Mutex<Vec<awaken_session_execution_contract::RetireSessionRealization>>,
     renewal_failure:
         Mutex<Option<awaken_session_execution_contract::SessionRealizationControlFailure>>,
     agent_lists: AtomicUsize,
@@ -331,103 +336,6 @@ fn frozen_projection() -> awaken_session_execution_contract::FrozenSessionProjec
         request_context: Vec::new(),
     }
 }
-#[async_trait::async_trait]
-impl awaken_session_execution_contract::SessionRealizationControl for RecordingSessionControl {
-    async fn begin_session_realization(
-        &self,
-        command: awaken_session_execution_contract::BeginSessionRealization,
-    ) -> Result<
-        awaken_session_execution_contract::SessionRealizationDirective,
-        awaken_session_execution_contract::SessionRealizationControlFailure,
-    > {
-        self.begins.lock().unwrap().push(command.clone());
-        let projection =
-            self.projection.lock().unwrap().clone().ok_or(
-                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
-            )?;
-        Ok(
-            awaken_session_execution_contract::SessionRealizationDirective {
-                projection,
-                authority: self.receipt(
-                    awaken_session_configuration_contract::resource::SessionRealizationLease {
-                        owner: command.target.owner,
-                        runtime_incarnation: command.target.runtime_incarnation,
-                        epoch: 2,
-                        expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
-                    },
-                )?,
-                action: awaken_session_execution_contract::SessionRealizationAction::Complete,
-            },
-        )
-    }
-
-    async fn renew_session_realization(
-        &self,
-        command: awaken_session_execution_contract::RenewSessionRealization,
-    ) -> Result<
-        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
-        awaken_session_execution_contract::SessionRealizationControlFailure,
-    > {
-        self.renewals.lock().unwrap().push(command.clone());
-        if let Some(error) = self.renewal_failure.lock().unwrap().clone() {
-            return Err(error);
-        }
-        let mut lease = command.asserted_lease;
-        lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-        self.receipt(lease)
-    }
-
-    async fn activate_session_realization(
-        &self,
-        command: awaken_session_execution_contract::ActivateSessionRealization,
-    ) -> Result<
-        awaken_session_execution_contract::SessionRealizationDirective,
-        awaken_session_execution_contract::SessionRealizationControlFailure,
-    > {
-        *self.activations.lock().unwrap() += 1;
-        let projection =
-            self.projection.lock().unwrap().clone().ok_or(
-                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
-            )?;
-        Ok(
-            awaken_session_execution_contract::SessionRealizationDirective {
-                projection,
-                authority: self.receipt(command.lease)?,
-                action: awaken_session_execution_contract::SessionRealizationAction::Complete,
-            },
-        )
-    }
-
-    async fn acknowledge_session_realization(
-        &self,
-        command: awaken_session_execution_contract::AcknowledgeSessionRealization,
-    ) -> Result<
-        awaken_session_execution_contract::SessionRealizationDirective,
-        awaken_session_execution_contract::SessionRealizationControlFailure,
-    > {
-        *self.acknowledgements.lock().unwrap() += 1;
-        let projection =
-            self.projection.lock().unwrap().clone().ok_or(
-                awaken_session_execution_contract::SessionRealizationControlFailure::NotReady,
-            )?;
-        Ok(
-            awaken_session_execution_contract::SessionRealizationDirective {
-                projection,
-                authority: self.receipt(command.lease)?,
-                action: awaken_session_execution_contract::SessionRealizationAction::Complete,
-            },
-        )
-    }
-
-    async fn fail_session_realization(
-        &self,
-        _command: awaken_session_execution_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_execution_contract::SessionRealizationControlFailure> {
-        *self.failures.lock().unwrap() += 1;
-        Ok(())
-    }
-}
-
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionTerminalCleanupQueue for RecordingSessionControl {
     async fn claim_next_terminal_cleanup(

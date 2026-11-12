@@ -24,6 +24,8 @@ use super::{SessionMutationError, SessionMutations, mutation::repository_failure
 /// Failure from compiling or migrating exact Session credential pins.
 #[derive(Debug, thiserror::Error)]
 pub enum SessionPreparationError {
+    #[error(transparent)]
+    Admission(crate::mutation::SessionAdmissionFailure),
     #[error("Session was not found")]
     NotFound,
     #[error("Session revision conflict")]
@@ -296,6 +298,20 @@ impl SessionCredentials {
         session: PersistedSession,
     ) -> futures_util::future::BoxFuture<'a, Result<PersistedSession, SessionPreparationError>>
     {
+        self.ensure_repository_credentials_pinned_using(
+            self.mutations.as_ref(),
+            owner_scope,
+            session,
+        )
+    }
+
+    pub fn ensure_repository_credentials_pinned_using<'a>(
+        &'a self,
+        commit: &'a dyn crate::SessionRootCommit,
+        owner_scope: &'a str,
+        session: PersistedSession,
+    ) -> futures_util::future::BoxFuture<'a, Result<PersistedSession, SessionPreparationError>>
+    {
         Box::pin(async move {
             let mutations = &self.mutations;
             let mut session = crate::mutation::aggregate_from_snapshot(session)
@@ -318,11 +334,19 @@ impl SessionCredentials {
                         SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
                     })?;
                 if !changed {
+                    if !commit
+                        .validate(&session.session_id, session.revision)
+                        .await
+                        .map_err(mutation_failure)?
+                    {
+                        return Err(SessionPreparationError::Conflict);
+                    }
                     return Ok(session.into_snapshot());
                 }
                 let session_id = session.session_id.clone();
                 match mutations
-                    .commit_session_snapshot_with_outcome(
+                    .commit_session_snapshot_with_outcome_using(
+                        commit,
                         owner_scope,
                         session,
                         "repository-credential-pin-migration",
@@ -348,6 +372,7 @@ impl SessionCredentials {
 
 pub(crate) fn mutation_failure(error: SessionMutationError) -> SessionPreparationError {
     match error {
+        SessionMutationError::Admission(error) => SessionPreparationError::Admission(error),
         SessionMutationError::NotFound => SessionPreparationError::NotFound,
         SessionMutationError::Conflict => SessionPreparationError::Conflict,
         SessionMutationError::IdempotencyMismatch => SessionPreparationError::Rejected(

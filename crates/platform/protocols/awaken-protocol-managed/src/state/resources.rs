@@ -49,6 +49,9 @@ impl ManagedState {
         error: awaken_session_application::SessionPreparationError,
     ) -> StateError {
         match error {
+            awaken_session_application::SessionPreparationError::Admission(error) => {
+                StateError::Run(error.into())
+            }
             awaken_session_application::SessionPreparationError::NotFound => StateError::NotFound,
             awaken_session_application::SessionPreparationError::Conflict => StateError::Conflict,
             awaken_session_application::SessionPreparationError::Rejected(error) => {
@@ -347,6 +350,8 @@ mod tests {
         // | P4 | Rejected bad request | 400/invalid_request_error |
         // | P5 | Rejected internal | 500/api_error |
         // | P6 | Rejected unavailable | 503/api_error |
+        // | P7-P10 | Admission bad request/conflict/internal/unavailable |
+        // |          | original 400/409/500/503 family, same diagnostic text |
         // HTTP classification grants no retry/replay or physical-stop proof;
         // the same Session operation must still supply verified completion.
         for (rule, cause, expected_status, expected_type) in [
@@ -391,6 +396,30 @@ mod tests {
             (
                 "P6",
                 SessionPreparationError::Rejected(RunError::unavailable("temporarily unavailable")),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+            ),
+            (
+                "P7",
+                SessionPreparationError::Admission(RunError::bad_request("same detail").into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+            ),
+            (
+                "P8",
+                SessionPreparationError::Admission(RunError::conflict("same detail").into()),
+                StatusCode::CONFLICT,
+                "invalid_request_error",
+            ),
+            (
+                "P9",
+                SessionPreparationError::Admission(RunError::internal("same detail").into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "api_error",
+            ),
+            (
+                "P10",
+                SessionPreparationError::Admission(RunError::unavailable("same detail").into()),
                 StatusCode::SERVICE_UNAVAILABLE,
                 "api_error",
             ),

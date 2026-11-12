@@ -60,6 +60,8 @@ pub struct ExecutionPorts {
     >,
     /// Committed-run recovery the Worker transport serves.
     pub worker_recovery: Arc<dyn RunRecoverySource>,
+    /// Required claimed HTTP persistence selected with the process stores.
+    pub worker_claim_persistence: awaken_dispatch_http::WorkerClaimPersistence,
     pub worker_work_release: Arc<dyn awaken_dispatch::ConditionalSessionWorkRelease>,
     /// Completion of the claimed Runs Workers settle.
     pub worker_completion: Arc<dyn CompletionSink>,
@@ -185,6 +187,7 @@ pub struct ColocatedExecutionInputs {
 type FinishColocatedExecution = dyn FnOnce(
         Arc<awaken_session_application::SessionApplication>,
         Arc<dyn awaken_dispatch::ConditionalSessionWorkRelease>,
+        awaken_dispatch_http::WorkerClaimPersistence,
     ) -> Result<ExecutionPorts, String>
     + Send;
 

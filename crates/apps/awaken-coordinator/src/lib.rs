@@ -76,6 +76,7 @@ mod worker_registry;
 pub mod workspace_path;
 
 pub use artifact_publication::ClaimFencedArtifactPublisher;
+pub use awaken_dispatch_http::WorkerClaimPersistence;
 pub use browser_cors::AiSdkBrowserCors;
 pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
@@ -1289,6 +1290,7 @@ async fn mount_with_managed_over_and_models(
         worker_checkpoint_authority(dispatch.as_ref(), execution.storage_dir.as_deref())?;
     let dispatch_router = awaken_dispatch_http::registered_dispatch_router(
         awaken_dispatch_http::RegisteredDispatchDependencies {
+            claim_persistence: execution.worker_claim_persistence.clone(),
             execution_bindings: worker_execution_bindings,
             execution_stops: worker_execution_stops,
             dispatch: dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,

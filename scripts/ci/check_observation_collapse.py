@@ -114,6 +114,11 @@ OLD_SHAPE = re.compile(r"Result\s*<\s*Option\s*<\s*StreamCheckpoint\b")
 # names the file that performs the translation, and an entry whose translator
 # stopped translating, or whose file no longer carries the shape, fails here.
 TRANSLATED_TRANSPORT = {
+    "crates/apps/awaken-process-startup/src/worker_claimed_persistence/checkpoints.rs": (
+        "the PostgreSQL server implements the same ClaimedCheckpointTransport; "
+        "it explicitly maps Unknown to Err, which crosses the existing HTTP wire "
+        "and becomes Unknown(Storage) at the single worker translation below"
+    ),
     "crates/platform/dispatch/awaken-dispatch-contract/src/dispatch/queue.rs": (
         "the DispatchQueue transport declares the remote checkpoint operations; its "
         "Err is 'the transport failed', which is ignorance, and the translation below "
@@ -394,11 +399,13 @@ class ObservationCollapseTests(unittest.TestCase):
         self.assertTrue(validation_errors(broken), "R8")
 
     def test_a_registered_file_that_dropped_the_shape_fails(self) -> None:
-        # R9: an exception that outlived its reason is itself a defect.
-        path = sorted(TRANSLATED_TRANSPORT)[0]
-        broken = dict(self.sources)
-        broken[path] = broken[path].replace("Result<Option<StreamCheckpoint>", "Observed<StreamCheckpoint")
-        self.assertTrue(validation_errors(broken), "R9")
+        # R9: for each server/declaration/client, dropping the transport shape
+        # must reject its stale entry; adding one cannot hide the older entries.
+        for path in TRANSLATED_TRANSPORT:
+            with self.subTest(path=path):
+                broken = dict(self.sources)
+                broken[path] = broken[path].replace("Result<Option<StreamCheckpoint>", "Observed<StreamCheckpoint")
+                self.assertTrue(validation_errors(broken), "R9")
 
     def test_escape_hatch_on_the_tri_state_fails(self) -> None:
         # R1: adding any way out of Unknown other than `match` is rejected.

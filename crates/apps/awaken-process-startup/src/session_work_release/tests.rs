@@ -181,6 +181,34 @@ impl Fixture {
     }
 
     async fn entry(&self) -> Entry {
+        self.entry_for(OWNER).await
+    }
+
+    async fn entry_for(&self, owner: &str) -> Entry {
+        self.entry_with_dispatch(owner, |id| {
+            let run = RunId(format!("run-{}", id.as_str()));
+            RunDispatch::new(awaken_runtime_contract::RunActivation::new(
+                run,
+                ThreadId(id.as_str().into()),
+                awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
+                    .model(
+                        awaken_runtime_contract::ModelBinding::parse(
+                            "default",
+                            "parking-model",
+                            "default",
+                        )
+                        .expect("valid canonical Native fixture binding"),
+                    )
+                    .build(),
+                Vec::new(),
+            ))
+            .for_session(ThreadId(id.as_str().into()))
+            .with_session_activity_epoch(1)
+        })
+        .await
+    }
+
+    async fn owned_session(&self, owner: &str) -> (SessionId, SessionWorkGrant) {
         let session = self
             .managed
             .create_session(
@@ -192,38 +220,31 @@ impl Fixture {
         let id = SessionId::from(session.id);
         let grant = match self
             .assignments
-            .acquire_session_work(&id, OWNER, SessionWorkAcquisition::ClaimedRun)
+            .acquire_session_work(&id, owner, SessionWorkAcquisition::ClaimedRun)
             .await
             .expect("Work acquisition")
         {
             SessionWorkOwnership::Leased(grant) => grant,
             _ => panic!("the self-hosted Session must lease its real Work"),
         };
-        let run = RunId(format!("run-{}", id.as_str()));
-        let request = RunDispatch::new(awaken_runtime_contract::RunActivation::new(
-            run.clone(),
-            ThreadId(id.as_str().into()),
-            awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
-                .model(
-                    awaken_runtime_contract::ModelBinding::parse(
-                        "default",
-                        "parking-model",
-                        "default",
-                    )
-                    .expect("valid canonical Native fixture binding"),
-                )
-                .build(),
-            Vec::new(),
-        ))
-        .for_session(ThreadId(id.as_str().into()))
-        .with_session_activity_epoch(1);
+        (id, grant)
+    }
+
+    async fn entry_with_dispatch(
+        &self,
+        owner: &str,
+        dispatch: impl FnOnce(&SessionId) -> RunDispatch,
+    ) -> Entry {
+        let (id, grant) = self.owned_session(owner).await;
+        let request = dispatch(&id);
+        let run = request.run_id().clone();
         self.dispatch
             .enqueue(request)
             .await
             .expect("Root Run dispatch");
         let claimed = self
             .dispatch
-            .claim(OWNER, 60_000, &Default::default())
+            .claim_run(&run, owner, 60_000, &Default::default())
             .await
             .unwrap()
             .expect("claim");
@@ -417,7 +438,7 @@ async fn live_postgres_cap_two_serializes_duplicate_release_and_claim_takeover()
         .execute(&mut gate)
         .await
         .unwrap();
-    f.d.execute(format!("CREATE FUNCTION parking_stop_gate() RETURNS trigger LANGUAGE plpgsql AS $$         BEGIN PERFORM pg_advisory_xact_lock({key}); RETURN NEW; END $$").as_str()).await.unwrap();
+    f.d.execute(sqlx::AssertSqlSafe(format!("CREATE FUNCTION parking_stop_gate() RETURNS trigger LANGUAGE plpgsql AS $$         BEGIN PERFORM pg_advisory_xact_lock({key}); RETURN NEW; END $$"))).await.unwrap();
     f.d.execute("CREATE TRIGGER parking_stop_gate BEFORE UPDATE ON work_queue_item         FOR EACH ROW WHEN (NEW.state='stopped' AND OLD.state='active') EXECUTE FUNCTION parking_stop_gate()")
         .await.unwrap();
     let port = f.release();
@@ -820,7 +841,7 @@ async fn live_postgres_shared_root_and_separate_work_database() {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
     );
     eprintln!("owned split-Work database: {database}; retained on test failure");
-    d.execute(format!("CREATE DATABASE {database}").as_str())
+    d.execute(sqlx::AssertSqlSafe(format!("CREATE DATABASE {database}")))
         .await
         .unwrap();
     let work_tag = format!("{tag}_work");
@@ -918,7 +939,7 @@ async fn live_postgres_shared_root_and_separate_work_database() {
         .execute(&mut gate)
         .await
         .unwrap();
-    f.work.execute(format!("CREATE FUNCTION parking_stop_gate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock({key}); RETURN NEW; END $$").as_str()).await.unwrap();
+    f.work.execute(sqlx::AssertSqlSafe(format!("CREATE FUNCTION parking_stop_gate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock({key}); RETURN NEW; END $$"))).await.unwrap();
     f.work.execute("CREATE TRIGGER parking_stop_gate BEFORE UPDATE ON work_queue_item FOR EACH ROW WHEN (NEW.state='stopped' AND OLD.state='active') EXECUTE FUNCTION parking_stop_gate()")
         .await.unwrap();
     let port = f.release();
@@ -1014,9 +1035,12 @@ async fn live_postgres_shared_root_and_separate_work_database() {
     gate.close().await.unwrap();
     work_observer.close().await;
     f.work.close().await;
-    sqlx::query(&format!("DROP DATABASE {database}"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP DATABASE {database}")))
         .execute(&f.observer)
         .await
         .unwrap();
     f.cleanup().await;
 }
+
+// Actual Worker HTTP uses this same selected persistence fixture.
+mod http;

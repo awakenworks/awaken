@@ -223,6 +223,7 @@ pub(crate) struct RemoteTerminalCleanupControl {
         Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationRejection>>,
     pub(crate) events: Mutex<Vec<String>>,
     pub(crate) disposal_response_loss_once: AtomicBool,
+    pub(crate) retirement_confirmed: AtomicBool,
     pub(crate) authorization_barrier:
         Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     pub(crate) terminal_work_block_for: Mutex<Option<String>>,
@@ -391,6 +392,26 @@ impl awaken_session_execution_contract::SessionRealizationControl for RemoteTerm
         awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         Err(awaken_session_execution_contract::SessionRealizationControlFailure::NotReady)
+    }
+    async fn retire_session_realization(
+        &self,
+        _: awaken_session_execution_contract::RetireSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationRetirement,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        if self
+            .retirement_confirmed
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            Ok(awaken_session_contract::SessionRealizationRetirement::Retired {})
+        } else {
+            Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+                    "retirement response is unknown".into(),
+                ),
+            )
+        }
     }
 
     async fn fail_session_realization(

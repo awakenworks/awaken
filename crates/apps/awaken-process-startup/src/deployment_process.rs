@@ -276,27 +276,34 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             inference_materializer: coordinator_services.inference_materializer,
             worker_directory: Some(worker_directory),
             runtime_authority: Some(persistence.runtime_authority.clone()),
-            work_release_persistence: match (
-                &deployment.runtime.database_url,
-                &deployment.coordinator.sessions,
-            ) {
-                (Some(runtime), awaken_control::StoreBackend::Postgres(session))
-                    if runtime == session
-                        && deployment.runtime.dispatch_backend
-                            == awaken_deployment_config::DispatchBackend::Postgres =>
-                {
-                    crate::SessionWorkReleasePersistence::Postgres {
-                        pool: persistence
-                            .postgres_pool
-                            .clone()
-                            .expect("selected PG dispatch has its process pool"),
-                        // Product store assembly opens both Session roots and Work
-                        // from coordinator.sessions through ProcessPostgresPools.
-                        roots: crate::ClaimConnectionUse::Borrowed,
-                        work: crate::ClaimConnectionUse::Borrowed,
+            work_release_persistence: if deployment.runtime.dispatch_backend
+                == awaken_deployment_config::DispatchBackend::Postgres
+            {
+                // ProcessPostgresPools owns one handle per database/principal.
+                // Dispatch PG always uses the composed claimed operations;
+                // an independent Session store remains explicit, never a
+                // fallback to guard-plus-a-second-checkout on the same pool.
+                let affinity = match (
+                    &deployment.runtime.database_url,
+                    &deployment.coordinator.sessions,
+                ) {
+                    (Some(runtime), awaken_control::StoreBackend::Postgres(session))
+                        if runtime == session =>
+                    {
+                        crate::ClaimConnectionUse::Borrowed
                     }
+                    _ => crate::ClaimConnectionUse::Independent,
+                };
+                crate::SessionWorkReleasePersistence::Postgres {
+                    pool: persistence
+                        .postgres_pool
+                        .clone()
+                        .expect("selected PG dispatch has its process pool"),
+                    roots: affinity,
+                    work: affinity,
                 }
-                _ => crate::SessionWorkReleasePersistence::Independent,
+            } else {
+                crate::SessionWorkReleasePersistence::Independent
             },
             worker_observations: Some(worker_observations),
             control_service_authenticator: None,

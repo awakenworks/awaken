@@ -665,25 +665,41 @@ impl awaken_credential_contract::SessionCredentialSource for RefreshedMcpCredent
 #[tokio::test]
 async fn a_new_realization_adopts_exactly_the_refresh_successor_of_each_mcp_pin() {
     // Causes: C1 the Vault's refresh receipt names the pin (3 -> 4) or none;
-    // C2 the realization pass begins a new lease or continues a live one
-    // (the registered Worker's next Run continues its lease).
+    // C2 the ordinary pass begins a new lease or continues a live one;
+    // C3 the Environment is ordinary or closed Restoring. P5 supplies a
+    // legitimate registered Worker and a live exact lease, so refusal cannot
+    // hide an erroneous credential refresh on the closed continuation path.
     // Effects: E1 the begin's root CAS re-pins the attachment to exactly 4
     // through a new MCP generation, so the directive stages the successor;
-    // E2 the pin and generation stay unchanged.
+    // E2 the pin and generation stay unchanged; E3 repeated Restore admission
+    // leaves the entire root unchanged. P5's credentialed pin and Some(4) distinguish it from
+    // empty-MCP continuation cases and expose removal of the ordinary guard.
     //
-    // | Rule | receipt | live lease | effect |
-    // |---|---|---|---|
-    // | P3 | 3 -> 4 | no | E1 |
-    // | P3c | 3 -> 4 | yes (continuation) | E1 |
-    // | P4 | none | no | E2 (staging then refuses the stale pin itself) |
-    for (rule, successor, continuation) in [
-        ("P3", Some(4), false),
-        ("P3c", Some(4), true),
-        ("P4", None, false),
+    // | Rule | receipt | live lease | Environment | effect |
+    // |---|---|---|---|---|
+    // | P3 | 3 -> 4 | no | ordinary | E1 |
+    // | P3c | 3 -> 4 | yes | ordinary | E1 |
+    // | P4 | none | no | ordinary | E2 (later Stage refuses stale pin) |
+    // | P5 | 3 -> 4 | yes | Restoring | E2 + E3 |
+    // Unexpired Hibernated Begin refusal and unchanged Root are already owned
+    // by assignment_begin_tests::begin_refusals_change_nothing (B1 continuation).
+    // P5 uses the original begin_restore command, then its first legal Begin
+    // admits the pending target before the before-snapshot. Released zero-I/O
+    // remains owned by worker_protocol W4/W8.
+    for (rule, successor, continuation, closed) in [
+        ("P3", Some(4), false, false),
+        ("P3c", Some(4), true, false),
+        ("P4", None, false, false),
+        ("P5", Some(4), true, true),
     ] {
         let id = format!("refresh-adoption-{rule}");
         let repo = authority_repository("refresh adoption SQLite repository").await;
-        let original = persisted(&id, false, "idle");
+        let original = if closed {
+            crate::tests::continuation::hibernated_session(&id, u64::MAX)
+        } else {
+            persisted(&id, false, "idle")
+        };
+        let closed_environment = closed.then(|| original.environment.clone());
         let baseline = original.frozen_baseline().unwrap().clone();
         let holder = baseline
             .environment
@@ -715,8 +731,44 @@ async fn a_new_realization_adopts_exactly_the_refresh_successor_of_each_mcp_pin(
             original.budget,
         );
         session.execution = SessionExecutionState::Idle;
+        let target = awaken_session_execution_contract::SessionRealizationTarget {
+            owner: "worker".into(),
+            runtime_incarnation: if closed { "worker:1:boot" } else { "worker/1" }.into(),
+            lease_expires_at_unix_ms: u64::MAX,
+            reassign_existing_lease: false,
+        };
+        if let Some(environment) = closed_environment {
+            session.environment = environment;
+            session.realization = Some(crate::session_resource::SessionRealizationLease {
+                owner: target.owner.clone(),
+                runtime_incarnation: target.runtime_incarnation.clone(),
+                epoch: 4,
+                expires_at_unix_ms: target.lease_expires_at_unix_ms,
+            });
+            let mut aggregate = awaken_session_contract::SessionAggregate::try_from(session)
+                .expect("P5 original Hibernated aggregate");
+            aggregate
+                .environment()
+                .begin_restore(
+                    "workspace",
+                    awaken_time::WallClockExt::now_ms(awaken_time::system_clock().as_ref()),
+                )
+                .expect("P5 original restore-intent command");
+            session = aggregate.into_snapshot();
+        }
         create(repo.as_ref(), session).await;
         let session_id = SessionId::from(id.as_str());
+        let workers = Arc::new(RecordingWorkerObservations::default());
+        if closed {
+            let mut manifest = terminal_cleanup_manifest();
+            manifest
+                .capabilities
+                .insert(awaken_worker_contract::SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY.into());
+            manifest
+                .checkpoint_formats
+                .insert("awaken-fs-tar-v1".into());
+            workers.replace(vec![terminal_cleanup_worker(&target, manifest)]);
+        }
         let mut app = SessionApplicationBuilder::fixture(
             Arc::new(NoopRuntime),
             Arc::new(NoopMcpRealizer),
@@ -724,7 +776,7 @@ async fn a_new_realization_adopts_exactly_the_refresh_successor_of_each_mcp_pin(
             Arc::new(RecordingEnvironmentSource::default()),
             {
                 let probe = std::sync::Arc::new(crate::ExecutionObservationProbe::default());
-                crate::SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe)
+                crate::SessionExecutionAdmission::new(probe.clone(), workers, probe)
             },
             Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
         )
@@ -735,12 +787,7 @@ async fn a_new_realization_adopts_exactly_the_refresh_successor_of_each_mcp_pin(
             let request = awaken_session_execution_contract::BeginSessionRealization {
                 expected_resources: None,
                 session_id: id.as_str().into(),
-                target: awaken_session_execution_contract::SessionRealizationTarget {
-                    owner: "worker".into(),
-                    runtime_incarnation: "worker/1".into(),
-                    lease_expires_at_unix_ms: u64::MAX,
-                    reassign_existing_lease: false,
-                },
+                target: target.clone(),
             };
             let realizations = app.realizations.clone();
             async move {
@@ -754,13 +801,46 @@ async fn a_new_realization_adopts_exactly_the_refresh_successor_of_each_mcp_pin(
         if continuation {
             // A live lease already owns this realization before the refresh.
             app.set_credential_source(Arc::new(RefreshedMcpCredentialSource { successor: None }));
-            begin(&app).await.expect("first begin");
+            begin(&app)
+                .await
+                .unwrap_or_else(|error| panic!("{rule} first begin: {error:?}"));
             app.set_credential_source(Arc::new(RefreshedMcpCredentialSource { successor }));
         }
         let before = repo.get(&session_id).await.unwrap();
         let generation_before = before.mcp.desired_attachments()[0].generation.clone();
-        begin(&app).await.expect("begin");
+        let directive = begin(&app)
+            .await
+            .unwrap_or_else(|error| panic!("{rule} begin: {error:?}"));
         let after = repo.get(&session_id).await.unwrap();
+        if closed {
+            assert_eq!(
+                directive.action,
+                awaken_session_execution_contract::SessionRealizationAction::Continue {
+                    instruction: awaken_session_contract::SessionEnvironmentInstruction::Restore,
+                },
+                "P5 closed restore owns no ordinary realization effects"
+            );
+            assert_eq!(
+                after, before,
+                "P5 no root CAS, credential or generation mutation"
+            );
+            assert_eq!(
+                after.mcp.desired_attachments()[0]
+                    .credential
+                    .as_ref()
+                    .unwrap()
+                    .credential
+                    .revision,
+                3,
+                "P5 retain frozen pin"
+            );
+            assert_eq!(
+                after.mcp.desired_attachments()[0].generation,
+                generation_before,
+                "P5 retain generation"
+            );
+            continue;
+        }
         let desired = after.mcp.desired_attachments();
         assert_eq!(desired.len(), 1, "{rule}");
         let pin = desired[0].credential.as_ref().unwrap();

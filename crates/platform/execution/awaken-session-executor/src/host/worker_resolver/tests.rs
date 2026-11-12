@@ -734,6 +734,21 @@ impl awaken_session_execution_contract::SessionRealizationControl for RecordingS
             },
         )
     }
+    async fn retire_session_realization(
+        &self,
+        _: awaken_session_execution_contract::RetireSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationRetirement,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        // This fixture does not admit root retirement; an unavailable reply
+        // cannot authorize closing a local source grant.
+        Err(
+            awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+                "root retirement is not configured by this fixture".into(),
+            ),
+        )
+    }
 
     async fn fail_session_realization(
         &self,

@@ -836,3 +836,128 @@ fn recovery_never_reopens_the_retired_credential_predecessor() {
         }
     }
 }
+
+#[test]
+fn issued_retirement_decision_table_preserves_sources_and_newer_observations() {
+    use crate::SessionRealizationRetirement as Outcome;
+    // W0: every disposition keeps its original tag-only JSON; adding any
+    // sibling field must reject before the caller can retire a local grant.
+    // Empty struct variants make deny_unknown_fields govern all three rows.
+    for (outcome, tag) in [
+        (Outcome::Retired {}, "retired"),
+        (Outcome::Preserved {}, "preserved"),
+        (Outcome::Superseded {}, "superseded"),
+    ] {
+        let wire = serde_json::json!({"disposition": tag});
+        assert_eq!(serde_json::to_value(outcome).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<Outcome>(wire).unwrap(), outcome);
+        assert!(
+            serde_json::from_value::<Outcome>(
+                serde_json::json!({"disposition": tag, "extra": true})
+            )
+            .is_err(),
+            "W0 {tag} must reject unknown fields"
+        );
+    }
+    // Finite relational cause/effect table, not a proof by sampling u64s:
+    // C1 ordinary/continuation/terminal; C2 exact/newer-or-older-expiry/foreign
+    // owner/incarnation/old-or-new-epoch/absent/explicitly-zero current grant.
+    // R1 closed phase => Preserved for every C2, including legacy expired data.
+    // R2 ordinary+exact => Retired (expiry0); R3 ordinary or terminal+same-key
+    // explicit-zero => replayable Retired. R4 terminal+other-present => Preserve;
+    // R5 other ordinary/absence => Superseded. All non-R2 rows are read-only;
+    // every row preserves attempts, cause, MCP and Resources. Invalid granted
+    // epoch0/input-assertion0 are excluded by the existing typed command gate.
+    let asserted = lease("worker", "boot", nth(4), 500);
+    for phase in ["ordinary", "closed", "terminal"] {
+        for relation in [
+            "exact",
+            "renewed",
+            "shorter",
+            "owner",
+            "incarnation",
+            "older-epoch",
+            "newer-epoch",
+            "absent",
+            "zero",
+        ] {
+            let mut dto = root(if phase == "terminal" {
+                SessionExecutionState::Terminated
+            } else {
+                SessionExecutionState::Idle
+            })
+            .into_snapshot();
+            let mut current = asserted.clone();
+            match relation {
+                "renewed" => current.expires_at_unix_ms += 1,
+                "shorter" => current.expires_at_unix_ms -= 1,
+                "owner" => current.owner.push_str("-replacement"),
+                "incarnation" => current.runtime_incarnation.push_str("-replacement"),
+                "older-epoch" => current.epoch = nth(3).get(),
+                "newer-epoch" => current.epoch = nth(5).get(),
+                "zero" => current.expires_at_unix_ms = 0,
+                _ => {}
+            }
+            dto.realization = (relation != "absent").then_some(current);
+            if phase == "closed" {
+                let fingerprint = dto
+                    .frozen_baseline()
+                    .unwrap()
+                    .environment
+                    .config_fingerprint
+                    .0
+                    .clone();
+                let generation = crate::SandboxGeneration::new(
+                    &dto.session_id,
+                    0,
+                    1000,
+                    fingerprint.clone(),
+                    "base",
+                );
+                dto.environment_materialization = None; // existing legacy import fixture
+                dto.environment = crate::SessionEnvironmentState::Hibernated {
+                    checkpoint: awaken_provisioning_contract::SandboxCheckpointRef {
+                        id: "checkpoint".into(),
+                        format: "format".into(),
+                        digest: "digest".into(),
+                        size_bytes: 1,
+                        created_at_unix_ms: 1,
+                        expires_at_unix_ms: 1000,
+                        environment_fingerprint: fingerprint,
+                        base_image_fingerprint: "base".into(),
+                        excluded_mounts: Vec::new(),
+                        suspend_effect_id: "suspend".into(),
+                    },
+                    generation,
+                };
+            }
+            let mut aggregate = SessionAggregate::try_from(dto).unwrap();
+            let before = aggregate.snapshot().clone();
+            let expected = match (phase, relation) {
+                ("closed", _) => Outcome::Preserved {},
+                (_, "zero") | ("ordinary", "exact") => Outcome::Retired {},
+                (_, "absent") => Outcome::Superseded {},
+                ("terminal", _) => Outcome::Preserved {},
+                _ => Outcome::Superseded {},
+            };
+            assert_eq!(
+                aggregate.assignment().retire_issued(&asserted),
+                expected,
+                "{phase}/{relation}"
+            );
+            let mut expected_root = before.clone();
+            if phase == "ordinary" && relation == "exact" {
+                expected_root
+                    .realization
+                    .as_mut()
+                    .unwrap()
+                    .expires_at_unix_ms = 0;
+            }
+            assert_eq!(
+                aggregate.snapshot(),
+                &expected_root,
+                "{phase}/{relation}: only exact ordinary grant may change"
+            );
+        }
+    }
+}

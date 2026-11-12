@@ -1,7 +1,6 @@
 //! Independent pool/scope/rollback outcomes on the production-selected writer.
 use super::*;
 use awaken_dispatch::RecoveryProjection;
-use awaken_dispatch_contract::DispatchSettlement as _;
 
 const PROGRESS: Duration = Duration::from_secs(10);
 

@@ -33,6 +33,8 @@ use super::{SessionMutationError, mutation::repository_failure};
 /// Failure from a Session activity transition.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionActivityError {
+    #[error(transparent)]
+    Admission(crate::mutation::SessionAdmissionFailure),
     #[error("Session was not found")]
     NotFound,
     #[error("Session is terminal and cannot begin another activity")]
@@ -288,6 +290,7 @@ fn session_activity_plan_cause_effect_table_is_closed() {
 impl SessionActivityError {
     pub(super) fn mutation(error: SessionMutationError) -> Self {
         match error {
+            SessionMutationError::Admission(error) => Self::Admission(error),
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::IdempotencyMismatch => Self::Internal(
@@ -302,6 +305,7 @@ impl SessionActivityError {
 
     pub(crate) fn run_error(self) -> RunError {
         match self {
+            Self::Admission(error) => error.into(),
             Self::NotFound => RunError::bad_request("Session was not found"),
             Self::Terminal => RunError::bad_request("Session no longer accepts new messages"),
             Self::NotReady => RunError::unavailable_classified(
@@ -368,7 +372,9 @@ impl SessionActivities {
         operation_id.starts_with("session-run-activity:")
     }
 
-    fn activity_operation_record(session_id: &str, operation_id: &str) -> IdempotencyRecord {
+    /// The original accepted-activity receipt identity. Composition reuses it
+    /// for an exact final receipt observation, never another key derivation.
+    pub fn activity_operation_record(session_id: &str, operation_id: &str) -> IdempotencyRecord {
         let identity = awaken_agent_contract::stable_fingerprint(&(
             "managed-session-activity-v1",
             session_id,
@@ -403,13 +409,14 @@ impl SessionActivities {
         }
     }
 
-    async fn replayed_activity_operation(
+    async fn replayed_activity_operation_using(
         &self,
         session_id: &awaken_session_types::SessionId,
         record: &IdempotencyRecord,
         operation: &str,
         source: Option<(&ThreadId, &RunId)>,
         snapshot: impl std::future::Future<Output = Result<PersistedSession, SessionActivityError>>,
+        commit: &dyn crate::SessionRootCommit,
     ) -> Result<Option<(PersistedSession, u64)>, SessionActivityError> {
         let Some(epoch) = self.activity_operation_receipt(session_id, record).await? else {
             return Ok(None);
@@ -420,7 +427,49 @@ impl SessionActivities {
         session
             .validate_run_activity_replay(operation, epoch, source)
             .map_err(|_| SessionActivityError::Conflict)?;
+        Self::validate_observed_activity_root(commit, &session).await?;
         Ok(Some((session, epoch)))
+    }
+
+    async fn replay_activity_from_repository_using(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        record: &IdempotencyRecord,
+        operation_id: &str,
+        source: Option<(&ThreadId, &RunId)>,
+        commit: &dyn crate::SessionRootCommit,
+    ) -> Result<Option<(PersistedSession, u64)>, SessionActivityError> {
+        self.replayed_activity_operation_using(
+            session_id,
+            record,
+            operation_id,
+            source,
+            async {
+                self.mutations
+                    .session_aggregate(session_id)
+                    .await
+                    .map(SessionAggregate::into_snapshot)
+                    .map_err(repository_failure)
+                    .map_err(SessionActivityError::mutation)
+            },
+            commit,
+        )
+        .await
+    }
+
+    async fn validate_observed_activity_root(
+        commit: &dyn crate::SessionRootCommit,
+        session: &PersistedSession,
+    ) -> Result<(), SessionActivityError> {
+        if commit
+            .validate(&session.session_id, session.revision)
+            .await
+            .map_err(SessionActivityError::mutation)?
+        {
+            Ok(())
+        } else {
+            Err(SessionActivityError::Conflict)
+        }
     }
 
     pub(crate) fn open_activity_on_snapshot(
@@ -642,7 +691,9 @@ impl SessionActivities {
         }
     }
 
-    fn budget_rejection_record(session_id: &str, operation_id: &str) -> IdempotencyRecord {
+    /// The original durable budget-refusal receipt identity, shared with the
+    /// final application gate without copying its fingerprint or key formula.
+    pub fn budget_rejection_record(session_id: &str, operation_id: &str) -> IdempotencyRecord {
         let identity = awaken_agent_contract::stable_fingerprint(&(
             "managed-session-run-budget-rejection-v1",
             session_id,
@@ -659,13 +710,14 @@ impl SessionActivities {
     /// owner; a returned BudgetReached is backed by a durable refusal receipt.
     /// The gated SQLite/native table covers this I/O/CAS race; existing scalar
     /// Kani and TLA results do not prove mutable-budget/negative-receipt ordering.
-    async fn resolve_run_budget_rejection(
+    async fn resolve_run_budget_rejection_using(
         &self,
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         continue_committed_await: bool,
         admitted_after: u64,
         source: Option<(&ThreadId, &RunId)>,
+        commit: &dyn crate::SessionRootCommit,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
         let owner = self
             .mutations
@@ -682,7 +734,7 @@ impl SessionActivities {
         // has already settled. Read after this snapshot so a preceding winner
         // cannot be overwritten by a rejection compiled from its newer root.
         if let Some(committed) = self
-            .recover_activity_for_operation(session_id, operation_id, source)
+            .recover_activity_for_operation_using(session_id, operation_id, source, commit)
             .await?
         {
             return Ok(committed);
@@ -713,11 +765,12 @@ impl SessionActivities {
         }
         let record = Self::budget_rejection_record(session_id.as_str(), operation_id);
         // Applied and replayed refusals both certify the same durable negative fact.
-        let _committed_rejection = self
+        let committed_rejection = self
             .mutations
-            .commit_session_snapshot_with_record(&owner, session, record, Vec::new())
+            .commit_session_snapshot_with_record_using(commit, &owner, session, record, Vec::new())
             .await
             .map_err(SessionActivityError::mutation)?;
+        Self::validate_observed_activity_root(commit, &committed_rejection.into_session()).await?;
         Err(SessionActivityError::BudgetReached)
     }
 
@@ -731,6 +784,22 @@ impl SessionActivities {
         operation_id: &str,
         source: Option<(&ThreadId, &RunId)>,
     ) -> Result<Option<(PersistedSession, u64)>, SessionActivityError> {
+        self.recover_activity_for_operation_using(
+            session_id,
+            operation_id,
+            source,
+            self.mutations.as_ref(),
+        )
+        .await
+    }
+
+    pub(crate) async fn recover_activity_for_operation_using(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        operation_id: &str,
+        source: Option<(&ThreadId, &RunId)>,
+        commit: &dyn crate::SessionRootCommit,
+    ) -> Result<Option<(PersistedSession, u64)>, SessionActivityError> {
         if operation_id.trim().is_empty() {
             return Err(SessionActivityError::Unavailable(
                 "Session activity operation identity is required".into(),
@@ -738,18 +807,17 @@ impl SessionActivities {
         }
         let record = Self::activity_operation_record(session_id.as_str(), operation_id);
         let replayed = self
-            .replayed_activity_operation(session_id, &record, operation_id, source, async {
-                self.mutations
-                    .session_aggregate(session_id)
-                    .await
-                    .map(SessionAggregate::into_snapshot)
-                    .map_err(repository_failure)
-                    .map_err(SessionActivityError::mutation)
-            })
+            .replay_activity_from_repository_using(
+                session_id,
+                &record,
+                operation_id,
+                source,
+                commit,
+            )
             .await?;
         // A Run activity refused at the budget boundary keeps that answer for
         // its caller's retry, ordinary repair and cancellation alike.
-        if replayed.is_none()
+        let rejected = replayed.is_none()
             && Self::is_run_activity_operation(operation_id)
             && self
                 .activity_operation_receipt(
@@ -757,8 +825,34 @@ impl SessionActivities {
                     &Self::budget_rejection_record(session_id.as_str(), operation_id),
                 )
                 .await?
-                .is_some()
-        {
+                .is_some();
+        if replayed.is_none() {
+            // No accepted receipt has polled a Root snapshot. Preserve that
+            // original missing-root/None observation; final claim validation
+            // is not evidence that a Root exists or a new epoch is authorized.
+            match commit.validate_claim().await {
+                Ok(()) => {}
+                Err(SessionMutationError::Conflict) => {
+                    // The final gate observed a same-operation receipt after
+                    // the cold absence. Read that ORIGINAL receipt once through
+                    // the same deferred Root/source law. Continued absence is
+                    // uncertainty, never a normal rejection or a new epoch.
+                    return self
+                        .replay_activity_from_repository_using(
+                            session_id,
+                            &record,
+                            operation_id,
+                            source,
+                            commit,
+                        )
+                        .await?
+                        .map(Some)
+                        .ok_or(SessionActivityError::Conflict);
+                }
+                Err(error) => return Err(SessionActivityError::mutation(error)),
+            }
+        }
+        if rejected {
             return Err(SessionActivityError::BudgetReached);
         }
         Ok(replayed)
@@ -852,8 +946,31 @@ impl SessionActivities {
         projected_revision: Option<SessionRevision>,
         source: Option<(&ThreadId, &RunId)>,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
+        self.begin_activity_for_operation_with_policy_using(
+            session_id,
+            operation_id,
+            continue_committed_await,
+            prior_activity_epoch,
+            projected_revision,
+            source,
+            self.mutations.as_ref(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn begin_activity_for_operation_with_policy_using(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        operation_id: &str,
+        continue_committed_await: bool,
+        prior_activity_epoch: Option<u64>,
+        projected_revision: Option<SessionRevision>,
+        source: Option<(&ThreadId, &RunId)>,
+        commit: &dyn crate::SessionRootCommit,
+    ) -> Result<(PersistedSession, u64), SessionActivityError> {
         if let Some(committed) = self
-            .recover_activity_for_operation(session_id, operation_id, source)
+            .recover_activity_for_operation_using(session_id, operation_id, source, commit)
             .await?
         {
             return Ok(committed);
@@ -862,7 +979,7 @@ impl SessionActivities {
         let projected_revision = self
             .activity_revision_after_continuation(session_id, projected_revision)
             .await?;
-        self.commit_activity_for_operation(
+        self.commit_activity_for_operation_using(
             session_id,
             operation_id,
             continue_committed_await,
@@ -872,6 +989,7 @@ impl SessionActivities {
                 admitted_after_cursor: None,
             },
             source,
+            commit,
         )
         .await
     }
@@ -884,9 +1002,35 @@ impl SessionActivities {
         session_id: &awaken_session_types::SessionId,
         projected_revision: SessionRevision,
     ) -> Result<SessionRevision, SessionActivityError> {
-        self.activity_revision_after_continuation(session_id, Some(projected_revision))
+        self.prepare_run_activity_revision_using(
+            session_id,
+            projected_revision,
+            self.mutations.as_ref(),
+        )
+        .await
+    }
+
+    pub(crate) async fn prepare_run_activity_revision_using(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        projected_revision: SessionRevision,
+        commit: &dyn crate::SessionRootCommit,
+    ) -> Result<SessionRevision, SessionActivityError> {
+        // Preparation may converge the original Session-owned continuation,
+        // under that owner's grant and Root CAS, with no Dispatch transaction.
+        // It grants no claim-specific epoch; final activity CAS uses the gate.
+        let revision = self
+            .activity_revision_after_continuation(session_id, Some(projected_revision))
             .await?
-            .ok_or(SessionActivityError::Conflict)
+            .ok_or(SessionActivityError::Conflict)?;
+        if !commit
+            .validate(session_id, revision)
+            .await
+            .map_err(SessionActivityError::mutation)?
+        {
+            return Err(SessionActivityError::Conflict);
+        }
+        Ok(revision)
     }
 
     pub(crate) async fn commit_prepared_run_activity(
@@ -897,7 +1041,28 @@ impl SessionActivities {
         source: (&ThreadId, &RunId),
         admitted_after_cursor: Option<u64>,
     ) -> Result<u64, RunError> {
-        self.commit_activity_for_operation(
+        self.commit_prepared_run_activity_using(
+            session_id,
+            operation_id,
+            projected_revision,
+            source,
+            admitted_after_cursor,
+            self.mutations.as_ref(),
+        )
+        .await
+        .map_err(|error| Self::activity_operation_error(operation_id, error))
+    }
+
+    pub(crate) async fn commit_prepared_run_activity_using(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        operation_id: &str,
+        projected_revision: SessionRevision,
+        source: (&ThreadId, &RunId),
+        admitted_after_cursor: Option<u64>,
+        commit: &dyn crate::SessionRootCommit,
+    ) -> Result<u64, SessionActivityError> {
+        self.commit_activity_for_operation_using(
             session_id,
             operation_id,
             false,
@@ -907,15 +1072,16 @@ impl SessionActivities {
                 admitted_after_cursor,
             },
             Some(source),
+            commit,
         )
         .await
         .map(|(_, epoch)| epoch)
-        .map_err(|error| Self::activity_operation_error(operation_id, error))
     }
 
     /// The sole accepted/refused receipt and root-CAS loop. No projection,
     /// continuation, Dispatch operation or synchronous publication runs here.
-    async fn commit_activity_for_operation(
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_activity_for_operation_using(
         &self,
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
@@ -923,6 +1089,7 @@ impl SessionActivities {
         prior_activity_epoch: Option<u64>,
         projection: ActivityProjection,
         source: Option<(&ThreadId, &RunId)>,
+        commit: &dyn crate::SessionRootCommit,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
         let ActivityProjection {
             revision: projected_revision,
@@ -932,7 +1099,7 @@ impl SessionActivities {
         let record = Self::activity_operation_record(session_id.as_str(), operation_id);
         for attempt in 0..ROOT_CAS_ATTEMPTS {
             if let Some(committed) = self
-                .recover_activity_for_operation(session_id, operation_id, source)
+                .recover_activity_for_operation_using(session_id, operation_id, source, commit)
                 .await?
             {
                 return Ok(committed);
@@ -950,7 +1117,7 @@ impl SessionActivities {
             // receipt committed before this snapshot wins before we compile an
             // epoch. A cap raise cannot erase a preceding durable refusal.
             if let Some(committed) = self
-                .recover_activity_for_operation(session_id, operation_id, source)
+                .recover_activity_for_operation_using(session_id, operation_id, source, commit)
                 .await?
             {
                 return Ok(committed);
@@ -984,12 +1151,13 @@ impl SessionActivities {
                     && Self::is_run_activity_operation(operation_id)
                 {
                     drop(session);
-                    self.resolve_run_budget_rejection(
+                    self.resolve_run_budget_rejection_using(
                         session_id,
                         operation_id,
                         continue_committed_await,
                         admitted_after,
                         source,
+                        commit,
                     )
                     .await
                 } else {
@@ -1004,7 +1172,8 @@ impl SessionActivities {
                     .settle_activity_epoch(prior_activity_epoch);
             }
             match mutations
-                .commit_session_snapshot_with_record(
+                .commit_session_snapshot_with_record_using(
+                    commit,
                     &owner_scope,
                     session,
                     record.clone(),
@@ -1012,8 +1181,8 @@ impl SessionActivities {
                 )
                 .await
             {
-                Ok(commit) if commit.transitioned() => {
-                    let session = commit.into_session();
+                Ok(snapshot_commit) if snapshot_commit.transitioned() => {
+                    let session = snapshot_commit.into_session();
                     if session.revision.0 != epoch {
                         return Err(SessionActivityError::Unavailable(
                             "Session activity revision did not match its committed epoch".into(),
@@ -1021,15 +1190,16 @@ impl SessionActivities {
                     }
                     return Ok((session, epoch));
                 }
-                Ok(commit) => {
-                    let snapshot = std::future::ready(Ok(commit.into_session()));
+                Ok(snapshot_commit) => {
+                    let snapshot = std::future::ready(Ok(snapshot_commit.into_session()));
                     return self
-                        .replayed_activity_operation(
+                        .replayed_activity_operation_using(
                             session_id,
                             &record,
                             operation_id,
                             source,
                             snapshot,
+                            commit,
                         )
                         .await?
                         .ok_or_else(|| {
@@ -1045,5 +1215,170 @@ impl SessionActivities {
             }
         }
         Err(SessionActivityError::Conflict)
+    }
+}
+
+#[cfg(test)]
+mod final_admission_tests {
+    use super::*;
+    use awaken_session_contract::{SessionRepository as _, SessionRepositoryReads as _};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ReceiptAtFinalGate {
+        activities: Arc<SessionActivities>,
+        session: awaken_session_types::SessionId,
+        operation: String,
+        thread: ThreadId,
+        run: RunId,
+        publish: bool,
+        claim_checks: AtomicUsize,
+        root_checks: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::SessionRootCommit for ReceiptAtFinalGate {
+        async fn commit(
+            &self,
+            _: &str,
+            _: awaken_session_contract::SessionMutation,
+        ) -> Result<awaken_session_contract::SessionMutationResult, SessionMutationError> {
+            panic!("receipt recovery must not call a second activity mutation");
+        }
+
+        async fn validate_claim(&self) -> Result<(), SessionMutationError> {
+            self.claim_checks.fetch_add(1, Ordering::SeqCst);
+            if self.publish {
+                self.activities
+                    .begin_activity_for_operation_with_policy(
+                        &self.session,
+                        &self.operation,
+                        false,
+                        None,
+                        None,
+                        Some((&self.thread, &self.run)),
+                    )
+                    .await
+                    .expect("the original independent contender commits its activity");
+            }
+            Err(SessionMutationError::Conflict)
+        }
+
+        async fn validate(
+            &self,
+            session: &awaken_session_types::SessionId,
+            observed_revision: SessionRevision,
+        ) -> Result<bool, SessionMutationError> {
+            self.root_checks.fetch_add(1, Ordering::SeqCst);
+            let current = self
+                .activities
+                .mutations
+                .repository()
+                .get(session)
+                .await
+                .map_err(repository_failure)?;
+            Ok(session == self.session && current.revision == observed_revision)
+        }
+    }
+
+    #[tokio::test]
+    async fn same_operation_receipt_is_reread_once_after_final_gate_conflict() {
+        // Causes: H9 cold accepted receipt absent; the final gate then returns
+        // Conflict with that same receipt now present or still absent. Effects:
+        // present => original epoch/source law from a fresh Root, no second
+        // mutation; absent => Conflict, never None/Rejected. Exactly one gate
+        // call owns the cut, so a hidden retry loop cannot pass this test.
+        // The existing SQLite application fixture supplies the real receipt
+        // and Root CAS. This tests recovery ordering, not actual PG claim locks.
+        for publish in [false, true] {
+            let store = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .await
+                    .unwrap(),
+            );
+            let session =
+                awaken_session_types::SessionId::from(format!("activity-receipt-cut-{publish}"));
+            crate::tests::create(
+                store.as_ref(),
+                crate::tests::persisted(session.as_str(), false, "idle"),
+            )
+            .await;
+            let app = crate::tests::application_fixture::application(
+                store.clone(),
+                Arc::new(crate::tests::RecordingEnvironmentSource::default()),
+            );
+            let thread = ThreadId(session.to_string());
+            let run = RunId("same-operation".into());
+            let operation = awaken_session_execution_contract::session_run_activity_operation_id(
+                &session, &run,
+            );
+            let before = store.get(&session).await.unwrap();
+            let gate = ReceiptAtFinalGate {
+                activities: app.activities.clone(),
+                session: session.clone(),
+                operation: operation.clone(),
+                thread: thread.clone(),
+                run: run.clone(),
+                publish,
+                claim_checks: AtomicUsize::new(0),
+                root_checks: AtomicUsize::new(0),
+            };
+            let result = app
+                .activities
+                .recover_activity_for_operation_using(
+                    &session,
+                    &operation,
+                    Some((&thread, &run)),
+                    &gate,
+                )
+                .await;
+            assert_eq!(
+                gate.claim_checks.load(Ordering::SeqCst),
+                1,
+                "H9 one final cut"
+            );
+            if publish {
+                let (root, epoch) = result.unwrap().expect("H9 exact accepted receipt recovery");
+                let record =
+                    SessionActivities::activity_operation_record(session.as_str(), &operation);
+                let receipt = store
+                    .idempotency_receipt(&session, &record.key)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(receipt.payload_hash, record.payload_hash);
+                assert_eq!(
+                    receipt.committed_revision.0, epoch,
+                    "H9 original receipt is sole epoch owner"
+                );
+                assert_eq!(root, store.get(&session).await.unwrap());
+                assert!(root.revision.0 > before.revision.0);
+                assert_eq!(
+                    gate.root_checks.load(Ordering::SeqCst),
+                    1,
+                    "H9 reread Root validated"
+                );
+            } else {
+                assert_eq!(
+                    result.unwrap_err(),
+                    SessionActivityError::Conflict,
+                    "H9 continued absence stays uncertain"
+                );
+                assert_eq!(store.get(&session).await.unwrap(), before);
+                assert_eq!(
+                    gate.root_checks.load(Ordering::SeqCst),
+                    0,
+                    "H9 no receipt means no snapshot read"
+                );
+            }
+            let missing = awaken_session_types::SessionId::from("missing-root-no-receipt");
+            assert!(
+                app.activities
+                    .recover_activity_for_operation(&missing, "missing-operation", None)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "ordinary missing Root retains original None"
+            );
+        }
     }
 }

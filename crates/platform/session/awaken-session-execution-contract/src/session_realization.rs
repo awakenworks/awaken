@@ -16,6 +16,8 @@ use crate::{
     McpGenerationRef, McpRealizationReceipt, RunError, SessionRealizationLease, StageMcpAttachment,
 };
 
+use awaken_session_contract::SessionRealizationRetirement;
+
 mod execution_projection;
 pub use execution_projection::{
     CanonicalSessionProjection, frozen_session_requires_opaque_process,
@@ -234,6 +236,13 @@ pub trait SessionRealizationControl: Send + Sync {
         &self,
         command: FailSessionRealization,
     ) -> Result<(), SessionRealizationControlFailure>;
+
+    /// Root-CAS disposition, independent from effect failure accounting. A
+    /// missing/unknown response never permits closing a local source grant.
+    async fn retire_session_realization(
+        &self,
+        command: RetireSessionRealization,
+    ) -> Result<SessionRealizationRetirement, SessionRealizationControlFailure>;
 }
 
 /// Registered-Worker selector over the Session repository's existing
@@ -499,7 +508,8 @@ pub(crate) mod tests {
         SessionTerminalRepositoryPublicationControl, realization_lease_authorizes,
         realization_lease_is_live_at,
     };
-    use crate::{SessionRealizationLease, SessionTerminalSourceDispatch};
+    use crate::{RetireSessionRealization, SessionRealizationLease, SessionTerminalSourceDispatch};
+    use awaken_session_contract::SessionRealizationRetirement;
 
     struct MinimalControl;
 
@@ -977,6 +987,16 @@ pub(crate) mod tests {
             _command: AcknowledgeSessionRealization,
         ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
             unreachable!("not exercised by the terminal port-default tests")
+        }
+        async fn retire_session_realization(
+            &self,
+            _: RetireSessionRealization,
+        ) -> Result<SessionRealizationRetirement, SessionRealizationControlFailure> {
+            // This fixture does not admit root retirement; an unavailable reply
+            // cannot authorize closing a local source grant.
+            Err(SessionRealizationControlFailure::Unavailable(
+                "root retirement is not configured by this fixture".into(),
+            ))
         }
 
         async fn fail_session_realization(

@@ -556,6 +556,14 @@ fn t3_lease_standing_fences_every_effect() {
     ] {
         let stale = lease == RealizationLeaseStanding::Stale;
         check_row("L renew", with(R, lease), E::RenewRealization, lease_lost);
+        // L0 RequireResident on an existing Resident is observation only:
+        // Stay carries zero instruction, unlike every physical effect below.
+        check_row(
+            "L0 resident observation",
+            with(R, lease),
+            E::RequireResident,
+            Stay,
+        );
         check_row(
             "L admit create",
             with(U, lease),

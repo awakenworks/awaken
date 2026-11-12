@@ -240,6 +240,28 @@ async fn conflict_and_unclassified_internal_failures_retry_until_the_durable_bud
         );
         let expected_message = effect.to_string();
         let after = repo.get(&id).await.unwrap();
+        // F-retire: the real Fail command has absorbed the failure and already
+        // expired its ordinary grant. Its typed retirement replay must still
+        // authorize stopping local renewal; a terminal *live* source differs.
+        let mut issued = after.realization.clone().unwrap();
+        issued.expires_at_unix_ms = u64::MAX;
+        assert_eq!(
+            app.realizations
+                .retire_session_realization(
+                    awaken_session_execution_contract::RetireSessionRealization {
+                        session_id: id.clone(),
+                        lease: issued
+                    }
+                )
+                .await
+                .unwrap(),
+            awaken_session_contract::SessionRealizationRetirement::Retired {}
+        );
+        assert_eq!(
+            repo.get(&id).await.unwrap(),
+            after,
+            "F-retire no second failure or budget mutation"
+        );
         assert_eq!(
             awaken_session_contract::session_classified_realization_failure(&after),
             Some((expected_code, expected_message.as_str())),

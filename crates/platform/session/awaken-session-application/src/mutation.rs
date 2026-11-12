@@ -129,9 +129,43 @@ pub enum SessionStateViolation {
     Budget(#[from] awaken_session_contract::ManagedListPriceError),
 }
 
+/// Lossless typed admission refusal retained beside a cloneable CAS error.
+/// The Runtime's diagnostic-only RunError deliberately is not Clone/Eq.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct SessionAdmissionFailure {
+    kind: awaken_runtime_contract::runs::RunErrorKind,
+    code: String,
+    message: String,
+}
+
+impl From<awaken_runtime_contract::runs::RunError> for SessionAdmissionFailure {
+    fn from(error: awaken_runtime_contract::runs::RunError) -> Self {
+        Self {
+            kind: error.kind,
+            code: error.code,
+            message: error.message,
+        }
+    }
+}
+
+impl From<SessionAdmissionFailure> for awaken_runtime_contract::runs::RunError {
+    fn from(error: SessionAdmissionFailure) -> Self {
+        Self {
+            kind: error.kind,
+            code: error.code,
+            message: error.message,
+        }
+    }
+}
+
 /// Failure returned by the Session application's one repository CAS boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionMutationError {
+    /// The composing claim/Work authority refused this operation. Preserve its
+    /// typed HTTP family; a stale claim is not a retryable Root CAS conflict.
+    #[error(transparent)]
+    Admission(SessionAdmissionFailure),
     #[error("Session was not found")]
     NotFound,
     #[error("Session revision conflict")]
@@ -155,6 +189,13 @@ pub enum SessionMutationError {
     Invalid(SessionStateViolation),
 }
 
+impl SessionMutationError {
+    #[must_use]
+    pub fn admission(error: awaken_runtime_contract::runs::RunError) -> Self {
+        Self::Admission(error.into())
+    }
+}
+
 /// The one classification of a Session state violation. An unavailable
 /// list-price authority is an outage the same command may retry; every other
 /// violation is permanent.
@@ -172,6 +213,7 @@ impl From<SessionStateViolation> for SessionMutationError {
 impl From<SessionMutationError> for awaken_runtime_contract::runs::RunError {
     fn from(error: SessionMutationError) -> Self {
         match error {
+            SessionMutationError::Admission(error) => error.into(),
             SessionMutationError::NotFound => Self::bad_request("Session was not found"),
             SessionMutationError::Conflict => Self::conflict("Session revision conflict"),
             SessionMutationError::IdempotencyMismatch => {
@@ -196,6 +238,18 @@ impl From<SessionMutationError>
 {
     fn from(error: SessionMutationError) -> Self {
         match error {
+            SessionMutationError::Admission(error) => match error.kind {
+                awaken_runtime_contract::runs::RunErrorKind::BadRequest => {
+                    Self::Invalid(error.message)
+                }
+                awaken_runtime_contract::runs::RunErrorKind::Conflict => Self::Conflict,
+                awaken_runtime_contract::runs::RunErrorKind::Internal => {
+                    Self::Internal(error.message)
+                }
+                awaken_runtime_contract::runs::RunErrorKind::Unavailable => {
+                    Self::Unavailable(error.message)
+                }
+            },
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::Unavailable(detail)
@@ -271,6 +325,31 @@ pub(crate) const ROOT_CAS_ATTEMPTS: usize = 3;
 /// The one Session-root mutation component. Use-case services share the
 /// original Repository and Clock; this component does not create a store,
 /// driver, retry queue or alternative idempotency protocol.
+/// Final admission for an already-compiled Session root mutation.
+///
+/// The Session use case retains its original bounded CAS loop and cold reads.
+/// A composing claim authority can bind this final CAS to its own held database
+/// connection. No transaction, repository view or retry state is hidden here.
+#[async_trait::async_trait]
+pub trait SessionRootCommit: Send + Sync {
+    /// Final tenure check for a result that observed no Root mutation (for
+    /// example an absent idempotency receipt). It proves no Root existence.
+    async fn validate_claim(&self) -> Result<(), SessionMutationError>;
+
+    async fn commit(
+        &self,
+        owner_scope: &str,
+        mutation: SessionMutation,
+    ) -> Result<SessionMutationResult, SessionMutationError>;
+
+    /// Validate even a no-change/read result before it can leave this use case.
+    async fn validate(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        observed_revision: SessionRevision,
+    ) -> Result<bool, SessionMutationError>;
+}
+
 pub struct SessionMutations {
     repository: Arc<dyn SessionRepository>,
     clock: Arc<dyn awaken_time::WallClock>,
@@ -305,22 +384,24 @@ impl SessionMutations {
         now: u64,
     ) -> Result<SessionMutationResult, SessionRepositoryError> {
         Self::commit_candidate(
-            repository,
-            owner_scope,
+            |mutation| repository.commit(owner_scope, mutation),
             session.compile_mutation(owner_scope, idempotency, lifecycle_facts, now),
             now,
         )
         .await
     }
 
-    async fn commit_candidate(
-        repository: &dyn SessionRepository,
-        owner_scope: &str,
+    async fn commit_candidate<F, Fut, E>(
+        commit: F,
         mutation: SessionMutation,
         now: u64,
-    ) -> Result<SessionMutationResult, SessionRepositoryError> {
+    ) -> Result<SessionMutationResult, E>
+    where
+        F: FnOnce(SessionMutation) -> Fut + Send,
+        Fut: std::future::Future<Output = Result<SessionMutationResult, E>> + Send,
+    {
         let observation = crate::sandbox_observation::prepare(&mutation.payload, now);
-        let result = repository.commit(owner_scope, mutation).await;
+        let result = commit(mutation).await;
         crate::sandbox_observation::committed(observation, result.as_ref().ok());
         result
     }
@@ -577,11 +658,30 @@ impl SessionMutations {
         operation: &str,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SnapshotCommit, SessionMutationError> {
+        self.commit_session_snapshot_with_outcome_using(
+            self,
+            owner_scope,
+            session,
+            operation,
+            lifecycle_facts,
+        )
+        .await
+    }
+
+    pub async fn commit_session_snapshot_with_outcome_using(
+        &self,
+        commit: &dyn SessionRootCommit,
+        owner_scope: &str,
+        session: SessionAggregate,
+        operation: &str,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
+    ) -> Result<SnapshotCommit, SessionMutationError> {
         // Keep the shared aggregate-owning future off each caller's stack, as
         // at the existing creation boundary. Polling/cancellation remain inline
         // with this caller; no task or retry owner is detached.
         let idempotency = compile_session_snapshot_idempotency(&session, operation);
-        Box::pin(self.commit_session_snapshot_with_record(
+        Box::pin(self.commit_session_snapshot_with_record_using(
+            commit,
             owner_scope,
             session,
             idempotency,
@@ -593,21 +693,36 @@ impl SessionMutations {
     pub async fn commit_session_snapshot_with_record(
         &self,
         owner_scope: &str,
+        session: SessionAggregate,
+        idempotency: IdempotencyRecord,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
+    ) -> Result<SnapshotCommit, SessionMutationError> {
+        self.commit_session_snapshot_with_record_using(
+            self,
+            owner_scope,
+            session,
+            idempotency,
+            lifecycle_facts,
+        )
+        .await
+    }
+
+    pub async fn commit_session_snapshot_with_record_using(
+        &self,
+        commit: &dyn SessionRootCommit,
+        owner_scope: &str,
         mut session: SessionAggregate,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SnapshotCommit, SessionMutationError> {
         let session_id = session.session_id.clone();
-        let result = Self::commit_observed_snapshot(
-            self.repository.as_ref(),
-            owner_scope,
-            &mut session,
-            idempotency,
-            lifecycle_facts,
-            self.clock.now_ms(),
+        let now = self.clock.now_ms();
+        let result = Self::commit_candidate(
+            |mutation| commit.commit(owner_scope, mutation),
+            session.compile_mutation(owner_scope, idempotency, lifecycle_facts, now),
+            now,
         )
-        .await
-        .map_err(repository_failure)?;
+        .await?;
         let (committed_revision, transitioned) = snapshot_commit_receipt(result)?;
         let session = if transitioned {
             session
@@ -635,13 +750,40 @@ impl SessionMutations {
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionMutationError> {
         Self::commit_candidate(
-            self.repository.as_ref(),
-            owner_scope,
+            |mutation| self.repository.commit(owner_scope, mutation),
             mutation,
             self.clock.now_ms(),
         )
         .await
         .map_err(repository_failure)
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRootCommit for SessionMutations {
+    async fn validate_claim(&self) -> Result<(), SessionMutationError> {
+        Ok(())
+    }
+
+    async fn commit(
+        &self,
+        owner_scope: &str,
+        mutation: SessionMutation,
+    ) -> Result<SessionMutationResult, SessionMutationError> {
+        self.repository
+            .commit(owner_scope, mutation)
+            .await
+            .map_err(repository_failure)
+    }
+
+    async fn validate(
+        &self,
+        _: &awaken_session_types::SessionId,
+        _: SessionRevision,
+    ) -> Result<bool, SessionMutationError> {
+        // The ordinary application path has no external Dispatch tenure. Its
+        // aggregate/Repository CAS retains exactly the existing authority law.
+        Ok(true)
     }
 }
 

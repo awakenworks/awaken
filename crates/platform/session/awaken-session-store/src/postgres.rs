@@ -16,6 +16,7 @@
 use super::*;
 use awaken_sql_storage::postgres_pool_options as pool_options;
 
+mod mutation;
 mod replay;
 use replay::{insert_session_revision, replay_bundle};
 pub use replay::{lock_session_for_run_archive, session_revision_at};
@@ -31,14 +32,41 @@ pub async fn postgres_session_root_on(
     connection: &mut sqlx::PgConnection,
     session_id: &awaken_session_types::SessionId,
 ) -> Result<PersistedSession, SessionRepositoryError> {
-    let row = sqlx::query(
-        "SELECT aggregate_json, revision \
-             FROM managed_session WHERE session_id = $1",
-    )
-    .bind(session_id.as_str())
-    .fetch_optional(&mut *connection)
-    .await
-    .map_err(storage)?;
+    read_session_root_on(connection, session_id, RootReadLock::Read).await
+}
+
+/// Serialize an exact Root observation with the original mutation/receipt CAS.
+/// A missing Root is still NotFound, never fabricated existence or revision0.
+pub async fn lock_postgres_session_root_on(
+    connection: &mut sqlx::PgConnection,
+    session_id: &awaken_session_types::SessionId,
+) -> Result<PersistedSession, SessionRepositoryError> {
+    read_session_root_on(connection, session_id, RootReadLock::Update).await
+}
+
+enum RootReadLock {
+    Read,
+    Update,
+}
+
+/// Read the canonical root on the caller's existing transaction connection.
+async fn read_session_root_on(
+    connection: &mut sqlx::PgConnection,
+    session_id: &awaken_session_types::SessionId,
+    lock: RootReadLock,
+) -> Result<PersistedSession, SessionRepositoryError> {
+    // The complete statement has one owner; only the closed lock suffix varies.
+    const SELECT_ROOT: &str =
+        "SELECT aggregate_json, revision FROM managed_session WHERE session_id = $1";
+    let suffix = match lock {
+        RootReadLock::Read => "",
+        RootReadLock::Update => " FOR UPDATE",
+    };
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!("{SELECT_ROOT}{suffix}")))
+        .bind(session_id.as_str())
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(storage)?;
     let Some(row) = row else {
         return Err(SessionRepositoryError::NotFound);
     };
@@ -50,6 +78,27 @@ pub async fn postgres_session_root_on(
 }
 
 impl PostgresManagedSessionRepository {
+    /// Observe the original exact receipt on the caller-held connection.
+    pub async fn idempotency_receipt_on(
+        connection: &mut sqlx::PgConnection,
+        session_id: &awaken_session_types::SessionId,
+        key: &str,
+    ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
+    {
+        let row = sqlx::query_as::<_, (String, i64, String)>(
+            "SELECT payload_hash, committed_revision, receipt_kind \
+             FROM managed_session_idempotency \
+             WHERE session_id = $1 AND idempotency_key = $2",
+        )
+        .bind(session_id.as_str())
+        .bind(key)
+        .fetch_optional(connection)
+        .await
+        .map_err(storage)?;
+        row.map(|(hash, revision, kind)| decode_session_receipt(hash, revision, &kind))
+            .transpose()
+    }
+
     /// Connect and apply the session migrations under the `managed` namespace.
     pub async fn connect(url: &str) -> Result<Self, String> {
         let pool = pool_options()
@@ -210,12 +259,12 @@ impl PostgresManagedSessionRepository {
     }
 
     async fn sync_session_indexes(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut sqlx::PgConnection,
         session: &PersistedSession,
     ) -> Result<(), SessionRepositoryError> {
         sqlx::query("DELETE FROM managed_session_vault_reference WHERE session_id = $1")
             .bind(session.session_id.as_str())
-            .execute(&mut **tx)
+            .execute(&mut *tx)
             .await
             .map_err(storage)?;
         for vault_id in referenced_vault_ids(session) {
@@ -225,7 +274,7 @@ impl PostgresManagedSessionRepository {
             )
             .bind(session.session_id.as_str())
             .bind(vault_id)
-            .execute(&mut **tx)
+            .execute(&mut *tx)
             .await
             .map_err(storage)?;
         }
@@ -252,7 +301,7 @@ impl PostgresManagedSessionRepository {
             .bind(i64::from(obligation.unbound_preparation))
             .bind(i64::from(obligation.unbound_terminal))
             .bind(i64::from(obligation.invalid))
-            .execute(&mut **tx)
+            .execute(&mut *tx)
             .await
             .map_err(storage)?;
         } else {
@@ -268,7 +317,7 @@ impl PostgresManagedSessionRepository {
             }
             sqlx::query("DELETE FROM managed_session_reconciliation_work WHERE session_id = $1")
                 .bind(session.session_id.as_str())
-                .execute(&mut **tx)
+                .execute(&mut *tx)
                 .await
                 .map_err(storage)?;
         }
@@ -276,14 +325,14 @@ impl PostgresManagedSessionRepository {
     }
 
     async fn sync_credential_source_index(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut sqlx::PgConnection,
         session: &PersistedSession,
     ) -> Result<(), SessionRepositoryError> {
         sqlx::query(
             "DELETE FROM managed_session_credential_source_reference WHERE session_id = $1",
         )
         .bind(session.session_id.as_str())
-        .execute(&mut **tx)
+        .execute(&mut *tx)
         .await
         .map_err(storage)?;
         for source_id in referenced_mcp_credential_source_ids(session) {
@@ -293,7 +342,7 @@ impl PostgresManagedSessionRepository {
             )
             .bind(session.session_id.as_str())
             .bind(source_id)
-            .execute(&mut **tx)
+            .execute(&mut *tx)
             .await
             .map_err(storage)?;
         }
@@ -448,7 +497,7 @@ impl PostgresManagedSessionRepository {
     }
 
     async fn session_identity(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut sqlx::PgConnection,
         session_id: &str,
     ) -> Result<TransactionalSessionIdentity, SessionRepositoryError> {
         let rows = sqlx::query(
@@ -462,7 +511,7 @@ impl PostgresManagedSessionRepository {
              ) AS identity ORDER BY identity_kind",
         )
         .bind(session_id)
-        .fetch_all(&mut **tx)
+        .fetch_all(&mut *tx)
         .await
         .map_err(storage)?;
         transactional_session_identity(
@@ -565,7 +614,7 @@ impl PostgresManagedSessionRepository {
     /// Root locks serialize commands whose accepted no-op does not advance the
     /// revision. The same receipt lookup runs before and after that lock.
     async fn mutation_replay(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: &mut sqlx::PgConnection,
         owner_scope: &str,
         mutation: &SessionMutation,
         expected_committed_revision: SessionRevision,
@@ -578,7 +627,7 @@ impl PostgresManagedSessionRepository {
         )
         .bind(session_id)
         .bind(&mutation.idempotency.key)
-        .fetch_optional(&mut **tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(storage)?;
         let Some((hash, revision, kind)) = row else {
@@ -832,177 +881,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
         owner_scope: &str,
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionRepositoryError> {
-        let mut commit_outcome_unknown = false;
-        async {
-            let receipt_kind = mutation.receipt_kind();
-            let next = mutation
-                .validate()
-                .map_err(|error| SessionRepositoryError::InvalidMutation(error.to_string()))?;
-            let session_id = mutation.payload.session_id().to_string();
-            let mut tx = self.pool.begin().await.map_err(storage)?;
-            if let Some(replay) =
-                Self::mutation_replay(&mut tx, owner_scope, &mutation, next).await?
-            {
-                return Ok(replay);
-            }
-            let current = sqlx::query(
-                "SELECT revision, scope_id, aggregate_json
-             FROM managed_session WHERE session_id = $1 FOR UPDATE",
-            )
-            .bind(&session_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage)?;
-            let Some(current) = current else {
-                let tombstone = sqlx::query(
-                    "SELECT deleted_revision FROM managed_session_tombstone WHERE session_id = $1",
-                )
-                .bind(&session_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(storage)?;
-                let revision = tombstone.map_or(0, |row| row.get::<i64, _>("deleted_revision"));
-                let revision = u64::try_from(revision)
-                    .map_err(|_| corrupt("negative deleted Session revision"))?;
-                return Ok(SessionMutationResult::Conflict {
-                    current_revision: SessionRevision(revision),
-                });
-            };
-            let current_revision = SessionRevision(
-                u64::try_from(current.get::<i64, _>("revision"))
-                    .map_err(|_| corrupt("negative managed Session revision"))?,
-            );
-            let current_owner: String = current.get("scope_id");
-            if current_owner != owner_scope || current_revision != mutation.expected_revision {
-                return Ok(SessionMutationResult::Conflict { current_revision });
-            }
-            if let Some(replay) =
-                Self::mutation_replay(&mut tx, owner_scope, &mutation, next).await?
-            {
-                return Ok(replay);
-            }
-            let (mut deleted_admissions, private_content) = validate_current_mutation(
-                &mutation,
-                EncodedSessionRow {
-                    aggregate_json: current.try_get("aggregate_json").map_err(storage)?,
-                    revision: current.try_get("revision").map_err(storage)?,
-                },
-            )?;
-            if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
-                let noops = sqlx::query_as::<_, (String, String, i64)>(
-                    "SELECT idempotency_key, payload_hash, committed_revision \
-                     FROM managed_session_idempotency \
-                     WHERE session_id = $1 AND receipt_kind = $2",
-                )
-                .bind(&session_id)
-                .bind(receipt_kind_value(SessionCommandReceiptKind::EventNoOp))
-                .fetch_all(&mut *tx)
-                .await
-                .map_err(storage)?;
-                if !noops.is_empty() {
-                    deleted_admissions = Some(event_admissions::merge_noops(
-                        deleted_admissions
-                            .as_deref()
-                            .expect("delete encoded its root receipts"),
-                        current_revision,
-                        noops,
-                    )?);
-                }
-            }
-            match &mutation.payload {
-                SessionMutationPayload::Replace(replacement) => {
-                    let mut replacement = replacement.clone();
-                    replacement.revision = next;
-                    let affected = sqlx::query(
-                        "UPDATE managed_session SET
-                        aggregate_json = $2, revision = $3
-                     WHERE session_id = $1 AND scope_id = $4 AND revision = $5",
-                    )
-                    .bind(replacement.session_id.as_str())
-                    .bind(aggregate_str(&replacement)?)
-                    .bind(db_revision(next)?)
-                    .bind(owner_scope)
-                    .bind(db_revision(current_revision)?)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(storage)?
-                    .rows_affected();
-                    if affected != 1 {
-                        return Ok(SessionMutationResult::Conflict { current_revision });
-                    }
-                    Self::sync_session_indexes(&mut tx, &replacement).await?;
-                    insert_session_revision(&mut tx, owner_scope, &replacement).await?;
-                }
-                SessionMutationPayload::Delete(tombstone) => {
-                    let affected = sqlx::query(
-                        "DELETE FROM managed_session
-                     WHERE session_id = $1 AND scope_id = $2 AND revision = $3",
-                    )
-                    .bind(&session_id)
-                    .bind(owner_scope)
-                    .bind(db_revision(current_revision)?)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(storage)?
-                    .rows_affected();
-                    if affected != 1 {
-                        return Ok(SessionMutationResult::Conflict { current_revision });
-                    }
-                    replay::delete_run_archives(&mut tx, owner_scope, &session_id).await?;
-                    sqlx::query(
-                        "INSERT INTO managed_session_tombstone
-                        (session_id, scope_id, deleted_revision, deleted_at, event_admissions_json, private_content)
-                     VALUES ($1, $2, $3, $4, $5, $6)",
-                    )
-                    .bind(tombstone.session_id.as_str())
-                    .bind(owner_scope)
-                    .bind(db_revision(tombstone.deleted_revision)?)
-                    .bind(&tombstone.deleted_at)
-                    .bind(deleted_admissions)
-                    .bind(i64::from(private_content))
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(storage)?;
-                }
-                SessionMutationPayload::EventNoOp { .. } => {}
-            }
-            sqlx::query(
-                "INSERT INTO managed_session_idempotency
-                (session_id, idempotency_key, payload_hash, committed_revision, receipt_kind)
-             VALUES ($1, $2, $3, $4, $5)",
-            )
-            .bind(&session_id)
-            .bind(&mutation.idempotency.key)
-            .bind(&mutation.idempotency.payload_hash)
-            .bind(db_revision(next)?)
-            .bind(receipt_kind_value(receipt_kind))
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
-            for fact in mutation.lifecycle_facts {
-                sqlx::query(
-                    "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
-                 ON CONFLICT (fact_id) DO NOTHING",
-                )
-                .bind(&fact.id)
-                .bind(lifecycle_str(&fact))
-                .execute(&mut *tx)
-                .await
-                .map_err(storage)?;
-            }
-            let committed = tx.commit().await;
-            commit_outcome_unknown = !matches!(&committed, Ok(()) | Err(sqlx::Error::Database(_)));
-            committed.map_err(storage)?;
-            Ok(if receipt_kind == SessionCommandReceiptKind::EventNoOp {
-                SessionMutationResult::AcknowledgedNoOp {
-                    observed_revision: next,
-                }
-            } else {
-                SessionMutationResult::Applied { new_revision: next }
-            })
-        }
-        .await
-        .map_err(|error| if commit_outcome_unknown { error } else { write_not_committed(error) })
+        self.commit_owned(owner_scope, mutation).await
     }
 
     async fn preparation_candidates(
@@ -1028,18 +907,8 @@ impl SessionRepository for PostgresManagedSessionRepository {
         key: &str,
     ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
     {
-        let row = sqlx::query_as::<_, (String, i64, String)>(
-            "SELECT payload_hash, committed_revision, receipt_kind \
-             FROM managed_session_idempotency \
-             WHERE session_id = $1 AND idempotency_key = $2",
-        )
-        .bind(session_id.as_str())
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage)?;
-        row.map(|(hash, revision, kind)| decode_session_receipt(hash, revision, &kind))
-            .transpose()
+        let mut connection = self.pool.acquire().await.map_err(storage)?;
+        Self::idempotency_receipt_on(&mut connection, session_id, key).await
     }
 }
 

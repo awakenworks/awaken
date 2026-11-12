@@ -80,6 +80,45 @@ impl DispatchError {
     }
 }
 
+impl From<DispatchError> for awaken_runtime_contract::runs::RunError {
+    fn from(error: DispatchError) -> Self {
+        match error {
+            DispatchError::Rejected(detail) => Self::bad_request(detail),
+            DispatchError::Conflict(detail) => Self::conflict(detail),
+            DispatchError::Unavailable(detail) => Self::unavailable(detail),
+        }
+    }
+}
+
+#[cfg(test)]
+mod operation_error_projection_tests {
+    #[test]
+    fn dispatch_operation_errors_preserve_each_typed_family() {
+        // E1 Rejected -> BadRequest; E2 Conflict -> Conflict; E3 unavailable
+        // -> Unavailable. Equal misleading diagnostics cannot choose a family.
+        use super::DispatchError;
+        use awaken_runtime_contract::runs::{RunError, RunErrorKind};
+        for (source, expected) in [
+            (
+                DispatchError::Rejected("unavailable conflict".into()),
+                RunErrorKind::BadRequest,
+            ),
+            (
+                DispatchError::Conflict("unavailable conflict".into()),
+                RunErrorKind::Conflict,
+            ),
+            (
+                DispatchError::Unavailable("unavailable conflict".into()),
+                RunErrorKind::Unavailable,
+            ),
+        ] {
+            let result: RunError = source.into();
+            assert_eq!(result.kind, expected);
+            assert_eq!(result.message, "unavailable conflict");
+        }
+    }
+}
+
 include!("dispatch/settlement.rs");
 
 mod attempt_binding;

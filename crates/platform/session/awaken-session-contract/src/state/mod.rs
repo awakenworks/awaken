@@ -14,8 +14,8 @@ pub use aggregate::{
     SessionCleanupOperations, SessionConfigurationOperations, SessionEnvironmentOperations,
     SessionEventsOperations, SessionLifecycleOperations, SessionMcpOperations,
     SessionRealizationAssignment, SessionRealizationBegin, SessionRealizationBeginRejection,
-    SessionRealizationBeginRequest, SessionResourcesOperations, session_activity_open_plan,
-    session_realization_assignment, session_root_update_observation,
+    SessionRealizationBeginRequest, SessionRealizationRetirement, SessionResourcesOperations,
+    session_activity_open_plan, session_realization_assignment, session_root_update_observation,
 };
 mod archive_intent;
 mod environment;

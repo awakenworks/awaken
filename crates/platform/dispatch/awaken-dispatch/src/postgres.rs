@@ -465,6 +465,15 @@ pub async fn lock_running_claim_for_commit(
     lock_claim_row(connection, claim, "running").await
 }
 
+/// The same original claim-row kernel for the existing prepared Run lane.
+/// The caller retains this transaction through final Session activity admission.
+pub async fn lock_session_run_reservation_for_admission(
+    connection: &mut sqlx::PgConnection,
+    claim: &RunClaim,
+) -> Result<Option<awaken_dispatch_contract::CommitEpochObservation>, DispatchError> {
+    lock_claim_row(connection, claim, "reservation_running").await
+}
+
 include!("postgres/release_claim.rs");
 include!("postgres/dispatch_queue.rs");
 include!("postgres/summaries.rs");

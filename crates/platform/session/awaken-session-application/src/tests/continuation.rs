@@ -775,7 +775,10 @@ fn add_acknowledged_active_mcp(
 ) -> crate::session_mcp::McpGenerationRef {
     let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
-        runtime_incarnation: "worker-a/boot-1".into(),
+        // The source must be the same registered incarnation the real Control
+        // verifies before Suspend intent; MCP and root retain this exact value.
+        runtime_incarnation: awaken_worker_contract::WorkerIdentity::new("worker-a", "boot-1", 1)
+            .lease_owner(),
         epoch: 7,
         expires_at_unix_ms: u64::MAX,
     };
@@ -2163,8 +2166,9 @@ async fn resident_projection_failure_retries_without_restoring_again() {
 async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
     // Frozen-topology decision table: C1 registered cloud Worker; C2
     // checkpoint-and-release; C3 Resident idle due / Hibernated driving ingress.
-    // X1 C1+C2+Resident commits Suspending; X2 C1+C2+Hibernated commits
-    // Restoring. Both publish run-free preparation demand and perform zero
+    // X1 Resident without a verified capable source Worker refuses before CAS;
+    // X2 C1+C2+Hibernated commits Restoring for a future compatible target.
+    // Both perform zero
     // Coordinator physical effects. The exact Worker owns those effects.
     // Local effects and self-hosted refusal have separate positive/negative tests.
     let resident_repo = Arc::new(
@@ -2184,18 +2188,21 @@ async fn external_checkpoint_retention_never_invokes_the_coordinator_runtime() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
 
-    resident_app
-        .continuations
-        .reconcile_environment_continuation(&SessionId::from("external-resident"), 2_000)
-        .await
-        .unwrap();
+    assert!(
+        resident_app
+            .continuations
+            .reconcile_environment_continuation(&SessionId::from("external-resident"), 2_000)
+            .await
+            .is_err(),
+        "X1 no verified source Worker, no Suspend intent"
+    );
     assert!(matches!(
         resident_repo
             .get(&SessionId::from("external-resident"))
             .await
             .unwrap()
             .environment,
-        awaken_session_contract::SessionEnvironmentState::Suspending { .. }
+        awaken_session_contract::SessionEnvironmentState::Resident { .. }
     ));
     assert_eq!(resident_runtime.quiesces.load(Ordering::SeqCst), 0, "X1/E1");
     assert_eq!(

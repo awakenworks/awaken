@@ -79,9 +79,9 @@ pub use dispatch::{
     SessionRunReservationResolution, SettleOutcome, SubmitOptions, can_admit_claim_credentials,
     claim_credential_operation, classify_commit_epoch_admission,
     compile_attempt_credential_bindings, compile_claim_credential_bindings, deadline_has_passed,
-    decide_lease_renewal, session_run_replacement_candidate_is_safe,
-    verify_attempt_credential_bindings, verify_claim_credential_bindings,
-    worker_credential_realization_capabilities,
+    decide_lease_renewal, prepared_session_run_admission_cursor,
+    session_run_replacement_candidate_is_safe, verify_attempt_credential_bindings,
+    verify_claim_credential_bindings, worker_credential_realization_capabilities,
 };
 pub use dispatch::{
     DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,

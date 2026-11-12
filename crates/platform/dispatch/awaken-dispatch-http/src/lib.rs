@@ -5,11 +5,18 @@
 //! does not own these routes.
 
 mod claimed_commit_http;
+mod claimed_persistence;
 mod durable_ops;
 mod worker_dispatch;
 
 pub use claimed_commit_http::{ClaimedCommitHttpService, claimed_commit_router};
-pub use durable_ops::durable_ops_router_with_session_admission;
+pub use claimed_persistence::{
+    WorkerClaimPersistence, WorkerSessionClaims, WorkerSessionResumeCommand,
+    require_worker_run_activity,
+};
+pub use durable_ops::{
+    durable_ops_router_with_session_admission, map_run_error as worker_application_error,
+};
 pub use worker_dispatch::respond as worker_transport_response;
 pub use worker_dispatch::{
     RegisteredDispatchDependencies, WORKER_DISPATCH_MAX_ATTEMPTS, WORKER_REGISTRY_TTL_MS,

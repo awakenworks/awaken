@@ -250,6 +250,7 @@ mod tests {
     pub(super) struct RecoveryControl {
         projection: Arc<Mutex<awaken_session_execution_contract::FrozenSessionProjection>>,
         failure_calls: std::sync::atomic::AtomicUsize,
+        next_retirement: Mutex<Option<awaken_session_execution_contract::RetireSessionRealization>>,
     }
 
     impl RecoveryControl {
@@ -259,7 +260,35 @@ mod tests {
             Self {
                 projection: Arc::new(Mutex::new(projection)),
                 failure_calls: std::sync::atomic::AtomicUsize::new(0),
+                next_retirement: Mutex::new(None),
             }
+        }
+
+        /// Script only an exact ordinary Root response. Unconfigured fixtures
+        /// retain unknown-outcome safety; no local error decides retirement.
+        pub(super) fn confirm_next_retirement(
+            &self,
+            command: awaken_session_execution_contract::RetireSessionRealization,
+        ) {
+            assert!(
+                self.current_projection()
+                    .environment
+                    .admits_realization_effects()
+            );
+            assert!(
+                self.next_retirement
+                    .lock()
+                    .unwrap()
+                    .replace(command)
+                    .is_none()
+            );
+        }
+
+        pub(super) fn assert_retirement_consumed(&self) {
+            assert!(
+                self.next_retirement.lock().unwrap().is_none(),
+                "R9 canonical driver must consume the exact Root response"
+            );
         }
 
         pub(super) fn current_projection(
@@ -519,6 +548,21 @@ mod tests {
                 },
             )
         }
+        async fn retire_session_realization(
+            &self,
+            _: awaken_session_execution_contract::RetireSessionRealization,
+        ) -> Result<
+            awaken_session_contract::SessionRealizationRetirement,
+            awaken_session_execution_contract::SessionRealizationControlFailure,
+        > {
+            // This fixture does not admit root retirement; an unavailable reply
+            // cannot authorize closing a local source grant.
+            Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+                    "root retirement is not configured by this fixture".into(),
+                ),
+            )
+        }
 
         async fn fail_session_realization(
             &self,
@@ -710,6 +754,25 @@ mod tests {
                     ),
                     action: awaken_session_execution_contract::SessionRealizationAction::Complete,
                 },
+            )
+        }
+        async fn retire_session_realization(
+            &self,
+            command: awaken_session_execution_contract::RetireSessionRealization,
+        ) -> Result<
+            awaken_session_contract::SessionRealizationRetirement,
+            awaken_session_execution_contract::SessionRealizationControlFailure,
+        > {
+            if let Some(expected) = self.next_retirement.lock().unwrap().take() {
+                assert_eq!(command, expected, "R9 exact issued Root retirement request");
+                return Ok(awaken_session_contract::SessionRealizationRetirement::Retired {});
+            }
+            // This fixture does not admit root retirement; an unavailable reply
+            // cannot authorize closing a local source grant.
+            Err(
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+                    "root retirement is not configured by this fixture".into(),
+                ),
             )
         }
 
@@ -1781,7 +1844,10 @@ mod tests {
         // replacement. R10=same cut+rebuild => observe, retire exact A, create B,
         // and publish its new handle. Cross both Runtime states with both
         // policies and Ready replay through the real driver, requiring the same B Arc.
-        // C13 a failed synchronization closes that Session generation. R9a a
+        // C13 Root explicitly confirms retirement of that exact ordinary
+        // issued grant; a synchronization failure alone is not closure. The
+        // default unknown Root response remains covered by the eager-preparation
+        // E2 row. R9a a
         // rebuild-policy change cannot revive it; R10 requires a separately
         // supplied fresh Control generation. The fixture supplies that receipt
         // explicitly, never edits Host authority to bypass closed-state admission.
@@ -1827,6 +1893,12 @@ mod tests {
                     authority: recovery_authority.clone(),
                     action: awaken_session_execution_contract::SessionRealizationAction::Complete,
                 };
+            control.confirm_next_retirement(
+                awaken_session_execution_contract::RetireSessionRealization {
+                    session_id: thread.into(),
+                    lease: recovery_authority.lease.clone(),
+                },
+            );
             let error = crate::application::worker_projection::realize_session(
                 &host.run_assembly,
                 &control,
@@ -1842,6 +1914,7 @@ mod tests {
                 error.to_string().contains("unavailable or terminal"),
                 "R9: {error}"
             );
+            control.assert_retirement_consumed();
             assert!(
                 Arc::ptr_eq(
                     &retained,

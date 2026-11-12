@@ -3057,6 +3057,8 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
 ///
 /// Constraints: `If-Match` fences only the command root CAS; a later projection
 /// failure cannot roll back Applied truth or masquerade as a precondition 409.
+/// A later Control conflict retires its exact ordinary grant through one Root
+/// CAS without effect-failure accounting; C3/C4 verify that fence explicitly.
 /// Every rule is Session/MCP-only and commits no Run, so the authoritative
 /// Thread recovery query returns `None` without a split fallback.
 #[tokio::test]
@@ -3179,10 +3181,29 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         .get(&SessionId::from(id))
         .await
         .expect("C3 committed durable root");
+    // C3 owns one command receipt, then Begin + activation. The failed ACK
+    // now asks the real Root to retire only that ordinary issued grant: exactly
+    // one extra CAS, no failure-budget change, and no invented new generation.
+    let mut expected_c3_retired = durable_before_c3
+        .realization
+        .clone()
+        .expect("C3 exact issued grant before the command");
+    assert_ne!(expected_c3_retired.expires_at_unix_ms, 0);
+    expected_c3_retired.expires_at_unix_ms = 0;
+    assert_eq!(
+        durable_after_conflict.realization,
+        Some(expected_c3_retired),
+        "C3 Root confirms retirement of the same owner/incarnation/epoch"
+    );
+    assert_eq!(
+        durable_after_conflict.realization_progress(),
+        durable_before_c3.realization_progress(),
+        "C3 retirement is not an effect failure or another budget attempt"
+    );
     assert_eq!(
         durable_after_conflict.revision.0,
-        committed_receipt.committed_revision.0 + 2,
-        "C3 begin and activation precede the injected acknowledgement conflict"
+        committed_receipt.committed_revision.0 + 3,
+        "C3 Begin + activation + one exact retirement after ACK conflict"
     );
     assert_eq!(
         durable_after_conflict.mcp.attachments.len(),
@@ -3289,10 +3310,29 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         desired_target.url, "https://cas-3.example/mcp",
         "C4 durable desired target is the committed replacement"
     );
+    // C4's activation did not commit. Command + Begin + exactly one Root
+    // retirement remain durable; original desired/Realizing and compensation
+    // assertions below still govern repair and external effects.
+    let mut expected_c4_retired = durable_before_c4
+        .realization
+        .clone()
+        .expect("C4 exact issued grant before the command");
+    assert_ne!(expected_c4_retired.expires_at_unix_ms, 0);
+    expected_c4_retired.expires_at_unix_ms = 0;
+    assert_eq!(
+        durable.realization,
+        Some(expected_c4_retired),
+        "C4 retires only the original exact issued fence"
+    );
+    assert_eq!(
+        durable.realization_progress(),
+        durable_before_c4.realization_progress(),
+        "C4 retirement spends no failure budget"
+    );
     assert_eq!(
         durable.revision.0,
-        durable_before_c4.revision.0 + 2,
-        "C4 command and begin roots committed before activation conflict"
+        durable_before_c4.revision.0 + 3,
+        "C4 command + Begin + one exact retirement after activation conflict"
     );
     assert_eq!(
         h.state.lock().unwrap().staged.len(),

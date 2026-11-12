@@ -124,10 +124,17 @@ impl ColocatedExecution for LocalExecution {
             dispatch_observation,
             capture_policy,
             artifact_fence,
-            finish: Box::new(move |sessions, worker_work_release| {
-                crate::coordinator_execution(&host, &sessions, worker_work_release)
+            finish: Box::new(
+                move |sessions, worker_work_release, worker_claim_persistence| {
+                    crate::coordinator_execution(
+                        &host,
+                        &sessions,
+                        worker_work_release,
+                        worker_claim_persistence,
+                    )
                     .map_err(|error| error.to_string())
-            }),
+                },
+            ),
         })
     }
 }

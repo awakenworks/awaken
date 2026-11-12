@@ -15,7 +15,7 @@ separation = "contract"
 
 [dependencies]
 # Shared continuation dispatch enforces the frozen duration; no executor is selected here.
-tokio = { version = "1", default-features = false, features = ["time"] }
+tokio = { workspace = true, features = ["time"] }
 awaken-provisioning-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-resource-contract.workspace = true

@@ -492,6 +492,14 @@ pub enum SessionContinuationReceipt {
     ExpiredCheckpointDeleted { checkpoint_id: String },
 }
 
+/// Ask the existing Session root whether an issued local grant may be closed.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetireSessionRealization {
+    pub session_id: crate::SessionId,
+    pub lease: SessionRealizationLease,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FailSessionRealization {
     pub session_id: crate::SessionId,

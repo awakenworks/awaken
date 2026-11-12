@@ -339,7 +339,9 @@ impl SessionProjectionReads for SessionQueries {
                 | SessionMutationError::NotApplied(message) => {
                     SessionProjectionRecoveryError::Unavailable(message)
                 }
-                error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {
+                error @ (SessionMutationError::Admission(_)
+                | SessionMutationError::Internal(_)
+                | SessionMutationError::Invalid(_)) => {
                     SessionProjectionRecoveryError::Rejected(error.into())
                 }
             })?;

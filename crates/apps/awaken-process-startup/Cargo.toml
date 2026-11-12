@@ -69,7 +69,10 @@ awaken-environment-image-build.workspace = true
 awaken-environment-package-image-builder.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
+awaken-dispatch-contract.workspace = true
+awaken-dispatch-http.workspace = true
 awaken-session-execution-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
 awaken-work-store.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-worker-contract.workspace = true
@@ -97,6 +100,8 @@ awaken-executable-agent-catalog = { workspace = true }
 awaken-executable-environment-contract = { workspace = true }
 awaken-executable-environment-catalog = { workspace = true }
 awaken-session-store = { workspace = true }
+# Product root composes the original borrowed recovery SQL with the selected claim transaction.
+awaken-store-postgres.workspace = true
 # The ACP adapter catalog and session-blob custody; the ACP executor itself is
 # linked only by Worker and CLI compositions.
 awaken-acp-catalog.workspace = true
@@ -185,9 +190,9 @@ serde_json.workspace = true
 sha2 = "0.10"
 
 [dev-dependencies]
+# Original Memory terminal fixture uses the real content repository and intent controller.
+awaken-memory-store.workspace = true
 awaken-lease-contract.workspace = true
-awaken-dispatch-http.workspace = true
-awaken-session-configuration-contract.workspace = true
 awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-credential-materializer.workspace = true
 awaken-protocol-a2a.workspace = true

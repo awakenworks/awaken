@@ -15,6 +15,8 @@
 //! through [`ColocatedWorkerPreparation`]; the Coordinator process package
 //! (`awaken-coordinator-process`) declares `awaken-coordinator` over this same
 //! startup and supplies none.
+mod worker_claimed_persistence;
+pub use worker_claimed_persistence::worker_claimed_persistence;
 mod session_work_release;
 pub use session_work_release::{
     ClaimConnectionUse, SessionWorkReleasePersistence, conditional_session_work_release,

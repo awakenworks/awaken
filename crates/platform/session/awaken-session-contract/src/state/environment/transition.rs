@@ -645,7 +645,10 @@ const fn require_resident(facts: SessionEnvironmentFacts) -> Outcome {
     if !facts.continuation_topology_supported {
         return Err(SessionEnvironmentRejection::UnsupportedContinuationTopology);
     }
-    if is_stale(facts) {
+    // Observing an already Resident root grants no physical effect. Its
+    // subsequent realization Begin still has to acquire a current successor;
+    // only starting/advancing continuation requires the source proof here.
+    if is_stale(facts) && !matches!(facts.step, SessionEnvironmentStep::Resident) {
         return Err(SessionEnvironmentRejection::LeaseNotCurrent);
     }
     match facts.step {
@@ -937,6 +940,9 @@ impl SessionEnvironmentFacts {
         now_unix_ms: u64,
     ) -> Self {
         let asserted = match &session.environment {
+            // A new source operation cannot inherit a retired/expired grant.
+            // Legacy unleased local roots retain the existing Unfenced law.
+            SessionEnvironmentState::Resident { .. } => session.realization.as_ref(),
             SessionEnvironmentState::Suspending {
                 operation,
                 suspend_phase: SuspendPhase::Quiescing | SuspendPhase::Uploading,

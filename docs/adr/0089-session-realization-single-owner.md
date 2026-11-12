@@ -164,3 +164,19 @@ readiness. Scope, immutable publication, replay and pre-effect refusal checks
 precede the request; pending is never success. Existing mutation/CAS laws remain
 unchanged, while contract tests cover opt-in, exact replay, refusal, no Run and
 the readiness decision table.
+
+
+### 2026-11-11 — issued projection retirement is a Session-root decision
+
+A Control error is not evidence that an issued local projection is disposable.
+The existing Session assignment owner returns `Retired`, `Preserved`, or
+`Superseded` through the original root CAS. Exact ordinary grants may be
+explicitly expired without changing failure accounting; continuation retains
+its source, and an updated expiry or replacement is not the failed observation.
+An already-expired ordinary grant is an idempotent retirement receipt, including
+a terminal root whose actual effect failure already expired that grant.
+The driver keeps its existing permit and current directive until it receives
+that result. Only `Retired` closes the exact local projection; unknown replies
+retain it and reload root truth. Fail still owns actual effect failures and
+their original budget and class. No phase cache, receipt store or retry lane is
+added, and the Worker facade has no second retirement policy.

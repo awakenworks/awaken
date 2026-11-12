@@ -189,6 +189,27 @@ pub(super) async fn session_model_request_admit(
     Json(request): Json<ClaimedModelRequestReq>,
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
+        if let crate::WorkerClaimPersistence::Postgres { sessions, .. } = &service.claim_persistence
+        {
+            let authority = claim_authority(&service, &worker, Some(&request.identity), false)
+                .await
+                .map_err(RealizationHttpError::from)?;
+            if authority.owner != request.claim.owner {
+                return Err(RealizationHttpError::from(ApplicationError::invalid(
+                    "authenticated worker does not own the Session claim",
+                )));
+            }
+            let admitted = sessions
+                .admit_model_request(
+                    &request.claim,
+                    &awaken_session_types::SessionId::from(&request.session_id),
+                    &request.thread_id,
+                    &request.run_id,
+                )
+                .await
+                .map_err(coordination_failure)?;
+            return Ok(json!({ "admitted": admitted }));
+        }
         let (_, guard) = claimed_session_authority(
             &service,
             &worker,
@@ -238,6 +259,20 @@ pub(super) async fn session_run_activity_admit(
                 "authenticated Worker does not own the Session reservation claim",
             )));
         }
+        if let crate::WorkerClaimPersistence::Postgres { sessions, .. } = &service.claim_persistence
+        {
+            let admission = sessions
+                .admit_run_activity(
+                    &request.claim,
+                    &awaken_session_types::SessionId::from(&request.session_id),
+                    &request.agent_id,
+                    &request.run_id,
+                    request.mode,
+                )
+                .await
+                .map_err(coordination_failure)?;
+            return Ok(json!({ "admission": admission }));
+        }
         let acquire = || async {
             service
                 .dispatch
@@ -253,27 +288,17 @@ pub(super) async fn session_run_activity_admit(
                 })
         };
         let validate = |guard: &awaken_dispatch_contract::CommitEpochGuard| {
-            let dispatch = guard.request();
-            let expected_mode = if guard.cancellation_requested() {
-                awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOnly
-            } else {
-                awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit
-            };
-            if !guard.is_live_at(service.clock.now_ms())
-                || request.run_id != request.claim.run_id
-                || request.run_id != *dispatch.run_id()
-                || dispatch.thread_id() != dispatch.session_thread_id()
-                || dispatch.thread_id().0 != request.session_id
-                || dispatch.session_activity_epoch.is_some()
-                || dispatch.activation.snapshot.root_agent_id.0 != request.agent_id
-                || request.mode != expected_mode
-            {
-                Err(RealizationHttpError::from(ApplicationError::invalid(
-                    "Session Run activity admission does not match the claimed reservation",
-                )))
-            } else {
-                Ok(())
-            }
+            crate::require_worker_run_activity(
+                guard.observation(),
+                &request.claim,
+                &awaken_session_types::SessionId::from(&request.session_id),
+                &request.agent_id,
+                &request.run_id,
+                request.mode,
+                service.clock.now_ms(),
+            )
+            .map_err(crate::worker_application_error)
+            .map_err(RealizationHttpError::from)
         };
         let mut guard = acquire().await?;
         let original = guard.request().clone();

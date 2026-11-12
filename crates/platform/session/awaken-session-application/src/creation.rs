@@ -456,6 +456,32 @@ mod create_effect_gate_exhaustive {
         }
         assert_eq!(cases, 42);
     }
+
+    #[test]
+    fn creation_preserves_the_claim_admission_failure_class_and_code() {
+        // C1 is the original claim refusal (bad request/conflict/unavailable/
+        // internal); C2 deliberately keeps the same diagnostic text. Each row
+        // must remain Rejected with the exact kind/code/message, rather than
+        // becoming a repository CAS conflict or an outage based on that text.
+        for original in [
+            RunError::bad_request("same admission detail"),
+            RunError::conflict("same admission detail"),
+            RunError::unavailable("same admission detail"),
+            RunError::classified("claim_admission_failed", "same admission detail"),
+        ] {
+            let expected = (
+                original.kind,
+                original.code.clone(),
+                original.message.clone(),
+            );
+            let SessionCreationError::Rejected(observed) =
+                SessionCreationError::mutation(SessionMutationError::admission(original))
+            else {
+                panic!("claim admission must retain its original rejection");
+            };
+            assert_eq!((observed.kind, observed.code, observed.message), expected);
+        }
+    }
 }
 
 /// Classify the repository-owned durable result at both create-replay entry
@@ -571,6 +597,7 @@ impl SessionCreationError {
 
     fn mutation(error: SessionMutationError) -> Self {
         match error {
+            SessionMutationError::Admission(error) => Self::Rejected(error.into()),
             SessionMutationError::NotFound => {
                 Self::Internal("newly created Session disappeared".into())
             }

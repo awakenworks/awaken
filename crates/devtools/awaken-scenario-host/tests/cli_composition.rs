@@ -51,7 +51,8 @@ async fn composition_selects_the_executor_components_and_binds_once() {
             coordinator_execution(
                 &assembled.host,
                 &assembled.state.sessions,
-                ports.worker_work_release.clone()
+                ports.worker_work_release.clone(),
+                ports.worker_claim_persistence.clone()
             ),
             Err(CoordinatorExecutionError::Coordination(
                 AgentCoordinationInstallError::AlreadyInstalled
@@ -75,7 +76,8 @@ async fn composition_selects_the_executor_components_and_binds_once() {
             coordinator_execution(
                 &assembled.host,
                 &other.state.sessions,
-                ports.worker_work_release.clone()
+                ports.worker_work_release.clone(),
+                ports.worker_claim_persistence.clone()
             ),
             Err(CoordinatorExecutionError::Coordination(
                 AgentCoordinationInstallError::DispatchObservationMismatch
@@ -152,7 +154,8 @@ async fn composition_rejects_started_dispatch_before_binding_applications() {
                         host.coordination().coordinator_dispatch().unwrap(),
                         application.work_assignments(),
                         clock.clone(),
-                    )
+                    ),
+                    awaken_coordinator::WorkerClaimPersistence::Independent,
                 ),
                 Err(CoordinatorExecutionError::DispatchAlreadyStarted)
             ),

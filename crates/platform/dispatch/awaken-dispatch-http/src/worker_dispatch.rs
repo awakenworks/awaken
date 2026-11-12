@@ -11,7 +11,6 @@
 //! duration are derived from trusted server-side SPIs before the neutral
 //! `DispatchQueue` is called.
 
-use awaken_session_configuration_contract::resource::SessionResourceManifest;
 use awaken_session_execution_contract::{ApplicationError, ApplicationErrorKind};
 use std::sync::Arc;
 
@@ -94,8 +93,8 @@ use session_realization::{
     authorize_session_terminal_cleanup_preparation, fail_session_realization,
     persist_session_environment_receipt, record_session_terminal_cleanup_disposal,
     record_session_terminal_cleanup_preparation, renew_session_realization,
-    session_cleanup_claim_next, session_cleanup_poll, session_preparation_claim_next,
-    session_resume,
+    retire_session_realization, session_cleanup_claim_next, session_cleanup_poll,
+    session_preparation_claim_next, session_resume,
 };
 use terminal_repository_publication::{
     session_repository_publication_complete, session_repository_publication_poll,
@@ -236,6 +235,7 @@ pub fn worker_source_retention_router(
 /// `Option`s are provider-dependent and their absence fails closed (see
 /// [`RegisteredDispatchDependencies`]).
 pub struct WorkerDispatchService {
+    claim_persistence: crate::WorkerClaimPersistence,
     dispatch: Arc<dyn WorkerDispatchAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     clock: Arc<dyn WallClock>,
@@ -271,6 +271,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn new(dependencies: RegisteredDispatchDependencies) -> Self {
         let RegisteredDispatchDependencies {
+            claim_persistence,
             execution_bindings,
             execution_stops,
             dispatch,
@@ -296,6 +297,7 @@ impl WorkerDispatchService {
             max_attempts,
         } = dependencies;
         Self {
+            claim_persistence,
             dispatch,
             authenticator,
             clock,
@@ -456,6 +458,7 @@ async fn observe_expired_predecessor(
 /// Everything [`WorkerDispatchService::new`] consumes. Every collaborator is
 /// required except the three whose provider exists only in some deployments.
 pub struct RegisteredDispatchDependencies {
+    pub claim_persistence: crate::WorkerClaimPersistence,
     /// Present only where a provider (systemd user units, Kubernetes Pods)
     /// observes Worker processes. Without it the unbound transport (the
     /// header-authenticated co-located Worker) freezes no physical binding;
@@ -640,6 +643,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route(
             "/v1/worker/session/realization/renew",
             post(renew_session_realization),
+        )
+        .route(
+            "/v1/worker/session/realization/retire",
+            post(retire_session_realization),
         )
         .route(
             "/v1/worker/session/realization/activate",
@@ -852,6 +859,20 @@ async fn recovery_snapshot(
                 "authenticated worker does not own the recovery claim",
             ));
         }
+        if let crate::WorkerClaimPersistence::Postgres { checkpoints, .. } =
+            &service.claim_persistence
+        {
+            let recovery = checkpoints
+                .load_recovery(
+                    &request.claim,
+                    request.session_work_authority.as_ref(),
+                    request.cached_prefix,
+                )
+                .await
+                .map_err(crate::worker_application_error)?;
+            return serde_json::to_value(recovery)
+                .map_err(|error| ApplicationError::internal(error.to_string()));
+        }
         let guard = service
             .dispatch
             .lock_commit_epoch(&request.claim)
@@ -965,6 +986,15 @@ async fn get_checkpoint(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         checkpoint_authority(&service, &worker, &request).await?;
+        if let crate::WorkerClaimPersistence::Postgres { checkpoints, .. } =
+            &service.claim_persistence
+        {
+            let checkpoint = checkpoints
+                .load_stream_checkpoint(&request.claim)
+                .await
+                .map_err(crate::worker_application_error)?;
+            return Ok(json!({ "checkpoint": checkpoint }));
+        }
         let Some(_guard) = service
             .dispatch
             .lock_commit_epoch(&request.claim)
@@ -1001,6 +1031,15 @@ async fn put_checkpoint(
                 "checkpoint run id does not match claim",
             ));
         }
+        if let crate::WorkerClaimPersistence::Postgres { checkpoints, .. } =
+            &service.claim_persistence
+        {
+            let outcome = checkpoints
+                .put_stream_checkpoint(&request.claim, checkpoint)
+                .await
+                .map_err(crate::worker_application_error)?;
+            return Ok(json!({ "applied": outcome.applied() }));
+        }
         let Some(_guard) = service
             .dispatch
             .lock_commit_epoch(&request.claim)
@@ -1027,6 +1066,15 @@ async fn delete_checkpoint(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         checkpoint_authority(&service, &worker, &request).await?;
+        if let crate::WorkerClaimPersistence::Postgres { checkpoints, .. } =
+            &service.claim_persistence
+        {
+            let outcome = checkpoints
+                .delete_stream_checkpoint(&request.claim)
+                .await
+                .map_err(crate::worker_application_error)?;
+            return Ok(json!({ "applied": outcome.applied() }));
+        }
         let Some(_guard) = service
             .dispatch
             .lock_commit_epoch(&request.claim)
@@ -1132,21 +1180,39 @@ async fn settle(
             );
             return Ok(json!({ "settled": false }));
         }
-        let thread_id = guard.request().thread_id().clone();
-        let session_thread_id = guard.request().session_thread_id().clone();
+        let dispatch = guard.request().clone();
+        let thread_id = dispatch.thread_id().clone();
+        let session_thread_id = dispatch.session_thread_id().clone();
         let owns_session_work = thread_id == session_thread_id;
         let terminal_observer = (request.outcome == awaken_dispatch::DispatchOutcome::Done)
             .then_some(&service.terminal_observer);
-        let coordinated_dispatch = guard.request().session_activity_epoch.is_some();
-        // Save the exact guarded prefix once. Terminal publication and foreground
-        // completion must not perform a second, post-settle recovery read that can
-        // cross a lease epoch or lose the child Thread's physical Session owner.
-        let committed_state = match service
-            .recovery
-            .recovery_snapshot_in_session(&session_thread_id, &thread_id, &claim.run_id)
-            .await
-        {
-            Ok(snapshot)
+        let coordinated_dispatch = dispatch.session_activity_epoch.is_some();
+        // A recovery read may borrow Dispatch's PostgreSQL pool. Release the
+        // first exact slot observation before calling the selected read owner,
+        // then revalidate this same original dispatch before any observer runs.
+        guard.release().await.map_err(|error| {
+            RealizationHttpError::from(ApplicationError::unavailable(error))
+        })?;
+        let recovery = match &service.claim_persistence {
+            crate::WorkerClaimPersistence::Independent => service
+                .recovery
+                .recovery_snapshot_in_session(&session_thread_id, &thread_id, &claim.run_id)
+                .await
+                .map(Some)
+                .map_err(|error| {
+                    ApplicationError::unavailable(format!(
+                        "read committed terminal settlement state: {error}"
+                    ))
+                }),
+            crate::WorkerClaimPersistence::Postgres { sessions, .. } => sessions
+                .settlement_snapshot(&claim)
+                .await
+                .map_err(crate::worker_application_error),
+        };
+        // Preserve one exact prefix for both terminal publication and foreground
+        // completion; a post-settle read could lose the physical Session owner.
+        let committed_state = match recovery {
+            Ok(Some(snapshot))
                 if snapshot.thread_id == thread_id && snapshot.claimed_run_id == claim.run_id =>
             {
                 snapshot
@@ -1155,19 +1221,57 @@ async fn settle(
                     .find(|record| record.id == claim.run_id && record.thread_id == thread_id)
                     .map(|record| record.state.clone())
             }
-            Ok(_) if terminal_observer.is_some() => {
+            Ok(None) => return Ok(json!({ "settled": false })),
+            Ok(Some(_)) if terminal_observer.is_some() => {
                 return Err(RealizationHttpError::from(ApplicationError::invalid(
                     "terminal settlement recovery does not match the guarded dispatch",
                 )));
             }
-            Ok(_) => None,
+            Ok(Some(_)) => None,
             Err(error) if terminal_observer.is_some() => {
-                return Err(RealizationHttpError::from(ApplicationError::unavailable(
-                    format!("read committed terminal settlement state: {error}"),
-                )));
+                return Err(RealizationHttpError::from(error));
             }
+            // The legacy uncoordinated Awaiting path consumes no committed
+            // proof. This is not an absent observation: Done propagates Unknown,
+            // and coordinated settlement below still requires matching truth.
             Err(_) => None,
         };
+        let Some(guard) = service
+            .dispatch
+            .lock_commit_epoch(&claim)
+            .await
+            .map_err(|error| {
+                RealizationHttpError::from(ApplicationError::internal(error.to_string()))
+            })?
+        else {
+            return Ok(json!({ "settled": false }));
+        };
+        if !guard.request().same_original_dispatch(&dispatch) {
+            guard.release().await.map_err(|error| {
+                RealizationHttpError::from(ApplicationError::unavailable(error))
+            })?;
+            return Ok(json!({ "settled": false }));
+        }
+        if !guard.permits_settlement() {
+            guard.release().await.map_err(|error| {
+                RealizationHttpError::from(ApplicationError::unavailable(error))
+            })?;
+            let observation = observe_expired_predecessor(&service, &claim, authority.lease_ms)
+                .await
+                .map_err(RealizationHttpError::from)?;
+            tracing::debug!(
+                ?observation,
+                "blocked settlement predecessor stop observation"
+            );
+            return Ok(json!({ "settled": false }));
+        }
+        let cancellation_requested = guard.cancellation_requested();
+        // The exact/idempotent terminal observer may call Session/Dispatch again.
+        // It must run without either Dispatch guard; the final settlement CAS
+        // still rejects a superseding epoch and Ended truth cannot restart a Run.
+        guard.release().await.map_err(|error| {
+            RealizationHttpError::from(ApplicationError::unavailable(error))
+        })?;
         if let Some(observer) = terminal_observer {
             let committed_state = committed_state.as_ref().ok_or_else(|| {
                 RealizationHttpError::from(ApplicationError::invalid(
@@ -1190,14 +1294,14 @@ async fn settle(
                     "dispatch.settlement.observe",
                     otel.kind = "internal"
                 ),
-                guard.request().traceparent.as_deref(),
+                dispatch.traceparent.as_deref(),
             );
             observer
                 .before_settle(
-                    guard.request(),
+                    &dispatch,
                     &claim,
                     committed_state,
-                    guard.cancellation_requested(),
+                    cancellation_requested,
                 )
                 .instrument(observation)
                 .await
@@ -1212,7 +1316,7 @@ async fn settle(
         let committed_terminal = request.outcome == awaken_dispatch::DispatchOutcome::Done
             && matches!(committed_state.as_ref(), Some(RunState::Ended(_)));
         let session_boundary = if coordinated_dispatch {
-            if let Some(session_activity_epoch) = guard.request().session_activity_epoch {
+            if let Some(session_activity_epoch) = dispatch.session_activity_epoch {
                 let state = committed_state.as_ref().ok_or_else(|| {
                     RealizationHttpError::from(ApplicationError::invalid(
                         "coordinated settlement has no matching committed Run",
@@ -1234,13 +1338,13 @@ async fn settle(
                     Some(session_activity_epoch),
                     Some(&session_thread_id),
                     (
-                        guard.request().thread_id(),
-                        guard.request().run_id(),
-                        &guard.request().activation.snapshot.root_agent_id.0,
+                        dispatch.thread_id(),
+                        dispatch.run_id(),
+                        &dispatch.activation.snapshot.root_agent_id.0,
                     ),
                     &claim.run_id,
                     state,
-                    guard.cancellation_requested(),
+                    cancellation_requested,
                 )
                 .map_err(|_| RealizationHttpError::from(ApplicationError::invalid(
                     "coordinated settlement does not match committed Session activity truth",
@@ -1251,7 +1355,6 @@ async fn settle(
         } else {
             None
         };
-        drop(guard);
         // Cause graph: a Work item is the Environment's single active ownership
         // fence, not a permanent reservation for every idle Session. Keeping a
         // root Session's Work active after its Run settles starves every queued

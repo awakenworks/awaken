@@ -206,17 +206,23 @@ async fn refused_run_free_preparation_closes_its_local_lease() {
     // C1 a Worker-claimed run-free preparation (no Run, no model claim);
     // C2 Control refuses the Activate after Stage, as `Conflict` does while an
     // interactive turn settles the same root (this fixture answers NotReady).
-    // E1 preparation reports pending; E2 its local lease projection is closed,
-    // so renewal stops and the durable lease expires for a later sweep instead
-    // of keeping an unfinished preparation live forever. C3 entry is either
+    // E1 preparation reports the original pending error. E2 a confirmed
+    // root retirement closes the local projection and stops renewal; E3 an
+    // unknown root response preserves it for reloading, never guessing closure. C3 entry is either
     // the preparation facade (L1) or the canonical already-serialized driver
     // (L2). Both close before releasing that same permit; cleanup after the
     // permit drops could revoke a later projection under the same generation.
-    for serialized in [false, true] {
+    // R1/R2 root confirms retirement => close in either original entry.
+    // R3/R4 root response unknown => retain the local grant and original error;
+    // local NotReady alone cannot prove the root has not entered continuation.
+    for (serialized, can_retire) in [(false, true), (true, true), (false, false), (true, false)] {
         let storage = tempfile::tempdir().expect("owned storage");
         let thread = "refused-run-free-preparation";
         let control =
             Arc::new(crate::host::tests::fixtures::RemoteTerminalCleanupControl::default());
+        control
+            .retirement_confirmed
+            .store(can_retire, std::sync::atomic::Ordering::SeqCst);
         let host = (crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
             .with_store_dir(storage.path())
@@ -283,8 +289,8 @@ async fn refused_run_free_preparation_closes_its_local_lease() {
             .await
             .expect_err("L2 refused Activate leaves preparation pending");
             assert!(
-                !local_lease_live(),
-                "L2 closes before the existing permit drops"
+                local_lease_live() != can_retire,
+                "L2 only a root-confirmed retirement closes before the permit drops"
             );
             assert_eq!(permit.session_id().as_str(), thread);
         } else {
@@ -294,8 +300,8 @@ async fn refused_run_free_preparation_closes_its_local_lease() {
                 .expect_err("L1 refused Activate leaves preparation pending");
         }
         assert!(
-            !local_lease_live(),
-            "E2 the refused run-free lease is no longer renewed locally"
+            local_lease_live() != can_retire,
+            "E2 retire only with a root receipt; unknown keeps the grant"
         );
     }
 }

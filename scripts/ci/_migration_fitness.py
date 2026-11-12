@@ -166,10 +166,15 @@ def check_all(repo_root: Path) -> list[str]:
             _session_registry_violations(session_schema.read_text(encoding="utf-8"))
         )
 
+    # Classify nested out-of-line modules through the existing Cargo-root
+    # traversal. A filename cannot hide production DDL or turn cfg(test)
+    # fixture helpers into a production migration authority.
+    reachable = _crate_boundary_workspace.production_module_files(
+        _crate_boundary_workspace.crate_manifests(crates)
+    )
     rust_sources = {
         path: _crate_boundary_workspace.production_rust(path.read_text(encoding="utf-8"))
-        for path in sorted(crates.rglob("*.rs"))
-        if "tests" not in path.parts
+        for path in sorted(reachable)
     }
     dialect_groups: dict[tuple[Path, str], dict[str, Path]] = {}
     for path in sorted(crates.rglob("*.sql")):
@@ -373,3 +378,26 @@ pub fn write() { sql(\"INSERT OR IGNORE INTO x VALUES (1)\"); }"""
     registry = "fn published() { Migration::published_legacy(); }\nMigration::new(22);"
     assert _session_registry_violations(registry)  # M12 duplicate history path
     assert _session_registry_violations("Migration::new(1);") == []  # M1
+    # M13 actual nested test module => exclude fixture DDL; removing the cfg
+    # makes the SAME file production and rejects it. M14 production under a
+    # directory named tests remains production. No path-based waiver exists.
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        crate = root / "crates" / "fixture"
+        source = crate / "src"
+        source.mkdir(parents=True)
+        (crate / "Cargo.toml").write_text('[package]\nname="fixture"\nversion="0.0.0"\nedition="2024"\n')
+        (source / "lib.rs").write_text('mod mutation;\n')
+        (source / "mutation.rs").write_text('#[cfg(test)]\nmod probes;\n')
+        nested = source / "mutation"
+        nested.mkdir()
+        probe = nested / "probes.rs"
+        probe.write_text('const SQL: &str = "CREATE TABLE fixture(id INT)";\n')
+        assert check_all(root) == [], "M13 test-only nested DDL is not production"
+        (source / "mutation.rs").write_text('mod probes;\n')
+        assert any('mutation/probes.rs: production DDL' in error for error in check_all(root)), "M13 removing cfg must refuse"
+        (source / "lib.rs").write_text('#[path="tests/live.rs"]\nmod production;\n')
+        (source / "tests").mkdir()
+        (source / "tests" / "live.rs").write_text(probe.read_text())
+        assert any('tests/live.rs: production DDL' in error for error in check_all(root)), "M14 a tests path cannot hide production"

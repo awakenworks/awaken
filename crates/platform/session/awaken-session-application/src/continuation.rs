@@ -267,6 +267,28 @@ impl SessionContinuations {
                 .await?
             }
             SessionEnvironmentInstruction::Quiesce => {
+                if session.requires_external_environment_owner() {
+                    let lease = session
+                        .realization
+                        .as_ref()
+                        .ok_or_else(SessionContinuationError::step_moved)?;
+                    let target = awaken_session_execution_contract::SessionRealizationTarget {
+                        owner: lease.owner.clone(),
+                        runtime_incarnation: lease.runtime_incarnation.clone(),
+                        lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+                        reassign_existing_lease: false,
+                    };
+                    verify_registered_target(
+                        &self.realizations.execution_admission,
+                        &target,
+                        session.snapshot(),
+                        now_unix_ms,
+                    )
+                    .await
+                    .map_err(|error| {
+                        unavailable("session_environment_source_worker_not_ready", error)
+                    })?;
+                }
                 session
                     .environment()
                     .begin_suspend_at(&owner_scope, now_unix_ms)?;

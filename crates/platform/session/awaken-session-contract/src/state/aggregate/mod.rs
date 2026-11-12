@@ -271,7 +271,7 @@ pub struct SessionAssignmentOperations<'a> {
 mod assignment;
 pub use assignment::{
     SessionRealizationAssignment, SessionRealizationBegin, SessionRealizationBeginRejection,
-    SessionRealizationBeginRequest, session_realization_assignment,
+    SessionRealizationBeginRequest, SessionRealizationRetirement, session_realization_assignment,
 };
 /// Borrowed budget command capability; no mutable snapshot escape.
 pub struct SessionBudgetOperations<'a> {

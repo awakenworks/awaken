@@ -113,9 +113,9 @@ impl From<awaken_session_application::SessionMutationError> for StateError {
             | SessionMutationError::NotApplied(message) => {
                 Self::Run(RunError::unavailable(message))
             }
-            error @ (SessionMutationError::Internal(_) | SessionMutationError::Invalid(_)) => {
-                Self::Run(error.into())
-            }
+            error @ (SessionMutationError::Admission(_)
+            | SessionMutationError::Internal(_)
+            | SessionMutationError::Invalid(_)) => Self::Run(error.into()),
         }
     }
 }
@@ -168,6 +168,31 @@ mod tests {
             ),
             "R4"
         );
+    }
+
+    #[test]
+    fn claim_admission_preserves_its_exact_run_failure_at_the_managed_boundary() {
+        // A1-A4 cross each claim failure family with identical diagnostic text.
+        // The original Run kind/code/message must survive; a claim conflict
+        // cannot become the repository CAS retry policy or a generic outage.
+        for original in [
+            RunError::bad_request("same admission detail"),
+            RunError::conflict("same admission detail"),
+            RunError::unavailable("same admission detail"),
+            RunError::classified("claim_admission_failed", "same admission detail"),
+        ] {
+            let expected = (
+                original.kind,
+                original.code.clone(),
+                original.message.clone(),
+            );
+            let StateError::Run(observed) = StateError::from(
+                awaken_session_application::SessionMutationError::admission(original),
+            ) else {
+                panic!("claim admission must retain its original Run failure");
+            };
+            assert_eq!((observed.kind, observed.code, observed.message), expected);
+        }
     }
 
     #[test]

@@ -36,6 +36,36 @@ use std::sync::Arc;
 
 use crate::SessionProjectionRecoveryError;
 
+/// Preserve the error's typed source until the activity-response boundary.
+/// A claim gate refusal is not the Session's ordinary definitive rejection.
+enum SessionRunAdmissionFailure {
+    Run(RunError),
+    Activity(crate::SessionActivityError),
+}
+
+impl SessionRunAdmissionFailure {
+    fn run_error(self, operation: &str) -> RunError {
+        match self {
+            Self::Run(error) => error,
+            Self::Activity(error) => {
+                crate::SessionActivities::activity_operation_error(operation, error)
+            }
+        }
+    }
+}
+
+fn run_activity_admission_result(
+    operation: &str,
+    admitted: Result<Option<u64>, SessionRunAdmissionFailure>,
+) -> Result<SessionRunActivityAdmission, RunError> {
+    match admitted {
+        Err(SessionRunAdmissionFailure::Activity(crate::SessionActivityError::Admission(
+            error,
+        ))) => Err(error.into()),
+        result => activity_admission_result(result.map_err(|error| error.run_error(operation))),
+    }
+}
+
 struct ResolvedRosterMember {
     entry: SessionAgentRosterEntry,
     snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
@@ -145,25 +175,24 @@ impl SessionCoordination {
     /// receipt is recovery truth and is re-read before fresh admission policy,
     /// so a response-loss repair recovers its original epoch even after the
     /// Session reached a budget or terminal state.
-    pub(crate) async fn begin_admitted_activity_for_operation(
+    async fn begin_admitted_activity_for_operation_using(
         &self,
         agent_id: &str,
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         source: (&ThreadId, &RunId),
-    ) -> Result<(awaken_session_contract::PersistedSession, u64), RunError> {
+        commit: &dyn crate::SessionRootCommit,
+    ) -> Result<(awaken_session_contract::PersistedSession, u64), SessionRunAdmissionFailure> {
         if operation_id.trim().is_empty() {
-            return Err(RunError::internal(
+            return Err(SessionRunAdmissionFailure::Run(RunError::internal(
                 "Session activity operation identity is required",
-            ));
+            )));
         }
-        let activity_error =
-            |error| crate::SessionActivities::activity_operation_error(operation_id, error);
         if let Some(committed) = self
             .activities
-            .recover_activity_for_operation(session_id, operation_id, Some(source))
+            .recover_activity_for_operation_using(session_id, operation_id, Some(source), commit)
             .await
-            .map_err(activity_error)?
+            .map_err(SessionRunAdmissionFailure::Activity)?
         {
             return Ok(committed);
         }
@@ -172,21 +201,26 @@ impl SessionCoordination {
             .owner(session_id)
             .await
             .map_err(crate::SessionActivityError::mutation)
-            .map_err(activity_error)?;
+            .map_err(SessionRunAdmissionFailure::Activity)?;
+        // The existing preparation owner may independently converge the
+        // Session under its own grant. No Dispatch transaction is held here;
+        // this preparation never replaces the final claim-gated activity CAS.
         self.run_admissions
             .admit_run_session(&owner_scope, session_id.as_str(), agent_id)
-            .await?;
+            .await
+            .map_err(SessionRunAdmissionFailure::Run)?;
         self.activities
-            .begin_activity_for_operation_with_policy(
+            .begin_activity_for_operation_with_policy_using(
                 session_id,
                 operation_id,
                 false,
                 None,
                 None,
                 Some(source),
+                commit,
             )
             .await
-            .map_err(activity_error)
+            .map_err(SessionRunAdmissionFailure::Activity)
     }
 
     async fn recover_coordinated_admission(
@@ -646,40 +680,27 @@ impl SessionCoordination {
         }
         result
     }
-}
 
-fn activity_admission_result(
-    admitted: Result<Option<u64>, RunError>,
-) -> Result<SessionRunActivityAdmission, RunError> {
-    match admitted {
-        Ok(None) => Ok(SessionRunActivityAdmission::Rejected),
-        Ok(Some(session_activity_epoch)) => Ok(SessionRunActivityAdmission::Admitted {
-            session_activity_epoch,
-        }),
-        Err(error)
-            if error.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest
-                || error.code == "budget_reached" =>
-        {
-            Ok(SessionRunActivityAdmission::Rejected)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-#[async_trait::async_trait]
-impl SessionAgentCoordination for SessionCoordination {
-    async fn prepare_prepared_session_run_activity(
+    /// Prepare through the existing Session continuation owner outside the
+    /// Dispatch transaction; the supplied gate validates any returned Root.
+    pub async fn prepare_prepared_session_run_activity_with_commit(
         &self,
         session_id: &awaken_session_types::SessionId,
         agent_id: &str,
         run_id: &RunId,
         mode: SessionRunActivityAdmissionMode,
+        commit: &dyn crate::SessionRootCommit,
     ) -> Result<Option<awaken_session_types::SessionRevision>, RunError> {
         let operation = session_run_activity_operation_id(session_id, run_id);
         let thread = ThreadId(session_id.to_string());
         match self
             .activities
-            .recover_activity_for_operation(session_id, &operation, Some((&thread, run_id)))
+            .recover_activity_for_operation_using(
+                session_id,
+                &operation,
+                Some((&thread, run_id)),
+                commit,
+            )
             .await
         {
             Ok(Some(_)) | Err(crate::SessionActivityError::BudgetReached) => return Ok(None),
@@ -706,29 +727,36 @@ impl SessionAgentCoordination for SessionCoordination {
             .admit_run_session(&owner, session_id.as_str(), agent_id)
             .await?;
         self.activities
-            .prepare_run_activity_revision(session_id, revision)
+            .prepare_run_activity_revision_using(session_id, revision, commit)
             .await
             .map(Some)
             .map_err(|error| crate::SessionActivities::activity_operation_error(&operation, error))
     }
 
-    async fn admit_prepared_session_run_activity(
+    /// Commit/recover only the original prepared operation. Its absence cursor
+    /// was read from the original Thread snapshot; it remains neither a lease
+    /// nor permission to skip the existing projection-revision/receipt laws.
+    pub async fn admit_prepared_session_run_activity_with_commit(
         &self,
         session_id: &awaken_session_types::SessionId,
         run_id: &RunId,
         mode: SessionRunActivityAdmissionMode,
         preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
+        commit: &dyn crate::SessionRootCommit,
     ) -> Result<SessionRunActivityAdmission, RunError> {
         let operation = session_run_activity_operation_id(session_id, run_id);
         let thread = ThreadId(session_id.to_string());
         let admitted = async {
             if let Some((_, epoch)) = self
                 .activities
-                .recover_activity_for_operation(session_id, &operation, Some((&thread, run_id)))
+                .recover_activity_for_operation_using(
+                    session_id,
+                    &operation,
+                    Some((&thread, run_id)),
+                    commit,
+                )
                 .await
-                .map_err(|error| {
-                    crate::SessionActivities::activity_operation_error(&operation, error)
-                })?
+                .map_err(SessionRunAdmissionFailure::Activity)?
             {
                 return Ok(Some(epoch));
             }
@@ -736,65 +764,79 @@ impl SessionAgentCoordination for SessionCoordination {
                 return Ok(None);
             }
             let revision = preparation.projected_revision.ok_or_else(|| {
-                RunError::unavailable_classified(
+                SessionRunAdmissionFailure::Run(RunError::unavailable_classified(
                     "session_run_admission_pending",
                     "prepared activity has no current execution revision or receipt",
-                )
+                ))
             })?;
             self.activities
-                .commit_prepared_run_activity(
+                .commit_prepared_run_activity_using(
                     session_id,
                     &operation,
                     revision,
                     (&thread, run_id),
                     Some(preparation.admitted_after_cursor),
+                    commit,
                 )
                 .await
                 .map(Some)
+                .map_err(SessionRunAdmissionFailure::Activity)
         }
         .await;
-        activity_admission_result(admitted)
+        run_activity_admission_result(&operation, admitted)
     }
 
-    async fn admit_session_run_activity(
+    /// The ordinary activity protocol with an explicit final claim/root gate.
+    /// Session-owned preparation is repeatable outside that gate; only the
+    /// original activity/negative receipt CAS authorizes the claimed Run.
+    pub async fn admit_session_run_activity_with_commit(
         &self,
         session_id: &awaken_session_types::SessionId,
         agent_id: &str,
         run_id: &RunId,
         mode: SessionRunActivityAdmissionMode,
+        commit: &dyn crate::SessionRootCommit,
     ) -> Result<SessionRunActivityAdmission, RunError> {
         let operation_id = session_run_activity_operation_id(session_id, run_id);
         let thread_id = ThreadId(session_id.to_string());
         let admitted = match mode {
             SessionRunActivityAdmissionMode::RecoverOrAdmit => self
-                .begin_admitted_activity_for_operation(
+                .begin_admitted_activity_for_operation_using(
                     agent_id,
                     session_id,
                     &operation_id,
                     (&thread_id, run_id),
+                    commit,
                 )
                 .await
                 .map(Some),
             SessionRunActivityAdmissionMode::RecoverOnly => self
                 .activities
-                .recover_activity_for_operation(
+                .recover_activity_for_operation_using(
                     session_id,
                     &operation_id,
                     Some((&thread_id, run_id)),
+                    commit,
                 )
                 .await
-                .map_err(|error| {
-                    crate::SessionActivities::activity_operation_error(&operation_id, error)
-                }),
+                .map_err(SessionRunAdmissionFailure::Activity),
         };
-        activity_admission_result(admitted.map(|value| value.map(|(_, epoch)| epoch)))
+        run_activity_admission_result(
+            &operation_id,
+            admitted.map(|value| value.map(|(_, epoch)| epoch)),
+        )
     }
 
-    async fn admit_session_model_request(
+    /// Admit the original model request through the supplied final root gate.
+    /// Cold root/recovery/usage reads keep their owners; no claim transaction
+    /// spans them. The budget commit and every successful result use this same
+    /// gate, and its typed refusal is never reduced to a generic unavailable.
+    pub async fn admit_session_model_request_with_commit(
         &self,
         session_id: &awaken_session_types::SessionId,
         thread_id: &ThreadId,
         run_id: &RunId,
+        commit: &dyn crate::SessionRootCommit,
     ) -> Result<bool, RunError> {
         let thread_reads = self.thread_reads.as_ref();
 
@@ -830,7 +872,7 @@ impl SessionAgentCoordination for SessionCoordination {
         // recovery owner while inference is still running, rather than waiting
         // for the completion observer or its scheduled recovery scan. An
         // already anchored input needs no further publication wakeups here.
-        if thread_id.0 == session_id.as_str()
+        let needs_reconciliation = thread_id.0 == session_id.as_str()
             && session.event_batches.iter().any(|batch| {
                 batch.events.iter().any(|entry| {
                     !entry.processed
@@ -842,10 +884,7 @@ impl SessionAgentCoordination for SessionCoordination {
                             } if pending_run == run_id
                         )
                 })
-            })
-        {
-            self.lifecycle.request_reconciliation();
-        }
+            });
         let usage = self
             .observations
             .session_usage_for_model_request(session_id.as_str(), &thread_id.0)
@@ -853,13 +892,117 @@ impl SessionAgentCoordination for SessionCoordination {
         let operation_id =
             crate::SessionLifecycle::budget_usage_observation_id(&session, &thread_id.0, &usage)
                 .map_err(RunError::from)?;
-        self.lifecycle
-            .reconcile_managed_budget_usage(session_id, &operation_id, usage)
-            .await
-            .map(|outcome| outcome.session.budget.can_admit_model_request())
-            .map_err(|error| {
+        let admission_error = |error| match error {
+            crate::SessionMutationError::Admission(error) => error.into(),
+            error => {
                 RunError::unavailable(format!("Session budget admission is unavailable: {error}"))
-            })
+            }
+        };
+        let outcome = self
+            .lifecycle
+            .reconcile_managed_budget_usage_with_commit(session_id, &operation_id, usage, commit)
+            .await
+            .map_err(admission_error)?;
+        if !commit
+            .validate(&outcome.session.session_id, outcome.session.revision)
+            .await
+            .map_err(admission_error)?
+        {
+            return Err(admission_error(crate::SessionMutationError::Conflict));
+        }
+        // A cold observation is not permission to schedule root recovery. The
+        // same final admission must succeed before this synchronous wake.
+        if needs_reconciliation {
+            self.lifecycle.request_reconciliation();
+        }
+        Ok(outcome.session.budget.can_admit_model_request())
+    }
+}
+
+fn activity_admission_result(
+    admitted: Result<Option<u64>, RunError>,
+) -> Result<SessionRunActivityAdmission, RunError> {
+    match admitted {
+        Ok(None) => Ok(SessionRunActivityAdmission::Rejected),
+        Ok(Some(session_activity_epoch)) => Ok(SessionRunActivityAdmission::Admitted {
+            session_activity_epoch,
+        }),
+        Err(error)
+            if error.kind == awaken_runtime_contract::runs::RunErrorKind::BadRequest
+                || error.code == "budget_reached" =>
+        {
+            Ok(SessionRunActivityAdmission::Rejected)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionAgentCoordination for SessionCoordination {
+    async fn prepare_prepared_session_run_activity(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        agent_id: &str,
+        run_id: &RunId,
+        mode: SessionRunActivityAdmissionMode,
+    ) -> Result<Option<awaken_session_types::SessionRevision>, RunError> {
+        self.prepare_prepared_session_run_activity_with_commit(
+            session_id,
+            agent_id,
+            run_id,
+            mode,
+            self.mutations.as_ref(),
+        )
+        .await
+    }
+
+    async fn admit_prepared_session_run_activity(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        run_id: &RunId,
+        mode: SessionRunActivityAdmissionMode,
+        preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
+    ) -> Result<SessionRunActivityAdmission, RunError> {
+        self.admit_prepared_session_run_activity_with_commit(
+            session_id,
+            run_id,
+            mode,
+            preparation,
+            self.mutations.as_ref(),
+        )
+        .await
+    }
+
+    async fn admit_session_run_activity(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        agent_id: &str,
+        run_id: &RunId,
+        mode: SessionRunActivityAdmissionMode,
+    ) -> Result<SessionRunActivityAdmission, RunError> {
+        self.admit_session_run_activity_with_commit(
+            session_id,
+            agent_id,
+            run_id,
+            mode,
+            self.mutations.as_ref(),
+        )
+        .await
+    }
+
+    async fn admit_session_model_request(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &ThreadId,
+        run_id: &RunId,
+    ) -> Result<bool, RunError> {
+        self.admit_session_model_request_with_commit(
+            session_id,
+            thread_id,
+            run_id,
+            self.mutations.as_ref(),
+        )
+        .await
     }
 
     async fn list_session_agents(
@@ -1300,6 +1443,68 @@ impl crate::ProfiledSessionReplies for SessionCoordination {
 #[cfg(test)]
 mod boundary_tests {
     use super::*;
+
+    #[test]
+    fn final_claim_refusals_never_become_successful_activity_rejections() {
+        // Causes: F1 typed final claim/Work refusal with each RunError family;
+        // F2 ordinary Session preflight BadRequest or durable BudgetReached;
+        // F3 accepted epoch or receipt-only absence. Effects: F1 stays the exact
+        // error even for BadRequest (never Ok(Rejected)); F2 retains the original
+        // definitive rejection; F3 retains its original closed outcome. This
+        // table protects error provenance, not HTTP/PG transaction qualification.
+        let session = awaken_session_types::SessionId::from("activity-final");
+        let operation = session_run_activity_operation_id(&session, &RunId("run".into()));
+        for error in [
+            RunError::bad_request_classified("fixture_claim", "exact final refusal"),
+            RunError::conflict_classified("fixture_claim", "exact final refusal"),
+            RunError::classified("fixture_claim", "exact final refusal"),
+            RunError::unavailable_classified("fixture_claim", "exact final refusal"),
+        ] {
+            let expected_kind = error.kind;
+            let expected_code = error.code.clone();
+            let expected_message = error.message.clone();
+            let refused = crate::SessionActivityError::mutation(
+                crate::SessionMutationError::admission(error),
+            );
+            let Err(actual) = run_activity_admission_result(
+                &operation,
+                Err(SessionRunAdmissionFailure::Activity(refused)),
+            ) else {
+                panic!("F1 a final claim refusal cannot be normal rejection");
+            };
+            assert_eq!(actual.kind, expected_kind);
+            assert_eq!(actual.code, expected_code);
+            assert_eq!(actual.message, expected_message);
+        }
+        for rejection in [
+            SessionRunAdmissionFailure::Run(RunError::bad_request("original policy")),
+            SessionRunAdmissionFailure::Activity(crate::SessionActivityError::BudgetReached),
+        ] {
+            assert!(
+                matches!(
+                    run_activity_admission_result(&operation, Err(rejection)).unwrap(),
+                    SessionRunActivityAdmission::Rejected
+                ),
+                "F2 preserve original Session rejection"
+            );
+        }
+        assert!(
+            matches!(
+                run_activity_admission_result(&operation, Ok(Some(9))).unwrap(),
+                SessionRunActivityAdmission::Admitted {
+                    session_activity_epoch: 9
+                }
+            ),
+            "F3 accepted original epoch"
+        );
+        assert!(
+            matches!(
+                run_activity_admission_result(&operation, Ok(None)).unwrap(),
+                SessionRunActivityAdmission::Rejected
+            ),
+            "F3 absence grants no new activity"
+        );
+    }
 
     #[test]
     fn boundary_classification_admits_reports_only_for_completed_runs() {

@@ -244,7 +244,7 @@ pub struct SessionRealizations {
     resource_references: Arc<crate::SessionResourceReferences>,
     placement: awaken_session_execution_contract::SessionPlacementRoles,
     executable_projections: crate::ExecutableProjections,
-    execution_admission: Arc<crate::SessionExecutionAdmission>,
+    pub(super) execution_admission: Arc<crate::SessionExecutionAdmission>,
     local_realization_owner: String,
     runtime_incarnation: String,
     realization_retry_budget: u32,
@@ -742,6 +742,34 @@ impl SessionRealizations {
             .await
     }
 
+    async fn next_action_using(
+        &self,
+        commit: &dyn crate::SessionRootCommit,
+        owner_scope: String,
+        session: &PersistedSession,
+        prepare_projection: bool,
+        activate_pending_resources: bool,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        // Catalog/credential/context I/O does not hold the claim's connection.
+        // Revalidate even Unchanged before publishing the resulting directive.
+        let directive = self
+            .next_action(
+                owner_scope,
+                session,
+                prepare_projection,
+                activate_pending_resources,
+            )
+            .await?;
+        if !commit
+            .validate(&session.session_id, session.revision)
+            .await
+            .map_err(mutation_control)?
+        {
+            return Err(SessionRealizationControlFailure::Conflict);
+        }
+        Ok(directive)
+    }
+
     async fn load_realization_root(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -771,6 +799,22 @@ impl SessionRealizations {
         'a,
         Result<(String, crate::SessionAggregate), SessionRealizationControlFailure>,
     > {
+        self.session_for_realization_using(
+            self.mutations.as_ref(),
+            session_id,
+            allow_continuation_begin,
+        )
+    }
+
+    fn session_for_realization_using<'a>(
+        &'a self,
+        commit: &'a dyn crate::SessionRootCommit,
+        session_id: &'a awaken_session_types::SessionId,
+        allow_continuation_begin: bool,
+    ) -> futures_util::future::BoxFuture<
+        'a,
+        Result<(String, crate::SessionAggregate), SessionRealizationControlFailure>,
+    > {
         Box::pin(async move {
             let (owner_scope, session) = self.load_realization_root(session_id).await?;
             // A failed initial realization is terminal. Treating its now-empty
@@ -792,9 +836,14 @@ impl SessionRealizations {
             // closed; ordinary Stage/Publish callbacks retain their old gate.
             let session = if ordinary {
                 self.credentials
-                    .ensure_repository_credentials_pinned(&owner_scope, session)
+                    .ensure_repository_credentials_pinned_using(commit, &owner_scope, session)
                     .await
-                    .map_err(unavailable)?
+                    .map_err(|error| match error {
+                        crate::SessionPreparationError::Admission(error) => {
+                            mutation_control(SessionMutationError::Admission(error))
+                        }
+                        error => unavailable(error),
+                    })?
             } else {
                 session
             };
@@ -809,6 +858,7 @@ impl SessionRealizations {
 #[cfg(test)]
 pub(crate) async fn drive_test_directive(
     realizations: &SessionRealizations,
+    control: &dyn SessionRealizationControl,
     session_id: &awaken_session_types::SessionId,
     projection: &dyn awaken_session_execution_contract::SessionProjectionSynchronizer,
     directive: SessionRealizationDirective,
@@ -823,7 +873,7 @@ pub(crate) async fn drive_test_directive(
     crate::drive_session_realization(
         &permit,
         None,
-        realizations,
+        control,
         projection,
         mcp,
         directive,

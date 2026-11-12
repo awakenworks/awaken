@@ -21,7 +21,8 @@ use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use std::time::Duration;
 
-#[path = "runtime_authority_claimed_pool_tests.rs"]
+// Keep the original pool cases when main relocates this enclosing module.
+#[path = "../../runtime_authority_claimed_pool_tests.rs"]
 mod pool_tests;
 
 async fn fixture() -> Option<(String, Arc<DurableRuntimeAuthority>, PgPool)> {

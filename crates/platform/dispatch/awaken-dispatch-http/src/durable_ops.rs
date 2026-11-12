@@ -113,7 +113,7 @@ async fn submit_background(
     )
 }
 
-fn map_run_error(error: awaken_runtime_contract::runs::RunError) -> ApplicationError {
+pub fn map_run_error(error: awaken_runtime_contract::runs::RunError) -> ApplicationError {
     match error.kind {
         RunErrorKind::BadRequest => ApplicationError::invalid(error.message),
         RunErrorKind::Unavailable => ApplicationError::unavailable(error.message),

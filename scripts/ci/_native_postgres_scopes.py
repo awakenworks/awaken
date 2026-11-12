@@ -47,6 +47,14 @@ CORE_SESSION_WORK_RELEASE_CASE_FLOORS = (
     'session_work_release::tests::live_postgres_rejects_stale_claim_and_changed_physical_evidence',
     'session_work_release::tests::live_postgres_work_release_rollback_and_epoch_owner_fences',
     'session_work_release::tests::live_postgres_shared_root_and_separate_work_database',
+    'session_work_release::tests::http::live_postgres_http_cap_one_resumes_the_selected_session',
+    'session_work_release::tests::http::live_postgres_http_cap_two_resumes_distinct_claims',
+    'session_work_release::tests::http::live_postgres_http_cap_one_checkpoint_and_recovery_keep_exact_fences',
+    'session_work_release::tests::http::live_postgres_http_resume_partial_affinity_keeps_original_owners',
+    'session_work_release::tests::http::settlement::live_postgres_http_cap_one_settles_real_memory_once_without_held_guard',
+    'session_work_release::tests::http::races::live_postgres_http_same_claim_cold_absence_recovers_the_one_accepted_receipt',
+    'session_work_release::tests::http::races::live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_root_write',
+    'session_work_release::tests::http::settlement::live_postgres_http_memory_observer_release_preserves_a_successor_before_settlement_cas',
 )
 
 CORE_CLAIMED_COMMIT_CASE_FLOORS = (
@@ -66,6 +74,12 @@ CORE_SELECTED_POSTGRES_WRITER_CASE_FLOORS = (
 
 # The race requires a live database; the integer conversion is a pure unit
 # boundary retained here as an independently named outcome, not DB evidence.
+STORAGE_SESSION_MUTATION_CASE_FLOORS = frozenset({
+    'postgres::mutation::tests::postgres_borrowed_commit_keeps_caller_transaction_and_rolls_back_late_sql_failure',
+    'postgres::mutation::tests::postgres_borrowed_commit_replays_exact_receipt_after_lost_acknowledgement',
+    'postgres::mutation::tests::postgres_borrowed_commit_preserves_private_binding_noop_and_delete_receipts',
+})
+
 STORAGE_SESSION_EXTRACTION_CASE_FLOORS = frozenset({
     'extraction::tests::postgres_extraction_execution_selection_and_first_claim_share_one_revision_fence',
     'extraction::tests::postgres_integer_conversion_rejects_clamping_and_lease_erasure',
@@ -92,7 +106,7 @@ def _require_session_extraction_phase(phases):
     runtime_flags = {argument.partition('=')[0] for argument in runtime if argument.startswith('--')}
     floors = {value.removeprefix('--require-case=') for value in before_runtime
               if value.startswith('--require-case=')}
-    if (not STORAGE_SESSION_EXTRACTION_CASE_FLOORS <= floors
+    if (not (STORAGE_SESSION_EXTRACTION_CASE_FLOORS | STORAGE_SESSION_MUTATION_CASE_FLOORS) <= floors
             or '--lib' not in before_runtime or 'postgres_' not in before_runtime
             or {'--test', '--tests', '--all-targets'} & set(before_runtime)
             or ('--features', 'test-support') not in pairs
@@ -184,7 +198,7 @@ def _require_work_store_phase(phases, root):
 
 
 def _require_session_work_release_phase(phases):
-    prefix = 'session_work_release::tests::live_postgres_'
+    prefix = 'session_work_release::tests::'
     selected = [phase for phase in phases
                 if phase.selector == 'critical_durability_evidence'
                 and phase.package == 'awaken-process-startup'

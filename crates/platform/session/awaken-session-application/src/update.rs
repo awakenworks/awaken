@@ -114,6 +114,7 @@ pub enum SessionUpdateError {
 impl SessionUpdateError {
     fn mutation(error: SessionMutationError) -> Self {
         match error {
+            SessionMutationError::Admission(error) => Self::Rejected(error.into()),
             SessionMutationError::NotFound => Self::NotFound,
             SessionMutationError::Conflict => Self::Conflict,
             SessionMutationError::IdempotencyMismatch => Self::IdempotencyMismatch,

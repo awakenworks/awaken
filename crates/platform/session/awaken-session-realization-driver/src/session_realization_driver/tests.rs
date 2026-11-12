@@ -40,6 +40,17 @@ impl SessionRealizationControl for ReportingControl {
     ) -> Result<SessionRealizationDirective, ControlError> {
         unreachable!("a failed effect never acknowledges")
     }
+    async fn retire_session_realization(
+        &self,
+        _: awaken_session_execution_contract::RetireSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationRetirement,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        // This original failure-reporting fixture confirms its root closure.
+        Ok(awaken_session_contract::SessionRealizationRetirement::Retired {})
+    }
+
     async fn fail_session_realization(
         &self,
         command: FailSessionRealization,

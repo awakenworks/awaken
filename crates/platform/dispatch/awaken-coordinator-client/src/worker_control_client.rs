@@ -908,6 +908,30 @@ impl WorkerControlClient {
         .map(|_| ())
     }
 
+    /// Ask the root to classify this exact lease. An absent or undecodable
+    /// response cannot authorize local closure, including against an older
+    /// Coordinator that does not expose the retirement operation.
+    pub async fn retire_session_realization(
+        &self,
+        identity: &WorkerIdentity,
+        command: awaken_session_execution_contract::RetireSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationRetirement,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/realization/retire",
+                json!({ "identity": identity, "command": command }),
+            )
+            .await?;
+        serde_json::from_value(body).map_err(|error| {
+            awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+                format!("Session realization retirement decode: {error}"),
+            )
+        })
+    }
+
     async fn realization_phase<T: serde::Serialize>(
         &self,
         path: &str,
@@ -1222,6 +1246,137 @@ mod session_environment_error_tests {
             assert_eq!(error.kind, kind, "{rule}");
             assert_eq!(error.code, code, "{rule}");
             assert_eq!(error.message, "m", "{rule}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod session_realization_retirement_tests {
+    use super::*;
+    use awaken_session_contract::SessionRealizationRetirement;
+    use awaken_session_execution_contract::{
+        RetireSessionRealization, SessionRealizationControl, SessionRealizationControlFailure,
+    };
+    use axum::{Json, Router, http::StatusCode, routing::post};
+    use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn retirement_requires_an_exact_typed_root_response_and_forwards_the_original_identity() {
+        // Cause/effect graph: C1 success/refusal status; C2 a current closed
+        // disposition or missing/unknown/extra/truncated JSON; C3 typed Control
+        // failure or an older Coordinator's 404. T1-T3 preserve the three root
+        // outcomes; T4-T9 cannot manufacture Retired; T10 preserves the exact
+        // Control failure. Every row forwards the same identity and lease once.
+        // Transport decoding grants no local invalidation and adds no retry or
+        // second retirement policy. Server-side signed authority is exercised
+        // by the existing signed Worker HTTP tests, not this client fixture.
+        let mut rows = vec![
+            (
+                "T1",
+                StatusCode::OK,
+                json!({"disposition":"retired"}).to_string(),
+                Ok(SessionRealizationRetirement::Retired {}),
+            ),
+            (
+                "T2",
+                StatusCode::OK,
+                json!({"disposition":"preserved"}).to_string(),
+                Ok(SessionRealizationRetirement::Preserved {}),
+            ),
+            (
+                "T3",
+                StatusCode::OK,
+                json!({"disposition":"superseded"}).to_string(),
+                Ok(SessionRealizationRetirement::Superseded {}),
+            ),
+        ];
+        for (rule, body) in [
+            ("T4", json!({})),
+            ("T5", json!({"disposition":null})),
+            ("T6", json!({"disposition":"future"})),
+            ("T7", json!({"disposition":"retired", "extra":true})),
+        ] {
+            rows.push((rule, StatusCode::OK, body.to_string(), Err("unavailable")));
+        }
+        rows.push(("T8", StatusCode::OK, "{".to_owned(), Err("unavailable")));
+        rows.push((
+            "T9",
+            StatusCode::NOT_FOUND,
+            json!({"error":"older Coordinator"}).to_string(),
+            Err("unavailable"),
+        ));
+        rows.push((
+            "T10",
+            StatusCode::CONFLICT,
+            json!({"realization_error": SessionRealizationControlFailure::StaleOwnership})
+                .to_string(),
+            Err("stale"),
+        ));
+        for (rule, status, body, expected) in rows {
+            let received = Arc::new(Mutex::new(Vec::<Value>::new()));
+            let requests = received.clone();
+            let app = Router::new().route(
+                "/v1/worker/session/realization/retire",
+                post(move |Json(request): Json<Value>| {
+                    let requests = requests.clone();
+                    let body = body.clone();
+                    async move {
+                        requests.lock().unwrap().push(request);
+                        (
+                            status,
+                            [(axum::http::header::CONTENT_TYPE, "application/json")],
+                            body,
+                        )
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let identity = WorkerIdentity::new("worker-a", "boot-a", 7);
+            let command = RetireSessionRealization {
+                session_id: awaken_session_types::SessionId::from("session-a"),
+                lease: awaken_session_configuration_contract::resource::SessionRealizationLease {
+                    owner: identity.worker_id.clone(),
+                    runtime_incarnation: identity.lease_owner(),
+                    epoch: 13,
+                    expires_at_unix_ms: u64::MAX,
+                },
+            };
+            let expected_request = json!({"identity":identity,"command":command});
+            let client = crate::WorkerControlSessionClient::new(
+                WorkerControlClient::new(
+                    WorkerUpstream::new(format!("http://{address}"))
+                        .with_worker_identity(identity.clone()),
+                ),
+                identity,
+            );
+            let result = client.retire_session_realization(command).await;
+            server.abort();
+            assert!(
+                server.await.unwrap_err().is_cancelled(),
+                "{rule} owned HTTP cleanup"
+            );
+            assert_eq!(
+                received.lock().unwrap().as_slice(),
+                &[expected_request],
+                "{rule} exact wire, one request"
+            );
+            match expected {
+                Ok(outcome) => assert_eq!(result, Ok(outcome), "{rule}"),
+                Err("stale") => assert_eq!(
+                    result,
+                    Err(SessionRealizationControlFailure::StaleOwnership),
+                    "{rule}"
+                ),
+                Err(_) => assert!(
+                    matches!(
+                        result,
+                        Err(SessionRealizationControlFailure::Unavailable(_))
+                    ),
+                    "{rule}: {result:?}"
+                ),
+            }
         }
     }
 }

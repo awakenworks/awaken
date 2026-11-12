@@ -40,6 +40,7 @@ from _session_effect_sources import (
     SESSION_STORE,
     SQLITE_SESSION_STORE,
     POSTGRES_SESSION_STORE,
+    POSTGRES_SESSION_MUTATION,
     RUNTIME_HOST,
     REALIZATION_EFFECTS_ROLE,
     INSTALLED_SESSION_PROJECTION,
@@ -120,6 +121,19 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
                 errors.append(
                     f"{relative}: missing Session external-effect guard {marker!r}"
                 )
+
+    # Both public entry points delegate to the sole SQL kernel; the effect
+    # admission guard lives in that kernel rather than a dead source token.
+    for function in ("commit_on", "commit_owned"):
+        errors.extend(_require_ordered_function(
+            sources, POSTGRES_SESSION_MUTATION, function,
+            (".validate()", "Self::commit_validated_on("),
+            "single PostgreSQL Session mutation kernel",
+        ))
+    errors.extend(_require_ordered_function(
+        sources, POSTGRES_SESSION_MUTATION, "commit_validated_on",
+        ("validate_current_mutation(",), "PostgreSQL current-row effect admission",
+    ))
 
     if _rust_function(sources.get(APPLICATION_TERMINAL, ""), "commit_delete_intent"):
         errors.append(f"{APPLICATION_TERMINAL}: Delete intent has a retired App owner")
@@ -888,6 +902,19 @@ def selftest() -> None:
     canonical = {
         relative: "\n".join(markers) for relative, markers in REQUIRED.items()
     }
+    canonical[POSTGRES_SESSION_MUTATION] = """
+pub async fn commit_on() {
+    mutation.validate();
+    Self::commit_validated_on();
+}
+pub async fn commit_owned() {
+    mutation.validate();
+    Self::commit_validated_on();
+}
+async fn commit_validated_on() {
+    validate_current_mutation();
+}
+"""
     canonical[SESSION_REPOSITORY_PUBLICATION_AGGREGATE] = """
 pub fn verified_terminal_cleanup() {
     self.terminal_cleanup.verify_for(&self.session_id)?;
@@ -1268,13 +1295,25 @@ fn recover_terminal_receipts() {
         (SESSION_STORE, "current.admits_tombstone("),
         (SESSION_STORE, ".validate_observation_replacement(replacement)"),
         (SQLITE_SESSION_STORE, "validate_current_mutation("),
-        (POSTGRES_SESSION_STORE, "validate_current_mutation("),
+        (POSTGRES_SESSION_MUTATION, "validate_current_mutation("),
+        (POSTGRES_SESSION_STORE, "self.commit_owned(owner_scope, mutation).await"),
     ):
         mutant = dict(canonical)
         assert marker in mutant[owner]
         mutant[owner] = mutant[owner].replace(marker, "")
         expected = f"{owner}: missing Session external-effect guard {marker!r}"
         assert expected in session_effect_violations(mutant), expected
+
+    # Moved kernel guard controls: disconnect either actual entry delegation,
+    # or leave its marker in a comment, and the same owner still refuses.
+    for function in ("commit_on", "commit_owned"):
+        mutant = dict(canonical)
+        body = _rust_function(mutant[POSTGRES_SESSION_MUTATION], function)
+        assert body and "Self::commit_validated_on(" in body
+        replacement = body.replace("Self::commit_validated_on(", "Self::disconnected(", 1)
+        replacement = replacement.replace("\n}", "\n// Self::commit_validated_on();\n}")
+        mutant[POSTGRES_SESSION_MUTATION] = mutant[POSTGRES_SESSION_MUTATION].replace(body, replacement, 1)
+        assert any("single PostgreSQL Session mutation kernel" in error for error in session_effect_violations(mutant)), function
 
     # G48 cause/effect rules: C1 one expected-prior declaration reaches the
     # sole local Git writer under an exact ref lease; C2 the shared cleanup

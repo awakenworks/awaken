@@ -556,6 +556,8 @@ fn assemble_control_surface(
 
 /// The placement-selected execution and its original Session persistence.
 struct ExecutionHost {
+    runtime_authority: Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
+    committed_store: awaken_deployment_config::StoreKind,
     selected: SelectedExecution,
     session_persistence: awaken_session_application::SessionPersistence,
 }
@@ -602,10 +604,12 @@ async fn assemble_execution_host(
             control,
             execution,
             &deployment,
-            runtime_authority,
+            runtime_authority.clone(),
             cloud.model_selection.default_model_ref().to_owned(),
         )?;
         return Ok(ExecutionHost {
+            runtime_authority,
+            committed_store: deployment.store,
             selected: SelectedExecution::Registered(selected),
             session_persistence,
         });
@@ -615,6 +619,7 @@ async fn assemble_execution_host(
          that co-locates their execution; start the AllInOne service with the `awaken` launcher"
             .to_owned()
     })?;
+    let committed_store = deployment.store;
     let selected = constructor
         .prepare(crate::ColocatedExecutionInputs {
             deployment,
@@ -622,7 +627,7 @@ async fn assemble_execution_host(
             local_workspace: base.stores.platform_workspace.clone(),
             clock,
             namespace_hand_path: base.process.namespace_hand_path.take(),
-            runtime_authority,
+            runtime_authority: runtime_authority.clone(),
             environment_bindings: session_persistence.environment_binding_sink(),
             model_selection: cloud.model_selection.clone(),
             cloud_models_enabled: base.process.model_supply.cloud_models_enabled,
@@ -670,6 +675,8 @@ async fn assemble_execution_host(
         })
         .await?;
     Ok(ExecutionHost {
+        runtime_authority,
+        committed_store,
         selected: SelectedExecution::Colocated(selected),
         session_persistence,
     })
@@ -697,6 +704,8 @@ fn assemble_session_plane(
     host: ExecutionHost,
 ) -> Result<SessionPlane, String> {
     let ExecutionHost {
+        runtime_authority,
+        committed_store,
         selected,
         session_persistence,
     } = host;
@@ -782,6 +791,13 @@ fn assemble_session_plane(
         session_application.work_assignments(),
         base.stores.clock.clone(),
     );
+    let worker_claim_persistence = crate::worker_claimed_persistence(
+        base.process.work_release_persistence.clone(),
+        committed_store,
+        runtime_authority,
+        session_application.clone(),
+        base.stores.clock.clone(),
+    );
     let coordinator_execution = match selected {
         SelectedExecution::Colocated(execution) => {
             bind_session_lifecycle_hooks(
@@ -789,12 +805,20 @@ fn assemble_session_plane(
                 Some(&execution.artifact_fence),
                 &session_application,
             )?;
-            (execution.finish)(session_application.clone(), worker_work_release)
+            (execution.finish)(
+                session_application.clone(),
+                worker_work_release,
+                worker_claim_persistence,
+            )
         }
         SelectedExecution::Registered(execution) => {
             bind_session_lifecycle_hooks(base, None, &session_application)?;
             execution
-                .finish(&session_application, worker_work_release)
+                .finish(
+                    &session_application,
+                    worker_work_release,
+                    worker_claim_persistence,
+                )
                 .map_err(|error| error.to_string())
         }
     }?;
