@@ -1717,6 +1717,10 @@ pub fn awaken_runtime_contract::runtime_context::NormalizedModelInput::new(impl 
 pub fn awaken_runtime_contract::runtime_context::NormalizedModelInput::ordered_messages(&self) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_runtime_contract::runtime_context::NormalizedModelInput::text_envelope(&self) -> alloc::string::String
 pub const fn awaken_runtime_contract::runtime_context::NormalizedModelInput::trace(&self) -> awaken_runtime_contract::runtime_context::ModelInputProjectionTrace
+pub struct awaken_runtime_contract::runtime_context::PreparedMcpAttachment
+pub awaken_runtime_contract::runtime_context::PreparedMcpAttachment::credential: core::option::Option<awaken_agent_contract::credential::reference::CredentialAccess>
+pub awaken_runtime_contract::runtime_context::PreparedMcpAttachment::name: alloc::string::String
+pub awaken_runtime_contract::runtime_context::PreparedMcpAttachment::target: awaken_agent_contract::mcp_target::McpTarget
 pub struct awaken_runtime_contract::runtime_context::RuntimeRunContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation_cause: awaken_runtime_contract::cancellation::CancellationCauseCell
@@ -1733,6 +1737,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_request_g
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::physical_quiescence: awaken_runtime_contract::runtime_context::AttemptQuiescence
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::prepared_mcp: alloc::vec::Vec<awaken_runtime_contract::runtime_context::PreparedMcpAttachment>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::provider_server_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ProviderServerTool>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
@@ -2241,6 +2246,10 @@ pub awaken_runtime_contract::PluginManifest::bound: awaken_runtime_contract::Cap
 pub awaken_runtime_contract::PluginManifest::config_sections: alloc::vec::Vec<alloc::string::String>
 pub awaken_runtime_contract::PluginManifest::id: alloc::string::String
 pub awaken_runtime_contract::PluginManifest::requires: alloc::vec::Vec<alloc::string::String>
+pub struct awaken_runtime_contract::PreparedMcpAttachment
+pub awaken_runtime_contract::PreparedMcpAttachment::credential: core::option::Option<awaken_agent_contract::credential::reference::CredentialAccess>
+pub awaken_runtime_contract::PreparedMcpAttachment::name: alloc::string::String
+pub awaken_runtime_contract::PreparedMcpAttachment::target: awaken_agent_contract::mcp_target::McpTarget
 pub struct awaken_runtime_contract::ProviderExecutionProfile
 pub awaken_runtime_contract::ProviderExecutionProfile::acp: core::option::Option<awaken_runtime_contract::resolved::AcpExecutionProfile>
 pub awaken_runtime_contract::ProviderExecutionProfile::unspecified_reasoning: awaken_runtime_contract::resolved::UnspecifiedReasoning
@@ -2347,6 +2356,7 @@ pub awaken_runtime_contract::RuntimeRunContext::model_request_gate: core::option
 pub awaken_runtime_contract::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
 pub awaken_runtime_contract::RuntimeRunContext::physical_quiescence: awaken_runtime_contract::runtime_context::AttemptQuiescence
+pub awaken_runtime_contract::RuntimeRunContext::prepared_mcp: alloc::vec::Vec<awaken_runtime_contract::runtime_context::PreparedMcpAttachment>
 pub awaken_runtime_contract::RuntimeRunContext::provider_server_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ProviderServerTool>
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>>
 pub awaken_runtime_contract::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>

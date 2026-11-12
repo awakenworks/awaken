@@ -249,7 +249,7 @@ impl RecipientKeyEnvelope {
         // Authenticate the complete claims, including expiry and key identity.
         // The canonical public fingerprint remains the interoperability check;
         // it is not treated as a cryptographic hash or used alone as AEAD data.
-        serde_json::to_vec(&(
+        let claims = (
             PREFIX,
             &access.credential,
             access.material_source,
@@ -260,7 +260,19 @@ impl RecipientKeyEnvelope {
             binding,
             key_id,
             expires,
-        ))
+        );
+        if access.expires_at_unix_ms.is_none() && access.issuer_generation.is_none() {
+            // Preserve the exact authenticated bytes of historical None/None
+            // publications. A metadata-bearing access never falls back here.
+            serde_json::to_vec(&claims)
+        } else {
+            serde_json::to_vec(&(
+                claims,
+                "credential-source-validity/v1",
+                access.expires_at_unix_ms,
+                access.issuer_generation,
+            ))
+        }
         .map_err(|_| CredentialMaterialError::Invalid)
     }
 

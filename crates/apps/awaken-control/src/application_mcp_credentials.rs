@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::ManagedCredentialAdoptionProgress;
+use awaken_credential_vault::{ApplicationMcpBearerEntry, McpCredentialTarget};
 use awaken_protocol_managed::{VaultState, parse_idempotency_key_header};
 use awaken_runtime_contract::runs::scope::WorkspaceScope;
 use axum::extract::{Extension, State};
@@ -23,6 +24,9 @@ struct ApplicationMcpCredentialCommand {
     mcp_server_url: String,
     /// Caller-owned monotonic order for this stable application/target tuple.
     credential_generation: u64,
+    /// Exact issuer expiry for this material generation; old requests omit it.
+    #[serde(default)]
+    expires_at_unix_ms: Option<u64>,
     /// Write-only. The response and durable credential row never contain it.
     token: String,
 }
@@ -88,15 +92,27 @@ async fn enter_application_mcp_credential(
                 "Idempotency-Key is required",
             )
         })?;
-    let (vault_id, source_id, revision, adoption) = state
-        .enter_application_mcp_bearer(
-            &workspace.0,
-            authority_id,
-            &command.mcp_server_url,
-            &idempotency_key,
-            command.credential_generation,
-            RedactedString::from(command.token),
+    let target = McpCredentialTarget::parse_http(&command.mcp_server_url).map_err(|_| {
+        error(
+            StatusCode::CONFLICT,
+            "conflict_error",
+            awaken_credential_vault::CredentialError::InvalidSource(
+                "MCP server URL must be an absolute HTTP(S) URL".into(),
+            )
+            .to_string(),
         )
+    })?;
+    let (vault_id, source_id, revision, adoption) = state
+        .enter_application_mcp_bearer(ApplicationMcpBearerEntry {
+            workspace_id: workspace.0,
+            application_authority_id: authority_id.to_owned(),
+            mcp_server_url: command.mcp_server_url,
+            target,
+            idempotency_key,
+            credential_generation: command.credential_generation,
+            expires_at_unix_ms: command.expires_at_unix_ms,
+            bearer: RedactedString::from(command.token),
+        })
         .await
         .map_err(|error_value| match error_value {
             awaken_credential_vault::CredentialError::InvalidSource(_)

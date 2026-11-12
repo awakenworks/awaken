@@ -75,6 +75,16 @@ impl SessionActivityOperations<'_> {
         if state.is_terminal() {
             return SessionActivityAdmissionPlan::Terminal;
         }
+        // Credential replacement uses the existing desired-generation state
+        // as its preparation fence. Root CAS orders a concurrent new activity
+        // against Requested -> Realizing -> Active/publication acknowledgement;
+        // neither side can admit from the other's older snapshot. Initial
+        // external preparation retains its ordinary reserved-Run admission.
+        if (state.execution.admits_activity() || state.has_active_activities())
+            && state.mcp.needs_realization()
+        {
+            return SessionActivityAdmissionPlan::NotReady;
+        }
         let plan = session_activity_open_plan(
             state.execution,
             state.activity_epoch,

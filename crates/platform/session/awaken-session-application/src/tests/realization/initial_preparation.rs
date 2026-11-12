@@ -1,9 +1,151 @@
 use super::*;
 use awaken_session_execution_contract::SessionPreparationControl;
+use futures_util::FutureExt;
 
 struct FixtureSessionPlacement;
 
 struct SelectiveSessionPlacement;
+
+struct ValiditySessionPlacement;
+
+impl awaken_session_execution_contract::SessionPreparationPlacement for ValiditySessionPlacement {
+    fn requirements(
+        &self,
+        session: &PersistedSession,
+    ) -> Result<
+        awaken_worker_contract::PlacementRequirements,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        let mut required =
+            awaken_session_execution_contract::SessionPreparationPlacement::requirements(
+                &FixtureSessionPlacement,
+                session,
+            )?;
+        // The production Run-free compiler uses this same metadata projection;
+        // this selector fixture introduces no alternative policy or ranking.
+        if awaken_worker_contract::mcp_credentials_require_validity(
+            session
+                .mcp
+                .desired_attachments()
+                .into_iter()
+                .filter_map(|a| a.credential.as_ref()),
+        ) {
+            required.required_capabilities.insert(
+                awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY.to_owned(),
+            );
+        }
+        Ok(required)
+    }
+}
+
+#[tokio::test]
+async fn run_free_selector_refuses_old_generic_worker_before_mutating_a_validity_bearing_root() {
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let id = SessionId::from("validity-preparation");
+    let mut root = idle_mcp_update(id.as_str(), false, false);
+    let holder = root
+        .frozen_baseline()
+        .unwrap()
+        .environment
+        .credential_realization
+        .mcp_holder
+        .clone();
+    let access = awaken_agent_contract::credential::CredentialAccess::new(
+        awaken_agent_contract::credential::CredentialRef {
+            id: "source".into(),
+            revision: 1,
+        },
+        awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+        awaken_agent_contract::credential::CredentialUsage::HttpHeader {
+            name: "authorization".into(),
+            scheme: Some("Bearer".into()),
+        },
+        awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
+            holder.clone(),
+            awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
+        ),
+    )
+    .with_expiry(u64::MAX)
+    .with_issuer_generation(1);
+    root.mcp = crate::session_mcp::SessionMcpAttachmentSet::from_initial(
+        vec![crate::session_mcp::McpAttachmentDraft {
+            name: "docs".into(),
+            target: awaken_agent_contract::McpTarget::parse_http("https://docs.example.test")
+                .unwrap(),
+            prompts_as_skills: false,
+            credential: Some(access),
+            origin: crate::session_mcp::McpAttachmentOrigin::Session,
+        }],
+        Some(holder),
+    )
+    .unwrap();
+    create(repo.as_ref(), root).await;
+    let before = repo.get(&id).await.unwrap();
+    let observations = Arc::new(RecordingWorkerObservations::default());
+    let probe = Arc::new(crate::ExecutionObservationProbe::default());
+    let app = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(repo.clone(), system_clock()),
+        Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
+        crate::SessionExecutionAdmission::new(
+            probe,
+            observations.clone(),
+            Arc::new(ValiditySessionPlacement),
+        ),
+    );
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        reassign_existing_lease: false,
+    };
+    let mut manifest = terminal_cleanup_manifest();
+    manifest
+        .capabilities
+        .remove(awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY);
+    observations.replace(vec![terminal_cleanup_worker(&target, manifest.clone())]);
+    assert!(
+        app.realizations
+            .claim_next_session_preparation(target.clone())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repo.get(&id).await.unwrap(),
+        before,
+        "old Worker cannot acquire the realization root"
+    );
+    manifest
+        .capabilities
+        .insert(awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY.to_owned());
+    observations.replace(vec![terminal_cleanup_worker(&target, manifest)]);
+    let assigned = app
+        .realizations
+        .claim_next_session_preparation(target)
+        .await
+        .unwrap()
+        .expect("new generic Worker remains eligible");
+    assert_eq!(assigned.session_id, id);
+    assert!(matches!(
+        assigned.directive.action,
+        awaken_session_execution_contract::SessionRealizationAction::Stage { .. }
+    ));
+    assert!(
+        repo.get(&id)
+            .await
+            .unwrap()
+            .active_activity_epochs
+            .is_empty(),
+        "capability grants no model activity"
+    );
+}
 
 impl awaken_session_execution_contract::SessionPreparationPlacement for FixtureSessionPlacement {
     fn requirements(
@@ -143,6 +285,12 @@ async fn idle_mcp_preparation_reuses_the_bound_worker_and_refuses_a_foreign_owne
     // R1=C1+C2+C3+same -> Stage the exact generation under the SAME lease;
     // R2=C1+C2+C3+foreign -> no assignment and byte-identical root. Neither
     // row creates a model Run, changes execution, or opts into initial work.
+    // C5 a hot generation is staged/published while already Idle; C6 its ACK
+    // matches the complete generation set; C7 that exact ACK is replayed.
+    // R3=C5+C6=>commit publication readiness and wake the existing supervisor,
+    // without a new activity/initial-idle fact. R4=C5+!C6=>no root write/wake.
+    // R5=C7=>same root, no duplicate fact/wake. These are the ACK liveness and
+    // authority effects reused by the real inline-Agent multi-Run regression.
     for self_hosted in [false, true] {
         let repo = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -240,6 +388,102 @@ async fn idle_mcp_preparation_reuses_the_bound_worker_and_refuses_a_foreign_owne
             repo.worker_demand().await.unwrap(),
             1,
             "R1 no extra replica"
+        );
+        let receipt = NoopMcpRealizer
+            .stage_mcp_attachment(mcp_stages.into_iter().next().unwrap())
+            .await
+            .unwrap();
+        let directive = application
+            .realizations
+            .activate_session_realization(
+                awaken_session_execution_contract::ActivateSessionRealization {
+                    session_id: id.clone(),
+                    lease: assignment.directive.authority.lease,
+                    prepared_resource_revision: None,
+                    mcp_receipts: vec![receipt],
+                },
+            )
+            .await
+            .unwrap();
+        let awaken_session_execution_contract::SessionRealizationAction::Publish { publish, drain } =
+            directive.action
+        else {
+            panic!("R3 active generation requires publication acknowledgement");
+        };
+        let command = awaken_session_execution_contract::AcknowledgeSessionRealization {
+            continuation: None,
+            session_id: id.clone(),
+            lease: directive.authority.lease,
+            published: publish,
+            drained: drain,
+        };
+        let _ = application.lifecycle.notified().now_or_never();
+        let before_ack = repo.get(&id).await.unwrap();
+        let facts = repo.pending_lifecycle().await.unwrap();
+        let mut mismatched = command.clone();
+        mismatched.published.clear();
+        assert!(
+            matches!(
+                application
+                    .realizations
+                    .acknowledge_session_realization(mismatched)
+                    .await,
+                Err(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(_)
+                )
+            ),
+            "R4 mismatched publication set"
+        );
+        assert_eq!(repo.get(&id).await.unwrap(), before_ack, "R4");
+        assert!(
+            application.lifecycle.notified().now_or_never().is_none(),
+            "R4 no wake"
+        );
+        let acknowledged = application
+            .realizations
+            .acknowledge_session_realization(command.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                acknowledged.action,
+                awaken_session_execution_contract::SessionRealizationAction::Complete
+            ),
+            "R3"
+        );
+        assert!(
+            application.lifecycle.notified().now_or_never().is_some(),
+            "R3 successful hot ACK wakes durable work"
+        );
+        let ready = repo.get(&id).await.unwrap();
+        assert!(ready.mcp.attachments[0].publication_acknowledged, "R3");
+        assert_eq!(
+            ready.execution, before.execution,
+            "R3 no activity admission"
+        );
+        assert_eq!(
+            ready.active_activity_epochs, before.active_activity_epochs,
+            "R3"
+        );
+        assert_eq!(
+            repo.pending_lifecycle().await.unwrap(),
+            facts,
+            "R3 no initial-idle fact"
+        );
+        application
+            .realizations
+            .acknowledge_session_realization(command)
+            .await
+            .unwrap();
+        assert_eq!(repo.get(&id).await.unwrap(), ready, "R5 no duplicate write");
+        assert!(
+            application.lifecycle.notified().now_or_never().is_none(),
+            "R5 no duplicate wake"
+        );
+        assert_eq!(
+            repo.pending_lifecycle().await.unwrap(),
+            facts,
+            "R5 no duplicate fact"
         );
     }
 }

@@ -7,6 +7,47 @@ use super::{
     McpReplacementPlan, PlaintextHolder, SessionMcpOperations,
 };
 
+impl super::SessionAggregate {
+    /// A claimed preparation may replace an exact credential while its one
+    /// named Run is logically active, before that Run acquires a physical slot.
+    /// The caller separately retains the Dispatch exclusion. Complete original
+    /// activity membership is required; a count, a legacy empty set, or a parent
+    /// Session identity cannot stand in for the current Run's coordinates.
+    pub fn admits_claimed_mcp_credential_preparation(
+        &self,
+        thread: &awaken_agent_contract::ThreadId,
+        run: &awaken_agent_contract::RunId,
+    ) -> bool {
+        if self.state.is_terminal() || self.state.active_activity_epochs.len() != 1 {
+            return false;
+        }
+        let Some((records, false)) = self.state.run_activities() else {
+            return false;
+        };
+        let epoch = *self
+            .state
+            .active_activity_epochs
+            .first()
+            .expect("one active epoch");
+        records
+            .iter()
+            .filter(|record| record.activity_epoch().get() == epoch)
+            .count()
+            == 1
+            && records.iter().any(|record| {
+                record.activity_epoch().get() == epoch
+                    && record.thread_id() == thread
+                    && record.run_id() == run
+            })
+            && matches!(
+                self.state.execution,
+                super::SessionExecutionState::Preparing
+                    | super::SessionExecutionState::Activating
+                    | super::SessionExecutionState::Running
+            )
+    }
+}
+
 impl SessionMcpOperations<'_> {
     /// Apply the canonical SessionMcpAttachmentSet::claim_realization law.
     pub fn claim_realization(

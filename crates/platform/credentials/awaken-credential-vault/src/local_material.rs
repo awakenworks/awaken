@@ -1,5 +1,9 @@
 //! Control-owned local credential material and write-back adapter.
 
+#[cfg(test)]
+#[path = "local_material/expiry_tests.rs"]
+mod expiry_tests;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -139,6 +143,25 @@ impl VaultLocalMaterialAuthority {
         if revision != access.credential.revision {
             return Err(CredentialMaterialError::RevisionMismatch);
         }
+        // Legacy pins omitted this field and still undergo the canonical
+        // source expiry check below. A published expiry must name exactly the
+        // same revision's metadata; a caller cannot extend it independently.
+        if access.expires_at_unix_ms.is_some()
+            && access.expires_at_unix_ms
+                != source
+                    .descriptor
+                    .as_ref()
+                    .and_then(|descriptor| descriptor.expires_at_unix_ms)
+        {
+            return Err(CredentialMaterialError::BindingMismatch);
+        }
+        if access.issuer_generation.is_some()
+            && access.issuer_generation
+                != crate::repo::application_mcp_issuer_generation(source)
+                    .map_err(|_| CredentialMaterialError::BindingMismatch)?
+        {
+            return Err(CredentialMaterialError::BindingMismatch);
+        }
         if source.workspace_id != binding.workspace_id {
             return Err(CredentialMaterialError::RecipientMismatch);
         }
@@ -212,7 +235,8 @@ impl CredentialMaterialResolver for VaultLocalMaterialAuthority {
         let CredentialMaterialRequest {
             access,
             selected_holder,
-            ..
+            binding,
+            expected_provider,
         } = request;
         let access_token = self.materialize_source(&source).await?;
         let material = if access.usage == CredentialUsage::ProviderAdapter
@@ -245,6 +269,10 @@ impl CredentialMaterialResolver for VaultLocalMaterialAuthority {
                 Err(secret) => CredentialMaterial::secret(secret),
             }
         };
+        // A source that was live before an awaited material read may have
+        // expired while it was opening. Observe that read once, then reject
+        // the retained material before returning it to any consumer.
+        self.validate_exact_source(&source, access, selected_holder, binding, expected_provider)?;
         material.validate_usage(&access.usage)?;
         if let Some(descriptor) = &source.descriptor {
             descriptor

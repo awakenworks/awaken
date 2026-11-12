@@ -165,6 +165,20 @@ pub struct SessionCredentialRolloutAdoption {
 }
 
 impl SessionCredentialRolloutAdoption {
+    /// Bind this delivery only to the authenticated preparation whose original
+    /// Dispatch exclusion remains borrowed. Other Sessions keep the ordinary
+    /// Idle rule, and the Vault still owns complete-event acknowledgement.
+    pub fn for_claimed_preparation<'a>(
+        &'a self,
+        context: &'a dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+    ) -> ClaimedCredentialRolloutAdoption<'a> {
+        ClaimedCredentialRolloutAdoption {
+            adoption: self,
+            context,
+            outcome: awaken_sync::InvariantLock::new(None),
+        }
+    }
+
     #[must_use]
     pub fn new(
         sessions: Arc<SessionApplication>,
@@ -190,21 +204,34 @@ impl SessionCredentialRolloutAdoption {
     async fn apply_vault_rollout(
         &self,
         event: &ManagedCredentialRollout,
+        preparation: Option<&ClaimedCredentialRolloutAdoption<'_>>,
     ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
+        if let Some(target) = preparation {
+            target.record(Err(ClaimedCredentialPreparationFailure::Unavailable));
+        }
         let sessions = self
             .roots
             .sessions_referencing_credential_source(&event.workspace_id, &event.source_id)
             .await
             .map_err(|error| sessions_unreadable(event, &error))?;
         let mut pending = false;
+        let mut selected_seen = false;
         for session in sessions {
+            let claimed = preparation
+                .filter(|target| target.context.session_id() == session.session_id.as_str());
+            selected_seen |= claimed.is_some();
             if source_already_adopted(&session, event) {
+                if let Some(target) = claimed {
+                    target.record(Ok(ClaimedCredentialPreparationProgress::AlreadyAdopted));
+                }
                 if !self.publication.publish_committed_session(&session) {
                     pending = true;
                 }
                 continue;
             }
-            if !awaken_session_contract::session_can_adopt_mcp_credential_lifecycle(&session) {
+            if claimed.is_none()
+                && !awaken_session_contract::session_can_adopt_mcp_credential_lifecycle(&session)
+            {
                 tracing::info!(rollout_id = %event.id, session_id = %session.session_id,
                     phase = "session_adoption", failure = "not_idle",
                     "Managed credential rollout remains pending");
@@ -219,30 +246,65 @@ impl SessionCredentialRolloutAdoption {
                 event.source_version,
                 event.credential_revision,
             ));
-            let result = self
-                .updates
-                .update_session(
-                    &session.session_id,
-                    SessionUpdateCommand {
-                        title: None,
-                        metadata: None,
-                        budget: None,
-                        tools: None,
-                        mcp_update: Some(SessionMcpUpdate::CredentialLifecycle {
-                            source_id: event.source_id.0.clone(),
-                            revoked: matches!(
-                                event.operation,
-                                ManagedCredentialOperation::Archive
-                                    | ManagedCredentialOperation::Delete
-                            ),
-                            candidates,
-                        }),
-                        idempotency_key: Some(event.id.clone()),
-                        request_fingerprint,
-                        if_match: None,
-                    },
-                )
-                .await;
+            let command = SessionUpdateCommand {
+                title: None,
+                metadata: None,
+                budget: None,
+                tools: None,
+                mcp_update: Some(SessionMcpUpdate::CredentialLifecycle {
+                    source_id: event.source_id.0.clone(),
+                    revoked: matches!(
+                        event.operation,
+                        ManagedCredentialOperation::Archive | ManagedCredentialOperation::Delete
+                    ),
+                    candidates,
+                }),
+                idempotency_key: Some(event.id.clone()),
+                request_fingerprint,
+                if_match: None,
+            };
+            let result = match claimed {
+                Some(target) => {
+                    self.updates
+                        .update_claimed_session_credentials(
+                            target.context,
+                            &session.session_id,
+                            command,
+                        )
+                        .await
+                }
+                None => {
+                    self.updates
+                        .update_session(&session.session_id, command)
+                        .await
+                }
+            };
+            if let Some(target) = claimed {
+                target.record(match &result {
+                    Ok(_) => Ok(ClaimedCredentialPreparationProgress::DesiredCommitted),
+                    Err(error) => Err(match error {
+                        SessionUpdateError::NotIdle => {
+                            ClaimedCredentialPreparationFailure::NotReady
+                        }
+                        SessionUpdateError::Conflict => {
+                            ClaimedCredentialPreparationFailure::Conflict
+                        }
+                        SessionUpdateError::NotFound => {
+                            ClaimedCredentialPreparationFailure::NotFound
+                        }
+                        SessionUpdateError::NotFrozen
+                        | SessionUpdateError::IdempotencyMismatch
+                        | SessionUpdateError::Rejected(_) => {
+                            ClaimedCredentialPreparationFailure::Invalid
+                        }
+                        SessionUpdateError::Realization(_)
+                        | SessionUpdateError::ProjectionAfterCommit { .. }
+                        | SessionUpdateError::Unavailable(_) => {
+                            ClaimedCredentialPreparationFailure::Unavailable
+                        }
+                    }),
+                });
+            }
             match result {
                 Ok(outcome) => {
                     if !source_already_adopted(&outcome.session, event) {
@@ -277,6 +339,12 @@ impl SessionCredentialRolloutAdoption {
                 }
             }
         }
+        if let Some(target) = preparation
+            && !selected_seen
+        {
+            target.record(Err(ClaimedCredentialPreparationFailure::NotFound));
+            pending = true;
+        }
         if !pending {
             Ok(ManagedCredentialAdoptionProgress::Converged)
         } else {
@@ -291,7 +359,66 @@ impl ManagedCredentialRolloutTarget for SessionCredentialRolloutAdoption {
         &self,
         event: &ManagedCredentialRollout,
     ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
-        self.apply_vault_rollout(event).await
+        self.apply_vault_rollout(event, None).await
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimedCredentialPreparationProgress {
+    AlreadyAdopted,
+    DesiredCommitted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ClaimedCredentialPreparationFailure {
+    #[error("the selected Run is not quiescent for credential preparation")]
+    NotReady,
+    #[error("the selected Session changed during credential preparation")]
+    Conflict,
+    #[error("the selected Session does not reference the credential source")]
+    NotFound,
+    #[error("the selected credential preparation is invalid")]
+    Invalid,
+    #[error("the selected credential preparation authority is unavailable")]
+    Unavailable,
+}
+
+pub struct ClaimedCredentialRolloutAdoption<'a> {
+    adoption: &'a SessionCredentialRolloutAdoption,
+    context: &'a dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+    outcome: awaken_sync::InvariantLock<
+        Option<Result<ClaimedCredentialPreparationProgress, ClaimedCredentialPreparationFailure>>,
+    >,
+}
+
+impl ClaimedCredentialRolloutAdoption<'_> {
+    pub fn outcome(
+        &self,
+    ) -> Option<Result<ClaimedCredentialPreparationProgress, ClaimedCredentialPreparationFailure>>
+    {
+        match self.outcome.lock() {
+            Ok(outcome) => *outcome,
+            Err(_) => Some(Err(ClaimedCredentialPreparationFailure::Unavailable)),
+        }
+    }
+
+    fn record(
+        &self,
+        result: Result<ClaimedCredentialPreparationProgress, ClaimedCredentialPreparationFailure>,
+    ) {
+        if let Ok(mut outcome) = self.outcome.lock() {
+            *outcome = Some(result);
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ManagedCredentialRolloutTarget for ClaimedCredentialRolloutAdoption<'_> {
+    async fn rollout(
+        &self,
+        event: &ManagedCredentialRollout,
+    ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
+        self.adoption.apply_vault_rollout(event, Some(self)).await
     }
 }
 

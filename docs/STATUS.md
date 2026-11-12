@@ -211,3 +211,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0103-session-execution-product-gap-closure-2.md` | Running budget tightening; memory-version redact action; explicit Stop receipts; classified MCP/ACP/Hand-relay faults; cross-base local realization takeover; doctest E-code gate | Not required | n/a |
 | `adr/0104-memory-copy-reconciliation-adopts-identical-heads.md` | Memory Copy replay adopts an identical durable head; a lost materialized Copy directory is gone, not empty | Not required | n/a |
 | `adr/0105-native-private-session-ownership.md` | Immutable native personal Session ownership and complete ingress qualification boundary | Not required | n/a |
+| `adr/0106-claimed-mcp-credential-preparation.md` | Role owner | Required | self |

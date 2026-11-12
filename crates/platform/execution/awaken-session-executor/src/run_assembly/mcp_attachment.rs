@@ -143,10 +143,30 @@ impl awaken_session_mcp::McpStagingSession for RunAssembly {
     }
 
     async fn realize_environment(&self, session: &str, agent: &str) -> Result<(), RunError> {
-        self.ctx_for(session, Some(agent))
+        let context = self
+            .ctx_for(session, Some(agent))
+            .await
+            .map_err(to_run_error)?;
+        if context.env.is_some() {
+            return Ok(());
+        }
+        if !self.runs_local_dispatch_pool()
+            || !awaken_session_execution_contract::requires_local_environment(
+                &context.config.resolved_spec,
+            )
+        {
+            return Err(RunError::classified(
+                "mcp_sandbox_unavailable",
+                "this Session cannot realize a local Sandbox for stdio MCP",
+            ));
+        }
+        // The ordinary context may defer a Native environment until it is
+        // needed. Staging stdio MCP is a physical consumer, like a Hand tool.
+        self.realization_executor
+            .ensure_session_environment_for_tool(session)
             .await
             .map(|_| ())
-            .map_err(to_run_error)
+            .map_err(RunError::from)
     }
 }
 

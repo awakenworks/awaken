@@ -205,6 +205,153 @@ fn credential_adoption_requires_idle_or_a_proven_unattempted_preparation() {
 }
 
 #[test]
+fn claimed_credential_preparation_requires_the_only_complete_current_run_activity() {
+    let thread = awaken_agent_contract::ThreadId("repair-thread".into());
+    let run = awaken_agent_contract::RunId("repair-current".into());
+    let mut root = fresh_root(SessionExecutionState::Idle, 0);
+    assert_eq!(
+        root.activity().open(
+            None,
+            false,
+            false,
+            1,
+            0,
+            Some(("repair-operation", &thread, &run))
+        ),
+        SessionActivityAdmissionPlan::Open(1)
+    );
+    assert!(root.admits_claimed_mcp_credential_preparation(&thread, &run));
+    assert!(
+        !session_can_adopt_mcp_credential_lifecycle(&root),
+        "ordinary busy admission stays closed"
+    );
+    assert!(!root.admits_claimed_mcp_credential_preparation(
+        &thread,
+        &awaken_agent_contract::RunId("parent-run".into())
+    ));
+    assert!(!root.admits_claimed_mcp_credential_preparation(
+        &awaken_agent_contract::ThreadId("controlled".into()),
+        &run
+    ));
+    let mut wire = serde_json::to_value(root.snapshot()).unwrap();
+    wire.as_object_mut().unwrap().remove("run_activities");
+    let unknown =
+        SessionAggregate::try_from(serde_json::from_value::<PersistedSession>(wire).unwrap())
+            .unwrap();
+    assert!(
+        !unknown.admits_claimed_mcp_credential_preparation(&thread, &run),
+        "legacy unknown is not absence"
+    );
+    assert_eq!(
+        root.activity().open(
+            None,
+            false,
+            false,
+            2,
+            0,
+            Some((
+                "peer-operation",
+                &thread,
+                &awaken_agent_contract::RunId("peer".into())
+            ))
+        ),
+        SessionActivityAdmissionPlan::Open(2)
+    );
+    assert!(
+        !root.admits_claimed_mcp_credential_preparation(&thread, &run),
+        "a parent Session cannot hide a peer"
+    );
+}
+
+#[test]
+fn pending_mcp_generation_fences_new_activity_until_exact_publication_acknowledgement() {
+    use awaken_session_configuration_contract::mcp::{
+        McpAttachmentDraft, McpAttachmentOrigin, McpRealizationClaim,
+    };
+    let thread = awaken_agent_contract::ThreadId("controlled".into());
+    let run = awaken_agent_contract::RunId("current".into());
+    let mut root = fresh_root(SessionExecutionState::Idle, 0);
+    assert_eq!(
+        root.activity().open(
+            None,
+            false,
+            false,
+            1,
+            0,
+            Some(("current-operation", &thread, &run))
+        ),
+        SessionActivityAdmissionPlan::Open(1)
+    );
+    root.mcp()
+        .request_full_replacement(
+            vec![McpAttachmentDraft {
+                name: "application".into(),
+                target: awaken_agent_contract::McpTarget::parse_http("https://example.test/mcp")
+                    .unwrap(),
+                prompts_as_skills: false,
+                credential: None,
+                origin: McpAttachmentOrigin::Session,
+            }],
+            None,
+        )
+        .unwrap();
+    let generation = root.mcp.desired_attachments()[0].generation.clone();
+    let peer = awaken_agent_contract::RunId("peer".into());
+    let assert_blocked = |root: &mut SessionAggregate| {
+        let before = root.clone();
+        assert_eq!(
+            root.activity().open(
+                None,
+                false,
+                false,
+                2,
+                0,
+                Some(("peer-operation", &thread, &peer))
+            ),
+            SessionActivityAdmissionPlan::NotReady
+        );
+        assert_eq!(
+            root.snapshot(),
+            before.snapshot(),
+            "refusal cannot open a partial activity"
+        );
+    };
+    assert_blocked(&mut root);
+    root.mcp()
+        .claim_realization(
+            &generation,
+            McpRealizationClaim {
+                realization_id: "claimed-preparation".into(),
+                runtime_incarnation: "worker/boot".into(),
+                lease_epoch: 1,
+                lease_expires_at_unix_ms: 100,
+                stage_idempotency_key: "stage-current".into(),
+            },
+        )
+        .unwrap();
+    assert_blocked(&mut root);
+    root.mcp()
+        .activate(&generation, "claimed-preparation")
+        .unwrap();
+    assert_blocked(&mut root);
+    root.mcp()
+        .acknowledge_publication(&generation, "claimed-preparation")
+        .unwrap();
+    assert!(!root.mcp.needs_realization());
+    assert_eq!(
+        root.activity().open(
+            None,
+            false,
+            false,
+            2,
+            0,
+            Some(("peer-operation", &thread, &peer))
+        ),
+        SessionActivityAdmissionPlan::Open(2)
+    );
+}
+
+#[test]
 fn named_activity_admissions_retain_raw_identity_without_requiring_a_created_domain() {
     // Causes: N1 fresh, before first Create; N2 named operation/raw Thread/Run;
     // N3 same Run with a new operation/epoch; N4 anonymous low admission;

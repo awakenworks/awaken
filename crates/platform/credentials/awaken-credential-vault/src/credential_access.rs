@@ -110,6 +110,14 @@ pub fn compile_exact_credential_access(
         usage,
         policy,
     );
+    if let Some(expiry) = source
+        .descriptor
+        .as_ref()
+        .and_then(|descriptor| descriptor.expires_at_unix_ms)
+    {
+        access = access.with_expiry(expiry);
+    }
+    access.issuer_generation = crate::repo::application_mcp_issuer_generation(source)?;
     if let Some(target) = target {
         access = access.with_target(target);
     }
@@ -287,6 +295,43 @@ pub(crate) mod tests {
         (source, target, policy, holder, binding)
     }
 
+    #[test]
+    fn each_compiled_revision_retains_its_own_expiry_after_source_rotation() {
+        let (mut source, target, policy, holder, binding) = fixture();
+        let compile = |source: &CredentialSource| {
+            compile_exact_credential_access(
+                source,
+                ExactCredentialAccessRequest {
+                    workspace_id: Some("workspace-a"),
+                    target: Some(target.clone()),
+                    usage: CredentialUsage::HttpBasicAuth,
+                    policy: policy.clone(),
+                    selected_holder: &holder,
+                    binding: &binding,
+                    now_unix_ms: 1_000,
+                },
+            )
+            .unwrap()
+        };
+        let first = compile(&source);
+        let retained = serde_json::to_value(&first).unwrap();
+        source.version += 1;
+        source.descriptor.as_mut().unwrap().expires_at_unix_ms = Some(9_000);
+        let second = compile(&source);
+        assert_eq!(
+            (first.credential.revision, first.expires_at_unix_ms),
+            (7, Some(2_000))
+        );
+        assert_eq!(
+            (second.credential.revision, second.expires_at_unix_ms),
+            (8, Some(9_000))
+        );
+        assert_eq!(
+            serde_json::from_value::<CredentialAccess>(retained).unwrap(),
+            first
+        );
+    }
+
     /// Source-to-access cause/effect graph: C1 source authority/status/revision
     /// are valid; C2 source and binding belong to the requested Workspace; C3
     /// target+usage are exactly declared and unexpired; C4 holder is authorized.
@@ -319,6 +364,11 @@ pub(crate) mod tests {
         )
         .expect("A1/E1");
         assert_eq!(access.credential.revision, 7, "A1/E1 exact revision");
+        assert_eq!(access.expires_at_unix_ms, Some(2_000), "A1/E1 exact expiry");
+        assert_eq!(
+            access.issuer_generation, None,
+            "ordinary source has no application issuer generation"
+        );
         assert_eq!(access.target.as_ref(), Some(&target), "A1/E1 target");
 
         let mut inactive = source.clone();

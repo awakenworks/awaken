@@ -730,6 +730,12 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
     assert!(
         manifest
             .capabilities
+            .contains(awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY),
+        "generic Native decoder/effect validity support does not require a Flow application"
+    );
+    assert!(
+        manifest
+            .capabilities
             .contains(awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY),
         "M1 compiled Claimed.request decoder is advertised independently of execution backend"
     );

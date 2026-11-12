@@ -181,11 +181,11 @@ pub use session::{
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     CanonicalPublicationError, CanonicalSessionProjection, CanonicalSessionPublication,
-    ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,
-    ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE, FailSessionRealization,
-    FrozenAgentPublicationDecision, FrozenProjectionReceipt, FrozenResourceTransitionUse,
-    FrozenSessionProjection, ObservedSessionRealizationLease, ProjectionReceiptRefusal,
-    RealizationFailureOutcome, RenewSessionRealization,
+    ClaimedSessionCredentialPreparationContext, ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
+    ENVIRONMENT_PROVISIONING_CODE, ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE,
+    FailSessionRealization, FrozenAgentPublicationDecision, FrozenProjectionReceipt,
+    FrozenResourceTransitionUse, FrozenSessionProjection, ObservedSessionRealizationLease,
+    ProjectionReceiptRefusal, RealizationFailureOutcome, RenewSessionRealization,
     SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE, SESSION_REALIZATION_NOT_READY_CODE,
     STALE_PROJECTION_CODE, SessionCheckpointArtifactControl, SessionContinuationReceipt,
     SessionFileReadAuthorization, SessionPreparationAssignment, SessionPreparationControl,
@@ -216,6 +216,8 @@ pub use source_retention::{
     SourceRetentionSubject, WORKER_SOURCE_RETENTION_SUBJECTS_PATH, WorkerSourceRetentionSubjects,
 };
 
+pub use session_realization::realization_generation_set_authorizes;
+
 #[cfg(test)]
 mod mcp_attachment {
     pub(crate) fn test_generation(
@@ -232,5 +234,3 @@ mod mcp_attachment {
 }
 
 pub use session::continuation::execute_environment_provider_continuation;
-
-pub use session_realization::realization_generation_set_authorizes;

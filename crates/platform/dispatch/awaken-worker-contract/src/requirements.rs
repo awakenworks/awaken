@@ -2,14 +2,14 @@
 // @formal entrypoint worker.accepted_protocol_version_is_inside_advertised_range
 use std::collections::BTreeSet;
 
-use awaken_agent_contract::credential::CredentialRef;
+use awaken_agent_contract::credential::{CredentialAccess, CredentialRef};
 use awaken_provisioning_contract::{ResourceRequests, SandboxRequirements};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::manifest::{
     CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION, REPOSITORY_CREDENTIALS_CAPABILITY,
-    SESSION_RESOURCES_CAPABILITY, WorkerManifest,
+    SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY, SESSION_RESOURCES_CAPABILITY, WorkerManifest,
 };
 use crate::observation::WorkerAcpCapabilityRequirement;
 
@@ -111,6 +111,24 @@ impl Default for PlacementRequirements {
 }
 
 impl PlacementRequirements {
+    /// Freeze the Session's published credential demand and its intrinsic
+    /// decoder/effect capability. Extra requirements are never removed here.
+    pub fn bind_session_mcp_credentials(
+        &mut self,
+        requirements: Option<Vec<awaken_credential_contract::McpCredentialRequirement>>,
+    ) {
+        if mcp_credentials_require_validity(
+            requirements
+                .iter()
+                .flatten()
+                .map(|requirement| &requirement.credential),
+        ) {
+            self.required_capabilities
+                .insert(SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY.to_owned());
+        }
+        self.session_mcp_credentials = requirements;
+    }
+
     /// Whether this is the exact backward-compatible posture omitted from legacy
     /// durable queue rows.
     #[must_use]
@@ -169,8 +187,22 @@ impl PlacementRequirements {
     }
 }
 
+/// One metadata-demand projection shared by Run publication, run-free Session
+/// preparation and final compatibility. Presence requires implementation
+/// support; neither absence nor the capability is a credential grant.
+#[must_use]
+pub fn mcp_credentials_require_validity<'a>(
+    credentials: impl IntoIterator<Item = &'a CredentialAccess>,
+) -> bool {
+    credentials
+        .into_iter()
+        .any(|access| access.expires_at_unix_ms.is_some() || access.issuer_generation.is_some())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum Incompatibility {
+    #[error("Session MCP credential projection is invalid")]
+    InvalidSessionMcpProjection,
     #[error("local-only work cannot be claimed by a remote worker")]
     LocalOnly,
     #[error("worker capacity must be greater than zero")]
@@ -277,7 +309,17 @@ pub fn can_claim(
         requirements
             .required_capabilities
             .iter()
-            .map(String::as_str),
+            .map(String::as_str)
+            .chain(
+                mcp_credentials_require_validity(
+                    requirements
+                        .session_mcp_credentials
+                        .iter()
+                        .flatten()
+                        .map(|requirement| &requirement.credential),
+                )
+                .then_some(SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY),
+            ),
         &manifest.capabilities,
     )?;
     if let Some(required) = &requirements.required_zone
@@ -368,3 +410,7 @@ pub fn can_claim_locally(requirements: &PlacementRequirements) -> bool {
         && requirements.required_credentials.is_empty()
         && requirements.required_acp_capabilities.is_empty()
 }
+
+#[cfg(test)]
+#[path = "requirements/mcp_validity_tests.rs"]
+mod mcp_validity_tests;

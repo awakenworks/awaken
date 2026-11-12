@@ -409,6 +409,18 @@ pub trait CredentialAccessAdmission {
         capabilities: &CredentialRealizationCapabilities,
         now_unix_ms: u64,
     ) -> Result<CredentialRealizationPlan, CredentialAdmissionError>;
+
+    /// Validate a frozen dependency before canonical preparation can replace
+    /// its expired source revision. This is not permission to realize material:
+    /// the actual prepared pin must still pass strict `admit` at the effect.
+    /// Target, policy, holder, capabilities and delivery expiry remain strict.
+    fn admit_for_preparation(
+        &self,
+        requested_holder: &PlaintextHolder,
+        realization: CredentialRealizationKind,
+        capabilities: &CredentialRealizationCapabilities,
+        now_unix_ms: u64,
+    ) -> Result<CredentialRealizationPlan, CredentialAdmissionError>;
 }
 
 impl CredentialAccessAdmission for CredentialAccess {
@@ -419,124 +431,173 @@ impl CredentialAccessAdmission for CredentialAccess {
         capabilities: &CredentialRealizationCapabilities,
         now_unix_ms: u64,
     ) -> Result<CredentialRealizationPlan, CredentialAdmissionError> {
-        if self.is_legacy_direct()
-            || !durable_material_source_is_reference_only(self.material_source)
-        {
-            return Err(CredentialAdmissionError::DirectPublicationRejected);
-        }
-        self.usage
-            .validate()
-            .map_err(|_| CredentialAdmissionError::InvalidCredentialUsage)?;
-        if self.policy.handling_mode == CredentialHandlingMode::ApplicationManaged
-            && (self.policy.model_exposure != ModelExposurePolicy::Forbidden
-                || requested_holder.boundary != PlaintextBoundary::Workload
-                || !matches!(&self.usage, CredentialUsage::Extension {consumer_id, ..} if !is_core_delivery_consumer(consumer_id)))
-        {
-            return Err(CredentialAdmissionError::InvalidHandlingPolicy);
-        }
-        validate_credential_target_usage(self.target.as_ref(), &self.usage)
-            .map_err(|_| CredentialAdmissionError::InvalidCredentialTarget)?;
-        if self.policy.allowed_plaintext_holders.is_empty() {
-            return Err(CredentialAdmissionError::EmptyAllowedHolders);
-        }
-        if !self
-            .policy
-            .allowed_plaintext_holders
-            .contains(requested_holder)
-        {
-            return Err(CredentialAdmissionError::HolderNotAllowed);
-        }
-        // A core delivery carrier is a runtime-owned transport, never an
-        // externally installed consumer, so it is never declared in
-        // `extension_consumers`. Only an external extension must prove an
-        // installed consumer for its exact material type.
-        if let CredentialUsage::Extension {
-            consumer_id,
-            material_type,
-            ..
-        } = &self.usage
-            && !is_core_delivery_consumer(consumer_id)
-            && !capabilities.supports_extension(consumer_id, material_type)
-        {
-            return Err(CredentialAdmissionError::ExtensionConsumerUnsupported);
-        }
-        if !capabilities.supports(
+        admit_credential_access(
+            self,
             requested_holder,
-            self.material_source,
             realization,
-            self.envelope.is_some(),
-        ) {
-            if !capabilities.holders.contains(requested_holder)
-                && !capabilities
-                    .alternatives
-                    .iter()
-                    .any(|profile| profile.holders.contains(requested_holder))
-            {
-                return Err(CredentialAdmissionError::HolderUnsupported);
-            }
-            if !capabilities
-                .material_sources
-                .contains(&self.material_source)
-                && !capabilities
-                    .alternatives
-                    .iter()
-                    .any(|profile| profile.material_sources.contains(&self.material_source))
-            {
-                return Err(CredentialAdmissionError::MaterialSourceUnsupported);
-            }
-            if self.envelope.is_some() {
-                return Err(CredentialAdmissionError::EnvelopeUnsupported);
-            }
+            capabilities,
+            now_unix_ms,
+            CredentialAdmissionPhase::Effect,
+        )
+    }
+
+    fn admit_for_preparation(
+        &self,
+        requested_holder: &PlaintextHolder,
+        realization: CredentialRealizationKind,
+        capabilities: &CredentialRealizationCapabilities,
+        now_unix_ms: u64,
+    ) -> Result<CredentialRealizationPlan, CredentialAdmissionError> {
+        admit_credential_access(
+            self,
+            requested_holder,
+            realization,
+            capabilities,
+            now_unix_ms,
+            CredentialAdmissionPhase::Preparation,
+        )
+    }
+}
+
+enum CredentialAdmissionPhase {
+    Preparation,
+    Effect,
+}
+
+fn admit_credential_access(
+    access: &CredentialAccess,
+    requested_holder: &PlaintextHolder,
+    realization: CredentialRealizationKind,
+    capabilities: &CredentialRealizationCapabilities,
+    now_unix_ms: u64,
+    phase: CredentialAdmissionPhase,
+) -> Result<CredentialRealizationPlan, CredentialAdmissionError> {
+    if access.is_legacy_direct()
+        || !durable_material_source_is_reference_only(access.material_source)
+    {
+        return Err(CredentialAdmissionError::DirectPublicationRejected);
+    }
+    access
+        .usage
+        .validate()
+        .map_err(|_| CredentialAdmissionError::InvalidCredentialUsage)?;
+    if access.policy.handling_mode == CredentialHandlingMode::ApplicationManaged
+        && (access.policy.model_exposure != ModelExposurePolicy::Forbidden
+            || requested_holder.boundary != PlaintextBoundary::Workload
+            || !matches!(&access.usage, CredentialUsage::Extension {consumer_id, ..} if !is_core_delivery_consumer(consumer_id)))
+    {
+        return Err(CredentialAdmissionError::InvalidHandlingPolicy);
+    }
+    validate_credential_target_usage(access.target.as_ref(), &access.usage)
+        .map_err(|_| CredentialAdmissionError::InvalidCredentialTarget)?;
+    if access.expires_at_unix_ms == Some(0)
+        || (matches!(phase, CredentialAdmissionPhase::Effect)
+            && access
+                .expires_at_unix_ms
+                .is_some_and(|expiry| now_unix_ms >= expiry))
+    {
+        return Err(CredentialAdmissionError::CredentialExpired);
+    }
+    if access.policy.allowed_plaintext_holders.is_empty() {
+        return Err(CredentialAdmissionError::EmptyAllowedHolders);
+    }
+    if !access
+        .policy
+        .allowed_plaintext_holders
+        .contains(requested_holder)
+    {
+        return Err(CredentialAdmissionError::HolderNotAllowed);
+    }
+    // A core delivery carrier is a runtime-owned transport, never an
+    // externally installed consumer, so it is never declared in
+    // `extension_consumers`. Only an external extension must prove an
+    // installed consumer for its exact material type.
+    if let CredentialUsage::Extension {
+        consumer_id,
+        material_type,
+        ..
+    } = &access.usage
+        && !is_core_delivery_consumer(consumer_id)
+        && !capabilities.supports_extension(consumer_id, material_type)
+    {
+        return Err(CredentialAdmissionError::ExtensionConsumerUnsupported);
+    }
+    if !capabilities.supports(
+        requested_holder,
+        access.material_source,
+        realization,
+        access.envelope.is_some(),
+    ) {
+        if !capabilities.holders.contains(requested_holder)
+            && !capabilities
+                .alternatives
+                .iter()
+                .any(|profile| profile.holders.contains(requested_holder))
+        {
             return Err(CredentialAdmissionError::HolderUnsupported);
         }
-        if let Some(envelope) = &self.envelope {
-            if envelope.envelope_ref().id.trim().is_empty() {
-                return Err(CredentialAdmissionError::EnvelopeReferenceEmpty);
-            }
-            if envelope
-                .envelope_ref()
-                .payload_fingerprint
-                .trim()
-                .is_empty()
-            {
-                return Err(CredentialAdmissionError::EnvelopeFingerprintEmpty);
-            }
-            if envelope.recipient() != &requested_holder.trust_domain
-                || envelope.required_boundary() != requested_holder.boundary
-            {
-                return Err(CredentialAdmissionError::EnvelopeRecipientMismatch);
-            }
-            if envelope.expires_at_unix_ms() <= now_unix_ms {
-                return Err(CredentialAdmissionError::EnvelopeExpired);
-            }
-        }
-        if self
-            .refresh
-            .as_ref()
-            .is_some_and(|refresh| refresh.credential_revision != self.credential.revision)
+        if !capabilities
+            .material_sources
+            .contains(&access.material_source)
+            && !capabilities
+                .alternatives
+                .iter()
+                .any(|profile| profile.material_sources.contains(&access.material_source))
         {
-            return Err(CredentialAdmissionError::CredentialRevisionMismatch);
+            return Err(CredentialAdmissionError::MaterialSourceUnsupported);
         }
-        if self
-            .refresh
-            .as_ref()
-            .is_some_and(|refresh| !refresh.has_valid_client_authentication_binding())
-        {
-            return Err(CredentialAdmissionError::RefreshClientAuthenticationInvalid);
+        if access.envelope.is_some() {
+            return Err(CredentialAdmissionError::EnvelopeUnsupported);
         }
-        if self
-            .refresh
-            .as_ref()
-            .is_some_and(|refresh| !refresh.has_valid_configuration_fingerprint())
-        {
-            return Err(CredentialAdmissionError::RefreshConfigurationMismatch);
-        }
-        Ok(CredentialRealizationPlan {
-            credential: self.credential.clone(),
-            selected_plaintext_holder: requested_holder.clone(),
-            selected_realization_kind: realization,
-        })
+        return Err(CredentialAdmissionError::HolderUnsupported);
     }
+    if let Some(envelope) = &access.envelope {
+        if envelope.envelope_ref().id.trim().is_empty() {
+            return Err(CredentialAdmissionError::EnvelopeReferenceEmpty);
+        }
+        if envelope
+            .envelope_ref()
+            .payload_fingerprint
+            .trim()
+            .is_empty()
+        {
+            return Err(CredentialAdmissionError::EnvelopeFingerprintEmpty);
+        }
+        if envelope.recipient() != &requested_holder.trust_domain
+            || envelope.required_boundary() != requested_holder.boundary
+        {
+            return Err(CredentialAdmissionError::EnvelopeRecipientMismatch);
+        }
+        if envelope.expires_at_unix_ms() <= now_unix_ms {
+            return Err(CredentialAdmissionError::EnvelopeExpired);
+        }
+    }
+    if access
+        .refresh
+        .as_ref()
+        .is_some_and(|refresh| refresh.credential_revision != access.credential.revision)
+    {
+        return Err(CredentialAdmissionError::CredentialRevisionMismatch);
+    }
+    if access
+        .refresh
+        .as_ref()
+        .is_some_and(|refresh| !refresh.has_valid_client_authentication_binding())
+    {
+        return Err(CredentialAdmissionError::RefreshClientAuthenticationInvalid);
+    }
+    if access
+        .refresh
+        .as_ref()
+        .is_some_and(|refresh| !refresh.has_valid_configuration_fingerprint())
+    {
+        return Err(CredentialAdmissionError::RefreshConfigurationMismatch);
+    }
+    Ok(CredentialRealizationPlan {
+        credential: access.credential.clone(),
+        selected_plaintext_holder: requested_holder.clone(),
+        selected_realization_kind: realization,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -566,6 +627,8 @@ pub enum CredentialAdmissionError {
     InvalidCredentialUsage,
     #[error("credential target is missing or incompatible with its usage")]
     InvalidCredentialTarget,
+    #[error("credential source revision is expired")]
+    CredentialExpired,
     #[error("recipient-bound credential envelopes are unsupported")]
     EnvelopeUnsupported,
     #[error("sealed credential envelope reference is empty")]
@@ -653,6 +716,9 @@ impl<T> WorkerLocalCredentialResolver for T where
     T: CredentialObservationSource + WorkerLocalReferenceRevalidator
 {
 }
+
+#[cfg(test)]
+mod expiry_tests;
 
 #[cfg(test)]
 mod tests {

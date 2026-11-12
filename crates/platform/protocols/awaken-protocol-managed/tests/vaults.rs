@@ -327,28 +327,38 @@ async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() 
     let h = harness();
     let (vault_id, source_id, revision, adoption) = h
         .state
-        .enter_application_mcp_bearer(
-            "workspace-a",
-            "awaken-flow",
-            "HTTPS://FLOW.EXAMPLE.TEST:443/mcp/",
-            "flow-bearer-1",
-            1,
-            RedactedString::new("token-1"),
-        )
+        .enter_application_mcp_bearer(awaken_credential_vault::ApplicationMcpBearerEntry {
+            workspace_id: "workspace-a".into(),
+            application_authority_id: "awaken-flow".into(),
+            mcp_server_url: "HTTPS://FLOW.EXAMPLE.TEST:443/mcp/".into(),
+            target: awaken_credential_vault::McpCredentialTarget::parse_http(
+                "HTTPS://FLOW.EXAMPLE.TEST:443/mcp/",
+            )
+            .unwrap(),
+            idempotency_key: "flow-bearer-1".into(),
+            credential_generation: 1,
+            expires_at_unix_ms: None,
+            bearer: RedactedString::new("token-1"),
+        })
         .await
         .unwrap();
     assert_eq!(revision, 1);
     assert_eq!(adoption, ManagedCredentialAdoptionProgress::Converged, "V1");
     let (replayed_vault, replayed_source, replayed_revision, replayed_adoption) = h
         .state
-        .enter_application_mcp_bearer(
-            "workspace-a",
-            "awaken-flow",
-            "https://flow.example.test/mcp",
-            "flow-bearer-1",
-            1,
-            RedactedString::new("token-1"),
-        )
+        .enter_application_mcp_bearer(awaken_credential_vault::ApplicationMcpBearerEntry {
+            workspace_id: "workspace-a".into(),
+            application_authority_id: "awaken-flow".into(),
+            mcp_server_url: "https://flow.example.test/mcp".into(),
+            target: awaken_credential_vault::McpCredentialTarget::parse_http(
+                "https://flow.example.test/mcp",
+            )
+            .unwrap(),
+            idempotency_key: "flow-bearer-1".into(),
+            credential_generation: 1,
+            expires_at_unix_ms: None,
+            bearer: RedactedString::new("token-1"),
+        })
         .await
         .unwrap();
     assert_eq!(
@@ -362,14 +372,19 @@ async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() 
     );
     let (_, rotated_source, rotated_revision, rotated_adoption) = h
         .state
-        .enter_application_mcp_bearer(
-            "workspace-a",
-            "awaken-flow",
-            "https://flow.example.test/mcp",
-            "flow-bearer-2",
-            2,
-            RedactedString::new("token-2"),
-        )
+        .enter_application_mcp_bearer(awaken_credential_vault::ApplicationMcpBearerEntry {
+            workspace_id: "workspace-a".into(),
+            application_authority_id: "awaken-flow".into(),
+            mcp_server_url: "https://flow.example.test/mcp".into(),
+            target: awaken_credential_vault::McpCredentialTarget::parse_http(
+                "https://flow.example.test/mcp",
+            )
+            .unwrap(),
+            idempotency_key: "flow-bearer-2".into(),
+            credential_generation: 2,
+            expires_at_unix_ms: None,
+            bearer: RedactedString::new("token-2"),
+        })
         .await
         .unwrap();
     assert_eq!(rotated_source, source_id);

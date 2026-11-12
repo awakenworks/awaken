@@ -417,6 +417,16 @@ pub(super) async fn assemble(
             .with_reader_session(file_reader_session_id),
         ));
     run_context.resource_origin = resource_origin;
+    run_context.prepared_mcp = active_mcp
+        .iter()
+        .map(
+            |projection| awaken_runtime_contract::PreparedMcpAttachment {
+                name: projection.request.name.clone(),
+                target: projection.request.target.clone(),
+                credential: projection.request.credential.clone(),
+            },
+        )
+        .collect();
     run_context.request_context = host
         .installed_sessions
         .read(thread, |installed| installed.inputs.request_context.clone())?

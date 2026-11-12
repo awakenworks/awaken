@@ -94,7 +94,7 @@ fn acp_mcp_client_injection_profile_admits(
     );
     (installed.extension_consumers.contains_key(&consumer_id)
         && access
-            .admit(
+            .admit_for_preparation(
                 holder,
                 awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
                 installed,
@@ -172,34 +172,25 @@ impl From<McpCredentialRequirementError> for DispatchCredentialAdmissionError {
     }
 }
 
-/// The Session MCP credential requirements this claim must satisfy.
-///
-/// The typed requirements the Session published at admission are
-/// authoritative, and the runtime envelope is not read. A row written before
-/// they existed carries none; only then is its projection decoded in full
-/// exactly as before, and any decode or pairing failure rejects the claim.
-/// Remove this fallback once those rows have drained.
-fn session_mcp_credential_requirements(
-    request: &RunDispatch,
-) -> Result<std::borrow::Cow<'_, [McpCredentialRequirement]>, DispatchCredentialAdmissionError> {
-    if let Some(requirements) = &request.placement.session_mcp_credentials {
-        return Ok(std::borrow::Cow::Borrowed(requirements));
+impl From<crate::run_dispatch::SessionMcpRequirementProjectionError>
+    for DispatchCredentialAdmissionError
+{
+    fn from(error: crate::run_dispatch::SessionMcpRequirementProjectionError) -> Self {
+        match error {
+            crate::run_dispatch::SessionMcpRequirementProjectionError::Decode(message) => {
+                Self::InvalidSessionCredentialProjection(message)
+            }
+            crate::run_dispatch::SessionMcpRequirementProjectionError::Requirement(error) => {
+                error.into()
+            }
+        }
     }
-    let Some(envelope) = &request.session_runtime else {
-        return Ok(std::borrow::Cow::Borrowed(&[]));
-    };
-    let projection = awaken_session_configuration_contract::SessionRuntimeProjection::decode(
-        &envelope.projection_json,
-    )
-    .map_err(|error| {
-        DispatchCredentialAdmissionError::InvalidSessionCredentialProjection(error.to_string())
-    })?;
-    Ok(std::borrow::Cow::Owned(
-        projection.mcp_credential_requirements()?,
-    ))
 }
 
-/// Admit one typed requirement against the installed Worker evidence. A Worker
+/// Admit one frozen dependency for preparation against installed Worker
+/// evidence. Its source expiry is not an effect grant: canonical Session
+/// realization and the materializer must strictly admit the actual pin.
+/// A Worker
 /// holder is the legacy relay; a Workload holder is client injection, which
 /// every effective execution backend must be an ACP adapter able to inject the
 /// exact process-private field from one installed profile.
@@ -219,7 +210,7 @@ fn admit_session_mcp_requirement(
             Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder)
         }
         McpRequirementRoute::WorkerRelay => access
-            .admit(
+            .admit_for_preparation(
                 holder,
                 awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
                 installed,
@@ -246,7 +237,7 @@ fn admit_session_mcp_requirement(
                 return Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder);
             }
             access
-                .admit(
+                .admit_for_preparation(
                     holder,
                     awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
                     installed,
@@ -291,7 +282,7 @@ pub fn compile_attempt_credential_bindings(
         claim_epoch,
         now_unix_ms,
     )?;
-    let requirements = session_mcp_credential_requirements(request)?;
+    let requirements = request.session_mcp_credential_requirements()?;
     every_mcp_requirement_admitted(requirements.iter().map(|requirement| {
         admit_session_mcp_requirement(request, requirement, installed, now_unix_ms)
     }))?;

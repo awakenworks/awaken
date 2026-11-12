@@ -6,6 +6,65 @@ use super::*;
 use awaken_credential_contract::McpCredentialRequirement;
 use awaken_session_configuration_contract::SessionRuntimeProjection;
 
+#[test]
+fn validity_codec_demand_is_intrinsic_for_published_and_legacy_mcp_carriers() {
+    use awaken_worker_contract::{
+        Incompatibility, SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY as CAP, WorkerManifest,
+    };
+    let worker = holder(PlaintextBoundary::Worker, "worker-a");
+    for (expiry, generation) in [
+        (None, None),
+        (Some(10), None),
+        (None, Some(1)),
+        (Some(10), Some(1)),
+    ] {
+        let mut access = mcp_access(&worker, bearer("authorization", "Bearer"));
+        access.expires_at_unix_ms = expiry;
+        access.issuer_generation = generation;
+        let projection = session_projection(Some(access), Some(worker.clone()));
+        for published in [false, true] {
+            let request = if published {
+                admitted_request(&a_request(), &projection).unwrap()
+            } else {
+                legacy_request(&a_request(), &projection)
+            }
+            .with_worker_codec_requirements();
+            let needed = expiry.is_some() || generation.is_some();
+            assert_eq!(
+                request.placement.required_capabilities.contains(CAP),
+                needed
+            );
+            let mut old = WorkerManifest {
+                capabilities: request.placement.required_capabilities.clone(),
+                ..Default::default()
+            };
+            old.capabilities.remove(CAP);
+            assert_eq!(
+                request.worker_codec_admission(Some(&old)).is_ok(),
+                !needed,
+                "published={published}, expiry={expiry:?}, generation={generation:?}"
+            );
+            old.capabilities.insert(CAP.to_owned());
+            assert!(request.worker_codec_admission(Some(&old)).is_ok());
+            let mut stripped = request;
+            stripped.placement.required_capabilities.remove(CAP);
+            assert_eq!(
+                stripped.validate_worker_codec_requirements().is_ok(),
+                !needed,
+                "metadata cannot be hidden by stripping its published cap"
+            );
+        }
+    }
+    let malformed = a_request()
+        .with_session_runtime(crate::SessionRuntimeEnvelope::new("{"))
+        .with_worker_codec_requirements();
+    assert_eq!(
+        malformed.validate_worker_codec_requirements(),
+        Err(Incompatibility::InvalidSessionMcpProjection),
+        "invalid legacy payload is an explicit refusal, never an empty healthy requirement"
+    );
+}
+
 fn acp_mcp_capabilities(
     selected_holder: &PlaintextHolder,
     backend_ref: &str,
@@ -344,6 +403,34 @@ fn typed_requirement_check_matches_the_legacy_decode_for_every_fixture() {
         );
         assert_eq!(typed, legacy, "D1 {}", fixture.rule);
         assert_eq!(typed, fixture.expected, "D1 {}", fixture.rule);
+    }
+}
+
+#[test]
+fn expired_frozen_mcp_dependency_retains_the_same_preparation_shape_and_capability_checks() {
+    // Every original route/holder/backend/profile refusal remains exact even
+    // when a frozen source has expired. Only the later actual MCP effect may
+    // consume a reissued, strictly admitted current pin.
+    for mut fixture in fixtures() {
+        for stage in fixture.projection.mcp_stages.as_mut().unwrap() {
+            if let Some(access) = stage.credential.as_mut() {
+                access.expires_at_unix_ms = Some(1);
+            }
+        }
+        let typed = claim(
+            admitted_request(&fixture.base, &fixture.projection),
+            &fixture.installed,
+        );
+        let legacy = claim(
+            Ok(legacy_request(&fixture.base, &fixture.projection)),
+            &fixture.installed,
+        );
+        assert_eq!(
+            typed, fixture.expected,
+            "expired dependency {}",
+            fixture.rule
+        );
+        assert_eq!(legacy, typed, "legacy dependency {}", fixture.rule);
     }
 }
 

@@ -72,6 +72,85 @@ async fn call(
 }
 
 #[tokio::test]
+async fn application_bearer_http_expiry_is_committed_with_its_exact_material_revision() {
+    let credentials = Arc::new(InMemoryCredentialRepo::new());
+    let secrets = Arc::new(InMemorySecretStore::new());
+    let state = Arc::new(VaultState::new(
+        secrets.clone(),
+        credentials.clone(),
+        awaken_time::system_clock(),
+        None,
+    ));
+    let app = application_mcp_credentials_router(state);
+    // Far-future metadata keeps this transport test independent of wall time.
+    // Half-open expiry boundaries are exercised with the Vault's ManualClock.
+    let first_expiry = u64::MAX - 2;
+    let body = |generation, expiry| {
+        json!({
+            "application_authority_id": "expiring-application",
+            "mcp_server_url": "https://flow.example.test/mcp",
+            "credential_generation": generation,
+            "expires_at_unix_ms": expiry,
+            "token": format!("synthetic-expiring-material-{generation}") // awaken-allow(secret): deterministic fixture
+        })
+    };
+    let (status, first) = call(
+        &app,
+        "workspace-a",
+        Some("expiring-1"),
+        body(1, first_expiry),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let source_id = CredentialSourceId(first["credential_source_id"].as_str().unwrap().into());
+    let before = credentials.get(&source_id).await.unwrap();
+    assert_eq!(before.version, 1);
+    assert_eq!(
+        before.descriptor.as_ref().unwrap().expires_at_unix_ms,
+        Some(first_expiry)
+    );
+    let material = secrets.inventory().await.unwrap();
+    assert_eq!(
+        call(
+            &app,
+            "workspace-a",
+            Some("expiring-1"),
+            body(1, first_expiry + 1)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT,
+        "HTTP cannot extend one material generation"
+    );
+    assert_eq!(credentials.get(&source_id).await.unwrap(), before);
+    assert_eq!(secrets.inventory().await.unwrap(), material);
+    let (status, rotated) = call(
+        &app,
+        "workspace-a",
+        Some("expiring-2"),
+        body(2, first_expiry + 1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rotated["revision"], 2);
+    let after = credentials.get(&source_id).await.unwrap();
+    assert_eq!(
+        after.descriptor.as_ref().unwrap().expires_at_unix_ms,
+        Some(first_expiry + 1)
+    );
+    assert_ne!(after.material_ref, before.material_ref);
+    for invalid in [0, 1] {
+        assert_eq!(
+            call(&app, "workspace-a", Some("expiring-3"), body(3, invalid))
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(credentials.get(&source_id).await.unwrap(), after);
+    }
+}
+
+#[tokio::test]
 async fn application_bearer_replay_revalidates_acknowledged_delivery_without_rotation() {
     // Cause/effect graph: C1 a generation-2 event was exactly acknowledged;
     // C2 its target later reports Pending, unavailable, or Converged; C3 the

@@ -277,6 +277,16 @@ impl std::fmt::Debug for CredentialRealizationHandle {
     }
 }
 
+/// Secret-free observation of one MCP attachment already made Active by the
+/// Session owner. Application decorators may validate this exact pin; it is
+/// neither desired state nor permission to select or renew a credential.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedMcpAttachment {
+    pub name: String,
+    pub target: awaken_agent_contract::McpTarget,
+    pub credential: Option<awaken_agent_contract::credential::CredentialAccess>,
+}
+
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
     /// Process-local projection of the activation's frozen caller toolsets.
@@ -403,6 +413,10 @@ pub struct RuntimeRunContext {
     /// runtime's ordinary capability-bound merge, tool presentation, and
     /// execution path.
     pub session_plugins: Vec<Arc<dyn crate::plugin::Plugin>>,
+    /// Exact Active MCP inputs used to assemble this attempt's plugins or ACP
+    /// server configuration. Pending desired generations are never projected.
+    /// This process-local observation does not replace per-call authorization.
+    pub prepared_mcp: Vec<PreparedMcpAttachment>,
 }
 
 impl RuntimeRunContext {

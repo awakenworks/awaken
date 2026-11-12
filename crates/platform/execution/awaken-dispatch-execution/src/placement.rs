@@ -400,11 +400,23 @@ pub fn session_preparation_requirements(
         .attachments
         .iter()
         .any(|attachment| attachment.target.sandbox_stdio_target().is_some());
-    Ok(session_preparation_placement(
+    let mut requirements = session_preparation_placement(
         &baseline.environment,
         session.resources.active_generation().1,
         requires_opaque_process,
-    ))
+    );
+    if awaken_worker_contract::mcp_credentials_require_validity(
+        session
+            .mcp
+            .desired_attachments()
+            .into_iter()
+            .filter_map(|attachment| attachment.credential.as_ref()),
+    ) {
+        requirements
+            .required_capabilities
+            .insert(awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY.to_owned());
+    }
+    Ok(requirements)
 }
 
 #[cfg(test)]
@@ -570,5 +582,77 @@ mod preparation_tests {
         );
         assert!(trusted.sandbox.process_tree_supervision, "P2/E2");
         assert!(trusted.required_credentials.is_empty(), "P2/E3");
+        // The production frozen-root compiler adds validity support from the
+        // exact desired MCP access, independently of Model or Flow features.
+        let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
+            awaken_session_configuration_contract::SessionBaselineInputs {
+                environment: environment.clone(),
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
+                mcp_authoring: Default::default(),
+                agent_id: "agent".into(),
+                agent_revision: None,
+                model: "model".into(),
+                model_override: None,
+                runtime: None,
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            },
+        );
+        let holder = baseline
+            .environment
+            .credential_realization
+            .mcp_holder
+            .clone();
+        for (expiry, generation) in [
+            (None, None),
+            (Some(10), None),
+            (None, Some(1)),
+            (Some(10), Some(1)),
+        ] {
+            let mut access = awaken_agent_contract::credential::CredentialAccess::new(
+                awaken_agent_contract::credential::CredentialRef {
+                    id: "source".into(),
+                    revision: 1,
+                },
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+                awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
+                    holder.clone(),
+                    awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
+                ),
+            );
+            access.expires_at_unix_ms = expiry;
+            access.issuer_generation = generation;
+            let mcp = awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet::from_initial(
+                vec![awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                    name: "docs".into(), target: awaken_agent_contract::McpTarget::parse_http("https://docs.example.test").unwrap(),
+                    prompts_as_skills: false, credential: Some(access), origin: awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
+                }], Some(holder.clone())).unwrap();
+            let root = awaken_session_contract::PersistedSession::frozen_with_budget(
+                "generic-preparation",
+                baseline.clone(),
+                Default::default(),
+                mcp,
+                None,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            );
+            let required = session_preparation_requirements(&root).unwrap();
+            assert_eq!(
+                required
+                    .required_capabilities
+                    .contains(awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY),
+                expiry.is_some() || generation.is_some(),
+                "expiry={expiry:?} generation={generation:?}"
+            );
+        }
     }
 }

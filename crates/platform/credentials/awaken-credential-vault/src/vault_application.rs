@@ -68,14 +68,8 @@ pub enum VaultCommandError {
     Credential(#[from] crate::catalog::ManagedCredentialMutationError),
 }
 
-/// The normalized MCP endpoint an application bearer authorizes, computed by
-/// the caller from the server URL: the canonical audience and the stable
-/// normalized-target fingerprint that keys the credential identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct McpCredentialTarget {
-    pub audience: String,
-    pub fingerprint: String,
-}
+mod mcp_target;
+pub use mcp_target::McpCredentialTarget;
 
 /// One hosted application's request to create or rotate its stable MCP
 /// bearer.
@@ -87,6 +81,9 @@ pub struct ApplicationMcpBearerEntry {
     pub target: McpCredentialTarget,
     pub idempotency_key: String,
     pub credential_generation: u64,
+    /// Exact issuer expiry committed with this generation's material and source
+    /// revision. `None` retains unspecified validity for legacy applications.
+    pub expires_at_unix_ms: Option<u64>,
     pub bearer: RedactedString,
 }
 
@@ -203,11 +200,11 @@ impl VaultApplication {
     async fn reconcile_application_mcp_rollout(
         &self,
         event_id: Option<&str>,
-        workspace_id: &str,
         vault_id: &str,
         credential_id: &str,
-        source_id: &CredentialSourceId,
+        source: &CredentialSource,
         source_revision: u64,
+        explicit_target: Option<&dyn ManagedCredentialRolloutTarget>,
     ) -> Result<ManagedCredentialAdoptionProgress, CredentialError> {
         let Some(event_id) = event_id else {
             // Managed creation has no predecessor to replace and therefore no
@@ -220,10 +217,10 @@ impl VaultApplication {
             // never turn disappearance into a usable Session.
             return Ok(ManagedCredentialAdoptionProgress::Pending);
         };
-        if event.workspace_id != workspace_id
+        if event.workspace_id != source.workspace_id
             || event.vault_id != vault_id
             || event.credential_id != credential_id
-            || event.source_id != *source_id
+            || event.source_id != source.id
             || event.source_version != source_revision
             || event.operation != ManagedCredentialOperation::Update
         {
@@ -234,11 +231,11 @@ impl VaultApplication {
         // Persist the retry intent before any participant await. A cancelled
         // replay or a target that became unavailable remains supervisor-owned.
         self.repository.rearm_managed_rollout(&event).await?;
-        let Some(target) = self.rollout_target() else {
+        let service_target = self.rollout_target();
+        let Some(target) = explicit_target.or(service_target.as_deref()) else {
             return Ok(ManagedCredentialAdoptionProgress::Pending);
         };
-        reconcile_managed_credential_rollout(&event, self.repository.as_ref(), target.as_ref())
-            .await
+        reconcile_managed_credential_rollout(&event, self.repository.as_ref(), target).await
     }
 
     // ---- Application MCP bearer ----------------------------------------------
@@ -250,6 +247,26 @@ impl VaultApplication {
         &self,
         entry: ApplicationMcpBearerEntry,
     ) -> Result<ApplicationMcpBearerReceipt, CredentialError> {
+        self.enter_application_mcp_bearer_inner(entry, None).await
+    }
+
+    /// Commit through the same Managed mutation and deliver its exact rollout
+    /// through one caller-owned authority. The target is borrowed only for
+    /// this call; ordinary background delivery retains its service-owned target.
+    pub async fn enter_application_mcp_bearer_with_rollout_target(
+        &self,
+        entry: ApplicationMcpBearerEntry,
+        target: &dyn ManagedCredentialRolloutTarget,
+    ) -> Result<ApplicationMcpBearerReceipt, CredentialError> {
+        self.enter_application_mcp_bearer_inner(entry, Some(target))
+            .await
+    }
+
+    async fn enter_application_mcp_bearer_inner(
+        &self,
+        entry: ApplicationMcpBearerEntry,
+        explicit_target: Option<&dyn ManagedCredentialRolloutTarget>,
+    ) -> Result<ApplicationMcpBearerReceipt, CredentialError> {
         let ApplicationMcpBearerEntry {
             workspace_id,
             application_authority_id,
@@ -257,12 +274,13 @@ impl VaultApplication {
             target,
             idempotency_key,
             credential_generation,
+            expires_at_unix_ms,
             bearer,
         } = entry;
         let workspace_id = workspace_id.as_str();
+        let source_id = target.source_id(workspace_id, &application_authority_id);
         let target_fingerprint = target.fingerprint;
         let vault_id = application_mcp_vault_id(workspace_id, &application_authority_id);
-        let source_id = application_mcp_source_id(&vault_id, &target_fingerprint);
         let command_key_fingerprint = identity_digest(
             "application-mcp-command-key-v1",
             &[
@@ -277,7 +295,13 @@ impl VaultApplication {
             &command_key_fingerprint,
             credential_generation,
         )?;
-        let descriptor = mcp_bearer_descriptor(&target.audience);
+        let mut descriptor = mcp_bearer_descriptor(&target.audience);
+        descriptor.expires_at_unix_ms = expires_at_unix_ms;
+        let now_ms = self.clock_reading_ms()?;
+        descriptor
+            .validate()
+            .and_then(|()| descriptor.validate_expiry(now_ms))
+            .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
         let target_audience = target.audience;
         let now = self.clock_reading_rfc3339()?;
         self.repository
@@ -364,6 +388,7 @@ impl VaultApplication {
                     target_audience,
                     command_key_fingerprint,
                     credential_generation,
+                    expires_at_unix_ms,
                     bearer,
                 },
                 now,
@@ -376,11 +401,11 @@ impl VaultApplication {
         let adoption = self
             .reconcile_application_mcp_rollout(
                 rollout_id.as_deref(),
-                workspace_id,
                 &vault_id,
                 &credential_id,
-                &source.id,
+                &source,
                 revision,
+                explicit_target,
             )
             .await?;
         Ok(ApplicationMcpBearerReceipt {

@@ -25,6 +25,7 @@ use awaken_session_execution_contract::{
     FailSessionRealization, RenewSessionRealization, SessionContinuationReceipt,
     SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
     SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationEffectFailure,
+    SessionRealizationLeaseReceipt,
 };
 
 use super::SessionMutationError;
@@ -397,12 +398,9 @@ impl SessionRealizations {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionRealizationDriveError> {
-        let admission = self
-            .executable_projections
-            .refresh()
+        self.refresh_executable_admission()
             .await
-            .map_err(|error| SessionRealizationDriveError::Control(unavailable(error)))?;
-        admission
+            .map_err(SessionRealizationDriveError::Control)?
             .enter(|| self.realize_session_after_refresh(session_id))
             .await
     }

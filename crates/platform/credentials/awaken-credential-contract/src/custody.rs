@@ -87,7 +87,7 @@ pub fn credential_envelope_payload_fingerprint(
     selected_holder: &PlaintextHolder,
     binding: &CredentialMaterialBinding,
 ) -> String {
-    if let Some(target) = &access.target {
+    let authority = if let Some(target) = &access.target {
         awaken_agent_contract::stable_fingerprint(&(
             &access.credential,
             access.material_source,
@@ -109,7 +109,27 @@ pub fn credential_envelope_payload_fingerprint(
             selected_holder,
             binding,
         ))
-    }
+    };
+    // Preserve every legacy AAD byte when expiry was unspecified. A newly
+    // frozen expiry is part of the same exact revision's authenticated data.
+    let authority = access
+        .expires_at_unix_ms
+        .map_or(authority.clone(), |expiry| {
+            awaken_agent_contract::stable_fingerprint(&(
+                "credential-source-expiry-v1",
+                authority,
+                expiry,
+            ))
+        });
+    access
+        .issuer_generation
+        .map_or(authority.clone(), |generation| {
+            awaken_agent_contract::stable_fingerprint(&(
+                "credential-issuer-generation-v1",
+                authority,
+                generation,
+            ))
+        })
 }
 
 #[cfg(test)]

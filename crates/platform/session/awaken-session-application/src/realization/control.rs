@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::mutation::ROOT_CAS_ATTEMPTS;
+use awaken_session_application_contract::ExecutableProjectionAdmission;
 use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
 use std::sync::Arc;
 use tracing::Instrument as _;
@@ -731,6 +732,10 @@ impl SessionRealizations {
             if ready_fact.is_some() {
                 self.lifecycle.notify_fact();
             }
+            // A hot MCP publication can unblock an existing queued command
+            // while the Session is already Idle. This wake follows the root
+            // CAS and grants no new activity or realization authority.
+            self.lifecycle.request_reconciliation();
             self.realization_directive(
                 owner_scope,
                 &session,
@@ -935,10 +940,7 @@ impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
     async fn renew_session_realization(
         &self,
         command: RenewSessionRealization,
-    ) -> Result<
-        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
-        SessionRealizationControlFailure,
-    > {
+    ) -> Result<SessionRealizationLeaseReceipt, SessionRealizationControlFailure> {
         // Lease-only renewal performs no executable refresh. Reuse its public
         // entry so local and remote callers share one receipt-publication rule.
         self.0.renew_session_realization(command).await
@@ -947,17 +949,22 @@ impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
 
 #[async_trait::async_trait]
 impl SessionRealizationControl for SessionRealizations {
+    async fn begin_claimed_session_realization(
+        &self,
+        context: &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+        command: BeginSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        context.verify_session_at(command.session_id.as_str(), self.clock.now_ms())?;
+        self.begin_session_realization(command).await
+    }
+
     async fn begin_session_realization(
         &self,
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         validate_target(&command, self.clock.now_ms())?;
-        let admission = self
-            .executable_projections
-            .refresh()
-            .await
-            .map_err(unavailable)?;
-        admission
+        self.refresh_executable_admission()
+            .await?
             .enter(|| self.begin_session_realization_after_refresh(command))
             .await
     }
@@ -965,11 +972,8 @@ impl SessionRealizationControl for SessionRealizations {
     async fn renew_session_realization(
         &self,
         command: RenewSessionRealization,
-    ) -> Result<
-        awaken_session_execution_contract::SessionRealizationLeaseReceipt,
-        SessionRealizationControlFailure,
-    > {
-        awaken_session_execution_contract::SessionRealizationLeaseReceipt::issued_at(
+    ) -> Result<SessionRealizationLeaseReceipt, SessionRealizationControlFailure> {
+        SessionRealizationLeaseReceipt::issued_at(
             self.renew_session_realization_after_load(command).await?,
             self.clock.now_ms(),
         )
@@ -979,12 +983,8 @@ impl SessionRealizationControl for SessionRealizations {
         &self,
         command: ActivateSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        let admission = self
-            .executable_projections
-            .refresh()
-            .await
-            .map_err(unavailable)?;
-        admission
+        self.refresh_executable_admission()
+            .await?
             .enter(|| self.activate_session_realization_after_refresh(command))
             .await
     }
@@ -993,12 +993,8 @@ impl SessionRealizationControl for SessionRealizations {
         &self,
         command: AcknowledgeSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        let admission = self
-            .executable_projections
-            .refresh()
-            .await
-            .map_err(unavailable)?;
-        admission
+        self.refresh_executable_admission()
+            .await?
             .enter(|| self.acknowledge_session_realization_after_refresh(command))
             .await
     }
@@ -1008,6 +1004,19 @@ impl SessionRealizationControl for SessionRealizations {
         command: FailSessionRealization,
     ) -> Result<(), SessionRealizationControlFailure> {
         self.fail_session_realization_after_refresh(command).await
+    }
+}
+
+impl SessionRealizations {
+    /// The same ordered executable-projection gate precedes begin, activate
+    /// and acknowledge. Lease-only renewal deliberately does not refresh it.
+    pub(super) async fn refresh_executable_admission(
+        &self,
+    ) -> Result<ExecutableProjectionAdmission, SessionRealizationControlFailure> {
+        self.executable_projections
+            .refresh()
+            .await
+            .map_err(unavailable)
     }
 }
 
@@ -1026,12 +1035,8 @@ impl awaken_session_execution_contract::SessionPreparationControl for SessionRea
                 "initial Session preparation cannot reassign a live lease".into(),
             ));
         }
-        let admission = self
-            .executable_projections
-            .refresh()
-            .await
-            .map_err(unavailable)?;
-        admission
+        self.refresh_executable_admission()
+            .await?
             .enter(|| async {
                 let Some(worker) = self
                     .execution_admission

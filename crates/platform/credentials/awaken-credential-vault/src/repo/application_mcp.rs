@@ -23,6 +23,10 @@ use super::{
 };
 use crate::{CredentialError, CredentialKind, CredentialSource, CredentialStatus, SecretStore};
 
+#[cfg(test)]
+#[path = "application_mcp/expiry_tests.rs"]
+mod expiry_tests;
+
 /// Provider marker for one hosted application's static MCP bearer.
 pub const APPLICATION_MCP_PROVIDER_ID: &str = "awaken.application-mcp.static-bearer/v1";
 
@@ -36,6 +40,8 @@ pub struct ApplicationMcpBearerCommand {
     pub command_key_fingerprint: String,
     /// Caller-owned positive monotonic order; never an Awaken-side counter.
     pub credential_generation: u64,
+    /// Exact issuer expiry; changing it requires a newer material generation.
+    pub expires_at_unix_ms: Option<u64>,
     pub bearer: RedactedString,
 }
 
@@ -106,6 +112,7 @@ fn validate_command(command: &ApplicationMcpBearerCommand) -> Result<(), Credent
         || command.target_audience.trim().is_empty()
         || command.command_key_fingerprint.trim().is_empty()
         || command.credential_generation == 0
+        || command.expires_at_unix_ms == Some(0)
         || command.bearer.is_empty()
     {
         return Err(CredentialError::InvalidSource(
@@ -120,7 +127,7 @@ fn expected_source(
     command: &ApplicationMcpBearerCommand,
     material_ref: crate::SecretRef,
 ) -> CredentialSource {
-    let descriptor = CredentialDescriptor::new(
+    let mut descriptor = CredentialDescriptor::new(
         command.target_audience.clone(),
         CredentialMaterialDescriptor::secret(OPAQUE_SECRET_MATERIAL_TYPE),
         [CredentialTargetContract::new(
@@ -134,6 +141,7 @@ fn expected_source(
             },
         )],
     );
+    descriptor.expires_at_unix_ms = command.expires_at_unix_ms;
     CredentialSource {
         id: command.source_id.clone(),
         replacement_of: None,
@@ -196,6 +204,7 @@ pub(crate) async fn prepare_application_mcp_bearer_rotation_with_receipt_recover
         store,
     )
     .await?;
+    validate_replay_expiry(current, &expected, exact_replay)?;
     if exact_replay && current.descriptor.is_some() && !missing_receipt {
         return Ok(None);
     }
@@ -234,6 +243,12 @@ pub async fn enter_or_rotate_application_mcp_bearer(
         command.credential_generation,
     )?;
     let expected = expected_source(&command, material_ref.clone());
+    expected
+        .descriptor
+        .as_ref()
+        .expect("application MCP source is described")
+        .validate_expiry(super::credential_material_now_unix_ms(clock)?)
+        .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
     let ApplicationMcpBearerCommand {
         source_id,
         command_key_fingerprint,
@@ -269,7 +284,7 @@ pub async fn enter_or_rotate_application_mcp_bearer(
 
     validate_source(&current, &expected)?;
     if current.descriptor.is_none() {
-        current_command_is_replay(
+        let exact_replay = current_command_is_replay(
             &current,
             &command_key_fingerprint,
             credential_generation,
@@ -277,6 +292,7 @@ pub async fn enter_or_rotate_application_mcp_bearer(
             store,
         )
         .await?;
+        validate_replay_expiry(&current, &expected, exact_replay)?;
         return migrate_legacy_provider_to_descriptor_exact(
             LegacyProviderDescriptorMigration::new(
                 &source_id,
@@ -294,15 +310,16 @@ pub async fn enter_or_rotate_application_mcp_bearer(
         )
         .await;
     }
-    if current_command_is_replay(
+    let exact_replay = current_command_is_replay(
         &current,
         &command_key_fingerprint,
         credential_generation,
         &bearer,
         store,
     )
-    .await?
-    {
+    .await?;
+    validate_replay_expiry(&current, &expected, exact_replay)?;
+    if exact_replay {
         return Ok(current);
     }
 
@@ -327,8 +344,18 @@ fn validate_source(
     actual: &CredentialSource,
     expected: &CredentialSource,
 ) -> Result<(), CredentialError> {
-    let authority_matches = (actual.descriptor == expected.descriptor
-        && actual.provider_id.is_none())
+    // Expiry belongs to the material generation. Only its immutable
+    // provider/material/target contract is compared here; replay separately
+    // requires the exact expiry, and a newer generation uses the normal WAL.
+    let authority_matches = (actual.descriptor.as_ref().is_some_and(|descriptor| {
+        same_descriptor_contract(
+            descriptor,
+            expected
+                .descriptor
+                .as_ref()
+                .expect("application MCP source is described"),
+        ) && descriptor.validate().is_ok()
+    }) && actual.provider_id.is_none())
         || (actual.descriptor.is_none()
             && actual.provider_id.as_deref() == Some(APPLICATION_MCP_PROVIDER_ID));
     if actual.id != expected.id
@@ -348,6 +375,65 @@ fn validate_source(
             "application MCP credential identity conflicts with existing source {}",
             actual.id.0
         )));
+    }
+    Ok(())
+}
+
+fn same_descriptor_contract(
+    actual: &CredentialDescriptor,
+    expected: &CredentialDescriptor,
+) -> bool {
+    let mut actual = actual.clone();
+    actual.expires_at_unix_ms = None;
+    let mut expected = expected.clone();
+    expected.expires_at_unix_ms = None;
+    actual == expected
+}
+
+/// The durable Managed validator admits only application-issued validity on a
+/// newer primary material generation. All other descriptor axes stay immutable;
+/// the caller still owns Update, source/child revision and material-fence checks.
+pub(super) fn application_mcp_validity_rotation_allowed(
+    before: &CredentialSource,
+    after: &CredentialSource,
+) -> bool {
+    let (Some(before_descriptor), Some(after_descriptor)) = (&before.descriptor, &after.descriptor)
+    else {
+        return false;
+    };
+    if !same_descriptor_contract(before_descriptor, after_descriptor)
+        || before.material_ref.is_none()
+        || after.material_ref.is_none()
+        || before.material_ref == after.material_ref
+    {
+        return false;
+    }
+    match (material_identity(before), material_identity(after)) {
+        (Ok((_, before_generation)), Ok((_, after_generation))) => {
+            after_generation > before_generation
+        }
+        _ => false,
+    }
+}
+
+fn validate_replay_expiry(
+    actual: &CredentialSource,
+    expected: &CredentialSource,
+    exact_replay: bool,
+) -> Result<(), CredentialError> {
+    if exact_replay
+        && actual
+            .descriptor
+            .as_ref()
+            .and_then(|descriptor| descriptor.expires_at_unix_ms)
+            != expected
+                .descriptor
+                .as_ref()
+                .and_then(|descriptor| descriptor.expires_at_unix_ms)
+    {
+        return Err(CredentialError::MutationConflict(
+            "application MCP expiry cannot change within one material generation".into(),
+        ));
     }
     Ok(())
 }
@@ -446,6 +532,25 @@ fn material_identity(source: &CredentialSource) -> Result<(&str, u64), Credentia
     Ok((command_identity, credential_generation))
 }
 
+/// Project application-issued metadata through the one material identity
+/// parser. Ordinary material locators have no issuer generation; legacy
+/// application locators without a positive generation remain unknown.
+pub(crate) fn application_mcp_issuer_generation(
+    source: &CredentialSource,
+) -> Result<Option<u64>, CredentialError> {
+    let prefix = format!("sec:{}:application-mcp:", source.id.0);
+    let application = source.provider_id.as_deref() == Some(APPLICATION_MCP_PROVIDER_ID)
+        || source
+            .material_ref
+            .as_ref()
+            .is_some_and(|reference| reference.0.starts_with(&prefix));
+    if !application {
+        return Ok(None);
+    }
+    let (_, generation) = material_identity(source)?;
+    Ok((generation > 0).then_some(generation))
+}
+
 async fn verify_material(
     source: &CredentialSource,
     command_key_fingerprint: &str,
@@ -503,6 +608,7 @@ mod tests {
             },
             idempotency_key: format!("lease-{generation}"),
             credential_generation: generation,
+            expires_at_unix_ms: None,
             bearer: RedactedString::new(token),
         };
         let first = app
@@ -602,6 +708,7 @@ mod tests {
             target_audience: "https://mcp.example.test/mcp".into(),
             command_key_fingerprint: "command-fingerprint".into(),
             credential_generation: 1,
+            expires_at_unix_ms: None,
             bearer: RedactedString::new("bearer"),
         };
         let material_ref = application_mcp_material_ref(

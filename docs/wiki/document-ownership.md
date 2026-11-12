@@ -178,6 +178,7 @@ Source documents own behavior. Wiki pages own retrieval facts only.
 | [adr/0103-session-execution-product-gap-closure-2.md](../adr/0103-session-execution-product-gap-closure-2.md) | running budget tightening, Stop receipts, classified adapter faults and cross-base realization takeover | [index.md](index.md) |
 | [adr/0104-memory-copy-reconciliation-adopts-identical-heads.md](../adr/0104-memory-copy-reconciliation-adopts-identical-heads.md) | Memory Copy replay adopts an identical durable head and refuses a lost Copy directory | [index.md](index.md) |
 | [adr/0105-native-private-session-ownership.md](../adr/0105-native-private-session-ownership.md) | immutable native private Session ownership and trusted current access | [index.md](index.md) |
+| [adr/0106-claimed-mcp-credential-preparation.md](../adr/0106-claimed-mcp-credential-preparation.md) | exact MCP credential validity and claimed preparation before physical Run admission | [index.md](index.md) |
 | [INVARIANTS.md](../INVARIANTS.md) | guardrail registry and DDD review checklist | all fact pages |
 
 ## Cross-Theme Anchors

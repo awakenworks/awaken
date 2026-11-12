@@ -1212,3 +1212,15 @@ co-located deployments keep their provider fingerprint. The broker and ledger
 compare Worker identity with the Worker namespace, not with the Sandbox namespace. Every original identity, UID,
 Registry, ticket-CAS and exact-target check remains required; no namespace is
 discovered from an untrusted request and no second Create authority is added.
+
+## Hot MCP publication readiness wake (2026-11-13)
+
+An ACK that commits a replacement MCP generation can make an already Idle
+Session eligible for its queued input. After that root CAS, the existing
+`SessionRealizations` ACK owner wakes `SessionLifecycle`'s durable-work
+reconciler even when no initial-ready lifecycle fact was created. The ordinary
+activity/Dispatch authorities still decide admission; the hint creates neither
+an activity nor a second realization driver. A mismatched or failed ACK emits
+no hint, and an exact ACK replay remains write-, fact- and wake-idempotent.
+The existing idle-preparation decision table and registered-Worker inline-Agent
+multi-Run regression enforce both liveness and the unchanged authority fences.
