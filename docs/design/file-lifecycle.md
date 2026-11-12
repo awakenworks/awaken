@@ -49,6 +49,18 @@ the copy may be edited, but it has no write-back path to the immutable FileStore
 object. Text conversion is forbidden. Edited bytes become a new File or Artifact
 only through an explicit publish; the original blob is never overwritten.
 
+The object adapter commits with the provider's atomic create operation. Its S3
+adapter recognizes official OSS S3 HTTPS endpoints and configures the existing
+SDK's virtual-host addressing and forbid-overwrite conditional-copy support.
+Any deployment whose SDK configuration disables conditional PUT must configure
+conditional copy instead: upload a uniquely named object inside the allocation's
+`.staging` prefix, copy it to the content key only if absent, then delete the
+temporary object. The conditional copy is the sole commit point. Replays verify
+the existing content; corruption is never overwritten. Copy or cleanup failures
+remain indeterminate and retryable. Temporary objects are not Files and are
+excluded from File listing; an interrupted process can leave uncommitted staging
+objects for provider retention cleanup.
+
 ### Release and reclaim
 
 Session release deletes only the sandbox copy. Logical File deletion revokes a

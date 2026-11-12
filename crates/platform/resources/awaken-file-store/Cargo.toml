@@ -38,6 +38,7 @@ awaken-sqlite-pool = { workspace = true, optional = true }
 awaken-sql-storage.workspace = true
 object_store = { version = "0.14", features = ["aws", "gcp"], optional = true }
 futures = { version = "0.3", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
 
 [features]
 # Process-local File authority used only by unit/integration/scenario fixtures.
@@ -48,7 +49,7 @@ postgres = ["dep:sqlx", "dep:awaken-scoped-migration", "awaken-sql-storage/postg
 # SQLite BLOB backend (`sqlite::SqliteFileStore`) over the same `file_store` scope.
 sqlite = ["dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sqlite-pool"]
 # Object-store backend (S3-compatible/GCS via `object_store`; key = content id).
-object-store = ["dep:object_store", "dep:futures"]
+object-store = ["dep:object_store", "dep:futures", "dep:uuid"]
 
 [dev-dependencies]
 proptest.workspace = true
