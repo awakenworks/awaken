@@ -629,3 +629,97 @@ async fn assert_registration_history(
         }
     }
 }
+
+#[tokio::test]
+async fn postgres_dependency_reads_do_not_borrow_the_authority_pool() {
+    // P1 one authority slot is held by the exact Registry guard; its three
+    // observation ports still see committed truth through one read slot. P2
+    // the transferred guard resource retains the original authority pool. P3
+    // an unavailable read pool remains an error and guard release restores the
+    // authority slot, allowing a Registry mutation without a read fallback.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let options = awaken_sql_storage::postgres_pool_options()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_millis(100));
+    let authority = options.clone().connect(&url).await.unwrap();
+    let reads = options
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(&url)
+        .await
+        .unwrap();
+    let directory = PostgresWorkerDirectory::with_read_pool(authority.clone(), reads.clone())
+        .await
+        .unwrap();
+    let directory =
+        PostgresWorkerDirectory::with_existing_read_pool(directory.pool(), reads.clone())
+            .await
+            .unwrap();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let worker_id = format!("dependency-reads-{nonce}");
+    let registered = directory
+        .register(registration(&worker_id, "boot"), 100, 50)
+        .await
+        .unwrap();
+    let identity = &registered.snapshot.identity;
+    let mut guard = directory.lock_incarnation(identity).await.unwrap().unwrap();
+    let (list, current, incarnation) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                directory.list(),
+                directory.current(&worker_id),
+                directory.incarnation(identity)
+            )
+        })
+        .await
+        .expect("P1 dependent observations cannot wait for their own authority slot");
+    assert!(list.unwrap().contains(&registered), "P1 roster");
+    assert_eq!(current.unwrap(), Some(registered.clone()), "P1 current");
+    assert_eq!(
+        incarnation.unwrap(),
+        Some(registered.clone()),
+        "P1 exact incarnation"
+    );
+    let (tx, original_pool) = guard
+        .take_resource::<(sqlx::Transaction<'static, sqlx::Postgres>, sqlx::PgPool)>()
+        .expect("P2 original Registry admission resource");
+    assert!(
+        Arc::ptr_eq(
+            &original_pool.connect_options(),
+            &authority.connect_options()
+        ),
+        "P2 authority provenance"
+    );
+    assert!(
+        !Arc::ptr_eq(&original_pool.connect_options(), &reads.connect_options()),
+        "P2 independent read quota"
+    );
+    tx.rollback().await.unwrap();
+    guard.release().await.unwrap();
+
+    let guard = directory.lock_incarnation(identity).await.unwrap().unwrap();
+    reads.close().await;
+    assert!(
+        directory.list().await.is_err(),
+        "P3 roster read fails closed"
+    );
+    assert!(
+        directory.current(&worker_id).await.is_err(),
+        "P3 current read fails closed"
+    );
+    assert!(
+        directory.incarnation(identity).await.is_err(),
+        "P3 exact read fails closed"
+    );
+    guard.release().await.unwrap();
+    assert_eq!(
+        directory.deregister(identity).await.unwrap(),
+        RegistryMutation::Applied,
+        "P3 authority mutation after read failure"
+    );
+    authority.close().await;
+}

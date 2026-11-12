@@ -8,16 +8,18 @@
 //! process globals; Local startup may migrate and connect; Server startup only
 //! verifies ledgers before connecting.
 
+use super::postgres_pools::{database_url, open_postgres_pools, postgres_components};
 use super::runtime_authority::SchemaAccess;
 use super::worker_registry::WorkerDirectoryHandle;
-use awaken_deployment_config::{CoordinatorStorage, DispatchBackend, StoreKind};
+use awaken_deployment_config::CoordinatorStorage;
 
 #[derive(Clone)]
 pub struct CoordinatorPersistence {
     pub worker_directory: WorkerDirectoryHandle,
     pub runtime_authority: std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
-    /// Process-owned PostgreSQL pool shared by every hosted adapter that reads
-    /// the Coordinator database. `None` is the explicit non-PostgreSQL case.
+    /// Process-owned PostgreSQL authority pool shared by guarded writes and
+    /// hosted adapters. Dependency reads use a separate bounded pool selected
+    /// at startup. `None` is the explicit non-PostgreSQL case.
     pub postgres_pool: Option<sqlx::PgPool>,
     /// Authoritative committed-run recovery view. Hosted compositions reuse
     /// this handle instead of opening a second commit projection.
@@ -28,41 +30,6 @@ pub struct CoordinatorPersistence {
     pub run_lifecycle: Option<
         std::sync::Arc<dyn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed>,
     >,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PostgresComponents {
-    dispatch: bool,
-    commit: bool,
-}
-
-impl PostgresComponents {
-    fn requires_process_pool(self) -> bool {
-        self.dispatch || self.commit
-    }
-
-    fn exposes_committed_run_feeds(self) -> bool {
-        self.commit
-    }
-}
-
-fn postgres_components(storage: &CoordinatorStorage) -> PostgresComponents {
-    PostgresComponents {
-        dispatch: storage.dispatch_backend == DispatchBackend::Postgres,
-        commit: storage.store == StoreKind::Postgres,
-    }
-}
-
-fn database_url(storage: &CoordinatorStorage) -> Result<Option<&str>, String> {
-    let components = postgres_components(storage);
-    if !components.dispatch && !components.commit {
-        return Ok(None);
-    }
-    storage
-        .database_url
-        .as_deref()
-        .map(Some)
-        .ok_or_else(|| "a Postgres Coordinator store requires runtime.database_url".to_string())
 }
 
 /// Apply every configured Coordinator-owned Postgres bundle without starting
@@ -90,7 +57,7 @@ pub async fn migrate_postgres_schema_with_pool(
     }
     let components = postgres_components(storage);
     if components.dispatch {
-        super::worker_registry::open_postgres_pool(pool.clone(), false).await?;
+        super::worker_registry::open_postgres_pools(pool.clone(), pool.clone(), false).await?;
     }
     super::runtime_authority::migrate_with_pool(storage, pool).await
 }
@@ -137,26 +104,13 @@ async fn open_with(
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
     let components = postgres_components(storage);
-    let database_url = database_url(storage)?;
-    let postgres_pool = if components.requires_process_pool() {
-        let url = database_url.expect("Postgres Coordinator components require database URL");
-        Some(
-            awaken_sql_storage::postgres_pool_options()
-                .max_connections(storage.postgres_max_connections.get())
-                .connect(url)
-                .await
-                .map_err(|error| {
-                    format!("connect process-owned Coordinator Postgres pool: {error}")
-                })?,
-        )
-    } else {
-        None
-    };
+    let (postgres_pool, postgres_read_pool) = open_postgres_pools(storage).await?;
     let runtime_authority =
-        super::runtime_authority::DurableRuntimeAuthority::open_with_postgres_pool(
+        super::runtime_authority::DurableRuntimeAuthority::open_with_postgres_pools(
             storage,
             schema,
             postgres_pool.clone(),
+            postgres_read_pool.clone(),
             clock,
         )
         .await?;
@@ -168,10 +122,11 @@ async fn open_with(
         components.exposes_committed_run_feeds()
     );
     let worker_directory = if components.dispatch {
-        super::worker_registry::open_postgres_pool(
+        super::worker_registry::open_postgres_pools(
             postgres_pool
                 .clone()
                 .expect("Postgres dispatch opened the process pool"),
+            postgres_read_pool.expect("Postgres dispatch opened the dependency read pool"),
             matches!(schema, SchemaAccess::Verify),
         )
         .await?
@@ -193,7 +148,9 @@ async fn open_with(
 
 #[cfg(test)]
 mod tests {
+    use super::super::postgres_pools::PostgresComponents;
     use super::*;
+    use awaken_deployment_config::{DispatchBackend, StoreKind};
     use awaken_worker_registry::WorkerRegistration;
 
     use crate::runtime_authority::tests::test_storage;
@@ -202,10 +159,11 @@ mod tests {
     fn backend_selection_maps_to_one_coordinator_schema_manifest() {
         // Cause/effect decision table:
         // Cause/effect graph: C1 dispatch uses Postgres; C2 commit uses
-        // Postgres. Either cause requires E1 exactly one process pool; neither
-        // cause yields E0 no pool. Dispatch, commit, checkpoint/wake and Worker
-        // registry clone that handle, so failover reconnect and backpressure do
-        // not multiply by adapter count.
+        // Postgres. Either cause requires E1 one authority pool plus one
+        // dependency-read pool; neither cause yields E0 no pool. Dispatch,
+        // commit writes, checkpoint/wake and Worker registry writes clone the
+        // authority handle. Registry/commit observations share the read pool,
+        // so held authority transactions cannot exhaust their own read quota.
         //
         // E2 is the hosted committed-run read pair, which exists exactly when
         // C2 does; hosted compositions receive E1/E2 from PreparedProcess and
@@ -214,9 +172,9 @@ mod tests {
         // | Rule | C1 dispatch | C2 commit | Pool effect | Feed effect |
         // |---|---|---|---|---|
         // | R1 | no | no | E0 none | E0 none |
-        // | R2 | yes | no | E1 one | E0 none |
-        // | R3 | no | yes | E1 one | E2 pair |
-        // | R4 | yes | yes | E1 one | E2 pair |
+        // | R2 | yes | no | E1 pair | E0 none |
+        // | R3 | no | yes | E1 pair | E2 pair |
+        // | R4 | yes | yes | E1 pair | E2 pair |
         let mut storage = test_storage();
         assert_eq!(
             postgres_components(&storage),

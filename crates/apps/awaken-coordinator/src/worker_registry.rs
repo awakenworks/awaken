@@ -25,14 +25,15 @@ pub(crate) async fn open_sqlite(storage_dir: &Path) -> Result<WorkerDirectoryHan
         .map_err(|error| format!("open Worker registry {}: {error}", path.display()))
 }
 
-pub(crate) async fn open_postgres_pool(
+pub(crate) async fn open_postgres_pools(
     pool: sqlx::PgPool,
+    read_pool: sqlx::PgPool,
     verify_only: bool,
 ) -> Result<WorkerDirectoryHandle, String> {
     let directory = if verify_only {
-        PostgresWorkerDirectory::with_existing_pool(pool).await
+        PostgresWorkerDirectory::with_existing_read_pool(pool, read_pool).await
     } else {
-        PostgresWorkerDirectory::with_pool(pool).await
+        PostgresWorkerDirectory::with_read_pool(pool, read_pool).await
     };
     directory
         .map(|directory| Arc::new(directory) as WorkerDirectoryHandle)

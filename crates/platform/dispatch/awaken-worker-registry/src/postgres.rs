@@ -51,6 +51,7 @@ async fn selected_bundles(
 
 pub struct PostgresWorkerDirectory {
     pool: PgPool,
+    read_pool: PgPool,
 }
 
 enum Mutation {
@@ -93,6 +94,14 @@ impl PostgresWorkerDirectory {
     }
 
     pub async fn with_pool(pool: PgPool) -> Result<Self, RegistryError> {
+        Self::with_read_pool(pool.clone(), pool).await
+    }
+
+    /// Keep Registry mutations and admission guards on `pool`, while dependent
+    /// observations use `read_pool`. Both bounded pools must select the same
+    /// PostgreSQL primary and schema through the same connection configuration.
+    /// A separate pool instance keeps reads available while guards retain slots.
+    pub async fn with_read_pool(pool: PgPool, read_pool: PgPool) -> Result<Self, RegistryError> {
         let (published, converged) = selected_bundles(&pool).await?;
         let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
             pool.clone(),
@@ -101,11 +110,20 @@ impl PostgresWorkerDirectory {
         .map_err(persist)?;
         runner.run_bundle(&published).await.map_err(persist)?;
         runner.run_bundle(&converged).await.map_err(persist)?;
-        Ok(Self { pool })
+        Ok(Self { pool, read_pool })
     }
 
     /// Wrap a shared pool after verifying its externally-owned migration ledger.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, RegistryError> {
+        Self::with_existing_read_pool(pool.clone(), pool).await
+    }
+
+    /// Select a separate bounded observation pool after externally applied
+    /// migrations. Both pools must address the same primary and schema.
+    pub async fn with_existing_read_pool(
+        pool: PgPool,
+        read_pool: PgPool,
+    ) -> Result<Self, RegistryError> {
         let (published, converged) = selected_bundles(&pool).await?;
         let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
             pool.clone(),
@@ -114,9 +132,10 @@ impl PostgresWorkerDirectory {
         .map_err(persist)?;
         runner.verify_bundle(&published).await.map_err(persist)?;
         runner.verify_bundle(&converged).await.map_err(persist)?;
-        Ok(Self { pool })
+        Ok(Self { pool, read_pool })
     }
 
+    /// The original authority pool used by mutations and incarnation guards.
     #[must_use]
     pub fn pool(&self) -> PgPool {
         self.pool.clone()
@@ -298,7 +317,7 @@ fn persist(error: impl std::fmt::Display) -> RegistryError {
 impl WorkerObservationSource for PostgresWorkerDirectory {
     async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
         let rows = sqlx::query(current_workers_query())
-            .fetch_all(&self.pool)
+            .fetch_all(&self.read_pool)
             .await
             .map_err(persist)?;
         rows.into_iter()
@@ -315,7 +334,7 @@ impl awaken_worker_contract::WorkerCurrentSource for PostgresWorkerDirectory {
             "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 ORDER BY generation DESC LIMIT 1"
         )))
         .bind(worker_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read_pool)
         .await
         .map_err(persist)?;
         row.map(|row| decode(encoded_row(&row))).transpose()
@@ -328,7 +347,7 @@ impl awaken_worker_contract::WorkerIncarnationSource for PostgresWorkerDirectory
         &self,
         identity: &WorkerIdentity,
     ) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let mut conn = self.pool.acquire().await.map_err(persist)?;
+        let mut conn = self.read_pool.acquire().await.map_err(persist)?;
         Self::read_incarnation(&mut conn, identity, false).await
     }
 }

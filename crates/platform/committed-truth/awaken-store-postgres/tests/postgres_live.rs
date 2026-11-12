@@ -2413,3 +2413,197 @@ async fn conditional_recovery_uses_thread_head_and_reloads_after_a_peer_commit()
     assert_eq!(snapshot.messages.len(), 2);
     assert_eq!(snapshot.message_commit_cursors.len(), 2);
 }
+
+#[tokio::test]
+async fn dependency_reads_survive_an_exhausted_authority_pool() {
+    use awaken_agent_contract::thread::read::recovery::LoadedRunRecovery;
+    use awaken_agent_contract::thread::read::transcript::{
+        TranscriptPageRequest, TranscriptSeekRequest, TranscriptView,
+    };
+    // P1 one authority transaction occupies the sole write slot; cold recovery,
+    // prefix reuse, transcript and event queries use the independent read slot.
+    // P2 an execution view preserves both selections. P3 read failure remains
+    // unavailable, while release and a subsequent commit still use authority.
+    let schema = "t_pg_dependency_reads";
+    let Some(fixture) = schema_pool(schema).await else {
+        return;
+    };
+    fixture.close().await;
+    let options = awaken_sql_storage::postgres_pool_options()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_millis(100));
+    let url = database_url_in_schema(schema);
+    let authority = options.clone().connect(&url).await.unwrap();
+    let reads = options
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(&url)
+        .await
+        .unwrap();
+    let store = PostgresCommitCoordinator::with_read_pool(authority.clone(), reads.clone())
+        .await
+        .unwrap();
+    let thread = ThreadId("thread-1".into());
+    let run = RunId("pool-awaiting".into());
+    let messages = vec![
+        message("pool-first", "first"),
+        message("pool-second", "second"),
+    ];
+    let commit = ThreadCommit::assemble(
+        thread.clone(),
+        awaiting_disposition(&run.0),
+        true,
+        messages.clone(),
+        vec![StateCommand::set(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            "pool",
+            serde_json::json!(true),
+        )],
+        Vec::new(),
+    );
+    let expected_events = commit.events.clone();
+    store.commit(commit).await.unwrap();
+    let cold = PostgresCommitCoordinator::with_existing_read_pool(authority.clone(), reads.clone())
+        .await
+        .unwrap();
+    let held = authority.begin().await.unwrap();
+    let view = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        assert!(cold.authoritative_thread_exists(&thread).await.unwrap());
+        assert!(cold.authoritative_run_record(&run).await.unwrap().is_some());
+        assert_eq!(
+            cold.authoritative_latest_run_record(&thread)
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            run
+        );
+        assert!(
+            cold.authoritative_open_wait_for_thread(&thread)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            cold.authoritative_committed_messages(&thread)
+                .await
+                .unwrap(),
+            messages
+        );
+        assert_eq!(
+            cold.authoritative_committed_state(&thread)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let page = cold
+            .authoritative_transcript_page(&TranscriptPageRequest {
+                thread_id: thread.clone(),
+                view: TranscriptView::RawCommitted,
+                snapshot: None,
+                start: 0,
+                limit: std::num::NonZeroUsize::new(1).unwrap(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.messages, messages[..1]);
+        let LoadedRunRecovery::Full {
+            prefix: Some(prefix),
+            snapshot,
+        } = cold
+            .load_recovery(&thread, &thread, &run, None)
+            .await
+            .unwrap()
+        else {
+            panic!("P1 cold recovery must issue the exact prefix")
+        };
+        assert_eq!(snapshot.messages, messages);
+        assert!(matches!(
+            cold.load_recovery(&thread, &thread, &run, Some(prefix))
+                .await
+                .unwrap(),
+            LoadedRunRecovery::Reuse { .. }
+        ));
+        let events = cold
+            .list_events(&EventScope::Thread(thread.clone()), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (&event.kind, &event.payload))
+                .collect::<Vec<_>>(),
+            expected_events
+                .iter()
+                .map(|event| (&event.kind, &event.payload))
+                .collect::<Vec<_>>(),
+            "P1 message and Run lifecycle events retain their exact committed order"
+        );
+        assert_eq!(
+            cold.events_after(RunLifecycleCursor(0), 10)
+                .await
+                .unwrap()
+                .events
+                .len(),
+            1
+        );
+        let request = TranscriptSeekRequest {
+            thread_id: thread.clone(),
+            seek: None,
+            limit: std::num::NonZeroUsize::new(1).unwrap(),
+        };
+        assert_eq!(
+            cold.transcript_seek_page(&request).await.unwrap().messages,
+            messages[1..]
+        );
+        let view = cold.open_thread_projection(&thread).await.unwrap();
+        assert_eq!(
+            view.authoritative_committed_messages(&thread)
+                .await
+                .unwrap(),
+            messages
+        );
+        assert_eq!(
+            view.recovery_snapshot(&thread, &run)
+                .await
+                .unwrap()
+                .messages,
+            messages
+        );
+        view
+    })
+    .await
+    .expect("P1/P2 dependency reads cannot acquire the held authority slot");
+    reads.close().await;
+    assert!(
+        cold.recovery_snapshot(&thread, &run).await.is_err(),
+        "P3 recovery fails closed"
+    );
+    assert!(
+        view.authoritative_committed_messages(&thread)
+            .await
+            .is_err(),
+        "P2/P3 derived view retains the read pool"
+    );
+    held.rollback().await.unwrap();
+    view.commit(ThreadCommit::assemble(
+        thread,
+        ended("pool-ended"),
+        true,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ))
+    .await
+    .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit")
+        .fetch_one(&authority)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 2,
+        "P3 derived execution view retains authority writes"
+    );
+    authority.close().await;
+}

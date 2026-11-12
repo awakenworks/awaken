@@ -35,6 +35,7 @@ mod coordinator_component;
 mod coordinator_persistence;
 pub mod credential_execution;
 mod credential_rollout_delivery;
+mod postgres_pools;
 mod session_credential_rollout;
 #[cfg(test)]
 mod session_credential_rollout_tests;
