@@ -24,6 +24,7 @@ awaken-container-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-environment-contract.workspace = true
+serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 uuid = { version = "1", features = ["v4"] }
 

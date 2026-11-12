@@ -27,8 +27,7 @@
     "CredentialExtensionConsumer": 1,
     "CredentialMaterialCustodian": 1,
     "ManagedListPriceProvider": 1,
-    "RealizationObserver": 1,
-    "SandboxCheckpointStore": 1
+    "RealizationObserver": 1
   },
   "foreign-persistence-port": {
     "FileStore <- awaken-session-executor": 1,

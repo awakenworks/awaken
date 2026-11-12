@@ -257,10 +257,14 @@ async fn container_restore_is_refused_at_selection_when_the_provider_has_no_rest
     )
     .into_provider_roles();
     let store = CountingCheckpointStore::default();
+    let spec = spec();
     let request = pc::SandboxRestoreRequest {
         workspace_id: "workspace".into(),
-        session_id: "session".into(),
-        effect_id: "restore-effect".into(),
+        session_id: spec.scope.clone(),
+        effect_id: format!(
+            "blake3:{}",
+            awaken_resource_contract::content_id(b"container-unsupported-restore-effect")
+        ),
         generation_id: "generation".into(),
         checkpoint: pc::SandboxCheckpointRef {
             id: "checkpoint".into(),
@@ -275,9 +279,23 @@ async fn container_restore_is_refused_at_selection_when_the_provider_has_no_rest
             suspend_effect_id: "suspend-effect".into(),
         },
     };
+    request
+        .validate_for_spec(&spec)
+        .expect("C2 the capability test supplies a valid exact restore request");
+    let mut malformed = request.clone();
+    malformed.effect_id = "restore-effect".into();
+    let malformed_error = container
+        .terminal()
+        .restore(&spec, &malformed, &store, pc::SandboxEffect::Unattached)
+        .await
+        .expect_err("R0 malformed identity is rejected before capability selection");
+    assert!(
+        matches!(malformed_error, pc::SandboxError::Invalid(_)),
+        "R0 malformed identity remains Invalid: {malformed_error}"
+    );
     let error = container
         .terminal()
-        .restore(&spec(), &request, &store, pc::SandboxEffect::Unattached)
+        .restore(&spec, &request, &store, pc::SandboxEffect::Unattached)
         .await
         .expect_err("R1 refused");
     assert!(

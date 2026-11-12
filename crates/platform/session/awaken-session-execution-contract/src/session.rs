@@ -733,8 +733,8 @@ pub use execution_recovery::{
 
 mod execution_observation;
 pub use execution_observation::{
-    SessionExecutionObservation, SessionModelRequestObservation, SessionRunExecutionObservation,
-    SessionToolUseObservation,
+    SessionEnvironmentObservation, SessionExecutionObservation, SessionModelRequestObservation,
+    SessionRunExecutionObservation, SessionSandboxCheckpointObservation, SessionToolUseObservation,
 };
 
 pub(crate) mod continuation;

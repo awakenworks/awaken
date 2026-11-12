@@ -308,6 +308,9 @@ impl ResolvedDeployment {
             disable_local_pool: !run_local_pool,
         };
         runtime.validate_local_execution()?;
+        if runtime.sandbox.checkpoint_s3.is_some() && (role != Role::AllInOne || !run_local_pool) {
+            return Err("sandbox_checkpoint_s3 requires AllInOne with local execution".into());
+        }
         if role == Role::Worker {
             // The registered Worker receives durable claims through its injected
             // HTTP dispatch store. Everything it owns locally is ephemeral

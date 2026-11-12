@@ -164,18 +164,19 @@ pub use session::{
     McpAttachmentRealizer, NO_COLOCATED_WORKER, NeutralRuntime, OutcomeDrive, OutcomeFailure,
     OutcomeIteration, OutcomeReport, Outcomes, ProjectionThreadSnapshots, RealizationEffects,
     RealizationRuntime, SessionCoordinationReads, SessionEnvironmentBindingSink,
-    SessionExecutionClosureReference, SessionExecutionEvidenceSelection,
-    SessionExecutionObservation, SessionExecutionOperationFootprint,
-    SessionExecutionOperationInventory, SessionExecutionRecoveryGap,
-    SessionExecutionRecoveryObservation, SessionExecutionRoleSelection, SessionExecutionRoles,
-    SessionExecutionToolOperation, SessionInputAdmission, SessionModelRequestObservation,
-    SessionPlacementRoles, SessionProjectionPrefix, SessionProjectionReadTimings,
-    SessionProjectionSource, SessionRecoveryPreparationReference, SessionRunExecutionObservation,
-    SessionRuns, SessionSourceDispatchObservation, SessionThreadLiveSubscription,
-    SessionToolUseObservation, StreamingRuns, TerminalCleanup, ThreadReads,
-    committed_lifecycle_prefix, drain_mcp_generation_receipt, outcome_terminal_commit_cursor,
-    projection_validation_needs_trailing_root, publish_mcp_generation_receipt,
-    same_thread_projection_prefix, select_recovery_snapshot_run,
+    SessionEnvironmentObservation, SessionExecutionClosureReference,
+    SessionExecutionEvidenceSelection, SessionExecutionObservation,
+    SessionExecutionOperationFootprint, SessionExecutionOperationInventory,
+    SessionExecutionRecoveryGap, SessionExecutionRecoveryObservation,
+    SessionExecutionRoleSelection, SessionExecutionRoles, SessionExecutionToolOperation,
+    SessionInputAdmission, SessionModelRequestObservation, SessionPlacementRoles,
+    SessionProjectionPrefix, SessionProjectionReadTimings, SessionProjectionSource,
+    SessionRecoveryPreparationReference, SessionRunExecutionObservation, SessionRuns,
+    SessionSandboxCheckpointObservation, SessionSourceDispatchObservation,
+    SessionThreadLiveSubscription, SessionToolUseObservation, StreamingRuns, TerminalCleanup,
+    ThreadReads, committed_lifecycle_prefix, drain_mcp_generation_receipt,
+    outcome_terminal_commit_cursor, projection_validation_needs_trailing_root,
+    publish_mcp_generation_receipt, same_thread_projection_prefix, select_recovery_snapshot_run,
 };
 
 pub use session_realization::{
@@ -216,6 +217,8 @@ pub use source_retention::{
     SourceRetentionSubject, WORKER_SOURCE_RETENTION_SUBJECTS_PATH, WorkerSourceRetentionSubjects,
 };
 
+pub use session::continuation::execute_environment_provider_continuation;
+
 pub use session_realization::realization_generation_set_authorizes;
 
 #[cfg(test)]
@@ -232,5 +235,3 @@ mod mcp_attachment {
         )
     }
 }
-
-pub use session::continuation::execute_environment_provider_continuation;

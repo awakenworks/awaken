@@ -1,3 +1,5 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: Projects parsed deployment settings into the Runtime configuration. Execution composition owns the checkpoint store and Session continuation owns its use.
 use std::path::Path;
 
 use awaken_acp_contract::AcpWorkerProfile;
@@ -67,6 +69,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
         }
     };
     let mut sandbox = SandboxSettings {
+        checkpoint_s3: file.sandbox_checkpoint_s3.clone(),
         trusted_host_enabled: file.sandbox_trusted_host_enabled.unwrap_or(false),
         trusted_host_scoped_execution: file.sandbox_trusted_host_scoped_execution.unwrap_or(false),
         allow_local_fallback: file.sandbox_allow_local_fallback.unwrap_or(false),
@@ -188,6 +191,35 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_checkpoint_s3_file_configuration_is_opt_in() {
+        let data = Path::new("/tmp/awaken-config-test");
+        assert!(
+            resolve(&FileConfig::default(), data)
+                .unwrap()
+                .sandbox
+                .checkpoint_s3
+                .is_none()
+        );
+
+        let file: FileConfig = toml::from_str(
+            r#"
+            sandbox_tier = "local"
+
+            [sandbox_checkpoint_s3]
+            bucket = "checkpoint-bucket"
+            region = "ap-southeast-1"
+            prefix = "awaken/checkpoints"
+            "#,
+        )
+        .unwrap();
+        let runtime = resolve(&file, data).unwrap();
+        let archive = runtime.sandbox.checkpoint_s3.unwrap();
+        assert_eq!(archive.bucket, "checkpoint-bucket");
+        assert_eq!(archive.region, "ap-southeast-1");
+        assert_eq!(archive.prefix, "awaken/checkpoints");
+    }
 
     #[test]
     fn container_mcp_relay_requires_one_externally_reachable_origin_pair() {

@@ -2,6 +2,49 @@
 // @formal reason: Existing immutable execution selection and committed Run read vocabulary, moved to its read boundary without adding authority.
 //! Session execution observation values.
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+use awaken_session_contract::{SessionEnvironmentPhase, SessionEnvironmentState};
+use serde::{Deserialize, Serialize};
+
+/// Durable environment evidence projected without exposing storage or execution handles.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionEnvironmentObservation {
+    pub phase: SessionEnvironmentPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<SessionSandboxCheckpointObservation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSandboxCheckpointObservation {
+    pub format: String,
+    pub digest: String,
+    pub size_bytes: u64,
+    pub created_at_unix_ms: u64,
+    pub expires_at_unix_ms: u64,
+}
+
+impl From<&SessionEnvironmentState> for SessionEnvironmentObservation {
+    fn from(state: &SessionEnvironmentState) -> Self {
+        Self {
+            phase: state.step().phase(),
+            generation_id: state
+                .generation()
+                .map(|generation| generation.id().to_owned()),
+            checkpoint: state
+                .checkpoint()
+                .map(|checkpoint| SessionSandboxCheckpointObservation {
+                    format: checkpoint.format.clone(),
+                    digest: checkpoint.digest.clone(),
+                    size_bytes: checkpoint.size_bytes,
+                    created_at_unix_ms: checkpoint.created_at_unix_ms,
+                    expires_at_unix_ms: checkpoint.expires_at_unix_ms,
+                }),
+        }
+    }
+}
 /// Read-only application projection joining one Session's immutable execution
 /// selection to committed Run/model-request facts. It owns no status or audit
 /// state: every field is rebuilt from the Session aggregate and the Runtime's
@@ -10,6 +53,7 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 pub struct SessionExecutionObservation {
     pub configuration:
         Option<awaken_session_configuration_contract::SessionConfigurationInspection>,
+    pub environment: SessionEnvironmentObservation,
     pub artifact_capture: Option<awaken_resource_contract::ArtifactCapture>,
     pub recovery: crate::SessionExecutionRecoveryObservation,
     pub session_id: String,

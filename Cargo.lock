@@ -1079,6 +1079,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-session-environment-contract",
  "awaken-tool-contract",
+ "serde",
  "thiserror",
  "uuid",
 ]
@@ -1571,6 +1572,7 @@ dependencies = [
  "awaken-package-image",
  "awaken-protocol-mcp",
  "awaken-provisioning-contract",
+ "awaken-resource-contract",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-sandbox-container",
@@ -1584,6 +1586,7 @@ dependencies = [
  "awaken-tool-contract",
  "awaken-worker-fleet-kubernetes",
  "axum",
+ "object_store",
  "serde_json",
  "tempfile",
  "tokio",

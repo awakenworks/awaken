@@ -125,6 +125,8 @@ impl std::str::FromStr for SandboxTier {
 /// environment variables.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxSettings {
+    /// Object storage for policy-managed Sandbox filesystem checkpoints.
+    pub checkpoint_s3: Option<SandboxCheckpointS3Config>,
     /// Allow exact `trusted_host` Environment policies on this installation.
     /// Workers advertise the matching backend only when this operator-owned
     /// switch is enabled; hosted installations therefore fail closed by default.
@@ -202,9 +204,19 @@ pub struct SandboxSettings {
     pub inherit_agent_stderr: bool,
 }
 
+/// Deployment-owned object allocation. The adapter uses workload credentials.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxCheckpointS3Config {
+    pub bucket: String,
+    pub region: String,
+    pub prefix: String,
+}
+
 impl Default for SandboxSettings {
     fn default() -> Self {
         Self {
+            checkpoint_s3: None,
             trusted_host_enabled: false,
             trusted_host_scoped_execution: false,
             allow_local_fallback: false,

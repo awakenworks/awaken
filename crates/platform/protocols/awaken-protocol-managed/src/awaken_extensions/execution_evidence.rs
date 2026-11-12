@@ -19,6 +19,8 @@ pub struct SessionExecutionEvidence {
     pub configuration:
         Option<awaken_session_configuration_contract::SessionConfigurationInspection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<awaken_session_execution_contract::SessionEnvironmentObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation: Option<awaken_session_execution_contract::SessionRecoveryPreparationReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_capture: Option<awaken_resource_contract::ArtifactCapture>,
@@ -99,6 +101,7 @@ mod tests {
     fn evidence_fixture() -> SessionExecutionEvidence {
         SessionExecutionEvidence {
             configuration: None,
+            environment: None,
             preparation: None,
             artifact_capture: None,
             operation_footprint: None,
