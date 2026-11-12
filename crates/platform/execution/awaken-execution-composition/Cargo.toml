@@ -34,6 +34,8 @@ awaken-acp-catalog.workspace = true
 awaken-run-executor-acp = { workspace = true, features = ["real-acp"] }
 # The backend-erased container ports the Session owner holds.
 awaken-provisioning-contract.workspace = true
+awaken-resource-contract.workspace = true
+object_store = { version = "0.14", features = ["aws"] }
 awaken-connection-plan.workspace = true
 awaken-time.workspace = true
 # The container tier (podman/docker/k8s) this composition realizes; each backend

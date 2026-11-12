@@ -155,7 +155,8 @@ pub struct SandboxCheckpointRequest {
 /// state: the phase of [`SessionEnvironmentState::step`] (see
 /// [`SessionEnvironmentStep::phase`]). A read projection only;
 /// [`SessionEnvironmentState`] remains the sole durable lifecycle authority.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionEnvironmentPhase {
     Unmaterialized,
     Resident,

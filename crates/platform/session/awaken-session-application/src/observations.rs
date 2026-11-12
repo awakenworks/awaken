@@ -195,6 +195,7 @@ impl SessionObservations {
         };
         Ok(SessionExecutionObservation {
             configuration: Some(self.queries.inspect_configuration(workspace_id, baseline)),
+            environment: (&recovered.session.environment).into(),
             artifact_capture,
             recovery: self
                 .coordination_reads

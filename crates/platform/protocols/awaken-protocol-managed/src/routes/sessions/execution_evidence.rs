@@ -27,6 +27,9 @@ fn project_execution_evidence(
         configuration: observation
             .configuration
             .filter(|_| selection.include_inspection),
+        environment: selection
+            .include_inspection
+            .then_some(observation.environment),
         artifact_capture: observation.artifact_capture,
         operation_footprint,
         operation_inventory,
@@ -102,8 +105,31 @@ mod tests {
         // model request. Effects: E1 every coordinate is preserved; E2 the
         // empty Run stays empty rather than being reported as executed. Rules:
         // R1=P1=>E1 and R2=P2=>E2.
+        let hibernated = awaken_session_contract::SessionEnvironmentState::Hibernated {
+            generation: awaken_session_contract::SandboxGeneration::new(
+                &awaken_session_types::SessionId::from("session-1"),
+                1,
+                100,
+                "environment",
+                "image",
+            ),
+            checkpoint: awaken_provisioning_contract::SandboxCheckpointRef {
+                id: "internal-object-id".into(),
+                format: "awaken-fs-tar-v1".into(),
+                digest: "archive-digest".into(),
+                size_bytes: 4096,
+                created_at_unix_ms: 5,
+                expires_at_unix_ms: 60,
+                environment_fingerprint: "environment".into(),
+                base_image_fingerprint: "image".into(),
+                excluded_mounts: vec![],
+                suspend_effect_id: "internal-effect-id".into(),
+            },
+        };
         let mut observation = awaken_session_application::SessionExecutionObservation {
-                configuration: None,                artifact_capture: Some(serde_json::from_value(serde_json::json!({
+                configuration: None,
+                environment: (&hibernated).into(),
+                artifact_capture: Some(serde_json::from_value(serde_json::json!({
                     "workspace_id":"workspace","session_id":"session-1","revision":2,
                     "file_ids":["file-original"],"origin":{"run_id":"original-run","owner":"worker","epoch":7}
                 })).unwrap()),
@@ -162,6 +188,7 @@ mod tests {
         assert_eq!(projected.backend_ref.as_deref(), Some("native"), "R1/E1");
         let legacy_wire = serde_json::to_value(&projected).unwrap();
         assert!(legacy_wire.get("configuration").is_none(), "P8");
+        assert!(legacy_wire.get("environment").is_none());
         assert!(
             legacy_wire["runs"][0].get("model_operations").is_none(),
             "P8"
@@ -172,6 +199,19 @@ mod tests {
                 include_inspection: true,
                 ..Default::default()
             },
+        );
+        let wire = serde_json::to_value(&inspected).unwrap();
+        assert_eq!(wire["environment"]["phase"], "hibernated");
+        assert_eq!(
+            wire["environment"]["generation_id"].as_str(),
+            hibernated.generation().map(|generation| generation.id())
+        );
+        assert_eq!(wire["environment"]["checkpoint"]["size_bytes"], 4096);
+        assert!(wire["environment"]["checkpoint"].get("id").is_none());
+        assert!(
+            wire["environment"]["checkpoint"]
+                .get("suspend_effect_id")
+                .is_none()
         );
         assert_eq!(
             inspected.runs[0].model_operations[0].model, "model-original",

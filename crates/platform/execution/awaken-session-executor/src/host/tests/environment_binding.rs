@@ -1200,6 +1200,158 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
     );
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn on_tool_use_first_stdio_mcp_stage_commits_one_environment_before_spawn() {
+    use awaken_session_execution_contract::McpAttachmentRealizer as _;
+
+    struct HeldBinding {
+        inner: BindingOrderSink,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_execution_contract::SessionEnvironmentBindingSink for HeldBinding {
+        async fn authorize(
+            &self,
+            intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+        ) -> Result<
+            awaken_session_contract::SessionEnvironmentEffectAuthorization,
+            awaken_runtime_contract::runs::RunError,
+        > {
+            self.inner.authorize(intent).await
+        }
+
+        async fn persist(
+            &self,
+            receipt: awaken_session_contract::SessionEnvironmentReceipt,
+        ) -> Result<
+            awaken_session_contract::SessionEnvironmentState,
+            awaken_runtime_contract::runs::RunError,
+        > {
+            self.entered.notify_one();
+            self.release.notified().await;
+            self.inner.persist(receipt).await
+        }
+    }
+
+    let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor))
+        .build()
+        .expect("validated Host dependencies");
+    install_test_session_application(&host);
+    let binding = Arc::new(HeldBinding {
+        inner: BindingOrderSink {
+            host: Arc::downgrade(&host),
+            authorize_calls: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
+            observed_before_publish: AtomicBool::new(false),
+            fail: false,
+            require_realization: false,
+            owned_session_id: None,
+            committed_environment: None,
+        },
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    host.run_assembly
+        .install_test_environment_binding_sink(binding.clone());
+    let session = "deferred-stdio-mcp";
+    let workspace = host.run_assembly.local_workspace();
+    let mut init = bare_session("assistant", workspace);
+    init.environment = on_tool_use_environment();
+    host.install_complete_test_session(session, init)
+        .await
+        .unwrap();
+    let ctx = host.run_assembly.ctx_for(session, None).await.unwrap();
+    assert!(ctx.env.is_none());
+    let hand = ctx.attempt_context.tool_executor.as_ref().unwrap().clone();
+
+    let witness_dir = tempfile::tempdir().unwrap();
+    let witness = witness_dir.path().join("mcp-starts");
+    let program = r#"
+import json, sys
+with open(sys.argv[1], "a") as witness:
+    witness.write("started\n")
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    if request["method"] == "initialize":
+        result = {"protocolVersion": request["params"]["protocolVersion"],
+                  "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "fixture", "version": "1"}}
+    else:
+        result = {"tools": []}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"#;
+    let target = awaken_agent_contract::McpTarget::sandbox_stdio(
+        "/usr/bin/python3",
+        vec![
+            "-c".into(),
+            program.into(),
+            witness.to_str().unwrap().into(),
+        ],
+    )
+    .unwrap();
+    use awaken_session_configuration_contract::mcp::{
+        McpAttachmentId, McpGeneration, McpGenerationRef, StageMcpAttachment,
+    };
+    let generation = McpGenerationRef::from_persisted(
+        session.into(),
+        McpGeneration::of_bare_target(McpAttachmentId("stdio".into()), 1, &target),
+        "runtime-1".into(),
+        1,
+        u64::MAX,
+    )
+    .unwrap();
+    let request = StageMcpAttachment {
+        workspace_id: workspace.into(),
+        generation: generation.clone(),
+        realization_id: "realize-stdio".into(),
+        stage_idempotency_key: "stage-stdio".into(),
+        name: "stdio".into(),
+        target,
+        prompts_as_skills: false,
+        credential: None,
+        selected_plaintext_holder: None,
+    };
+    let effects = crate::session_effects::RunMcpEffects::new(host.run_assembly.clone());
+    let stage = effects.stage_mcp_attachment(request.clone());
+    tokio::pin!(stage);
+    tokio::select! {
+        result = &mut stage => panic!("MCP stage ended before the Environment binding: {result:?}"),
+        result = tokio::time::timeout(std::time::Duration::from_secs(10), binding.entered.notified()) => {
+            result.expect("stdio MCP requested the Environment binding");
+        }
+    }
+    assert!(!witness.exists(), "MCP must wait for the binding commit");
+    let call = awaken_tool_contract::tool::ToolCall {
+        call_id: "read-during-mcp".into(),
+        tool_id: "read".into(),
+        arguments: serde_json::json!({"path": "missing"}),
+    };
+    let read = hand.invoke(&call);
+    tokio::pin!(read);
+    let first_poll = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(std::future::Future::poll(read.as_mut(), cx))
+    })
+    .await;
+    assert!(first_poll.is_pending());
+    binding.release.notify_one();
+    let (receipt, _) = tokio::join!(&mut stage, &mut read);
+    let receipt = receipt.expect("stdio MCP prepared");
+    let replay = effects.stage_mcp_attachment(request).await.unwrap();
+    assert_eq!(replay, receipt);
+    assert_eq!(binding.inner.authorize_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(binding.inner.calls.load(Ordering::SeqCst), 1);
+    assert!(binding.inner.observed_before_publish.load(Ordering::SeqCst));
+    assert_eq!(std::fs::read_to_string(witness).unwrap(), "started\n");
+    effects.drain_mcp_generation(generation).await.unwrap();
+}
+
 /// L5: persistence failure fails closed; no deferred environment becomes visible.
 #[tokio::test]
 async fn on_tool_use_binding_failure_never_publishes_the_environment() {

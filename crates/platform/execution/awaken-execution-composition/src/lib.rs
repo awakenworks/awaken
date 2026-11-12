@@ -21,6 +21,7 @@ use awaken_session_executor::SessionExecutorBuilder;
 
 mod acp_backend;
 mod acp_provision;
+mod checkpoint_s3;
 mod container;
 mod local;
 mod sandbox_source;
@@ -210,6 +211,16 @@ pub async fn with_session_environment_from_deployment_at(
     let host =
         select_local_session_environment(host, deployment, hand_factory, namespace_hand_path)
             .await?;
+    let host = if let Some(config) = &deployment.sandbox.checkpoint_s3 {
+        if deployment.sandbox_tier != awaken_deployment_config::SandboxTier::Local {
+            return Err("sandbox_checkpoint_s3 currently requires the Local Sandbox tier".into());
+        }
+        host.with_environment_checkpoint_store(Arc::new(
+            checkpoint_s3::S3CheckpointStore::from_config(config)?,
+        ))
+    } else {
+        host
+    };
     Ok(if deployment.acp.is_some() {
         with_backend_owned_environment(host, deployment)
     } else {

@@ -103,6 +103,7 @@ pub(super) struct FileConfig {
     pub(super) control_seal_key_file: Option<PathBuf>,
     pub(super) sandbox_tier: Option<String>,
     pub(super) sandbox_dir: Option<PathBuf>,
+    pub(super) sandbox_checkpoint_s3: Option<awaken_deployment_config::SandboxCheckpointS3Config>,
     pub(super) sandbox_trusted_host_enabled: Option<bool>,
     pub(super) sandbox_trusted_host_scoped_execution: Option<bool>,
     pub(super) sandbox_allow_local_fallback: Option<bool>,
