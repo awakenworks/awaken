@@ -146,11 +146,13 @@ and an incremental recovery design remain separate work.
 ## PostgreSQL checkout and cancellation (2026-10-07)
 
 Runtime PostgreSQL connection lifecycle has one owner:
-`awaken-store-runtime::postgres_pool_options`. Composition roots still choose
-connection capacity and clone the same pool into repositories. Standalone
-commit, dispatch, checkpoint and Worker-directory constructors use that same
-policy. A composition that injects a `PgPool` must construct it with this policy;
-domain repositories retain ownership of their SQL, transactions and facts.
+`awaken-sql-storage::postgres_pool_options`. Composition roots choose
+connection capacity and share the authority pool across guarded mutations.
+The [claim-guard recovery amendment](#claim-guard-recovery-dependency-pools-2026-11-12)
+selects the pool for dependent observations. Standalone commit, dispatch,
+checkpoint and Worker-directory constructors use the canonical checkout policy.
+A composition that injects a `PgPool` must construct it with this policy.
+Domain repositories retain ownership of their SQL, transactions and facts.
 
 SQLx 0.8.6 can cancel `BEGIN` after sending it but before recording transaction
 depth. Its drop guard then queues no rollback, and its protocol ping accepts the
@@ -210,3 +212,116 @@ and [top-level transaction management](https://www.postgresql.org/docs/16/plpgsq
 - Names: `RunStore` / `ThreadReader` are now `CommittedThreadView` (+
   `CheckpointReader` for events), per [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md). `DurableRunIngress` no
   longer exists (removed by the 2026-09-01 amendment of [ADR-0009](0009-durable-run-ingress-slice.md)).
+
+
+## Claim-guard recovery dependency pools (2026-11-12)
+
+### Cause and decision
+
+A legal claim-guard operation can retain a PostgreSQL transaction while awaiting
+three existing recovery dependencies. Worker selection lists registrations,
+predecessor recovery reads the prior Worker incarnation, and branch recovery
+loads the committed Thread transcript and recovery prefix. When every checkout
+in their shared pool is held by such a guard, the dependency waits for a
+connection whose release requires that same dependency to finish. One retained
+guard and a one-connection pool are sufficient to reproduce the cycle.
+
+The Coordinator composition constructs one bounded authority pool and one
+independent bounded dependency pool over the same PostgreSQL primary and schema.
+Dispatch guards, Registry mutations and commit writes acquire the authority pool.
+Worker-directory observations and committed Thread/message/event/lifecycle and
+recovery operations acquire the shared dependency pool. Thread-scoped execution
+projections retain both pool handles and acquire connections for their operations.
+Recovery reconstructs its existing derived execution view from committed facts.
+The dependency pool carries these repository operations through their original
+ports and validation.
+
+This allocation follows the Dispatch and Committed Truth bounded contexts.
+`CoordinatorPersistence` owns physical connection composition, the Registry owns
+Worker facts, and `PostgresCommitCoordinator` owns committed facts and replay.
+The live `CommitEpochGuard` keeps its original transaction and fence throughout
+the dependent work. Successful recovery still requires the original Worker,
+incarnation, claim and committed-prefix checks before an authoritative write.
+
+Increasing the original pool size delays exhaustion to a larger set of guarded
+callers. Releasing the guard before dependency evaluation loses its protected
+admission interval. A pool created per request makes connection capacity grow
+with callers. The selected shared dependency pool provides a separately bounded
+checkout budget while preserving the original admission and commit boundaries.
+
+### Construction and connection budget
+
+Both `PostgresWorkerDirectory` and `PostgresCommitCoordinator` expose async
+`with_read_pool(authority_pool, read_pool)` and
+`with_existing_read_pool(authority_pool, read_pool)`. The first applies the
+existing migration bundles through `authority_pool`, and the second verifies the
+externally managed bundles through that pool. Each caller supplies independent
+pool instances configured for one primary, database, role and schema/search path.
+The constructors rely on this composition contract. Their inputs are ordinary
+`PgPool` handles and carry no automatic cross-pool database-identity comparison.
+
+The existing `with_pool`, `with_existing_pool`, `connect` and `connect_existing`
+constructors alias dependency operations to their authority pool. They retain
+single-pool checkout behavior under a retained guard. Callers requiring the
+independent dependency budget select the explicit two-pool constructors.
+
+Production `CoordinatorPersistence::open` and `open_existing`, together with the
+`DurableRuntimeAuthority` scenario composition, create the pair once from the
+same URL and `awaken-sql-storage::postgres_pool_options`. The private
+`postgres_pools` component owns their shared backend selection, database-URL
+validation and bounded pool construction. Both composition owners depend on
+this component, whose dependencies point to configuration and SQL storage.
+The existing backend-selection decision table and module-cycle ratchet enforce
+this dependency direction. With
+`N = CoordinatorStorage.postgres_max_connections`, each pool has maximum `N`.
+The pair contributes up to `2N` connections per Coordinator composition instance.
+Operator connection budgeting includes both maxima and every replica. Other
+component pools contribute their own configured budgets.
+
+`CoordinatorPersistence.postgres_pool` exposes the authority pool used by guarded
+writes and hosted adapters. The directory and commit adapters retain the shared
+dependency pool. The operational migration path uses its single bounded pool of
+maximum `N`, applying bundles without starting the runtime recovery composition.
+Acquisition cancellation and timeout use the canonical checkout policy. A
+saturated dependency pool surfaces the existing unavailable/acquisition error.
+
+## PostgreSQL Role Catalog
+
+| Name | Kind | Owns | Uses | Must Not Own | Failure Mode | Guardrail/Test |
+|---|---|---|---|---|---|---|
+| `CoordinatorPersistence` | Application composition | One process-owned authority/dependency pool pair and its explicit connection maxima | `CoordinatorStorage`, private `postgres_pools` construction, Registry and Runtime authority constructors | Repository SQL and domain admission decisions | Every retained guard consumes the capacity needed by its own dependent operation | G67, production constructor and exact-claim PostgreSQL regression |
+| `PostgresWorkerDirectory` | Persistence adapter | Worker registration/incarnation observations and original Registry mutation transactions | Authority pool for guards/mutations, shared dependency pool for observations | Dispatch claim mutation and Thread commit authority | Worker selection or predecessor observation waits on the held guard pool | G67, Registry dependency-read conformance |
+| `PostgresCommitCoordinator` | Persistence adapter | Atomic Thread commits and authoritative committed-prefix recovery | Authority pool for commit writes, shared dependency pool for observations/recovery, bounded Thread execution views | Worker selection and Dispatch admission authority | Transcript or branch recovery exhausts the guard's checkout pool | G67, store recovery and production claim-composition regressions |
+
+### Test design and qualification boundary
+
+G67 is a Target guardrail while the changed cohort awaits qualification. The
+following cases name intended assertions. The table records test design and
+existing owners without claiming their execution passed.
+
+Its promotion profile indexes the existing schema/adapter, claim/delivery and
+atomic-commit safety requirements. The separate
+`store.backends/guard_dependency_progress` liveness requirement registers the
+three new PostgreSQL test obligations. Promotion of G67 additionally requires
+the actual exhausted-pool/held-guard/recovery cases and composing-product HTTP
+resume evidence on the final source. Safety-profile results establish their
+indexed authority properties. The separate executed cases establish dependency
+progress for their owned pool and recovery conditions.
+
+| Entry or cause | Required observation | Existing validation owner |
+|---|---|---|
+| Worker-directory authority pool has one connection held by a live guard | `list`, current registration and incarnation observations complete through the independent bounded pool, retaining the expected Worker facts | `postgres_dependency_reads_do_not_borrow_the_authority_pool` in `awaken-worker-registry` conformance |
+| Commit authority pool is exhausted | Committed messages, branch transcript, recovery prefix, events/lifecycle and a Thread execution view remain observable through the dependency pool, and that view can commit through the original authority after the dependency pool closes | `dependency_reads_survive_an_exhausted_authority_pool` in `awaken-store-postgres` `postgres_live` |
+| Production migration/verification composition exhausts all authority slots at maximum one and two | Real `CommitEpochGuard` values stay live during Registry observation, cold recovery and Thread-view opening, malformed prefixes refuse, and explicit release or guard drop returns capacity with the claim still current | `postgres_process_dependency_reads_keep_the_original_claim_authority` in the Coordinator `claimed_commit` tests |
+| A current guarded owner writes or a receipt is replayed | Original claim-fenced commit succeeds once, replay returns its original receipt and stale owners cannot append | Existing Coordinator `claimed_commit` conformance plus the composing product's PostgreSQL terminal-writer recovery tests |
+| Worker, incarnation or claim becomes stale, cancelled or lease-expired | Original admission/fence checks refuse authoritative effects and preserve committed truth | Existing Dispatch and signed Worker-transport stale-owner, cancellation and claim conformance |
+| Dependency checkout is exhausted or its awaiting task is cancelled | Existing unavailable/timeout behavior, bounded pool sizes, released cancelled work and clean subsequent authority checkout | Live PostgreSQL acquisition/cancellation conformance plus the affected dependency-read cases |
+| Thread-scoped projections are cloned or reopened | Both pool handles are propagated, ordinary handles retain no checked-out connection, and exact committed-prefix validation still applies | Store Thread projection/recovery tests and Coordinator claim composition |
+| Migrate versus externally managed startup | Both pools share the owned schema, migration and verification select their original authority entrypoints, and the operational migration path uses its single configured pool | Existing scoped-migration and Coordinator persistence tests |
+| Public constructor compatibility | Existing single-pool calls compile and use their original aliasing path, explicit pair constructors appear in reviewed API snapshots | Affected Registry/store/Coordinator compilation and `check_public_api.sh` owners |
+
+Real HTTP recovery of the three original branches belongs to the composing
+product's existing PostgreSQL resume tests. It qualifies the exact published
+Native revision consumed by that product, including final claim release and
+terminal outcome. Adapter-level progress, documentation checks and a selected
+API snapshot each establish their own scope. Qualification results remain bound to their actual source and declared scope.

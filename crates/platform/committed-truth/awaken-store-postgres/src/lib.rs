@@ -219,6 +219,7 @@ const NS: &str = "runtime";
 /// A Postgres-backed [`Coordinator`] plus asynchronous durable read ports.
 pub struct PostgresCommitCoordinator {
     pool: PgPool,
+    read_pool: PgPool,
     projection: InvariantLock<Projection>,
     projection_thread: Option<ThreadId>,
 }
@@ -298,18 +299,37 @@ impl PostgresCommitCoordinator {
 
     /// Build from an existing pool: apply migrations and read the global fence.
     pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
+        Self::with_read_pool(pool.clone(), pool).await
+    }
+
+    /// Keep commits on `pool` and dependent authoritative reads on `read_pool`.
+    /// Both bounded pools must select the same PostgreSQL primary and schema
+    /// through the same connection configuration. A separate pool instance
+    /// keeps dependency observations available while guards retain write slots.
+    /// Recovery still rebuilds the existing process-local execution projection.
+    pub async fn with_read_pool(pool: PgPool, read_pool: PgPool) -> Result<Self, StoreError> {
         Self::migrate_pool(&pool).await?;
-        Self::open_pool(pool).await
+        Self::open_pool(pool, read_pool).await
     }
 
     /// Build from an existing pool after verifying both the portable commit
     /// bundle and the Postgres-only sequence bundle.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
-        Self::verify_pool(&pool).await?;
-        Self::open_pool(pool).await
+        Self::with_existing_read_pool(pool.clone(), pool).await
     }
 
-    async fn open_pool(pool: PgPool) -> Result<Self, StoreError> {
+    /// Select a separate bounded read pool after externally applied migrations.
+    /// Both pools must address the same PostgreSQL primary and schema. Select
+    /// an independent bounded read pool when authority transactions stay held.
+    pub async fn with_existing_read_pool(
+        pool: PgPool,
+        read_pool: PgPool,
+    ) -> Result<Self, StoreError> {
+        Self::verify_pool(&pool).await?;
+        Self::open_pool(pool, read_pool).await
+    }
+
+    async fn open_pool(pool: PgPool, read_pool: PgPool) -> Result<Self, StoreError> {
         let sequence: i64 =
             sqlx::query_scalar("SELECT COALESCE(MAX(sequence), 0) FROM runtime_commit")
                 .fetch_one(&pool)
@@ -319,6 +339,7 @@ impl PostgresCommitCoordinator {
             decode_authority(sequence).map_err(|error| StoreError::Read(error.to_string()))?;
         Ok(Self {
             pool,
+            read_pool,
             projection: InvariantLock::new(Projection {
                 sequence,
                 ..Projection::default()
@@ -328,8 +349,8 @@ impl PostgresCommitCoordinator {
     }
 
     /// Open one active Thread's synchronous execution view from a single
-    /// repeatable-read recovery prefix. The returned handle shares the database
-    /// pool but owns only this Thread's disposable process-local projection.
+    /// repeatable-read recovery prefix. The returned handle shares both bounded
+    /// pools and owns this Thread's disposable process-local projection.
     pub async fn open_thread_projection(&self, thread_id: &ThreadId) -> Result<Self, StoreError> {
         let snapshot = self
             .recovery_snapshot(thread_id, &RunId("__projection_read__".to_owned()))
@@ -337,6 +358,7 @@ impl PostgresCommitCoordinator {
             .map_err(|error| StoreError::Hydrate(error.to_string()))?;
         Ok(Self {
             pool: self.pool.clone(),
+            read_pool: self.read_pool.clone(),
             projection: InvariantLock::new(projection_from_snapshot(snapshot)),
             projection_thread: Some(thread_id.clone()),
         })
@@ -409,7 +431,7 @@ impl PostgresCommitCoordinator {
     ) -> Result<Option<RunRecord>, StoreError> {
         let row = sqlx::query("SELECT thread_id, phase FROM runtime_run_record WHERE run_id = $1")
             .bind(&run_id.0)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&self.read_pool)
             .await
             .map_err(|error| StoreError::Read(error.to_string()))?;
         row.map(|row| {
@@ -446,7 +468,7 @@ impl PostgresCommitCoordinator {
              JOIN runtime_run_record AS run ON run.run_id = latest.run_id",
         )
         .bind(&thread_id.0)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read_pool)
         .await
         .map_err(|error| StoreError::Read(error.to_string()))?;
         row.map(|row| {
@@ -484,7 +506,7 @@ impl PostgresCommitCoordinator {
              JOIN runtime_waiting AS waiting ON waiting.run_id = latest.run_id",
         )
         .bind(&thread_id.0)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&self.read_pool)
         .await
         .map_err(|error| StoreError::Read(error.to_string()))?;
         let Some(row) = row else {
@@ -520,7 +542,7 @@ impl PostgresCommitCoordinator {
     ) -> Result<Vec<Message>, StoreError> {
         let rows = sqlx::query("SELECT data FROM runtime_message WHERE thread_id = $1 ORDER BY id")
             .bind(&thread_id.0)
-            .fetch_all(&self.pool)
+            .fetch_all(&self.read_pool)
             .await
             .map_err(|error| StoreError::Read(error.to_string()))?;
         rows.into_iter()
@@ -543,7 +565,7 @@ impl PostgresCommitCoordinator {
             StoreError::Read(error.to_string())
         }
 
-        let mut tx = self.pool.begin().await.map_err(read_error)?;
+        let mut tx = self.read_pool.begin().await.map_err(read_error)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -582,7 +604,7 @@ impl PostgresCommitCoordinator {
         request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
     ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, StoreError>
     {
-        replay::transcript_seek_page(&self.pool, request).await
+        replay::transcript_seek_page(&self.read_pool, request).await
     }
 
     /// Read a thread's complete state-command log from committed PostgreSQL
@@ -595,7 +617,7 @@ impl PostgresCommitCoordinator {
         let rows =
             sqlx::query("SELECT data FROM runtime_state_command WHERE thread_id = $1 ORDER BY id")
                 .bind(&thread_id.0)
-                .fetch_all(&self.pool)
+                .fetch_all(&self.read_pool)
                 .await
                 .map_err(|error| StoreError::Read(error.to_string()))?;
         rows.into_iter()
@@ -618,7 +640,7 @@ impl PostgresCommitCoordinator {
             "SELECT EXISTS(SELECT 1 FROM runtime_commit WHERE thread_id = $1)",
         )
         .bind(&thread_id.0)
-        .fetch_one(&self.pool)
+        .fetch_one(&self.read_pool)
         .await
         .map_err(|error| StoreError::Read(error.to_string()))
     }
@@ -1155,9 +1177,9 @@ impl CheckpointReader for PostgresCommitCoordinator {
         };
         let query = sqlx::query(statement).bind(after).bind(limit);
         let rows = match scope {
-            EventScope::All => query.fetch_all(&self.pool).await,
+            EventScope::All => query.fetch_all(&self.read_pool).await,
             EventScope::Run(_) | EventScope::Thread(_) => {
-                query.bind(scope_id).fetch_all(&self.pool).await
+                query.bind(scope_id).fetch_all(&self.read_pool).await
             }
         }
         .map_err(|error| error.to_string())?;
@@ -1257,7 +1279,7 @@ impl PostgresCommitCoordinator {
         use awaken_agent_contract::thread::read::recovery::{
             LoadedRunRecovery, ReusedRunRecovery, ThreadPrefixRef,
         };
-        let mut tx = self.pool.begin().await.map_err(recovery_reject)?;
+        let mut tx = self.read_pool.begin().await.map_err(recovery_reject)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await
@@ -1495,7 +1517,7 @@ impl RunLifecycleFeed for PostgresCommitCoordinator {
         )
         .bind(after)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(&self.read_pool)
         .await
         .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
 

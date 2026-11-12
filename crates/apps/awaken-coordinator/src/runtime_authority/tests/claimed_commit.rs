@@ -34,10 +34,18 @@ async fn fixture() -> Option<(String, Arc<DurableRuntimeAuthority>, PgPool)> {
     let mut storage = tests::test_storage();
     storage.store = StoreKind::Postgres;
     storage.dispatch_backend = DispatchBackend::Postgres;
-    let authority = DurableRuntimeAuthority::open_with_postgres_pool(
+    let authority = DurableRuntimeAuthority::open_with_postgres_pools(
         &storage,
         SchemaAccess::Migrate,
         Some(pool.clone()),
+        Some(
+            awaken_sql_storage::postgres_pool_options()
+                .max_connections(1)
+                .acquire_timeout(Duration::from_secs(5))
+                .connect(&url)
+                .await
+                .unwrap(),
+        ),
         awaken_time::system_clock(),
     )
     .await
@@ -1171,4 +1179,198 @@ async fn selected_local_writers_commit_child_history_in_the_parent_session() {
         assert!(!authority.durable_thread_exists(&thread.0).await.unwrap());
         assert!(authority.shared_lifecycle_feed().is_none());
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_process_dependency_reads_keep_the_original_claim_authority() {
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+    use awaken_dispatch_contract::{DispatchClaimOwnership as _, DispatchCommitAuthority as _};
+    use awaken_time::WallClockExt as _;
+    use sqlx::Executor as _;
+    // P1/P2 normal migrate and verify startup share a bounded dependency-read
+    // pool. Every authority slot is occupied by an actual CommitEpochGuard,
+    // yet Registry roster/exact reads and cold Runtime recovery/projection
+    // complete. P3 malformed committed input fails recovery while the original
+    // guard still owns its slot; explicit release permits the next exact-claim
+    // operation. SELECT-only recovery cannot wait on its own Dispatch row lock.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let admin = awaken_reliability_testkit::postgres_fixture_pool(&url).await;
+    admin
+        .execute("DROP SCHEMA IF EXISTS t_coordinator_dependency_reads CASCADE")
+        .await
+        .unwrap();
+    admin
+        .execute("CREATE SCHEMA t_coordinator_dependency_reads")
+        .await
+        .unwrap();
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let url = format!("{url}{separator}options=-c%20search_path%3Dt_coordinator_dependency_reads");
+    for (capacity, verify) in [(1, false), (2, true)] {
+        let mut storage = tests::test_storage();
+        storage.store = StoreKind::Postgres;
+        storage.dispatch_backend = DispatchBackend::Postgres;
+        storage.database_url = Some(url.clone());
+        storage.postgres_max_connections = std::num::NonZeroU32::new(capacity).unwrap();
+        let clock = awaken_time::system_clock();
+        let persistence = if verify {
+            crate::coordinator_persistence::open_existing(&storage, clock.clone()).await
+        } else {
+            crate::coordinator_persistence::open(&storage, clock.clone()).await
+        }
+        .unwrap();
+        let pool = persistence.postgres_pool.as_ref().unwrap();
+        let seed = PostgresCommitCoordinator::with_existing_pool(pool.clone())
+            .await
+            .unwrap();
+        let directory = &persistence.worker_directory;
+        let registered = directory
+            .register(
+                awaken_worker_contract::WorkerRegistration {
+                    worker_id: format!("pool-worker-{capacity}"),
+                    incarnation_id: "boot".into(),
+                    manifest: awaken_dispatch_testkit::worker_http::current_dispatch_codec_manifest(
+                    ),
+                    create_ledger: None,
+                },
+                clock.now_ms(),
+                60_000,
+            )
+            .await
+            .unwrap();
+        let dispatch = persistence.runtime_authority.dispatch_store();
+        let mut claims = Vec::new();
+        let mut threads = Vec::new();
+        let mut guards = Vec::new();
+        for ordinal in 0..capacity {
+            let request = RunDispatch::new(awaken_dispatch_testkit::worker_http::activation(
+                &format!("pool-{capacity}-{ordinal}"),
+            ));
+            let thread = request.thread_id().clone();
+            seed.commit(ThreadCommit::assemble(
+                thread.clone(),
+                RunDisposition::ended(
+                    RunId(format!("history-{capacity}-{ordinal}")),
+                    EndCause::NaturalEnd,
+                ),
+                true,
+                vec![Message::text(
+                    MessageId("pool-message".into()),
+                    Role::Assistant,
+                    "prefix",
+                )],
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .unwrap();
+            let run = request.run_id().clone();
+            dispatch.enqueue(request).await.unwrap();
+            let claimed = dispatch
+                .claim_run(
+                    &run,
+                    &registered.snapshot.identity.lease_owner(),
+                    60_000,
+                    &Default::default(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            claims.push(RunClaim::from(&claimed.lease));
+            threads.push(thread);
+        }
+        for claim in &claims {
+            guards.push(dispatch.lock_commit_epoch(claim).await.unwrap().unwrap());
+        }
+        assert_eq!(
+            pool.num_idle(),
+            0,
+            "P1 every original authority slot is guarded"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            assert!(
+                directory.list().await.unwrap().contains(&registered),
+                "P1 roster"
+            );
+            assert_eq!(
+                directory
+                    .current(&registered.snapshot.identity.worker_id)
+                    .await
+                    .unwrap(),
+                Some(registered.clone()),
+                "P1 current"
+            );
+            assert_eq!(
+                directory
+                    .incarnation(&registered.snapshot.identity)
+                    .await
+                    .unwrap(),
+                Some(registered.clone()),
+                "P1 exact incarnation"
+            );
+            for (thread, claim) in threads.iter().zip(&claims) {
+                let recovery = persistence
+                    .run_recovery
+                    .as_ref()
+                    .unwrap()
+                    .recovery_snapshot(thread, &claim.run_id)
+                    .await
+                    .unwrap();
+                assert_eq!(recovery.messages.len(), 1, "P2 cold prefix truth");
+                let view = persistence
+                    .runtime_authority
+                    .open_commit(&thread.0)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    view.authoritative_committed_messages(thread).await.unwrap(),
+                    recovery.messages,
+                    "P2 derived projection read"
+                );
+                assert!(
+                    persistence
+                        .runtime_authority
+                        .durable_thread_exists(&thread.0)
+                        .await
+                        .unwrap(),
+                    "P2 authoritative collision read"
+                );
+            }
+        })
+        .await
+        .expect("P1/P2 actual row guards cannot block their dependency observations");
+        sqlx::query("UPDATE t_coordinator_dependency_reads.runtime_message SET data = 'null'::jsonb WHERE thread_id = $1")
+            .bind(&threads[0].0).execute(&admin).await.unwrap();
+        assert!(
+            persistence
+                .run_recovery
+                .as_ref()
+                .unwrap()
+                .recovery_snapshot(&threads[0], &claims[0].run_id)
+                .await
+                .is_err(),
+            "P3 malformed prefix fails closed"
+        );
+        for guard in guards {
+            if verify {
+                drop(guard);
+            } else {
+                guard.release().await.unwrap();
+            }
+        }
+        for claim in &claims {
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), dispatch.claim_is_current(claim))
+                    .await
+                    .expect("P3 original authority slot released")
+                    .unwrap()
+            );
+        }
+    }
+    admin
+        .execute("DROP SCHEMA t_coordinator_dependency_reads CASCADE")
+        .await
+        .unwrap();
+    admin.close().await;
 }

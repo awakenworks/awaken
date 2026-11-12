@@ -114,7 +114,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0005-run-terminal-state-single-authority.md` | Decision record | Not required | n/a |
 | `adr/0006-fact-authority-run-record-is-cache.md` | Decision record | Not required | n/a |
 | `adr/0007-runtime-owns-tool-execution.md` | Decision record | Not required | n/a |
-| `adr/0008-durable-postgres-commit-backend.md` | Decision record | Not required | n/a |
+| `adr/0008-durable-postgres-commit-backend.md` | Decision record and PostgreSQL guard/dependency pool role owner, changed-cohort qualification pending | Required | self |
 | `adr/0009-durable-run-ingress-slice.md` | Decision record | Not required | n/a |
 | `adr/0010-idempotent-pending-consumption.md` | Decision record | Not required | n/a |
 | `adr/0011-autonomous-dispatch-service.md` | Decision record | Not required | n/a |

@@ -333,31 +333,20 @@ impl DurableRuntimeAuthority {
         schema: SchemaAccess,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Arc<Self>, String> {
-        let postgres_pool = if storage.dispatch_backend == DispatchBackend::Postgres
-            || storage.store == StoreKind::Postgres
-        {
-            Some(
-                awaken_sql_storage::postgres_pool_options()
-                    .max_connections(storage.postgres_max_connections.get())
-                    .connect(required_database_url(
-                        storage,
-                        "Postgres Runtime authority",
-                    )?)
-                    .await
-                    .map_err(|error| format!("connect Coordinator Postgres pool: {error}"))?,
-            )
-        } else {
-            None
-        };
-        Self::open_with_postgres_pool(storage, schema, postgres_pool, clock).await
+        let (postgres_pool, postgres_read_pool) =
+            super::postgres_pools::open_postgres_pools(storage).await?;
+        Self::open_with_postgres_pools(storage, schema, postgres_pool, postgres_read_pool, clock)
+            .await
     }
 
-    /// Open every Runtime persistence adapter over the process's one
-    /// process pool when Postgres is selected. SQLite callers pass no pool.
-    pub(crate) async fn open_with_postgres_pool(
+    /// Keep Runtime writes on the process authority pool while dependent
+    /// authoritative reads use the same-primary, same-schema read pool.
+    /// SQLite callers pass neither pool.
+    pub(crate) async fn open_with_postgres_pools(
         storage: &CoordinatorStorage,
         schema: SchemaAccess,
         postgres_pool: Option<sqlx::PgPool>,
+        postgres_read_pool: Option<sqlx::PgPool>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<Arc<Self>, String> {
         let (dispatch, wake) =
@@ -366,9 +355,16 @@ impl DurableRuntimeAuthority {
             let pool = postgres_pool.clone().ok_or_else(|| {
                 "Postgres commit requires the process-owned Coordinator pool".to_owned()
             })?;
+            let read_pool = postgres_read_pool.ok_or_else(|| {
+                "Postgres commit requires the process-owned dependency read pool".to_owned()
+            })?;
             let commit = match schema {
-                SchemaAccess::Migrate => PostgresCommitCoordinator::with_pool(pool).await,
-                SchemaAccess::Verify => PostgresCommitCoordinator::with_existing_pool(pool).await,
+                SchemaAccess::Migrate => {
+                    PostgresCommitCoordinator::with_read_pool(pool, read_pool).await
+                }
+                SchemaAccess::Verify => {
+                    PostgresCommitCoordinator::with_existing_read_pool(pool, read_pool).await
+                }
             }
             .map_err(|error| error.to_string())?;
             Some(Arc::new(commit))
@@ -427,17 +423,6 @@ pub(crate) async fn migrate_with_pool(
             .map_err(|error| error.to_string())?;
     }
     Ok(())
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn required_database_url<'a>(
-    storage: &'a CoordinatorStorage,
-    component: &str,
-) -> Result<&'a str, String> {
-    storage
-        .database_url
-        .as_deref()
-        .ok_or_else(|| format!("{component} requires runtime.database_url"))
 }
 
 async fn open_dispatch(
