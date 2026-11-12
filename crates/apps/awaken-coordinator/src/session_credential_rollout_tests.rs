@@ -14,6 +14,7 @@ use awaken_session_types::SessionId;
 
 use crate::SessionCredentialRolloutAdoption;
 
+mod claimed_preparation_tests;
 mod preparation_tests;
 
 fn rollout_event(
@@ -504,14 +505,19 @@ async fn vault_rollout_graph_releases_each_credential_return_edge() {
             None,
         ));
         let (vault_id, _, _, _) = vault
-            .enter_application_mcp_bearer(
-                "workspace-a",
-                "application-a",
-                "https://mcp.example.test",
-                "drop-graph-command",
-                1,
-                awaken_agent_contract::RedactedString::new("drop-secret"),
-            )
+            .enter_application_mcp_bearer(awaken_credential_vault::ApplicationMcpBearerEntry {
+                workspace_id: "workspace-a".into(),
+                application_authority_id: "application-a".into(),
+                mcp_server_url: "https://mcp.example.test".into(),
+                target: awaken_credential_vault::McpCredentialTarget::parse_http(
+                    "https://mcp.example.test",
+                )
+                .unwrap(),
+                idempotency_key: "drop-graph-command".into(),
+                credential_generation: 1,
+                expires_at_unix_ms: None,
+                bearer: awaken_agent_contract::RedactedString::new("drop-secret"),
+            })
             .await
             .unwrap();
         let runtime = Arc::new(RehydrateFake::default());

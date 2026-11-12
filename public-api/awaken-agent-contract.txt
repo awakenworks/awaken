@@ -620,6 +620,8 @@ pub struct awaken_agent_contract::credential::CandidateFingerprint(pub alloc::st
 pub struct awaken_agent_contract::credential::CredentialAccess
 pub awaken_agent_contract::credential::CredentialAccess::credential: awaken_agent_contract::credential::CredentialRef
 pub awaken_agent_contract::credential::CredentialAccess::envelope: core::option::Option<awaken_agent_contract::credential::CredentialEnvelope>
+pub awaken_agent_contract::credential::CredentialAccess::expires_at_unix_ms: core::option::Option<u64>
+pub awaken_agent_contract::credential::CredentialAccess::issuer_generation: core::option::Option<u64>
 pub awaken_agent_contract::credential::CredentialAccess::material_source: awaken_agent_contract::credential::CredentialMaterialSource
 pub awaken_agent_contract::credential::CredentialAccess::policy: awaken_agent_contract::credential::CredentialExecutionPolicy
 pub awaken_agent_contract::credential::CredentialAccess::refresh: core::option::Option<awaken_agent_contract::credential::CredentialRefreshAccess>
@@ -629,6 +631,8 @@ impl awaken_agent_contract::credential::CredentialAccess
 pub fn awaken_agent_contract::credential::CredentialAccess::is_legacy_direct(&self) -> bool
 pub fn awaken_agent_contract::credential::CredentialAccess::new(awaken_agent_contract::credential::CredentialRef, awaken_agent_contract::credential::CredentialMaterialSource, awaken_agent_contract::credential::CredentialUsage, awaken_agent_contract::credential::CredentialExecutionPolicy) -> Self
 pub fn awaken_agent_contract::credential::CredentialAccess::with_envelope(self, awaken_agent_contract::credential::CredentialEnvelope) -> Self
+pub fn awaken_agent_contract::credential::CredentialAccess::with_expiry(self, u64) -> Self
+pub fn awaken_agent_contract::credential::CredentialAccess::with_issuer_generation(self, u64) -> Self
 pub fn awaken_agent_contract::credential::CredentialAccess::with_refresh(self, awaken_agent_contract::credential::CredentialRefreshAccess) -> Self
 pub fn awaken_agent_contract::credential::CredentialAccess::with_target(self, awaken_agent_contract::credential::CredentialTarget) -> Self
 impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_contract::credential::CredentialAccess

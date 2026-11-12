@@ -246,6 +246,22 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
 impl awaken_session_execution_contract::SessionRealizationControl
     for DeadlineSessionRealizationControl<'_>
 {
+    async fn begin_claimed_session_realization(
+        &self,
+        context: &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+        command: awaken_session_execution_contract::BeginSessionRealization,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRealizationDirective,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        self.call(
+            "begin_claimed",
+            self.inner
+                .begin_claimed_session_realization(context, command),
+        )
+        .await
+    }
+
     async fn begin_session_realization(
         &self,
         command: awaken_session_execution_contract::BeginSessionRealization,

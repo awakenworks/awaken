@@ -446,6 +446,12 @@ impl PinnedCredentialMaterializer {
                 expected_provider,
             })
             .await?;
+        if access
+            .expires_at_unix_ms
+            .is_some_and(|expiry| self.clock.now_ms() >= expiry)
+        {
+            return Err(CredentialMaterialError::Expired);
+        }
         if resolved.credential != access.credential || resolved.holder != *selected_holder {
             return Err(CredentialMaterialError::ResolverMismatch);
         }
@@ -525,6 +531,7 @@ fn admission_material_error(
         }
         Admission::CredentialRevisionMismatch => CredentialMaterialError::RevisionMismatch,
         Admission::EnvelopeExpired => CredentialMaterialError::EnvelopeExpired,
+        Admission::CredentialExpired => CredentialMaterialError::Expired,
         _ => CredentialMaterialError::Unavailable,
     }
 }
@@ -1924,5 +1931,113 @@ mod tests {
                 .await,
             Err(CredentialMaterialError::ResolverMismatch)
         );
+    }
+
+    /// The resolver succeeds after its awaited work. The materializer alone
+    /// must refuse material whose exact source expiry was reached during that
+    /// wait. The boundary-minus-one and absent-metadata rows preserve success.
+    #[tokio::test]
+    async fn source_expiry_is_rechecked_after_external_resolution_await() {
+        struct AdvancingResolver {
+            inner: ExactExternalResolver,
+            clock: Arc<awaken_lease_testkit::ManualClock>,
+            completed_at: u64,
+            successful_resolutions: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl CredentialMaterialResolver for AdvancingResolver {
+            fn material_capabilities(
+                &self,
+            ) -> std::collections::BTreeSet<awaken_credential_contract::CredentialMaterialCapability>
+            {
+                self.inner.material_capabilities()
+            }
+
+            async fn resolve_exact(
+                &self,
+                request: CredentialMaterialRequest<'_>,
+            ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
+                tokio::task::yield_now().await;
+                let resolved = self.inner.resolve_exact(request).await?;
+                self.clock.set(self.completed_at);
+                self.successful_resolutions.fetch_add(1, Ordering::SeqCst);
+                Ok(resolved)
+            }
+        }
+
+        for (case, expiry, completed_at, expected_success) in [
+            ("before expiry", Some(5_000), 4_999, true),
+            ("expiry equality", Some(5_000), 5_000, false),
+            ("after expiry", Some(5_000), 5_001, false),
+            ("legacy unknown expiry", None, 5_000, true),
+        ] {
+            let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_000));
+            let holder = selected_holder();
+            let target = "https://service.example/mcp";
+            let usage = CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            };
+            let resolver = Arc::new(AdvancingResolver {
+                inner: ExactExternalResolver {
+                    expected_binding: CredentialMaterialBinding::for_target(
+                        "workspace-a",
+                        &target,
+                        &usage,
+                    ),
+                    expected_payload_fingerprint: "unused-without-envelope",
+                    returned_holder: holder.clone(),
+                },
+                clock: clock.clone(),
+                completed_at,
+                successful_resolutions: AtomicUsize::new(0),
+            });
+            let materializer = PinnedCredentialMaterializer::external_only(resolver.clone(), clock);
+            let mut access = CredentialAccess::new(
+                CredentialRef {
+                    id: "external-source".into(),
+                    revision: 1,
+                },
+                CredentialMaterialSource::WorkerReference,
+                usage,
+                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+            )
+            .with_target(awaken_agent_contract::credential::CredentialTarget::new(
+                awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
+                target,
+            ));
+            access.expires_at_unix_ms = expiry;
+            let result = materializer
+                .resolve_for_workspace(
+                    &access,
+                    &holder,
+                    CredentialRealizationKind::WorkerRelay,
+                    "workspace-a",
+                    &target,
+                )
+                .await;
+            assert_eq!(
+                resolver.successful_resolutions.load(Ordering::SeqCst),
+                1,
+                "{case}: the original resolver succeeds exactly once"
+            );
+            if expected_success {
+                let resolved = result.unwrap_or_else(|error| panic!("{case}: {error}"));
+                assert_eq!(resolved.credential, access.credential, "{case}");
+                assert_eq!(resolved.holder, holder, "{case}");
+                assert_eq!(
+                    resolved.material.single_secret().unwrap().expose_secret(),
+                    "external-sealed-material",
+                    "{case}"
+                );
+            } else {
+                assert_eq!(
+                    result.unwrap_err(),
+                    CredentialMaterialError::Expired,
+                    "{case}"
+                );
+            }
+        }
     }
 }

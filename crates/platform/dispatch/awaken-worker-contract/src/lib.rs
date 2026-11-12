@@ -55,10 +55,10 @@ pub use manifest::{
     BACKGROUND_TASK_CONTROL_CAPABILITY, CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION,
     FingerprintError, HOST_EXECUTOR_CAPABILITY, PREPARED_SESSION_DISPATCH_CAPABILITY,
     PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, REPOSITORY_CREDENTIALS_CAPABILITY, RegisteredCapacity,
-    SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY, SESSION_RESOURCES_CAPABILITY,
-    SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY, TOOL_RESULT_JOURNAL_CAPABILITY,
-    TRUSTED_HOST_SANDBOX_BACKEND, VersionRange, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
-    WorkerCapacity, WorkerManifest, ZeroRegisteredCapacity,
+    SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY, SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY,
+    SESSION_RESOURCES_CAPABILITY, SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY,
+    TOOL_RESULT_JOURNAL_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND, VersionRange,
+    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCapacity, WorkerManifest, ZeroRegisteredCapacity,
 };
 #[cfg(any(test, kani))]
 pub(crate) use observation::dynamic_observation_admitted;
@@ -94,7 +94,7 @@ pub(crate) use requirements::required_capability_is_admitted;
 pub use requirements::{
     ExecutionLocation, Incompatibility, PlacementRequirements, WorkerRecoveryMode,
     admit_required_capabilities, can_claim, can_claim_locally, manifest_recovery_matches_installed,
-    sandbox_tool_recovery_is_compatible,
+    mcp_credentials_require_validity, sandbox_tool_recovery_is_compatible,
 };
 pub use run_claim::RunClaim;
 pub use source_retention::WorkerSourceRetention;

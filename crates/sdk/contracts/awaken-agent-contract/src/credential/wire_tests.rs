@@ -26,6 +26,46 @@ fn worker() -> PlaintextHolder {
 }
 
 #[test]
+fn exact_revision_expiry_round_trips_and_changes_only_expiring_wire_identity() {
+    let legacy = CredentialAccess::new(
+        CredentialRef {
+            id: "credential-a".into(),
+            revision: 7,
+        },
+        CredentialMaterialSource::ControlPlaneReference,
+        CredentialUsage::ProviderAdapter,
+        CredentialExecutionPolicy::exact(worker(), ModelExposurePolicy::Forbidden),
+    );
+    let legacy_wire = serde_json::to_value(&legacy).unwrap();
+    assert!(legacy_wire.get("expires_at_unix_ms").is_none());
+    let expiring = legacy.clone().with_expiry(5_000).with_issuer_generation(3);
+    let mut expected = legacy_wire.clone();
+    expected["expires_at_unix_ms"] = json!(5_000);
+    expected["issuer_generation"] = json!(3);
+    pins(&expiring, expected);
+    assert_eq!(
+        serde_json::from_value::<CredentialAccess>(legacy_wire)
+            .unwrap()
+            .expires_at_unix_ms,
+        None,
+        "missing legacy validity remains unknown"
+    );
+    assert_ne!(
+        crate::stable_fingerprint(&legacy),
+        crate::stable_fingerprint(&expiring)
+    );
+    assert_ne!(
+        crate::stable_fingerprint(&expiring),
+        crate::stable_fingerprint(&expiring.clone().with_expiry(6_000))
+    );
+    assert_ne!(
+        crate::stable_fingerprint(&expiring),
+        crate::stable_fingerprint(&expiring.clone().with_issuer_generation(4))
+    );
+    assert_eq!(expiring.credential, legacy.credential);
+}
+
+#[test]
 fn scalar_reference_values_keep_their_wire_shape() {
     pins(
         &CredentialRef {

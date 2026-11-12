@@ -144,6 +144,23 @@ fn mcp_projection_requires_realization(
     session.mcp.needs_realization() || active_requires_new_owner
 }
 
+fn claimed_preparation_error(
+    error: awaken_session_execution_contract::SessionRealizationControlFailure,
+) -> SessionUpdateError {
+    use awaken_session_execution_contract::SessionRealizationControlFailure as Failure;
+    match error {
+        Failure::NotReady => SessionUpdateError::NotIdle,
+        Failure::Conflict => SessionUpdateError::Conflict,
+        Failure::NotFound => SessionUpdateError::NotFound,
+        Failure::Invalid(_) | Failure::Internal(_) | Failure::Retired | Failure::Terminal => {
+            SessionUpdateError::Rejected(RunError::bad_request(error.to_string()))
+        }
+        Failure::Unavailable(_) | Failure::StaleOwnership => {
+            SessionUpdateError::Unavailable(error.to_string())
+        }
+    }
+}
+
 fn realization_failure_after_commit(
     error: awaken_session_execution_contract::SessionRealizationDriveError,
 ) -> RunError {
@@ -334,13 +351,22 @@ fn compile_update_tool_settings(
     compiler: &dyn awaken_tool_contract::ToolConfigurationCompiler,
     command: &SessionUpdateCommand,
     session: &awaken_session_contract::SessionAggregate,
+    preparation: Option<
+        &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+    >,
 ) -> Result<SessionUpdateCommand, SessionUpdateError> {
     if session.execution != SessionExecutionState::Idle
         && !is_budget_only_tightening(command, session)
         && !(matches!(
             command.mcp_update,
             Some(SessionMcpUpdate::CredentialLifecycle { .. })
-        ) && awaken_session_contract::session_can_adopt_mcp_credential_lifecycle(session))
+        ) && (awaken_session_contract::session_can_adopt_mcp_credential_lifecycle(session)
+            || preparation.is_some_and(|context| {
+                session.admits_claimed_mcp_credential_preparation(
+                    context.thread_id(),
+                    &context.activation().run_id,
+                )
+            })))
     {
         return Err(SessionUpdateError::NotIdle);
     }
@@ -434,6 +460,9 @@ impl SessionUpdateCommands {
     async fn reconcile_mcp_update_intent(
         &self,
         session_id: &awaken_session_types::SessionId,
+        preparation: Option<
+            &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+        >,
     ) -> Result<PersistedSession, SessionUpdateError> {
         let mutations = &self.mutations;
         let owner_scope = mutations
@@ -446,6 +475,7 @@ impl SessionUpdateCommands {
                 .await
                 .map_err(repository_failure)
                 .map_err(SessionUpdateError::mutation)?;
+            self.verify_claimed_credential_preparation(preparation, &session)?;
             let desired = session.mcp.desired_attachments();
             let drafts = desired
                 .into_iter()
@@ -501,6 +531,99 @@ impl SessionUpdateCommands {
         session_id: &awaken_session_types::SessionId,
         command: SessionUpdateCommand,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
+        self.update_session_inner(session_id, command, None).await
+    }
+
+    /// Commit only a monotonic credential pin under the caller's retained
+    /// pre-physical Dispatch exclusion. Physical realization remains the
+    /// canonical begin/drive protocol; Pending is not an adoption receipt.
+    pub async fn update_claimed_session_credentials(
+        &self,
+        context: &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+        session_id: &awaken_session_types::SessionId,
+        command: SessionUpdateCommand,
+    ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
+        if context.session_id() != session_id.as_str()
+            || context.session_work_authority().session_id() != session_id
+            || command.title.is_some()
+            || command.metadata.is_some()
+            || command.budget.is_some()
+            || command.tools.is_some()
+            || !matches!(
+                command.mcp_update,
+                Some(SessionMcpUpdate::CredentialLifecycle { revoked: false, .. })
+            )
+        {
+            return Err(SessionUpdateError::Rejected(RunError::bad_request(
+                "claimed credential preparation permits only the exact Session's credential update",
+            )));
+        }
+        self.update_session_inner(session_id, command, Some(context))
+            .await
+    }
+
+    fn verify_claimed_credential_preparation(
+        &self,
+        preparation: Option<
+            &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+        >,
+        session: &awaken_session_contract::SessionAggregate,
+    ) -> Result<(), SessionUpdateError> {
+        let Some(context) = preparation else {
+            return Ok(());
+        };
+        context
+            .verify_session_at(session.session_id.as_str(), self.clock.now_ms())
+            .map_err(claimed_preparation_error)?;
+        if session.is_terminal() {
+            return Err(SessionUpdateError::Rejected(RunError::bad_request(
+                "claimed credential preparation has inconsistent current Run coordinates",
+            )));
+        }
+        if session.execution != SessionExecutionState::Idle {
+            if session.active_activity_epochs.len() > 1 {
+                return Err(SessionUpdateError::NotIdle);
+            }
+            let complete_current = session
+                .run_activities()
+                .is_some_and(|(records, unrecorded)| {
+                    !unrecorded
+                        && session.active_activity_epochs.first().is_some_and(|epoch| {
+                            records.iter().any(|record| {
+                                record.activity_epoch().get() == *epoch
+                                    && record.thread_id() == context.thread_id()
+                                    && record.run_id() == &context.activation().run_id
+                            })
+                        })
+                });
+            if !complete_current {
+                return Err(SessionUpdateError::Rejected(RunError::bad_request(
+                    "claimed credential preparation requires the original current Run activity receipt",
+                )));
+            }
+            if !session.admits_claimed_mcp_credential_preparation(
+                context.thread_id(),
+                &context.activation().run_id,
+            ) {
+                return Err(SessionUpdateError::NotIdle);
+            }
+        }
+        Ok(())
+    }
+
+    async fn update_session_inner(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        command: SessionUpdateCommand,
+        preparation: Option<
+            &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+        >,
+    ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
+        if let Some(context) = preparation {
+            context
+                .verify_at(self.clock.now_ms())
+                .map_err(claimed_preparation_error)?;
+        }
         let command_record = command
             .idempotency_key
             .as_ref()
@@ -538,7 +661,7 @@ impl SessionUpdateCommands {
                 admission
                     .as_ref()
                     .expect("MCP retry acquired executable admission")
-                    .enter(|| self.reconcile_mcp_update_intent(session_id))
+                    .enter(|| self.reconcile_mcp_update_intent(session_id, preparation))
                     .await?
             } else {
                 self.mutations
@@ -554,7 +677,9 @@ impl SessionUpdateCommands {
                 command_applied: false,
                 changes: SessionUpdateChanges::default(),
             };
-            return self.reconcile_update_runtime(outcome, &command).await;
+            return self
+                .reconcile_update_runtime_for_preparation(outcome, &command, preparation)
+                .await;
         }
 
         let persisted = self
@@ -599,7 +724,9 @@ impl SessionUpdateCommands {
         };
 
         for attempt in 0..ROOT_CAS_ATTEMPTS {
-            let update = || self.update_session_once(session_id, &command, command_record.clone());
+            let update = || {
+                self.update_session_once(session_id, &command, command_record.clone(), preparation)
+            };
             let result = match admission.as_ref() {
                 Some(admission) => admission.enter(update).await,
                 None => update().await,
@@ -611,12 +738,33 @@ impl SessionUpdateCommands {
                     continue;
                 }
                 Ok(outcome) => {
-                    return self.reconcile_update_runtime(outcome, &command).await;
+                    return self
+                        .reconcile_update_runtime_for_preparation(outcome, &command, preparation)
+                        .await;
                 }
                 result => return result,
             }
         }
         Err(SessionUpdateError::Conflict)
+    }
+
+    async fn reconcile_update_runtime_for_preparation(
+        &self,
+        outcome: SessionUpdateOutcome,
+        command: &SessionUpdateCommand,
+        preparation: Option<
+            &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+        >,
+    ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
+        if let Some(context) = preparation {
+            context
+                .verify_at(self.clock.now_ms())
+                .map_err(claimed_preparation_error)?;
+            // The caller drives the one original realization protocol after
+            // this desired-state commit. Do not acquire another driver here.
+            return Ok(outcome);
+        }
+        self.reconcile_update_runtime(outcome, command).await
     }
 
     async fn reconcile_update_runtime(
@@ -831,6 +979,9 @@ impl SessionUpdateCommands {
         session_id: &awaken_session_types::SessionId,
         command: &SessionUpdateCommand,
         command_record: Option<IdempotencyRecord>,
+        preparation: Option<
+            &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+        >,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
         let mutations = &self.mutations;
         let owner_scope = mutations
@@ -842,6 +993,7 @@ impl SessionUpdateCommands {
             .await
             .map_err(repository_failure)
             .map_err(SessionUpdateError::mutation)?;
+        self.verify_claimed_credential_preparation(preparation, &session)?;
         // Close the receipt/read race. A concurrent exact command may commit
         // after the public fast-path check but before this snapshot; in that
         // case the durable receipt is authoritative and no second payload is
@@ -860,7 +1012,8 @@ impl SessionUpdateCommands {
             }
             if command.mcp_update.is_some() {
                 session = crate::mutation::aggregate_from_snapshot(
-                    self.reconcile_mcp_update_intent(session_id).await?,
+                    self.reconcile_mcp_update_intent(session_id, preparation)
+                        .await?,
                 )
                 .map_err(repository_failure)
                 .map_err(SessionUpdateError::mutation)?;
@@ -882,7 +1035,7 @@ impl SessionUpdateCommands {
             });
         }
         let compiler = self.tool_configuration_compiler.as_ref();
-        let command = &compile_update_tool_settings(compiler, command, &session)?;
+        let command = &compile_update_tool_settings(compiler, command, &session, preparation)?;
         let before = session.snapshot().clone();
         let mcp_changed = match command.mcp_update.as_ref() {
             Some(update) => {
@@ -915,6 +1068,7 @@ impl SessionUpdateCommands {
             || changes.budget()
             || command_record.is_some()
         {
+            self.verify_claimed_credential_preparation(preparation, &session)?;
             let commit = match command_record {
                 Some(record) => mutations
                     .commit_session_snapshot_with_record(&owner_scope, session, record, Vec::new())

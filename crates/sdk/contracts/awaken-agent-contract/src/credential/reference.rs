@@ -371,6 +371,15 @@ enum LegacyCredentialInjection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CredentialAccess {
     pub credential: CredentialRef,
+    /// Expiry of this exact source revision, frozen by the canonical source
+    /// compiler. Absence is legacy/unspecified validity, never proof of an
+    /// unbounded application grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_unix_ms: Option<u64>,
+    /// Positive issuer-owned material generation, distinct from the Vault
+    /// source revision. Only the canonical source compiler can establish it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer_generation: Option<u64>,
     pub material_source: CredentialMaterialSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envelope: Option<CredentialEnvelope>,
@@ -393,6 +402,10 @@ fn is_false(value: &bool) -> bool {
 #[derive(Deserialize)]
 struct CredentialAccessWire {
     credential: CredentialRef,
+    #[serde(default)]
+    expires_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    issuer_generation: Option<u64>,
     #[serde(default)]
     material_source: Option<CredentialMaterialSource>,
     #[serde(default)]
@@ -446,6 +459,8 @@ impl<'de> Deserialize<'de> for CredentialAccess {
         })?;
         Ok(Self {
             credential: wire.credential,
+            expires_at_unix_ms: wire.expires_at_unix_ms,
+            issuer_generation: wire.issuer_generation,
             material_source,
             envelope: wire.envelope,
             target: wire.target,
@@ -467,6 +482,8 @@ impl CredentialAccess {
     ) -> Self {
         Self {
             credential,
+            expires_at_unix_ms: None,
+            issuer_generation: None,
             material_source,
             envelope: None,
             target: None,
@@ -487,6 +504,20 @@ impl CredentialAccess {
     #[must_use]
     pub fn with_target(mut self, target: CredentialTarget) -> Self {
         self.target = Some(target);
+        self
+    }
+
+    /// Freeze the canonical expiry of this exact source revision.
+    #[must_use]
+    pub fn with_expiry(mut self, expires_at_unix_ms: u64) -> Self {
+        self.expires_at_unix_ms = Some(expires_at_unix_ms);
+        self
+    }
+
+    /// Freeze the issuer-owned generation of this exact source revision.
+    #[must_use]
+    pub fn with_issuer_generation(mut self, issuer_generation: u64) -> Self {
+        self.issuer_generation = Some(issuer_generation);
         self
     }
 

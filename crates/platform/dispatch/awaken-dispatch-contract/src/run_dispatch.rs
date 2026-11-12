@@ -18,6 +18,9 @@ use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 use awaken_worker_contract::PlacementRequirements;
 use serde::{Deserialize, Serialize};
 
+mod mcp_requirements;
+pub(crate) use mcp_requirements::SessionMcpRequirementProjectionError;
+
 /// Dispatch-neutral envelope for a frozen Session resource manifest.
 ///
 /// The dispatch bounded context owns delivery, not Session resource vocabulary,
@@ -617,6 +620,7 @@ impl RunDispatch {
     fn required_worker_codecs(
         &self,
         include_runtime_journal: bool,
+        mcp_validity: Option<&'static str>,
     ) -> impl Iterator<Item = &'static str> + use<> {
         let prepared = (self.identity_scope == DispatchIdentityScope::PreparedSessionCommand)
             .then_some(awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY);
@@ -626,14 +630,35 @@ impl RunDispatch {
         let task_control = self
             .needs_background_task_control()
             .then_some(awaken_worker_contract::BACKGROUND_TASK_CONTROL_CAPABILITY);
-        [prepared, journal, task_control].into_iter().flatten()
+        [prepared, journal, task_control, mcp_validity]
+            .into_iter()
+            .flatten()
+    }
+
+    fn mcp_validity_codec(
+        &self,
+    ) -> Result<Option<&'static str>, awaken_worker_contract::Incompatibility> {
+        let requirements = self
+            .session_mcp_credential_requirements()
+            .map_err(|_| awaken_worker_contract::Incompatibility::InvalidSessionMcpProjection)?;
+        Ok(awaken_worker_contract::mcp_credentials_require_validity(
+            requirements
+                .iter()
+                .map(|requirement| &requirement.credential),
+        )
+        .then_some(awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY))
     }
 
     fn bind_worker_codec_requirements(&mut self) {
         if self.identity_scope != DispatchIdentityScope::PreparedSessionCommand {
             return;
         }
-        let required = self.required_worker_codecs(true);
+        // Builders do not authorize a malformed carrier. Mark its decoder
+        // conservatively; submission still returns the original typed refusal.
+        let mcp = self.mcp_validity_codec().unwrap_or(Some(
+            awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY,
+        ));
+        let required = self.required_worker_codecs(true, mcp);
         // This narrows a registered Worker's eligibility but does not force an
         // already installed local owner to acquire a registered Worker.
         self.placement
@@ -646,7 +671,10 @@ impl RunDispatch {
     /// their exact wire bytes; this never changes execution location.
     #[must_use]
     pub fn with_worker_codec_requirements(mut self) -> Self {
-        let required = self.required_worker_codecs(true);
+        let mcp = self.mcp_validity_codec().unwrap_or(Some(
+            awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY,
+        ));
+        let required = self.required_worker_codecs(true, mcp);
         self.placement
             .required_capabilities
             .extend(required.map(str::to_owned));
@@ -663,7 +691,7 @@ impl RunDispatch {
             != awaken_worker_contract::ExecutionLocation::LocalOnly
             && self.placement.runtime_protocol_version != 0;
         awaken_worker_contract::admit_required_capabilities(
-            self.required_worker_codecs(remote_wire),
+            self.required_worker_codecs(remote_wire, self.mcp_validity_codec()?),
             &self.placement.required_capabilities,
         )
     }
@@ -675,13 +703,14 @@ impl RunDispatch {
         &self,
         worker: Option<&awaken_worker_contract::WorkerManifest>,
     ) -> Result<(), awaken_worker_contract::Incompatibility> {
+        let mcp = self.mcp_validity_codec()?;
         awaken_worker_contract::admit_required_capabilities(
-            self.required_worker_codecs(true),
+            self.required_worker_codecs(true, mcp),
             &self.placement.required_capabilities,
         )?;
         let no_offers = std::collections::BTreeSet::new();
         awaken_worker_contract::admit_required_capabilities(
-            self.required_worker_codecs(true),
+            self.required_worker_codecs(true, mcp),
             worker.map_or(&no_offers, |manifest| &manifest.capabilities),
         )
     }

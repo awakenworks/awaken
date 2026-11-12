@@ -5,6 +5,147 @@ struct FixtureSessionPlacement;
 
 struct SelectiveSessionPlacement;
 
+struct ValiditySessionPlacement;
+
+impl awaken_session_execution_contract::SessionPreparationPlacement for ValiditySessionPlacement {
+    fn requirements(
+        &self,
+        session: &PersistedSession,
+    ) -> Result<
+        awaken_worker_contract::PlacementRequirements,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        let mut required =
+            awaken_session_execution_contract::SessionPreparationPlacement::requirements(
+                &FixtureSessionPlacement,
+                session,
+            )?;
+        // The production Run-free compiler uses this same metadata projection;
+        // this selector fixture introduces no alternative policy or ranking.
+        if awaken_worker_contract::mcp_credentials_require_validity(
+            session
+                .mcp
+                .desired_attachments()
+                .into_iter()
+                .filter_map(|a| a.credential.as_ref()),
+        ) {
+            required.required_capabilities.insert(
+                awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY.to_owned(),
+            );
+        }
+        Ok(required)
+    }
+}
+
+#[tokio::test]
+async fn run_free_selector_refuses_old_generic_worker_before_mutating_a_validity_bearing_root() {
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let id = SessionId::from("validity-preparation");
+    let mut root = idle_mcp_update(id.as_str(), false, false);
+    let holder = root
+        .frozen_baseline()
+        .unwrap()
+        .environment
+        .credential_realization
+        .mcp_holder
+        .clone();
+    let access = awaken_agent_contract::credential::CredentialAccess::new(
+        awaken_agent_contract::credential::CredentialRef {
+            id: "source".into(),
+            revision: 1,
+        },
+        awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+        awaken_agent_contract::credential::CredentialUsage::HttpHeader {
+            name: "authorization".into(),
+            scheme: Some("Bearer".into()),
+        },
+        awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
+            holder.clone(),
+            awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
+        ),
+    )
+    .with_expiry(u64::MAX)
+    .with_issuer_generation(1);
+    root.mcp = crate::session_mcp::SessionMcpAttachmentSet::from_initial(
+        vec![crate::session_mcp::McpAttachmentDraft {
+            name: "docs".into(),
+            target: awaken_agent_contract::McpTarget::parse_http("https://docs.example.test")
+                .unwrap(),
+            prompts_as_skills: false,
+            credential: Some(access),
+            origin: crate::session_mcp::McpAttachmentOrigin::Session,
+        }],
+        Some(holder),
+    )
+    .unwrap();
+    create(repo.as_ref(), root).await;
+    let before = repo.get(&id).await.unwrap();
+    let observations = Arc::new(RecordingWorkerObservations::default());
+    let probe = Arc::new(crate::ExecutionObservationProbe::default());
+    let app = configured_application(
+        Arc::new(NoopRuntime),
+        SessionPersistence::new(repo.clone(), system_clock()),
+        Arc::new(RecordingEnvironmentSource::default()),
+        Default::default(),
+        None,
+        crate::SessionExecutionAdmission::new(
+            probe,
+            observations.clone(),
+            Arc::new(ValiditySessionPlacement),
+        ),
+    );
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        reassign_existing_lease: false,
+    };
+    let mut manifest = terminal_cleanup_manifest();
+    manifest
+        .capabilities
+        .remove(awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY);
+    observations.replace(vec![terminal_cleanup_worker(&target, manifest.clone())]);
+    assert!(
+        app.realizations
+            .claim_next_session_preparation(target.clone())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        repo.get(&id).await.unwrap(),
+        before,
+        "old Worker cannot acquire the realization root"
+    );
+    manifest
+        .capabilities
+        .insert(awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY.to_owned());
+    observations.replace(vec![terminal_cleanup_worker(&target, manifest)]);
+    let assigned = app
+        .realizations
+        .claim_next_session_preparation(target)
+        .await
+        .unwrap()
+        .expect("new generic Worker remains eligible");
+    assert_eq!(assigned.session_id, id);
+    assert!(matches!(
+        assigned.directive.action,
+        awaken_session_execution_contract::SessionRealizationAction::Stage { .. }
+    ));
+    assert!(
+        repo.get(&id)
+            .await
+            .unwrap()
+            .active_activity_epochs
+            .is_empty(),
+        "capability grants no model activity"
+    );
+}
+
 impl awaken_session_execution_contract::SessionPreparationPlacement for FixtureSessionPlacement {
     fn requirements(
         &self,

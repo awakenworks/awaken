@@ -95,6 +95,7 @@ pub use token_publication::{
     token_publication_state,
 };
 mod cleanup;
+pub(crate) use application_mcp::application_mcp_issuer_generation;
 pub use application_mcp::{
     APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, PreparedApplicationMcpBearerRotation,
     application_mcp_material_ref, application_mcp_operation_id,
@@ -1080,11 +1081,25 @@ impl PendingManagedCredentialMutation {
             .revision
             .checked_add(1)
             .is_some_and(|next| self.after_credential.revision == next);
+        // Validity is material-generation metadata only for canonical
+        // application MCP locators. Generic descriptor authority remains
+        // immutable, and metadata-only changes cannot extend the old pin.
+        let descriptor_contract_matches = before_source.descriptor == self.after_source.descriptor
+            || (self.operation == ManagedCredentialOperation::Update
+                && writes_new_material
+                && before_source
+                    .version
+                    .checked_add(1)
+                    .is_some_and(|next| self.after_source.version == next)
+                && application_mcp::application_mcp_validity_rotation_allowed(
+                    before_source,
+                    &self.after_source,
+                ));
         let immutable_source_axes_match = before_source.id == self.after_source.id
             && before_source.workspace_id == self.after_source.workspace_id
             && before_source.kind == self.after_source.kind
             && before_source.replacement_of == self.after_source.replacement_of
-            && before_source.descriptor == self.after_source.descriptor
+            && descriptor_contract_matches
             && before_source.provider_id == self.after_source.provider_id
             && before_source.protocol_endpoint_id == self.after_source.protocol_endpoint_id
             && before_source.env_key == self.after_source.env_key

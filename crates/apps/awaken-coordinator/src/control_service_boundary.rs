@@ -1178,15 +1178,17 @@ mod tests {
             // request counts: E4/E5 use the actual Control transport trace.
             let url = "https://normalizer.example.test/mcp";
             let (vault_id, source_id, revision, adoption) = credentials
-                .enter_application_mcp_bearer(
-                    "workspace-a",
-                    "normalizer-fixture",
-                    url,
-                    "normalizer-command",
-                    1,
+                .enter_application_mcp_bearer(awaken_credential_vault::ApplicationMcpBearerEntry {
+                    workspace_id: "workspace-a".into(),
+                    application_authority_id: "normalizer-fixture".into(),
+                    mcp_server_url: url.into(),
+                    target: awaken_credential_vault::McpCredentialTarget::parse_http(url).unwrap(),
+                    idempotency_key: "normalizer-command".into(),
+                    credential_generation: 1,
+                    expires_at_unix_ms: None,
                     // awaken-allow(secret): test-only material never recorded by the observer.
-                    awaken_agent_contract::RedactedString::new("normalizer-test-bearer"),
-                )
+                    bearer: awaken_agent_contract::RedactedString::new("normalizer-test-bearer"),
+                })
                 .await
                 .unwrap();
             assert!(

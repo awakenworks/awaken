@@ -1262,6 +1262,7 @@ dependencies = [
  "awaken-skill-store",
  "awaken-store-inmem",
  "awaken-store-postgres",
+ "awaken-sync",
  "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",

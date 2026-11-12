@@ -77,7 +77,7 @@ use axum::{Json, Router};
 
 use crate::common::headers::parse_idempotency_key_header;
 use crate::common::scope::RequiredWorkspaceScope;
-use crate::routes::{ManagedJson, ManagedQuery, sha256_identity};
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::vault::{
     Credential, CredentialAuth, CredentialCreateParams, CredentialCreateWire,
     CredentialInjectionLocation, CredentialInjectionLocationParams, CredentialNetworking,
@@ -90,32 +90,10 @@ use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 #[cfg(test)]
 mod credential_material_ingress;
 
-fn application_mcp_target_fingerprint(
-    url: &str,
-) -> Result<String, awaken_agent_contract::McpTargetError> {
-    let identity = awaken_agent_contract::McpTarget::identity(url)?;
-    let port = identity.port.map(|port| port.to_string());
-    Ok(sha256_identity(
-        "application-mcp-normalized-target-v1",
-        &[
-            &identity.scheme,
-            &identity.host,
-            port.as_deref().unwrap_or(""),
-            &identity.path,
-            if identity.query.is_some() {
-                "query"
-            } else {
-                ""
-            },
-            identity.query.as_deref().unwrap_or(""),
-        ],
-    ))
-}
-
 /// The canonical MCP audience of `url`.
 fn mcp_audience(url: &str) -> Result<String, awaken_credential_vault::CredentialError> {
-    awaken_agent_contract::McpTarget::identity(url)
-        .map(|identity| identity.canonical_url())
+    McpCredentialTarget::parse_http(url)
+        .map(|target| target.audience)
         .map_err(|_| {
             awaken_credential_vault::CredentialError::InvalidSource(
                 "MCP credential target must be an absolute HTTP(S) URL".into(),
@@ -214,12 +192,7 @@ impl VaultState {
     /// Control; this method returns only secret-free receipt facts.
     pub async fn enter_application_mcp_bearer(
         &self,
-        workspace_id: &str,
-        application_authority_id: &str,
-        mcp_server_url: &str,
-        idempotency_key: &str,
-        credential_generation: u64,
-        bearer: RedactedString,
+        entry: ApplicationMcpBearerEntry,
     ) -> Result<
         (
             String,
@@ -229,27 +202,7 @@ impl VaultState {
         ),
         awaken_credential_vault::CredentialError,
     > {
-        let fingerprint = application_mcp_target_fingerprint(mcp_server_url).map_err(|_| {
-            awaken_credential_vault::CredentialError::InvalidSource(
-                "MCP server URL must be an absolute HTTP(S) URL".into(),
-            )
-        })?;
-        let audience = mcp_audience(mcp_server_url)?;
-        let receipt = self
-            .application
-            .enter_application_mcp_bearer(ApplicationMcpBearerEntry {
-                workspace_id: workspace_id.to_owned(),
-                application_authority_id: application_authority_id.to_owned(),
-                mcp_server_url: mcp_server_url.to_owned(),
-                target: McpCredentialTarget {
-                    audience,
-                    fingerprint,
-                },
-                idempotency_key: idempotency_key.to_owned(),
-                credential_generation,
-                bearer,
-            })
-            .await?;
+        let receipt = self.application.enter_application_mcp_bearer(entry).await?;
         Ok((
             receipt.vault_id,
             receipt.source_id,

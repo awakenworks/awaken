@@ -42,7 +42,9 @@ pub use projection_receipt::{
 };
 mod repository_publication_projection;
 pub use repository_publication_projection::SessionRepositoryPublicationProjection;
+mod claimed_preparation;
 mod control_failure;
+pub use claimed_preparation::ClaimedSessionCredentialPreparationContext;
 mod exclusion;
 pub use exclusion::{
     SessionRealizationExclusionDecision, SessionRealizationPermit,
@@ -190,6 +192,18 @@ mod repository_publication_projection_tests {
 /// receipts/acknowledgements to the next phase.
 #[async_trait]
 pub trait SessionRealizationControl: Send + Sync {
+    /// Prepare only credentials under the authenticated, still-held Dispatch
+    /// claim before returning the ordinary canonical realization directive.
+    /// The authenticated caller verifies the borrowed context first. The
+    /// default retains ordinary realization without adding mutation authority.
+    async fn begin_claimed_session_realization(
+        &self,
+        _context: &dyn ClaimedSessionCredentialPreparationContext,
+        command: BeginSessionRealization,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        self.begin_session_realization(command).await
+    }
+
     async fn begin_session_realization(
         &self,
         command: BeginSessionRealization,

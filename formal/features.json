@@ -80,6 +80,17 @@
         {"feature":"resource.files","requirement":"resource_lifecycle"},
         {"feature":"protocol.mcp","requirement":"mcp_protocol"}
       ]
+    },
+    {
+      "id": "G66",
+      "requirements": [
+        {"feature":"credential.lifecycle","requirement":"credential_lifecycle"},
+        {"feature":"credential.plaintext_boundary","requirement":"exact_holder"},
+        {"feature":"session.lifecycle","requirement":"session_state"},
+        {"feature":"session.managed_worker","requirement":"work_authority"},
+        {"feature":"worker.remote_execution","requirement":"remote_protocol"},
+        {"feature":"protocol.mcp","requirement":"mcp_protocol"}
+      ]
     }
   ],
   "product_journeys": [

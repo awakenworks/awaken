@@ -48,6 +48,7 @@ use awaken_worker_transport_security::{
     authenticate_worker_request, verify_current_worker_identity, verify_worker_identity,
 };
 
+mod claimed_preparation;
 mod registry_endpoints;
 use registry_endpoints::{
     deregister_worker, drain_worker, heartbeat_worker, quiesce_worker, register_worker,

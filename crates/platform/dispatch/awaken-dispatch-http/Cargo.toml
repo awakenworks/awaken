@@ -18,6 +18,7 @@ awaken-runtime-contract.workspace = true
 awaken-tool-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-time.workspace = true
+awaken-sync.workspace = true
 awaken-agent-contract.workspace = true
 awaken-observability.workspace = true
 awaken-dispatch.workspace = true

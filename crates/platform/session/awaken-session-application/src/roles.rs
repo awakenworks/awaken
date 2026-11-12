@@ -430,6 +430,19 @@ pub trait SessionTermination: Send + Sync {
 /// adoption.
 #[async_trait]
 pub trait SessionUpdates: Send + Sync {
+    /// Credential-only desired-state preparation under a still-held exact
+    /// Dispatch claim. Ordinary update admission remains unchanged.
+    async fn update_claimed_session_credentials(
+        &self,
+        _context: &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+        _session_id: &SessionId,
+        _command: SessionUpdateCommand,
+    ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
+        Err(SessionUpdateError::Unavailable(
+            "claimed credential preparation is unsupported".into(),
+        ))
+    }
+
     /// See [`SessionApplication::update_session`].
     async fn update_session(
         &self,
@@ -607,6 +620,20 @@ impl SessionTermination for crate::SessionTerminationCommands {
 
 #[async_trait]
 impl SessionUpdates for crate::SessionUpdateCommands {
+    async fn update_claimed_session_credentials(
+        &self,
+        context: &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
+        session_id: &SessionId,
+        command: SessionUpdateCommand,
+    ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
+        Box::pin(
+            crate::SessionUpdateCommands::update_claimed_session_credentials(
+                self, context, session_id, command,
+            ),
+        )
+        .await
+    }
+
     async fn update_session(
         &self,
         session_id: &SessionId,

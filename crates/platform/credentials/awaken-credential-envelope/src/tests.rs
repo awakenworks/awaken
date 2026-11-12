@@ -5,6 +5,8 @@ use awaken_agent_contract::{
 };
 use serde_json::{Value, json};
 
+mod source_validity;
+
 fn holder(boundary: PlaintextBoundary) -> PlaintextHolder {
     PlaintextHolder::new(
         boundary,

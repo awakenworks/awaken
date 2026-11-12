@@ -301,7 +301,9 @@ impl<'a> DispatchPreparation<'a> {
             request = request.with_placement(placement);
         }
         // Published after the placement is pinned: `with_placement` replaces it whole.
-        request.placement.session_mcp_credentials = session_mcp_credentials;
+        request
+            .placement
+            .bind_session_mcp_credentials(session_mcp_credentials);
         if request.activation.inherited_toolsets().is_some() {
             request.placement.required_capabilities.insert(
                 awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string(),

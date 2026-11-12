@@ -46,7 +46,9 @@ pub use credential_rollout_delivery::{
     HttpManagedCredentialRolloutTarget, credential_rollout_router_with_authenticator,
 };
 pub use session_credential_rollout::{
-    SessionCredentialRolloutAdoption, SessionProjectionPublication,
+    ClaimedCredentialPreparationFailure, ClaimedCredentialPreparationProgress,
+    ClaimedCredentialRolloutAdoption, SessionCredentialRolloutAdoption,
+    SessionProjectionPublication,
 };
 pub mod data_subject_boundary;
 mod execution_ports;

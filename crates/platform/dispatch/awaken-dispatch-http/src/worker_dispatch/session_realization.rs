@@ -261,7 +261,7 @@ pub(super) async fn session_resume(
                 "authenticated worker does not own the Session resume claim",
             )));
         }
-        let guard = service
+        let mut guard = service
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
@@ -275,7 +275,7 @@ pub(super) async fn session_resume(
                 "Session resume claim lease has expired",
             )));
         }
-        let dispatch = guard.request();
+        let dispatch = guard.request().clone();
         if dispatch.run_id() != &request.claim.run_id {
             return Err(RealizationHttpError::from(ApplicationError::invalid(
                 "guarded dispatch does not match the Session resume claim",
@@ -357,8 +357,9 @@ pub(super) async fn session_resume(
                 ));
             }
         }
-        let realization = match control
-            .begin_session_realization(awaken_session_execution_contract::BeginSessionRealization {
+        let realization = match super::claimed_preparation::begin(
+            control.as_ref(), &mut guard, &request.claim, receipt, service.clock.as_ref(),
+            awaken_session_execution_contract::BeginSessionRealization {
                 session_id: awaken_session_types::SessionId::from(&request.session_id),
                 expected_resources,
                 target: awaken_session_execution_contract::SessionRealizationTarget {
@@ -417,7 +418,7 @@ pub(super) async fn session_resume(
                 "Session resume claim expired before realization assignment",
             )));
         }
-        drop(guard);
+        super::claimed_preparation::release(guard).await?;
         Ok(json!({ "realization": realization }))
     }
     .await;

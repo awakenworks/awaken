@@ -149,6 +149,24 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         "P3"
     );
 
+    // The application decorator observes the same Active generation used for
+    // Native/ACP wiring. A staged successor is never execution readiness.
+    let prepared_v1 = host
+        .run_assembly
+        .ctx_for("mcp-parity", None)
+        .await
+        .expect("P3 construct the real Host attempt context");
+    assert_eq!(prepared_v1.attempt_context.prepared_mcp.len(), 1, "P3");
+    assert_eq!(
+        prepared_v1.attempt_context.prepared_mcp[0],
+        awaken_runtime_contract::PreparedMcpAttachment {
+            name: visible[0].request.name.clone(),
+            target: visible[0].request.target.clone(),
+            credential: visible[0].request.credential.clone(),
+        },
+        "P3 the staged successor cannot replace the prepared pin"
+    );
+
     host.run_assembly
         .publish_mcp_projection(&generation(2))
         .await
@@ -162,6 +180,21 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         visible[0].native_wiring.as_ref().unwrap().tool_ids[0],
         "docs-generation-2",
         "P4"
+    );
+    let prepared_v2 = host
+        .run_assembly
+        .ctx_for("mcp-parity", None)
+        .await
+        .expect("P4 rebuild after canonical publication");
+    assert_eq!(prepared_v2.attempt_context.prepared_mcp.len(), 1, "P4");
+    assert_eq!(
+        prepared_v2.attempt_context.prepared_mcp[0].target, visible[0].request.target,
+        "P4 the rebuilt context observes only the newly Active generation"
+    );
+    assert_ne!(
+        prepared_v1.attempt_context.prepared_mcp[0].target,
+        prepared_v2.attempt_context.prepared_mcp[0].target,
+        "P4 an old context cannot be relabeled as a new prepared pin"
     );
     let replacement = project_mcp_session_transport(
         visible[0].server.as_ref().unwrap(),

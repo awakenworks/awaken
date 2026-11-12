@@ -34,7 +34,21 @@ pub(super) async fn managed_material_mutation_begin_and_phases_conform(
     };
     repo.insert_vault("ws", vault.clone()).await.unwrap();
     let mut source = source("cred:managed-begin-owner", "ws");
-    source.material_ref = Some(SecretRef("sec:managed-begin-owner:r1:primary".into()));
+    source.material_ref = Some(
+        awaken_credential_vault::repo::application_mcp_material_ref(
+            &source.id,
+            "generation-one",
+            1,
+        )
+        .unwrap(),
+    );
+    source.descriptor = Some(
+        awaken_credential_vault::mcp_bearer_descriptor("https://mcp.example.test")
+            .with_expiry(5_000),
+    );
+    source.provider_id = None;
+    source.protocol_endpoint_id = Some("managed-begin-owner-endpoint".into());
+    source.env_key = None;
     let child = ManagedVaultCredential {
         id: "child-begin-owner".into(),
         vault_id: vault.id,
@@ -138,7 +152,17 @@ pub(super) async fn managed_material_mutation_begin_and_phases_conform(
         .await
         .unwrap()
         .unwrap();
-    let after_source = before_source.clone();
+    let mut after_source = before_source.clone();
+    after_source.version += 1;
+    after_source.material_ref = Some(
+        awaken_credential_vault::repo::application_mcp_material_ref(
+            &after_source.id,
+            "generation-two",
+            2,
+        )
+        .unwrap(),
+    );
+    after_source.descriptor.as_mut().unwrap().expires_at_unix_ms = Some(9_000);
     let mut after_child = before_child.clone();
     after_child.revision += 1;
     after_child
@@ -151,16 +175,124 @@ pub(super) async fn managed_material_mutation_begin_and_phases_conform(
         after_source,
         before_child,
         after_child,
-        false,
+        true,
         1_000,
     )
     .unwrap();
+    // Public serde fields never authorize a validity change. These decoded
+    // envelopes must reject before any durable WAL/source/child/outbox write,
+    // on Memory, SQLite and PostgreSQL alike.
+    for case in 0..10 {
+        let mut forged = update.clone();
+        match case {
+            0 => {
+                let reference = &mut forged.after_source.material_ref.as_mut().unwrap().0;
+                *reference = reference.replace(":generation:2:", ":generation:1:");
+            }
+            1 => {
+                forged.after_source.material_ref =
+                    forged.before_source.as_ref().unwrap().material_ref.clone()
+            }
+            2 => forged.after_source.version -= 1,
+            3 => forged.after_source.version += 1,
+            4 => forged
+                .after_source
+                .descriptor
+                .as_mut()
+                .unwrap()
+                .provider
+                .0
+                .push_str("-foreign"),
+            5 => forged.after_source.descriptor.as_mut().unwrap().targets[0]
+                .target
+                .audience
+                .0
+                .push_str("/foreign"),
+            6 => {
+                let reference = &mut forged.after_source.material_ref.as_mut().unwrap().0;
+                *reference = format!(
+                    "sec:ordinary:attempt:{}",
+                    forged.material_fence.attempt_id()
+                );
+            }
+            7 => {
+                forged.after_source.material_ref =
+                    forged.before_source.as_ref().unwrap().material_ref.clone();
+                forged.after_source.auxiliary_material_refs.insert(
+                    "only-new-auxiliary".into(),
+                    SecretRef(format!(
+                        "sec:auxiliary:attempt:{}",
+                        forged.material_fence.attempt_id()
+                    )),
+                );
+            }
+            8 => {
+                forged.operation = ManagedCredentialOperation::Archive;
+                forged.after_source.status = CredentialStatus::Archived;
+                forged.after_credential.lifecycle = ManagedCredentialLifecycle::Archived {
+                    at: "archived".into(),
+                };
+            }
+            9 => {
+                forged.operation = ManagedCredentialOperation::Delete;
+                forged.after_source.status = CredentialStatus::Archived;
+                forged.after_credential.lifecycle = ManagedCredentialLifecycle::Deleted {
+                    at: "deleted".into(),
+                };
+            }
+            _ => unreachable!(),
+        }
+        let decoded: PendingManagedCredentialMutation =
+            serde_json::from_value(serde_json::to_value(forged).unwrap()).unwrap();
+        assert!(
+            decoded.validate().is_err(),
+            "validity forged envelope case {case}"
+        );
+        assert!(
+            repo.begin_managed_mutation(decoded, 1_000).await.is_err(),
+            "validity forged case {case}"
+        );
+        assert!(
+            repo.pending_managed_mutations().await.unwrap().is_empty(),
+            "validity forged case {case}"
+        );
+        assert_eq!(
+            repo.get(&update.after_source.id).await.unwrap(),
+            *update.before_source.as_ref().unwrap()
+        );
+        assert_eq!(
+            repo.get_vault_credential("ws", &update.after_credential.id)
+                .await
+                .unwrap(),
+            update.before_credential
+        );
+        assert!(repo.pending_managed_rollouts().await.unwrap().is_empty());
+    }
     assert!(
         repo.begin_managed_mutation(update.clone(), 1_000)
             .await
             .unwrap()
     );
+    assert_eq!(
+        repo.get(&update.after_source.id).await.unwrap(),
+        *update.before_source.as_ref().unwrap(),
+        "expiry and material remain the old version before Ready/publication"
+    );
+    let update = repo.mark_managed_mutation_ready(&update).await.unwrap();
     let update_reclaiming = repo.commit_managed_mutation(&update).await.unwrap();
+    assert_eq!(
+        repo.get(&update.after_source.id).await.unwrap(),
+        update.after_source
+    );
+    assert_eq!(
+        update
+            .after_source
+            .descriptor
+            .as_ref()
+            .unwrap()
+            .expires_at_unix_ms,
+        Some(9_000)
+    );
     // Rollout identity decision table, shared by all three real repositories.
     // C1 event key exists; C2 every payload field matches; C3 exact mutation is
     // replayed. R1 C1+C2+C3 => same event and committed pair; R2 C1+!C2 =>
@@ -235,14 +367,25 @@ pub(super) async fn managed_material_mutation_begin_and_phases_conform(
     // witness runs on all adapters without a parallel test-only insertion port.
     let mut next_child = update.after_credential.clone();
     next_child.revision += 1;
+    let mut next_source = update.after_source.clone();
+    next_source.version += 1;
+    next_source.material_ref = Some(
+        awaken_credential_vault::repo::application_mcp_material_ref(
+            &next_source.id,
+            "generation-three",
+            3,
+        )
+        .unwrap(),
+    );
+    next_source.descriptor.as_mut().unwrap().expires_at_unix_ms = Some(12_000);
     let collision_update = PendingManagedCredentialMutation::change(
         update.operation_id.clone(),
         ManagedCredentialOperation::Update,
         update.after_source.clone(),
-        update.after_source.clone(),
+        next_source,
         update.after_credential.clone(),
         next_child,
-        false,
+        true,
         1_000,
     )
     .unwrap();
@@ -251,6 +394,10 @@ pub(super) async fn managed_material_mutation_begin_and_phases_conform(
             .await
             .unwrap()
     );
+    let collision_update = repo
+        .mark_managed_mutation_ready(&collision_update)
+        .await
+        .unwrap();
     assert!(
         matches!(
             repo.commit_managed_mutation(&collision_update).await,
@@ -260,7 +407,8 @@ pub(super) async fn managed_material_mutation_begin_and_phases_conform(
     );
     assert_eq!(
         repo.get(&update.after_source.id).await.unwrap(),
-        update.after_source
+        update.after_source,
+        "outbox conflict rolls back the attempted expiry/material/revision advance"
     );
     assert_eq!(
         repo.get_vault_credential("ws", &update.after_credential.id)

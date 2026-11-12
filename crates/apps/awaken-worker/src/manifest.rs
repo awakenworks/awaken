@@ -256,6 +256,11 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
     // Dispatch decoder. Native/ACP/A2A selection changes execution, not this
     // installed wire support; no operator capability opt-in is needed.
     capabilities.insert(awaken_worker_contract::PREPARED_SESSION_DISPATCH_CAPABILITY.to_owned());
+    // The compiled Session decoder retains exact validity metadata and its
+    // materializer separates preparation from expiry-checked effects. This is
+    // generic Native support, independent of embedded application capabilities.
+    capabilities
+        .insert(awaken_worker_contract::SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY.to_owned());
     // Advertise this only with the actual Runtime Returned/KnownAborted codec.
     // Prepared Session command support is an independent capability owned by
     // its wire admission path; neither token substitutes for the other.
