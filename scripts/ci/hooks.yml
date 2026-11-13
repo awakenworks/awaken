@@ -433,7 +433,7 @@ commit-checks:
                 #    Status/Owner/Fact/Links/Verification, owner links that resolve.
                 - name: check-wiki-okf
                   tags: [read-only]
-                  run: python3 scripts/ci/check_wiki_okf.py {staged_files}
+                  run: python3 scripts/ci/check_wiki_okf.py --self-test && python3 scripts/ci/check_wiki_okf.py {staged_files}
                 # 10. The wiki ownership index lists every design document. Whole-tree scan,
                 #    so any added/renamed/removed design doc trips it regardless of glob.
                 - name: check-ownership-index

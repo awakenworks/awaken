@@ -11,7 +11,7 @@ verifies the mechanical parts agents are likely to drift:
   non-empty ``type``;
 - reserved ``index.md`` files have no frontmatter and act as navigation;
 - reserved ``log.md`` files have no frontmatter and use date-grouped update
-  history;
+  history, or retain only an empty navigation entry point;
 - owned fact records use ``FACT-*`` headings, not legacy ``OKF-*`` headings;
 - every fact record carries Status, Owner, Fact, Links, and Verification fields;
 - each fact's ``Owner`` field links to a real owner file and, if anchored, a real
@@ -142,12 +142,58 @@ def check_log_file(path: Path, text: str) -> list[str]:
         errors.append(f"{path}: OKF log.md should start with a title heading")
     dates = list(DATE_HEADING.finditer(text))
     if not dates:
-        errors.append(f"{path}: OKF log.md must contain ISO date headings like `## YYYY-MM-DD`")
+        # An empty history can retain navigation without manufacturing an entry.
+        # Headings, lists, tables, quotations and code are history content, so
+        # they still need the existing date-grouped form.
+        targets = {match.group(1) for match in MARKDOWN_LINK.finditer(text)}
+        entry = re.search(
+            r"^\s*(?:#{2,6}\s|[-*+]\s|\d+[.)]\s|>\s|[|]|`{3,}|~{3,})",
+            text,
+            re.MULTILINE,
+        )
+        if targets != {"index.md", "maintenance-notes.md"} or entry:
+            errors.append(f"{path}: OKF log.md must contain ISO date headings like `## YYYY-MM-DD`")
         return errors
     values = [match.group(0).removeprefix("##").strip() for match in dates]
     if values != sorted(values, reverse=True):
         errors.append(f"{path}: OKF log.md date headings must be newest first")
     return errors
+
+
+def self_test() -> int:
+    path = WIKI_ROOT / "log.md"
+    navigation = "[Index](index.md) and [Maintenance](maintenance-notes.md).\n"
+    empty = "# Wiki Update Log\n\n" + navigation
+    cases = (
+        ("empty navigation", empty, True),
+        ("bare title", "# Wiki Update Log\n", False),
+        ("incomplete navigation", "# Wiki\n[Index](index.md)\n", False),
+        ("missing title", navigation, False),
+        ("frontmatter", "---\ntype: log\n---\n" + empty, False),
+        ("undated heading", empty + "\n## Updated\n", False),
+        ("unordered entry", empty + "\n- Updated a fact.\n", False),
+        ("ordered entry", empty + "\n1. Updated a fact.\n", False),
+        ("quoted entry", empty + "\n> Updated a fact.\n", False),
+        ("table entry", empty + "\n| Updated | fact |\n", False),
+        ("fenced entry", empty + "\n```text\nUpdated a fact.\n```\n", False),
+        ("extra navigation", empty + "[Other](other.md)\n", False),
+        ("malformed date", empty + "\n## 2026-11\n", False),
+        ("single date", "# Wiki\n## 2026-11-13\n- Fact updated.\n", True),
+        ("newest first", "# Wiki\n## 2026-11-13\n## 2026-11-12\n", True),
+        ("oldest first", "# Wiki\n## 2026-11-12\n## 2026-11-13\n", False),
+    )
+    failures = []
+    for name, text, valid in cases:
+        errors = check_log_file(path, text)
+        if (not errors) != valid:
+            failures.append(f"{name}: expected valid={valid}, got {errors}")
+    if failures:
+        print("check-wiki-okf self-test failed:", file=sys.stderr)
+        for failure in failures:
+            print(f"  {failure}", file=sys.stderr)
+        return 1
+    print(f"OK - wiki history decision table passed ({len(cases)} cases).")
+    return 0
 
 
 def check_owner_link(path: Path, heading: str, section: str) -> list[str]:
@@ -193,8 +239,13 @@ def parse(argv: list[str]) -> argparse.Namespace:
         prog="check_wiki_okf.py", description=__doc__, allow_abbrev=False
     )
     parser.add_argument("paths", nargs="*", help="wiki Markdown files; empty rescans the wiki")
-    return parser.parse_args(argv)
+    parser.add_argument("--self-test", action="store_true", help="run the history decision table")
+    args = parser.parse_args(argv)
+    if args.self_test and args.paths:
+        parser.error("--self-test does not accept file paths")
+    return args
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(parse(sys.argv[1:]).paths))
+    args = parse(sys.argv[1:])
+    raise SystemExit(self_test() if args.self_test else main(args.paths))
