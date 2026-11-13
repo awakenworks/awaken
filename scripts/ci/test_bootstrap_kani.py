@@ -12,7 +12,7 @@ import _strict_unittest as strict_unittest
 from unittest import mock
 from _native_shell import bash_executable
 from formal_sources import detached_git_environment
-from test_formal_run_evidence import nested_shell_function, run_shell_fixture
+from _shell_fixture import nested_shell_function, run_shell_fixture
 
 ROOT = Path(__file__).resolve().parents[2]
 
