@@ -10,7 +10,7 @@ workspace = true
 
 [package.metadata.awaken]
 # Environment package images behind the package-image build port: Docker
-# Engine and rootless Podman builds, Kubernetes rootless BuildKit Jobs and
+# Engine and rootless Podman builds, Kubernetes Kaniko Jobs and
 # kubelet image checks with the versioned,
 # read-only evidence that binds a built image to the Sandbox Pod that runs it.
 # A crate of its own so the Coordinator's Environment image build stage and

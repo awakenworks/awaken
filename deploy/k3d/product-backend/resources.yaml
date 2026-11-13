@@ -33,7 +33,7 @@ data:
     package_image_registry = "k3d-awaken-registry.localhost:5000/environments"
     package_image_builder = "k8s"
     package_registry_insecure = true
-    k8s_buildkit_image = "k3d-awaken-registry.localhost:5000/system/buildkit:v0.30.0-rootless"
+    k8s_kaniko_image = "k3d-awaken-registry.localhost:5000/system/kaniko:v1.29.1-debug"
 ---
 apiVersion: v1
 kind: ConfigMap

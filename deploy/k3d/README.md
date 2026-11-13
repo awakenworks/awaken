@@ -48,7 +48,7 @@ artifact's real OCI digest and uses the same immutable reference for capacity
 admission, node import, Session Pods, and the trusted Sandbox control forwarder.
 For an Environment without packages, node-local import needs no Registry pull.
 An Environment with packages requires a Registry-qualified Sandbox digest:
-BuildKit resolves its `FROM` image independently of the node-local import.
+Kaniko resolves its `FROM` image independently of the node-local import.
 
 The product overlay selects `container_hand_residency = "resident"`. The
 existing Pod channel is the single ACP transport for these Kubernetes Sessions;
@@ -212,7 +212,7 @@ count to `k3d_render_sandbox_image`. Applying either source overlay directly
 leaves the required immutable identity unresolved and is rejected by Runtime.
 
 Package-bearing Environments still require a Registry for the immutable derived
-images built by the Kubernetes BuildKit Jobs. Create and attach that Registry
+images built by the Kubernetes Kaniko Jobs. Create and attach that Registry
 when constructing a package-enabled cluster:
 
 ```bash
@@ -222,11 +222,11 @@ k3d registry create awaken-registry.localhost --port 5111
 . e2e/k3d/harness.sh
 k3d_create_cluster awaken-product 1 2 k3d-awaken-registry.localhost:5000
 
-# Mirror the rootless builder as well as derived Environment images. This keeps
-# package materialization independent of Docker Hub availability on every node.
-docker tag moby/buildkit:v0.30.0-rootless \
-  localhost:5111/system/buildkit:v0.30.0-rootless
-docker push localhost:5111/system/buildkit:v0.30.0-rootless
+# Mirror the official Kaniko debug builder as well as derived Environment images. This keeps
+# package materialization independent of upstream registry availability on every node.
+docker tag ghcr.io/osscontainertools/kaniko:v1.29.1-debug@sha256:ebc38a988e5aa1aaea99240e931aeeeff9d8e6bb5a0bd0e00eaf79973bf0a773 \
+  localhost:5111/system/kaniko:v1.29.1-debug
+docker push localhost:5111/system/kaniko:v1.29.1-debug
 ```
 
 Build the product binaries with the Kubernetes feature on both the launcher
@@ -240,7 +240,7 @@ cargo build --release -p awaken-cli --bins -p awaken-worker \
 Publish `awaken-sandbox:local` to the attached Registry and use its **Registry
 manifest digest** as the two `__AWAKEN_SANDBOX_IMAGE__` replacements, for
 example `k3d-awaken-registry.localhost:5000/system/awaken-sandbox@sha256:<digest>`.
-The local `awaken-sandbox@sha256:…` reference is insufficient for a BuildKit
+The local `awaken-sandbox@sha256:…` reference is insufficient for a Kaniko
 Job, even if the same bytes were imported into the node. Verify the digest at
 the Registry before rendering the overlay. On a fresh product PVC, run the
 same image's `database migrate` once with `--initialize-installation` and an
@@ -248,17 +248,26 @@ operator `--initialization-reference` before ordinary `all-in-one` startup;
 ordinary startup deliberately refuses unbound empty storage.
 
 `5111` is only the host-published port used by Docker push. Kubernetes Pods and
-BuildKit use the Registry container's internal `:5000` endpoint; putting the
+Kaniko use the Registry container's internal `:5000` endpoint; putting the
 host port in `package_image_registry` makes in-cluster pushes fail with
 `connection refused`.
 
-The all-in-one Pod never runs or mounts a Docker daemon. It submits bounded,
-rootless BuildKit Jobs through namespace-scoped RBAC; those Jobs push immutable
+The all-in-one Pod never runs or mounts a Docker daemon. It submits bounded
+Kaniko Jobs through namespace-scoped RBAC; those Jobs push immutable
 derived Environment images to the same Registry. Session creation waits inside
 Awaken for the exact digest, and Session Pods receive that digest instead of
-installing packages at startup. Set `k8s_buildkit_image` to the cluster-visible
-mirror reference; omitting it retains `moby/buildkit:v0.30.0-rootless` for
-backward compatibility.
+installing packages at startup. Set `k8s_kaniko_image` to the cluster-visible
+mirror reference; omitting it uses the pinned multi-architecture executor with
+its BusyBox shell.
+
+For a private Registry, set `k8s_package_push_secret` to an existing namespace
+`kubernetes.io/dockerconfigjson` Secret with executor pull/push rights. Kubelet
+`k8s_image_pull_secrets` are independent and never implicitly grant push.
+The builder runs as UID 0 in a non-privileged container with RuntimeDefault
+seccomp, no ServiceAccount token, host mounts or Docker socket. Nodes may keep
+`user.max_user_namespaces=0`. The namespace must admit that build-container
+identity. For an existing deployment, follow the controlled object/config
+migration in [ADR-0072](../../docs/adr/0072-environment-definition-and-execution-boundary.md#kubernetes-executor-replacement-2026-11-13).
 
 ## Verification Rules
 

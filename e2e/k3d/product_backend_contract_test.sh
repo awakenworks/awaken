@@ -25,7 +25,7 @@ trap 'rm -f "$RENDERED" "$CONTROL_RENDERED"' EXIT
 # restricted to namespaces explicitly labelled as an
 # Awaken Design backend; C5 K8s sandbox uses the imported non-`latest` base and
 # the canonical retained continuation PVC and separate Create-only executor
-# and read/UID-fenced disposal Roles, while BuildKit Jobs, the derived-image
+# and read/UID-fenced disposal Roles, while Kaniko Jobs, the derived-image
 # Registry, and namespace-scoped RBAC including
 # Pod metadata update for resourceVersion-fenced reaper-lease transfer are
 # coherent through the Registry container's internal :5000 endpoint (the host
@@ -98,7 +98,7 @@ grep -q "container_image = \"$SANDBOX_IMAGE\"" "$RENDERED"
 grep -q 'container_hand_residency = "resident"' "$RENDERED"
 grep -q 'package_image_builder = "k8s"' "$RENDERED"
 grep -q 'package_image_registry = "k3d-awaken-registry.localhost:5000/environments"' "$RENDERED"
-grep -q 'k8s_buildkit_image = "k3d-awaken-registry.localhost:5000/system/buildkit:v0.30.0-rootless"' "$RENDERED"
+grep -q 'k8s_kaniko_image = "k3d-awaken-registry.localhost:5000/system/kaniko:v1.29.1-debug"' "$RENDERED"
 ! grep -q 'k3d-awaken-registry.localhost:5111' "$RENDERED"
 grep -q 'package_registry_insecure = true' "$RENDERED"
 grep -q 'serviceAccountName: awaken-product' "$RENDERED"

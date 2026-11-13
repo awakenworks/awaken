@@ -112,7 +112,7 @@ The Coordinator process starts the build loop as an internal application
 worker; it is not an authored resource, public API object, or Awaken Design
 concern. SQLite/PostgreSQL build rows are the one durable Pending/Building/
 Ready/Failed authority. On Kubernetes, the injected package provisioner creates
-a bounded rootless BuildKit Job and pushes the result to the configured shared
+a bounded Kaniko Job and pushes the result to the configured shared
 OCI Registry. The Kubernetes Job owns no durable lifecycle state, and neither
 Runtime Host nor the Session Pod installs Environment packages after a prepared
 digest has been frozen.
@@ -207,7 +207,7 @@ ConfigMap incarnation before binding the existing destination image-check to
 its UID. It accepts the check only when the exact Job/Pod chain yields the same
 kubelet digest as the stored image. A missing ConfigMap or missing/drifted
 destination invalidates Ready so the existing claimed build worker can converge
-it; the availability path never invokes BuildKit, claims work, or creates
+it; the availability path never invokes the build engine, claims work, or creates
 another retry owner. Docker and Podman retain their existing stored-image probes.
 
 ### D5: Delivery is durable and fail-closed
@@ -409,3 +409,56 @@ If a connection is lost before any response arrives, the client cannot infer
 whether authoring committed. Clients needing safe create retries supply a stable
 `Idempotency-Key` for the operation and reuse it with the same payload. A new
 unkeyed request intentionally names a new command.
+
+## Kubernetes executor replacement (2026-11-13)
+
+`awaken-package-image` replaces its Kubernetes rootless BuildKit executor with
+one official OSS Container Tools Kaniko debug container. The existing
+`PackageImageProvisioner` port, shared recipe/fingerprint, Coordinator build
+rows/leases/backoff, exact object realization, termination digest verification,
+and mandatory kubelet availability check remain authoritative. Docker and
+Podman adapters are unchanged. There is no legacy Kubernetes executor fallback.
+
+The debug image includes BusyBox solely to copy the projected Dockerfile into
+an EmptyDir as an ordinary file before `exec /kaniko/executor`. The complete
+executor image is used; its binary is not copied into the Sandbox image. The
+builder unpacks the base as UID/GID 0 with `privileged=false`,
+`allowPrivilegeEscalation=false`, writable container rootfs and RuntimeDefault
+seccomp. It requests no extra capabilities, host namespaces, host paths, Docker
+socket or ServiceAccount token. This requires a namespace admitting a root
+build container; it does not require node user namespaces or kernel changes.
+Session execution identity and isolation policy remain separately owned.
+
+The deployment's single builder-image option is `k8s_kaniko_image`, defaulting
+to the digest-pinned multi-architecture `v1.29.1-debug` image. Private mirrors
+must retain `/busybox/sh` and `/kaniko/executor`. An optional
+`k8s_package_push_secret` names an existing namespace Docker-config Secret
+(`.dockerconfigjson`) for executor pull/push. This reuses Kubernetes Secret
+custody and introduces no credential store. Kubelet `k8s_image_pull_secrets`
+only select pull credentials and are never inferred to grant push access.
+Omitting the push Secret selects anonymous executor access. Local Docker and
+Podman retain `package_registry_auth_file`. Insecure development Registry
+opt-in is scoped to the configured Registry host; other Registry TLS stays
+verified. Proxy build args and executor environment reuse the existing
+cooperative proxy setting; they are not added to the image's ENV.
+
+The retained structural package-realization contract advances to `v2`: its
+build container is `kaniko`, its bounded ConfigMap contains only `Dockerfile`,
+and success still requires exit 0 plus the exact repository digest matching
+the independent kubelet image check. The one build-result parser decodes an
+optional single final LF from Kaniko's termination-message record before
+passing it to the unchanged strict immutable-image parser. Multiple lines,
+CR/log data, missing receipts and malformed/foreign identities remain refused.
+Old executor receipts are not accepted as new builds. UID/owner/spec/cardinality checks and the secret-free proof shape
+are unchanged. A failed RUN, push error, absent/malformed receipt or digest
+mismatch cannot yield Ready and follows the original Coordinator failure path.
+
+Upgrade Coordinator, Worker and composing verifier consumers together. Replace
+`k8s_buildkit_image` with `k8s_kaniko_image` in external deployment files;
+unknown old keys fail closed. Select push-authorized Registry credentials
+explicitly. Before enabling the new build loop, drain old build attempts and
+retire the recorded old package Job/ConfigMap incarnations using Kubernetes API
+UID/resourceVersion deletion preconditions. Do not delete Session Pods,
+Coordinator rows or Registry images. Reconciliation then reuses matching
+Registry destinations through the ordinary exact image-check path. Same-name
+old objects are rejected rather than overwritten or silently adopted.

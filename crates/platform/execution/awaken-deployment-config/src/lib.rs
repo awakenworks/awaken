@@ -85,7 +85,7 @@ pub enum SandboxTier {
 pub enum PackageImageBuilder {
     Docker,
     Podman,
-    /// Rootless BuildKit Job running in the target Kubernetes namespace.
+    /// Kaniko Job running in the target Kubernetes namespace.
     Kubernetes,
 }
 
@@ -183,17 +183,20 @@ pub struct SandboxSettings {
     /// Worker-side image builder. Its secret material is never projected into a
     /// Session or Agent process.
     pub package_registry_auth_file: Option<PathBuf>,
-    /// Permit plain-HTTP/TLS-insecure access from the Kubernetes BuildKit Job.
+    /// Permit plain-HTTP access to the configured Registry from the Kaniko Job.
     /// Intended for explicitly trusted development registries such as k3d.
     pub package_registry_insecure: bool,
     /// Explicit operator opt-in for unrestricted Docker package builds to use
     /// the builder host network. Never changes Session networking or overrides
     /// None/Allowlist package policies. Defaults to the ordinary Docker network.
     pub package_build_host_network: bool,
-    /// Rootless BuildKit image used by Kubernetes package-build Jobs. Operators
+    /// Kaniko debug image used by Kubernetes package-build Jobs. Operators
     /// may point this at an admitted private mirror so Environment startup never
-    /// depends on live Docker Hub availability.
-    pub k8s_buildkit_image: String,
+    /// depends on live upstream registry availability.
+    pub k8s_kaniko_image: String,
+    /// Existing Docker-config Secret with executor Registry push/pull rights.
+    /// Never inferred from the kubelet image-pull secrets.
+    pub k8s_package_push_secret: Option<String>,
     /// Optional builder independent from the Session execution backend.
     pub package_image_builder: Option<PackageImageBuilder>,
     /// Age after which unused, Awaken-labeled derived images may be pruned from
@@ -239,7 +242,8 @@ impl Default for SandboxSettings {
             package_registry_auth_file: None,
             package_registry_insecure: false,
             package_build_host_network: false,
-            k8s_buildkit_image: "moby/buildkit:v0.30.0-rootless".to_owned(),
+            k8s_kaniko_image: awaken_container_contract::DEFAULT_K8S_KANIKO_IMAGE.to_owned(),
+            k8s_package_push_secret: None,
             package_image_builder: None,
             package_local_cache_ttl_secs: 7 * 24 * 60 * 60,
             inherit_agent_stderr: false,
@@ -281,7 +285,8 @@ impl SandboxSettings {
             local_cache_ttl: std::time::Duration::from_secs(self.package_local_cache_ttl_secs),
             cluster_namespace: self.k8s_namespace.clone(),
             image_pull_secrets: self.k8s_image_pull_secrets.clone(),
-            buildkit_image: self.k8s_buildkit_image.clone(),
+            kaniko_image: self.k8s_kaniko_image.clone(),
+            push_secret: self.k8s_package_push_secret.clone(),
             forward_proxy: self
                 .container_forward_proxy
                 .as_deref()
@@ -329,7 +334,8 @@ pub struct SandboxPackageSettingsInput {
     pub package_registry_auth_file: Option<PathBuf>,
     pub package_registry_insecure: bool,
     pub package_build_host_network: bool,
-    pub k8s_buildkit_image: Option<String>,
+    pub k8s_kaniko_image: Option<String>,
+    pub k8s_package_push_secret: Option<String>,
     pub package_image_builder: Option<String>,
     pub package_local_cache_ttl_secs: Option<u64>,
     pub inherit_agent_stderr: bool,
@@ -349,16 +355,22 @@ impl SandboxPackageSettingsInput {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.trim_end_matches('/').to_owned());
+        settings.k8s_package_push_secret = self
+            .k8s_package_push_secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned);
         settings.package_registry_auth_file = self.package_registry_auth_file;
         settings.package_registry_insecure = self.package_registry_insecure;
         settings.package_build_host_network = self.package_build_host_network;
         if let Some(image) = self
-            .k8s_buildkit_image
+            .k8s_kaniko_image
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            settings.k8s_buildkit_image = image.to_owned();
+            settings.k8s_kaniko_image = image.to_owned();
         }
         settings.package_image_builder = self
             .package_image_builder
@@ -379,6 +391,11 @@ impl SandboxPackageSettingsInput {
 
         if settings.package_image_builder.is_some() && settings.package_image_registry.is_none() {
             return Err("package_image_builder requires a non-empty package_image_registry".into());
+        }
+        if settings.k8s_package_push_secret.is_some() && settings.package_image_registry.is_none() {
+            return Err(
+                "k8s_package_push_secret requires a non-empty package_image_registry".into(),
+            );
         }
         if settings.package_registry_auth_file.is_some()
             && settings.package_image_registry.is_none()
@@ -1155,8 +1172,8 @@ mod tests {
     #[test]
     fn package_sandbox_settings_have_one_cause_effect_table() {
         // Causes: P1 registry+builder are both present; P2 either one is absent
-        // on K8s; P3 auth/insecure lacks a registry; P4 builder token is unknown;
-        // P5 TTL is zero; P6 pull Secret/registry/build image have surrounding
+        // on K8s; P3 auth/insecure/push Secret lacks a registry; P4 builder token is unknown;
+        // P5 TTL is zero; P6 independent pull/push Secrets, registry/build image have surrounding
         // whitespace. Effects: E1 P1 normalizes and admits; E2 P2-P5 reject;
         // E3 P6 preserves only non-empty normalized coordinates. CLI and the
         // standalone Worker call this same owner, so these rules cannot drift.
@@ -1169,7 +1186,8 @@ mod tests {
             SandboxPackageSettingsInput {
                 k8s_image_pull_secrets: vec![" registry-auth ".into(), " ".into()],
                 package_image_registry: Some(" registry.example/team/ ".into()),
-                k8s_buildkit_image: Some(" mirror/buildkit:1 ".into()),
+                k8s_kaniko_image: Some(" mirror/kaniko:1 ".into()),
+                k8s_package_push_secret: Some(" registry-push ".into()),
                 package_image_builder: Some("k8s".into()),
                 inherit_agent_stderr: true,
                 ..Default::default()
@@ -1182,7 +1200,15 @@ mod tests {
             settings.package_image_registry.as_deref(),
             Some("registry.example/team")
         );
-        assert_eq!(settings.k8s_buildkit_image, "mirror/buildkit:1");
+        assert_eq!(settings.k8s_kaniko_image, "mirror/kaniko:1");
+        assert_eq!(
+            settings.k8s_package_push_secret.as_deref(),
+            Some("registry-push")
+        );
+        let build = settings.package_image_build_settings();
+        assert_eq!(build.push_secret.as_deref(), Some("registry-push"));
+        assert_eq!(build.image_pull_secrets, ["registry-auth"]);
+        assert_eq!(build.kaniko_image, "mirror/kaniko:1");
         assert_eq!(
             settings.package_image_builder,
             Some(PackageImageBuilder::Kubernetes)
@@ -1190,6 +1216,10 @@ mod tests {
         assert!(settings.inherit_agent_stderr);
 
         for input in [
+            SandboxPackageSettingsInput {
+                k8s_package_push_secret: Some("registry-push".into()),
+                ..Default::default()
+            },
             SandboxPackageSettingsInput {
                 package_image_registry: Some("registry.example/team".into()),
                 ..Default::default()

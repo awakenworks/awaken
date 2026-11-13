@@ -207,7 +207,8 @@ struct WorkerFileConfig {
     package_registry_auth_file: Option<PathBuf>,
     package_registry_insecure: Option<bool>,
     package_build_host_network: Option<bool>,
-    k8s_buildkit_image: Option<String>,
+    k8s_kaniko_image: Option<String>,
+    k8s_package_push_secret: Option<String>,
     package_image_builder: Option<String>,
     package_local_cache_ttl_secs: Option<u64>,
     sandbox_inherit_agent_stderr: Option<bool>,
@@ -319,7 +320,8 @@ impl WorkerDaemonConfig {
             package_registry_auth_file: file.package_registry_auth_file,
             package_registry_insecure: file.package_registry_insecure.unwrap_or(false),
             package_build_host_network: file.package_build_host_network.unwrap_or(false),
-            k8s_buildkit_image: file.k8s_buildkit_image,
+            k8s_kaniko_image: file.k8s_kaniko_image,
+            k8s_package_push_secret: file.k8s_package_push_secret,
             package_image_builder: file.package_image_builder,
             package_local_cache_ttl_secs: file.package_local_cache_ttl_secs,
             inherit_agent_stderr: file.sandbox_inherit_agent_stderr.unwrap_or(false),
@@ -1302,7 +1304,7 @@ mod tests {
         // the trusted-host switch enters the typed Deployment value exactly.
         // The canonical K8s adapter is therefore the only evidence owner.
         write(&format!(
-            "role='worker'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\nk8s_image_pull_secrets=['registry-auth']\ncontainer_image='awaken-sandbox:local'\npackage_image_registry='registry.example/team/'\npackage_image_builder='k8s'\nsandbox_inherit_agent_stderr=true\n",
+            "role='worker'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\nsandbox_tier='k8s'\nk8s_namespace='agents'\nk8s_image_pull_secrets=['registry-auth']\nk8s_kaniko_image='mirror/kaniko:debug'\nk8s_package_push_secret='registry-push'\ncontainer_image='awaken-sandbox:local'\npackage_image_registry='registry.example/team/'\npackage_image_builder='k8s'\nsandbox_inherit_agent_stderr=true\n", // awaken-allow(secret): Kubernetes Secret name fixture, not credential material.
             credential.display()
         ));
         let k8s = WorkerDaemonConfig::load(&path, None, None).expect("S1");
@@ -1326,6 +1328,17 @@ mod tests {
         assert_eq!(
             k8s.runtime.sandbox.package_image_builder,
             Some(awaken_deployment_config::PackageImageBuilder::Kubernetes),
+            "S1"
+        );
+        // S1 independent pull/push coordinates and selected executor cross the
+        // standalone file -> shared SandboxSettings path without API effects.
+        assert_eq!(
+            k8s.runtime.sandbox.k8s_kaniko_image, "mirror/kaniko:debug",
+            "S1"
+        );
+        assert_eq!(
+            k8s.runtime.sandbox.k8s_package_push_secret.as_deref(),
+            Some("registry-push"),
             "S1"
         );
         assert!(k8s.runtime.sandbox.inherit_agent_stderr, "S1");

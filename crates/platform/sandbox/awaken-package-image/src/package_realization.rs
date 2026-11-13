@@ -23,7 +23,7 @@ use awaken_container_contract::RuntimeError;
 use awaken_worker_fleet_kubernetes::api_defaults::normalize_pod_spec;
 use awaken_worker_fleet_kubernetes::managed_names::{k8s_runtime_id, pod_name};
 
-pub const K8S_PACKAGE_REALIZATION_CONTRACT_VERSION: &str = "v1";
+pub const K8S_PACKAGE_REALIZATION_CONTRACT_VERSION: &str = "v2";
 pub const PACKAGE_REALIZATION_CONTRACT_ANNOTATION: &str = "awaken.dev/package-realization-contract";
 pub const PACKAGE_RECIPE_FINGERPRINT_ANNOTATION: &str = "awaken.dev/package-recipe-fingerprint";
 pub const PACKAGE_IMAGE_DESTINATION_ANNOTATION: &str = "awaken.dev/package-image-destination";
@@ -267,19 +267,21 @@ fn build_result(
         ));
     }
     let (pod, pod_uid) = one_claimed_pod(job_object, job, pods, namespace)?;
-    let status = successful_container_status(pod, "buildkit")?;
+    let status = successful_container_status(pod, "kaniko")?;
     let message = status
         .state
         .as_ref()
         .and_then(|state| state.terminated.as_ref())
         .and_then(|terminated| terminated.message.as_deref())
-        .ok_or_else(|| {
-            K8sPackageRealizationError::invalid("BuildKit returned no immutable image")
-        })?;
+        .ok_or_else(|| K8sPackageRealizationError::invalid("Kaniko returned no immutable image"))?;
+    // Kaniko emits one line (including its final LF) into Kubernetes' raw
+    // termination message. Decode only that record separator here; the shared
+    // immutable identity parser remains strict about controls and extra data.
+    let message = message.strip_suffix('\n').unwrap_or(message);
     let (repository, _) = immutable_image(message)?;
     if repository != destination_repository(&job.destination, &job.fingerprint)? {
         return Err(K8sPackageRealizationError::invalid(
-            "BuildKit result repository differs from the exact destination",
+            "Kaniko result repository differs from the exact destination",
         ));
     }
     Ok((pod_uid, message.into()))
@@ -313,7 +315,7 @@ fn image_check_result(
     Ok((pod_uid, resolved.into()))
 }
 
-/// Extract a successful BuildKit result with the same UID, ownerRef, Pod-spec,
+/// Extract a successful Kaniko result with the same UID, ownerRef, Pod-spec,
 /// status, and cardinality rules used by the retained verifier. The builder may
 /// persist the returned immutable image; this function owns no second receipt.
 pub(crate) fn verified_package_build_result(
@@ -613,7 +615,7 @@ pub fn verify_k8s_package_realization(
         let (pod_uid, image) = build_result(job_object, &build, evidence.pods, evidence.namespace)?;
         if image != *sandbox_image {
             return Err(K8sPackageRealizationError::invalid(
-                "BuildKit result differs from image-check and Sandbox digest",
+                "Kaniko result differs from image-check and Sandbox digest",
             ));
         }
         (Some(build.uid), Some(pod_uid))

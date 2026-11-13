@@ -622,8 +622,13 @@ mod tests {
             "S1 default build network is unchanged"
         );
         assert_eq!(
-            defaults.k8s_buildkit_image, "moby/buildkit:v0.30.0-rootless",
+            defaults.k8s_kaniko_image,
+            awaken_container_contract::DEFAULT_K8S_KANIKO_IMAGE,
             "S1"
+        );
+        assert_eq!(
+            defaults.k8s_package_push_secret, None,
+            "S1 anonymous executor by default"
         );
         assert_eq!(defaults.package_image_builder, None, "S1");
         assert!(!defaults.inherit_agent_stderr, "S1");
@@ -645,9 +650,8 @@ mod tests {
                 package_registry_auth_file: Some(PathBuf::from("/run/secrets/registry.json")),
                 package_registry_insecure: Some(true),
                 package_build_host_network: Some(true),
-                k8s_buildkit_image: Some(
-                    "registry.internal/system/buildkit:v0.30.0-rootless".into(),
-                ),
+                k8s_kaniko_image: Some("registry.internal/system/kaniko:v1.29.1-debug".into()),
+                k8s_package_push_secret: Some("registry-push".into()),
                 package_image_builder: Some("k8s".into()),
                 package_local_cache_ttl_secs: Some(300),
                 sandbox_inherit_agent_stderr: Some(true),
@@ -702,7 +706,14 @@ mod tests {
             "S2"
         );
         assert_eq!(
-            selected.k8s_buildkit_image, "registry.internal/system/buildkit:v0.30.0-rootless",
+            selected.k8s_kaniko_image, "registry.internal/system/kaniko:v1.29.1-debug",
+            "S2"
+        );
+        // S2 independent push authority crosses file -> shared settings without
+        // reusing the kubelet pull Secret or reading credential bytes.
+        assert_eq!(
+            selected.k8s_package_push_secret.as_deref(),
+            Some("registry-push"),
             "S2"
         );
         assert_eq!(
@@ -1519,5 +1530,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("forbids inline Cloud credentials"));
+    }
+    #[test]
+    fn kaniko_file_schema_rejects_the_retired_executor_key() {
+        // R1 old executor key => E1 unknown-field error; R2 canonical Kaniko
+        // image + independent push Secret => E2 parse exactly, no I/O.
+        assert!(
+            toml::from_str::<FileConfig>("k8s_buildkit_image='old/image'").is_err(),
+            "R1"
+        );
+        let file: FileConfig = toml::from_str(
+            "k8s_kaniko_image='mirror/kaniko:debug'\nk8s_package_push_secret='push-auth'", // awaken-allow(secret): Kubernetes Secret name fixture, not credential material.
+        )
+        .unwrap();
+        assert_eq!(
+            file.k8s_kaniko_image.as_deref(),
+            Some("mirror/kaniko:debug"),
+            "R2"
+        );
+        assert_eq!(
+            file.k8s_package_push_secret.as_deref(),
+            Some("push-auth"),
+            "R2"
+        );
     }
 }

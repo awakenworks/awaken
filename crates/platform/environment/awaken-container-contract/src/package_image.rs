@@ -11,6 +11,10 @@ use awaken_provisioning_contract as pc;
 
 use crate::RuntimeError;
 
+/// Official executor plus BusyBox shell used to normalize ConfigMap inputs.
+/// Pin the multi-architecture index; mirrors must retain the debug image's shell.
+pub const DEFAULT_K8S_KANIKO_IMAGE: &str = "ghcr.io/osscontainertools/kaniko:v1.29.1-debug@sha256:ebc38a988e5aa1aaea99240e931aeeeff9d8e6bb5a0bd0e00eaf79973bf0a773";
+
 /// Independent package-image build/publish port.
 #[async_trait]
 pub trait PackageImageProvisioner: Send + Sync {
@@ -65,8 +69,11 @@ pub struct PackageImageBuildSettings {
     pub cluster_namespace: String,
     /// Image pull secrets of the builder Pods.
     pub image_pull_secrets: Vec<String>,
-    /// The rootless BuildKit image of the builder Pods.
-    pub buildkit_image: String,
+    /// The official Kaniko debug image of the builder Pods.
+    pub kaniko_image: String,
+    /// Existing namespace Docker-config Secret with pull/push rights for the executor.
+    /// Independent from kubelet image-pull credentials; absent means anonymous access.
+    pub push_secret: Option<String>,
     /// Connectivity proxy for the builder's unrestricted traffic.
     pub forward_proxy: Option<crate::ForwardProxy>,
 }

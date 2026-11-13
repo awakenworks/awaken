@@ -280,7 +280,7 @@ fn canonical_fixture() -> Fixture {
     let build_pod = successful_job_pod(
         &build_job,
         "build-pod-uid",
-        "containerd://moby/buildkit@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "containerd://ghcr.io/osscontainertools/kaniko@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         Some(image.clone()),
     );
     let check_pod = successful_job_pod(
@@ -846,4 +846,153 @@ async fn evidence_bounds_stop_before_semantic_selection() {
         .is_err(),
         "R3"
     );
+}
+
+#[tokio::test]
+async fn retired_executor_evidence_cannot_be_adopted_as_kaniko() {
+    // Causes: C1 retired contract version; C2 retired daemon input; C3 retired
+    // build container, even with recomputed projection hashes. Each alone must
+    // yield E1 no proof. R1=C1=>E1; R2=C2=>E1; R3=C3=>E1. Positive control:
+    // the unchanged canonical fixture yields one fresh v2 proof.
+    assert_eq!(canonical_fixture().verify().unwrap().contract_version, "v2");
+    let mut fixture = canonical_fixture();
+    fixture.config_maps[0]
+        .metadata
+        .annotations
+        .as_mut()
+        .unwrap()
+        .insert(PACKAGE_REALIZATION_CONTRACT_ANNOTATION.into(), "v1".into());
+    assert_rejected(fixture, "R1");
+    let mut fixture = canonical_fixture();
+    fixture.config_maps[0]
+        .data
+        .as_mut()
+        .unwrap()
+        .insert("buildkitd.toml".into(), "[registry]".into());
+    stamp_package_config_map(&mut fixture.config_maps[0]).unwrap();
+    stamp_realization(&mut fixture.config_maps[0]).unwrap();
+    assert_rejected(fixture, "R2");
+    let mut fixture = canonical_fixture();
+    let build = fixture.job_index(PACKAGE_BUILD_JOB_KIND);
+    fixture.jobs[build]
+        .spec
+        .as_mut()
+        .unwrap()
+        .template
+        .spec
+        .as_mut()
+        .unwrap()
+        .containers[0]
+        .name = "buildkit".into();
+    bind_package_job_to_config(
+        &mut fixture.jobs[build],
+        &fixture.config_maps[0],
+        PACKAGE_BUILD_JOB_KIND,
+    )
+    .unwrap();
+    stamp_realization(&mut fixture.jobs[build]).unwrap();
+    assert_rejected(fixture, "R3");
+}
+
+#[tokio::test]
+async fn kaniko_receipt_decodes_one_line_without_weakening_image_identity() {
+    // Transport cause/effect table from actual ACK v1.29.1 evidence:
+    // C1 one valid digest record; C2 one final LF; C3 extra/control/log data;
+    // C4 empty/missing/wrong repository or digest; C5 unsuccessful process.
+    // R1=C1+!C2=>canonical image; R2=C1+C2=>same canonical image;
+    // R3=C3|C4|C5=>no build result/proof. Only this carrier strips one LF;
+    // immutable_image itself must keep rejecting LF-terminated identities.
+    let image = canonical_fixture().image;
+    let rows = [
+        (Some(image.clone()), true),
+        (Some(format!("{image}\n")), true),
+        (Some(format!("{image}\n\n")), false),
+        (Some(format!("{image}\r\n")), false),
+        (Some(format!("\n{image}")), false),
+        (Some(format!("build log\n{image}\n")), false),
+        (Some(format!("{image} \n")), false),
+        (Some(String::new()), false),
+        (Some("\n".into()), false),
+        (None, false),
+        (
+            Some(format!("foreign/repository@sha256:{}\n", "a".repeat(64))),
+            false,
+        ),
+        (
+            Some(format!(
+                "{}@sha256:{}\n",
+                image.split('@').next().unwrap(),
+                "A".repeat(64)
+            )),
+            false,
+        ),
+        (
+            Some(format!(
+                "{}@sha256:{}\n",
+                image.split('@').next().unwrap(),
+                "a".repeat(63)
+            )),
+            false,
+        ),
+    ];
+    assert!(
+        immutable_image(&format!("{image}\n")).is_err(),
+        "R2 changes the carrier only"
+    );
+    for (message, accepts) in rows {
+        let mut fixture = canonical_fixture();
+        let build = fixture.job_index(PACKAGE_BUILD_JOB_KIND);
+        let pod = fixture.job_pod_index(PACKAGE_BUILD_JOB_KIND);
+        fixture.pods[pod]
+            .status
+            .as_mut()
+            .unwrap()
+            .container_statuses
+            .as_mut()
+            .unwrap()[0]
+            .state
+            .as_mut()
+            .unwrap()
+            .terminated
+            .as_mut()
+            .unwrap()
+            .message = message.clone();
+        let result = verified_package_build_result(&fixture.jobs[build], &fixture.pods, NAMESPACE);
+        assert_eq!(result.is_ok(), accepts, "R1-R4 {message:?}");
+        assert_eq!(
+            fixture.verify().is_ok(),
+            accepts,
+            "R1-R4 retained observer {message:?}"
+        );
+        if accepts {
+            assert_eq!(
+                result.unwrap(),
+                image,
+                "R1/R2 one canonical returned identity"
+            );
+        }
+    }
+    let mut fixture = canonical_fixture();
+    let build = fixture.job_index(PACKAGE_BUILD_JOB_KIND);
+    let pod = fixture.job_pod_index(PACKAGE_BUILD_JOB_KIND);
+    let terminated = fixture.pods[pod]
+        .status
+        .as_mut()
+        .unwrap()
+        .container_statuses
+        .as_mut()
+        .unwrap()[0]
+        .state
+        .as_mut()
+        .unwrap()
+        .terminated
+        .as_mut()
+        .unwrap();
+    terminated.message = Some(format!("{image}\n"));
+    terminated.exit_code = 23;
+    assert!(
+        verified_package_build_result(&fixture.jobs[build], &fixture.pods, NAMESPACE).is_err(),
+        "R3/C5 failed process cannot publish a valid-looking receipt"
+    );
+    assert!(fixture.verify().is_err(), "R3/C5 retained observer");
 }
