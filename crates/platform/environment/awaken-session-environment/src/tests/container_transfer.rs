@@ -83,9 +83,15 @@ async fn docker_anonymous_repository_and_artifact_readback_use_one_sandbox() {
     )
     .await
     .unwrap();
+    // F1 a single file spans many transfer chunks and contains NUL/non-UTF-8
+    // bytes => the existing staged write and final rename retain every byte.
+    // This is the real Docker consumer of the SAME chunk budget used by tree
+    // projection; the URI regressions separately exercise Kubernetes encoding.
+    let mut live_bytes = vec![255; 100_000];
+    live_bytes[0] = 0;
     environment
         .agent_process()
-        .materialize_inline("/workspace/.mnt/live.txt", b"live")
+        .materialize_inline("/workspace/.mnt/live.txt", &live_bytes)
         .await
         .unwrap();
     assert_eq!(
@@ -94,7 +100,7 @@ async fn docker_anonymous_repository_and_artifact_readback_use_one_sandbox() {
             .list_workspace_files(".mnt")
             .await
             .unwrap(),
-        vec![("live.txt".into(), b"live".to_vec())]
+        vec![("live.txt".into(), live_bytes)]
     );
     environment
         .projection()

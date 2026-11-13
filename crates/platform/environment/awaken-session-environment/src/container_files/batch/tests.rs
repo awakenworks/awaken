@@ -4,6 +4,62 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
 
+fn encoded_exec_uri_bytes(command: &pc::Command) -> usize {
+    let mut uri = url::Url::parse(&format!(
+        "https://kubernetes.invalid/api/v1/namespaces/{}/pods/{}/exec",
+        "n".repeat(63),
+        "p".repeat(253),
+    ))
+    .unwrap();
+    {
+        let mut query = uri.query_pairs_mut();
+        query.append_pair("container", "agent");
+        query.append_pair("stdout", "true");
+        for argument in &command.argv {
+            query.append_pair("command", argument);
+        }
+    }
+    uri.as_str().len()
+}
+
+#[test]
+fn binary_transfer_reserves_encoded_exec_uri_headroom() {
+    // Wire decision table: C1 binary base64 can consist almost entirely of '/';
+    // C2 each argv member is URL-form-encoded by Kubernetes; C3 its process
+    // wrapper adds more command parameters. R1=C1+C2+C3 => every planned
+    // request stays below 48 KiB before that wrapper, leaving headroom under
+    // http's 65,534-byte URI ceiling. Raw argv <=64 KiB did not imply R1.
+    // Byte preservation and atomic publication use the existing B1-B7 tests.
+    let files = [("binary.bin".into(), vec![255; 150_000], false)];
+    let (_, batches) = commands(".skills/binary", &files, 8).unwrap();
+    for command in &batches {
+        let encoded = encoded_exec_uri_bytes(command);
+        assert!(encoded < 48 * 1024, "R1 encoded URI bytes={encoded}");
+    }
+}
+
+#[test]
+fn multi_file_skill_transfer_reserves_encoded_exec_uri_headroom() {
+    // R2: many ordinary text files fill a batch even when no single file is
+    // large. Unicode/shell-special relative paths add encoding expansion too.
+    // The whole tree must retain its original files rather than truncate the
+    // Skill/context or publish a partial subset to fit a transport request.
+    let files = (0..48)
+        .map(|i| {
+            (
+                format!("参考/lesson-{i}% quote'$.md"),
+                "学习证据与交互反馈\n".repeat(150).into_bytes(),
+                false,
+            )
+        })
+        .collect::<Vec<_>>();
+    let (_, batches) = commands(".skills/courseware", &files, 9).unwrap();
+    for command in &batches {
+        let encoded = encoded_exec_uri_bytes(command);
+        assert!(encoded < 48 * 1024, "R2 encoded URI bytes={encoded}");
+    }
+}
+
 // Run the actual portable remote program against a private temporary workspace.
 // Only transport coordinates are remapped; quoting, validation, permissions and
 // publication execute unchanged. This fixture launches POSIX sh/chmod/mv on

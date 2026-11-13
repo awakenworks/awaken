@@ -6,7 +6,10 @@ use awaken_provisioning_contract as pc;
 
 mod batch;
 
-const MATERIALIZATION_CHUNK_BYTES: usize = 32 * 1024;
+// Shared by single-file and atomic-tree transfer. Base64 binary may be all '/',
+// which Kubernetes expands to %2F in exec query arguments; reserve headroom for
+// that encoding and the runtime's exec wrapper, not only the OS argv limit.
+const MATERIALIZATION_CHUNK_BYTES: usize = 8 * 1024;
 
 static FILE_STAGE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -130,7 +133,7 @@ pub(super) async fn write(
 
     // Detached exec has consistent completion semantics across Docker, Podman and
     // Kubernetes, unlike half-closing an attached stdin stream. Chunked base64 keeps
-    // every argv well below OS limits while preserving arbitrary binary file bytes.
+    // every encoded exec request bounded while preserving arbitrary file bytes.
     use base64::Engine as _;
     for chunk in contents.chunks(MATERIALIZATION_CHUNK_BYTES) {
         let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);

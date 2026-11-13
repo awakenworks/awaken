@@ -17,6 +17,9 @@ use awaken_provisioning_contract::AgentProcess;
 use std::sync::atomic::Ordering;
 use tokio::io::AsyncWriteExt as _;
 
+#[cfg(test)]
+mod uri_tests;
+
 pub(super) struct K8sExecState {
     pub(super) completion: Option<tokio::task::JoinHandle<Option<Status>>>,
     // One disposable observation cache covers both exit and failed observation.
