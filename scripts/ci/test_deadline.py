@@ -781,10 +781,12 @@ class CooperativeCapabilityTests(unittest.TestCase):
         # The process entry _deadline.sh calls: accepted => 0 and silent;
         # refused => 75 with the existing "install the committed host policy" text.
         with tempfile.TemporaryDirectory() as tmp:
-            observer = Path(tmp) / "awaken-build-admission"
+            observer = Path(tmp) / ("awaken-build-admission.cmd" if os.name == "nt"
+                                    else "awaken-build-admission")
             for value, status in ((NEW_CAPABILITIES, 0), ({**NEW_CAPABILITIES, "exclusive_kinds": []}, 75)):
                 with self.subTest(status=status):
-                    observer.write_text("#!/bin/sh\nprintf '%s\\n' '" + json.dumps(value) + "'\n")
+                    observer.write_text(("@echo off\n@echo " + json.dumps(value) + "\n") if os.name == "nt"
+                                        else "#!/bin/sh\nprintf '%s\\n' '" + json.dumps(value) + "'\n")
                     observer.chmod(0o755)
                     result = subprocess.run([sys.executable, str(DEADLINE), "--require-cooperative", str(observer)],
                                             capture_output=True, text=True, timeout=20)

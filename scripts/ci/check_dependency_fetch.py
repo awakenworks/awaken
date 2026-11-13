@@ -23,6 +23,7 @@ import tempfile
 import time
 
 import check_dependency_sources as policy
+import deadline
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -164,13 +165,10 @@ def run(argv: list[str], cwd: Path, environment: dict[str, str], log: Path,
         *, timeout: int = 180) -> dict[str, object]:
     started = time.monotonic()
     with log.open("wb") as stream:
-        try:
-            result = subprocess.run(argv, cwd=cwd, env=environment, stdout=stream,
-                                    stderr=subprocess.STDOUT, timeout=timeout)
-            code = result.returncode
-        except subprocess.TimeoutExpired:
+        code = deadline.run(timeout, argv, cwd=cwd, environment=environment,
+                            stdout=stream, stderr=subprocess.STDOUT)
+        if code == deadline.TIMEOUT_EXIT:
             stream.write(b"\nFAILED: dependency verification timed out\n")
-            code = 124
     return {"command": argv, "exit_code": code, "seconds": round(time.monotonic()-started, 3),
             "log": str(log)}
 

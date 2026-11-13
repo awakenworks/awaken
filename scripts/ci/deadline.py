@@ -267,6 +267,7 @@ def terminate_group(process: subprocess.Popen[bytes]) -> None:
 
 
 def run(seconds: float | None, command: list[str], *, stdout=None, stderr=None, environment=None,
+        cwd: str | Path | None = None,
         admission_bound: float | None = None, report: dict | None = None) -> int:
     """Run `command` for at most `seconds` of execution (None: no execution bound).
 
@@ -277,6 +278,8 @@ def run(seconds: float | None, command: list[str], *, stdout=None, stderr=None, 
     if (seconds is not None and (not math.isfinite(seconds) or seconds <= 0)) or not command:
         return 2
     stdio = {name: value for name, value in (('stdout', stdout), ('stderr', stderr)) if value is not None}
+    if cwd is not None:
+        stdio['cwd'] = cwd
     if os.name == "nt":
         from _windows_job import WindowsJob
 

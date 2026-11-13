@@ -391,6 +391,42 @@ impl McpSessions {
             .unwrap_or_default())
     }
 
+    /// Publish a built Runtime only while its captured MCP connections are
+    /// still the visible physical owners. Match and cache publication share
+    /// the same installed-Session mutation as MCP publication and drain.
+    /// A staged successor or lease-only renewal does not change the inputs;
+    /// removed/recreated owners, closed admission and absent Sessions refuse
+    /// installation. This observation grants no realization authority.
+    pub fn install_runtime_if_inputs_current<S: SessionMcpStates>(
+        &self,
+        slots: &S,
+        thread: &str,
+        prepared: &[McpGenerationProjection],
+        runtime: S::Runtime,
+    ) -> Result<bool, McpError> {
+        Ok(slots
+            .modify_mcp_and_runtime(thread, |mcp, cached| {
+                if !mcp.admits_realization() {
+                    return false;
+                }
+                let mut current = mcp.projections.iter().filter(|projection| {
+                    projection.state == McpProjectionState::Active && projection.server.is_some()
+                });
+                let unchanged = prepared.iter().all(|previous| {
+                    current.next().is_some_and(|next| {
+                        Arc::ptr_eq(&previous.drain, &next.drain)
+                            && previous.request.renewal_binding_fingerprint()
+                                == next.request.renewal_binding_fingerprint()
+                    })
+                }) && current.next().is_none();
+                if unchanged {
+                    *cached = Some(runtime);
+                }
+                unchanged
+            })?
+            .unwrap_or(false))
+    }
+
     pub fn projection<S: SessionMcpStates>(
         &self,
         slots: &S,

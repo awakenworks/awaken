@@ -78,9 +78,17 @@ async fn install(
         &active_mcp,
         ctx.config.resolved_spec.plugin_config.plugins(),
     )?;
-    host.installed_sessions.install_with(thread, |installed| {
-        installed.run.context = Some(ctx.clone())
-    })?;
+    if !host.mcp.install_runtime_if_inputs_current(
+        host.installed_sessions.as_ref(),
+        thread,
+        &active_mcp,
+        ctx.clone(),
+    )? {
+        return Err(SessionExecutionError::unavailable_classified(
+            "mcp_context_inputs_changed",
+            "MCP inputs changed while the Session context was being built",
+        ));
+    }
     // A prior process may have crashed after atomically ending the parent
     // and before delivering its remote child cancellations. Re-entering the
     // session redelivers those idempotent outbox entries.
@@ -111,3 +119,6 @@ async fn install(
     }
     Ok(ctx)
 }
+
+#[cfg(test)]
+mod projection_installation_tests;

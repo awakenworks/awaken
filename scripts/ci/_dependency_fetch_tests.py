@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -192,8 +193,78 @@ class DependencyFetchTests(unittest.TestCase):
         self.assertNotEqual(missing["stages"][-1]["exit_code"], 0)
         self.assertTrue(verify("cold-valid", revision)["passed"])
 
+    def test_command_preserves_working_directory_arguments_environment_and_exit(self):
+        original = Path.cwd()
+        literal = 'spaces "quotes" $literal `literal`'
+        env = {**fetch.clean_environment(), "DEPENDENCY_FETCH_FIXTURE": literal}
+        script = ("import json,os,pathlib,sys; "
+                  "print(json.dumps([str(pathlib.Path.cwd()),sys.argv[1],"
+                  "os.environ['DEPENDENCY_FETCH_FIXTURE']])); sys.exit(17)")
+        log = self.root / "command.log"
+        row = fetch.run([sys.executable, "-c", script, literal], self.root, env, log)
+        self.assertEqual(row["exit_code"], 17)
+        self.assertEqual(json.loads(log.read_text()), [str(self.root), literal, literal])
+        self.assertEqual(Path.cwd(), original)
+
+    def test_timeout_stops_owned_descendant_without_stopping_an_unrelated_child(self):
+        # The parent cannot declare readiness until its child is listening.
+        # A surviving listener after timeout is a leaked descendant, regardless
+        # of PID recycling. A separate child outside that command must survive.
+        listener = ("import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); "
+                    "s.listen(); s.settimeout(20); print(s.getsockname()[1],flush=True); "
+                    "c,_=s.accept(); c.settimeout(5); c.recv(16); c.close(); s.close()")
+        sentinel = subprocess.Popen([sys.executable, "-u", "-c", listener],
+                                    stdout=subprocess.PIPE, text=True)
+        def stop_sentinel():
+            if sentinel.poll() is None:
+                sentinel.terminate()
+            sentinel.wait(timeout=5)
+            sentinel.stdout.close()
+        self.addCleanup(stop_sentinel)
+        sentinel_port = int(sentinel.stdout.readline())
+        ready = self.root / "descendant-ready"
+        witness = socket.socket()
+        self.addCleanup(witness.close)
+        witness.bind(("127.0.0.1", 0))
+        witness.listen(1)
+        witness.settimeout(2)
+        child = ("import socket; "
+                 f"c=socket.create_connection(('127.0.0.1',{witness.getsockname()[1]}),timeout=5); "
+                 "c.sendall(b'ready\\n'); print('ready',flush=True); c.settimeout(20); c.recv(16)")
+        parent = ("import pathlib,subprocess,sys; "
+                  "c=subprocess.Popen([sys.executable,'-u','-c',sys.argv[2]],"
+                  "stdout=subprocess.PIPE,text=True); "
+                  "ready=c.stdout.readline().strip(); pathlib.Path(sys.argv[1]).write_text(ready); c.wait()")
+        row = fetch.run([sys.executable, "-u", "-c", parent, str(ready), child],
+                        self.root, fetch.clean_environment(), self.root / "owned-timeout.log", timeout=5)
+        self.assertEqual(row["exit_code"], 124)
+        self.assertEqual(ready.read_text(), "ready", "the descendant readiness barrier was not reached")
+        # The held connection must reach EOF after process-tree cleanup. A
+        # listener probing a now-closed Windows port can merely time out.
+        connection, _ = witness.accept()
+        with connection:
+            connection.settimeout(2)
+            greeting = bytearray()
+            while not greeting.endswith(b"\n"):
+                chunk = connection.recv(1)
+                self.assertTrue(chunk, "the child exited before sending readiness")
+                greeting.extend(chunk)
+            self.assertEqual(greeting, b"ready\n")
+            try:
+                survived = connection.recv(1) != b""
+            except TimeoutError:
+                survived = True
+            except ConnectionResetError:
+                survived = False
+            if survived:
+                connection.sendall(b"stop")
+        with socket.create_connection(("127.0.0.1", sentinel_port), timeout=2) as connection:
+            connection.sendall(b"stop")
+        self.assertEqual(sentinel.wait(timeout=5), 0)
+        self.assertFalse(survived, "the timed-out command left its child listening")
+
     def test_timeout_and_wrong_resolved_object_fail_closed(self):
-        with patch.object(fetch.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 1)):
+        with patch.object(fetch.deadline, "run", return_value=fetch.deadline.TIMEOUT_EXIT):
             row = fetch.run(["git"], self.root, fetch.clean_environment(), self.root / "timeout.log")
         self.assertEqual(row["exit_code"], 124)
         logs = self.root / "wrong"
