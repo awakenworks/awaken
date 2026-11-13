@@ -136,7 +136,10 @@ pub(super) fn build_pod(
         });
         auth.push(mount("registry-auth", "/kaniko/.docker", true));
     }
-    let mut common_env = Vec::new();
+    // Warmer otherwise caches only the selected child manifest. A private
+    // index digest would force the credential-free RUN back to the registry.
+    // The pinned Kaniko reader verifies and resolves its cached index locally.
+    let mut common_env = vec![env("FF_KANIKO_CACHE_IMAGE_INDEX", "true")];
     let mut build_args = vec![
         BUILD_SCRIPT.into(),
         "--".into(),

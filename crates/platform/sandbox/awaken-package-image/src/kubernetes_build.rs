@@ -1707,6 +1707,13 @@ mod tests {
         // receipt mount, RO base cache, no publish/cache push/ambient helpers.
         // C4 trusted push -> R4 non-root/RO-rootfs and regular-file-only input.
         // C5 invalid registry/image/proxy -> R5 reject before API mutation.
+        // C6 base is a private OCI index instead of a single manifest. R6
+        // both prefetch and credential-free RUN enable the pinned upstream
+        // index cache: the warmer persists the digest-verified index and the
+        // executor selects its platform locally, without registry auth. The
+        // runtime decision table covers single/default => offline success,
+        // index/default => refusal, index/enabled => offline success; the same
+        // canonical flag must reach both stages, never a second resolver.
         use crate::package_realization::{
             KANIKO_BUILD_CONTAINER, KANIKO_PREFETCH_CONTAINER, KANIKO_PUSH_CONTAINER,
         };
@@ -1764,6 +1771,16 @@ mod tests {
         assert_eq!(init[0].name, KANIKO_PREFETCH_CONTAINER);
         assert_eq!(init[0].command.as_ref().unwrap(), &["/kaniko/warmer"]);
         assert_eq!(init[1].name, KANIKO_BUILD_CONTAINER);
+        for stage in init {
+            assert!(
+                stage.env.as_ref().is_some_and(|values| values
+                    .iter()
+                    .any(|value| value.name == "FF_KANIKO_CACHE_IMAGE_INDEX"
+                        && value.value.as_deref() == Some("true")
+                        && value.value_from.is_none())),
+                "R6 private OCI indexes resolve from the shared read-only cache"
+            );
+        }
         assert_eq!(pod.containers.len(), 1);
         assert_eq!(pod.containers[0].name, KANIKO_PUSH_CONTAINER);
         let build = &init[1];

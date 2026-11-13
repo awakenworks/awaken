@@ -490,3 +490,16 @@ well as the successful push container. Missing/failed/ambiguous init evidence or
 a credential-bearing build mount is rejected even with copied projection hashes.
 Older v1/v2 Job and ConfigMap incarnations require the same controlled retirement
 before reuse; existing Registry images can still follow the recovery path.
+
+### 2026-11-13 amendment: Offline cache resolution includes image indexes
+
+The same pinned Kaniko image already owns OCI-index caching. Prefetch and build
+explicitly enable `FF_KANIKO_CACHE_IMAGE_INDEX=true`: prefetch stores the original
+index and selected platform image, and the credential-free executor verifies
+the cached index digest before selecting its child. Single-manifest bases keep
+the existing cache path. No second manifest resolver, rewritten Dockerfile,
+credential mount in RUN, or global architecture override is added. Without
+this flag, a private index reference misses the child-only cache and attempts an
+unauthenticated registry lookup; the fixed contract keeps that lookup local.
+The corresponding Job test owns the cause/effect table and flag projection;
+actual pinned-image offline runs separately cover the manifest/index cases.
