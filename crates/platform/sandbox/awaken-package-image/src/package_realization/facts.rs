@@ -19,6 +19,7 @@ use super::{
     PACKAGE_REALIZATION_CONTRACT_ANNOTATION, PACKAGE_RECIPE_FINGERPRINT_ANNOTATION,
     REALIZATION_DIGEST_ANNOTATION,
 };
+use super::{KANIKO_BUILD_CONTAINER, KANIKO_PREFETCH_CONTAINER, KANIKO_PUSH_CONTAINER};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::ConfigMap;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -272,10 +273,6 @@ pub(super) fn job_fact(job: &Job, namespace: &str) -> Result<JobFact, K8sPackage
         || pod.restart_policy.as_deref() != Some("Never")
         || awaken_worker_fleet_kubernetes::has_forbidden_sandbox_namespace_shape(pod)
         || pod.containers.len() != 1
-        || pod
-            .init_containers
-            .as_ref()
-            .is_some_and(|values| !values.is_empty())
     {
         return Err(K8sPackageRealizationError::invalid(
             "package Job Pod template violates the canonical tokenless one-container shape",
@@ -283,7 +280,72 @@ pub(super) fn job_fact(job: &Job, namespace: &str) -> Result<JobFact, K8sPackage
     }
     let container = &pod.containers[0];
     match kind {
-        PACKAGE_BUILD_JOB_KIND if container.name == "kaniko" => {
+        PACKAGE_BUILD_JOB_KIND if container.name == KANIKO_PUSH_CONTAINER => {
+            let init = pod.init_containers.as_deref().unwrap_or_default();
+            if init.len() != 2
+                || init[0].name != KANIKO_PREFETCH_CONTAINER
+                || init[1].name != KANIKO_BUILD_CONTAINER
+                || init.iter().any(|stage| stage.image != container.image)
+            {
+                return Err(K8sPackageRealizationError::invalid(
+                    "build lacks its exact serial Kaniko stages",
+                ));
+            }
+            // The untrusted RUN stage may see only the recipe and transient
+            // artifact/cache volumes, never credentials or push receipts.
+            let build = &init[1];
+            if pod.share_process_namespace == Some(true)
+                || build
+                    .env_from
+                    .as_ref()
+                    .is_some_and(|values| !values.is_empty())
+                || build
+                    .env
+                    .as_ref()
+                    .is_some_and(|values| values.iter().any(|value| value.value_from.is_some()))
+                || !build
+                    .env
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|value| {
+                        value.name == "DOCKER_CONFIG"
+                            && value.value.as_deref() == Some("/kaniko/no-auth")
+                    })
+                || build.volume_mounts.as_deref().unwrap_or_default().len() != 4
+            {
+                return Err(K8sPackageRealizationError::invalid(
+                    "untrusted build has ambient credentials or shared processes",
+                ));
+            }
+            let volumes = pod.volumes.as_deref().unwrap_or_default();
+            for mount in build.volume_mounts.as_deref().unwrap_or_default() {
+                let volume = volumes
+                    .iter()
+                    .find(|volume| volume.name == mount.name)
+                    .ok_or_else(|| {
+                        K8sPackageRealizationError::invalid("build mount has no exact volume")
+                    })?;
+                let safe = match mount.name.as_str() {
+                    "build-input" => volume.config_map.is_some() && mount.read_only == Some(true),
+                    "base-cache" => volume.empty_dir.is_some() && mount.read_only == Some(true),
+                    "build-context" | "build-output" => volume.empty_dir.is_some(),
+                    _ => false,
+                };
+                if !safe {
+                    return Err(K8sPackageRealizationError::invalid(
+                        "untrusted build mounts credential or private push data",
+                    ));
+                }
+            }
+            let args = build.args.as_deref().unwrap_or_default();
+            if !args.iter().any(|arg| arg == "--no-push")
+                || !args.iter().any(|arg| arg == "--no-push-cache")
+            {
+                return Err(K8sPackageRealizationError::invalid(
+                    "untrusted build can publish",
+                ));
+            }
             let config_name = package_build_name(fingerprint)
                 .map_err(|error| K8sPackageRealizationError::invalid(error.to_string()))?;
             let config_volumes = pod
@@ -307,6 +369,10 @@ pub(super) fn job_fact(job: &Job, namespace: &str) -> Result<JobFact, K8sPackage
         }
         PACKAGE_IMAGE_CHECK_JOB_KIND
             if container.name == "verify"
+                && pod
+                    .init_containers
+                    .as_ref()
+                    .is_none_or(|values| values.is_empty())
                 && container.image.as_deref() == Some(destination)
                 && container.image_pull_policy.as_deref() == Some("Always") => {}
         _ => {

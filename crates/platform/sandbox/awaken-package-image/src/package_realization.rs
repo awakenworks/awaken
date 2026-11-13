@@ -23,7 +23,10 @@ use awaken_container_contract::RuntimeError;
 use awaken_worker_fleet_kubernetes::api_defaults::normalize_pod_spec;
 use awaken_worker_fleet_kubernetes::managed_names::{k8s_runtime_id, pod_name};
 
-pub const K8S_PACKAGE_REALIZATION_CONTRACT_VERSION: &str = "v2";
+pub const K8S_PACKAGE_REALIZATION_CONTRACT_VERSION: &str = "v3";
+pub(crate) const KANIKO_PREFETCH_CONTAINER: &str = "kaniko-prefetch";
+pub(crate) const KANIKO_BUILD_CONTAINER: &str = "kaniko-build";
+pub(crate) const KANIKO_PUSH_CONTAINER: &str = "kaniko";
 pub const PACKAGE_REALIZATION_CONTRACT_ANNOTATION: &str = "awaken.dev/package-realization-contract";
 pub const PACKAGE_RECIPE_FINGERPRINT_ANNOTATION: &str = "awaken.dev/package-recipe-fingerprint";
 pub const PACKAGE_IMAGE_DESTINATION_ANNOTATION: &str = "awaken.dev/package-image-destination";
@@ -236,6 +239,13 @@ fn successful_container_status<'a>(
         ));
     }
     let status = &statuses[0];
+    successful_status(status, name)
+}
+
+fn successful_status<'a>(
+    status: &'a k8s_openapi::api::core::v1::ContainerStatus,
+    name: &str,
+) -> Result<&'a k8s_openapi::api::core::v1::ContainerStatus, K8sPackageRealizationError> {
     let state = status
         .state
         .as_ref()
@@ -267,7 +277,28 @@ fn build_result(
         ));
     }
     let (pod, pod_uid) = one_claimed_pod(job_object, job, pods, namespace)?;
-    let status = successful_container_status(pod, "kaniko")?;
+    let init = pod
+        .status
+        .as_ref()
+        .and_then(|status| status.init_container_statuses.as_ref())
+        .ok_or_else(|| {
+            K8sPackageRealizationError::invalid("build has no init termination evidence")
+        })?;
+    if init.len() != 2 {
+        return Err(K8sPackageRealizationError::invalid(
+            "build has ambiguous init termination evidence",
+        ));
+    }
+    for name in [KANIKO_PREFETCH_CONTAINER, KANIKO_BUILD_CONTAINER] {
+        let matches: Vec<_> = init.iter().filter(|status| status.name == name).collect();
+        if matches.len() != 1 {
+            return Err(K8sPackageRealizationError::invalid(
+                "build init identity is missing or ambiguous",
+            ));
+        }
+        successful_status(matches[0], name)?;
+    }
+    let status = successful_container_status(pod, KANIKO_PUSH_CONTAINER)?;
     let message = status
         .state
         .as_ref()

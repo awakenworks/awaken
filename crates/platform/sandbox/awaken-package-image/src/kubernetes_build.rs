@@ -11,8 +11,7 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::batch::v1::{Job, JobSpec};
 use k8s_openapi::api::core::v1::{
-    ConfigMap, ConfigMapVolumeSource, Container, EnvVar, KeyToPath, LocalObjectReference, Pod,
-    PodSpec, PodTemplateSpec, SecretVolumeSource, SecurityContext, Volume, VolumeMount,
+    ConfigMap, Container, LocalObjectReference, Pod, PodSpec, PodTemplateSpec,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{DeleteParams, ListParams, Preconditions};
@@ -34,13 +33,13 @@ use awaken_worker_fleet_kubernetes::{
 };
 
 use awaken_container_contract::DEFAULT_K8S_KANIKO_IMAGE;
-use awaken_worker_fleet_kubernetes::pod_resources::{byte_quantity, pod_resources};
 // A cold desktop/multimedia image installs hundreds of Debian packages. On a
 // fresh k3d node the package indexes alone can consume most of ten minutes, so
 // the former ten-minute deadline killed a healthy package-build Job while it was
 // downloading archives and the reconciler immediately restarted the same work.
 // Keep the build bounded, but give cold package realization its own wider
 // window instead of coupling it to the much cheaper image-pull probe below.
+mod stages;
 const PACKAGE_BUILD_TIMEOUT_SECS: i64 = 30 * 60;
 // A desktop/browser Environment image can take several minutes to pull after
 // kubelet garbage collection. Keep the availability check alive for the same
@@ -352,6 +351,7 @@ impl K8sPackageImageProvisioner {
     pub fn with_forward_proxy(mut self, proxy: ForwardProxy) -> Result<Self, RuntimeError> {
         if proxy.url.trim().is_empty()
             || proxy.url.chars().any(char::is_whitespace)
+            || proxy.url.contains('@')
             || !(proxy.url.starts_with("http://") || proxy.url.starts_with("https://"))
         {
             return Err(backend(
@@ -390,144 +390,6 @@ impl K8sPackageImageProvisioner {
         };
         stamp_package_config_map(&mut config)?;
         stamp_realization(&mut config)?;
-        // Keep one container and the official executor image. ConfigMap volume
-        // entries are symlinks: normalize the recipe into ordinary files before
-        // executor unpack/snapshot. exec preserves its real exit code and receipt.
-        let script = r#"
-set -eu
-/busybox/mkdir -p /workspace
-/busybox/cp -L /input/Dockerfile /workspace/Dockerfile
-exec /kaniko/executor "$@"
-"#;
-        let mut arguments = vec![
-            script.to_owned(),
-            "--".to_owned(),
-            "--context=dir:///workspace".to_owned(),
-            "--dockerfile=/workspace/Dockerfile".to_owned(),
-            format!("--destination={destination}"),
-            "--image-name-with-digest-file=/dev/termination-log".to_owned(),
-            "--snapshot-mode=full".to_owned(),
-            "--cache=false".to_owned(),
-            "--push-retry=1".to_owned(),
-        ];
-        if self.registry_insecure {
-            // This opt-in applies only to the configured development registry,
-            // never to arbitrary FROM registries or a global TLS bypass.
-            arguments.push(format!("--insecure-registry={registry_host}"));
-        }
-        let mut volume_mounts = vec![
-            VolumeMount {
-                name: "build-input".into(),
-                mount_path: "/input".into(),
-                read_only: Some(true),
-                ..Default::default()
-            },
-            VolumeMount {
-                name: "build-context".into(),
-                mount_path: "/workspace".into(),
-                ..Default::default()
-            },
-        ];
-        let mut volumes = vec![
-            Volume {
-                name: "build-input".into(),
-                config_map: Some(ConfigMapVolumeSource {
-                    name: name.clone(),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            Volume {
-                name: "build-context".into(),
-                empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource {
-                    size_limit: Some(byte_quantity(1024 * 1024)),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        ];
-        if let Some(secret_name) = &self.push_secret {
-            volume_mounts.push(VolumeMount {
-                name: "registry-auth".into(),
-                mount_path: "/kaniko/.docker".into(),
-                read_only: Some(true),
-                ..Default::default()
-            });
-            volumes.push(Volume {
-                name: "registry-auth".into(),
-                secret: Some(SecretVolumeSource {
-                    secret_name: Some(secret_name.clone()),
-                    items: Some(vec![KeyToPath {
-                        key: ".dockerconfigjson".into(),
-                        path: "config.json".into(),
-                        mode: Some(0o400),
-                    }]),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            });
-        }
-        let mut environment = Vec::new();
-        if let Some(proxy) = &self.forward_proxy {
-            let no_proxy = format!("localhost,127.0.0.1,{registry_host},.svc,.cluster.local");
-            for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
-                arguments.push(format!("--build-arg={name}={}", proxy.url));
-                environment.push(EnvVar {
-                    name: name.into(),
-                    value: Some(proxy.url.clone()),
-                    ..Default::default()
-                });
-            }
-            for name in ["NO_PROXY", "no_proxy"] {
-                arguments.push(format!("--build-arg={name}={no_proxy}"));
-                environment.push(EnvVar {
-                    name: name.into(),
-                    value: Some(no_proxy.clone()),
-                    ..Default::default()
-                });
-            }
-        }
-        let container = Container {
-            name: "kaniko".into(),
-            // Build Pods reserve capacity and bound unpack/snapshot writes;
-            // the shared Session projection owns the Kubernetes quantity codec.
-            resources: pod_resources(
-                &pc::ResourceRequests {
-                    cpu_millis: Some(100),
-                    memory_bytes: Some(256 * 1024 * 1024),
-                    disk_bytes: Some(1024 * 1024 * 1024),
-                },
-                &pc::ResourceLimits {
-                    cpu_millis: Some(2000),
-                    memory_bytes: Some(2 * 1024 * 1024 * 1024),
-                    disk_bytes: Some(8 * 1024 * 1024 * 1024),
-                    pids: None,
-                },
-            ),
-            image: Some(self.kaniko_image.clone()),
-            image_pull_policy: Some("IfNotPresent".into()),
-            command: Some(vec!["/busybox/sh".into(), "-ceu".into()]),
-            args: Some(arguments),
-            env: Some(environment),
-            security_context: Some(SecurityContext {
-                // Kaniko unpacks the base filesystem directly; it needs root
-                // in this disposable build container, not a user namespace,
-                // privileged mode, host mounts, or an unconfined seccomp profile.
-                privileged: Some(false),
-                allow_privilege_escalation: Some(false),
-                run_as_non_root: Some(false),
-                run_as_user: Some(0),
-                run_as_group: Some(0),
-                read_only_root_filesystem: Some(false),
-                seccomp_profile: Some(k8s_openapi::api::core::v1::SeccompProfile {
-                    type_: "RuntimeDefault".into(),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            volume_mounts: Some(volume_mounts),
-            ..Default::default()
-        };
         let mut labels = sandbox_network_labels(Some("open"));
         labels.insert(
             "app.kubernetes.io/managed-by".into(),
@@ -549,20 +411,13 @@ exec /kaniko/executor "$@"
                         labels: Some(labels),
                         ..Default::default()
                     }),
-                    spec: Some(PodSpec {
-                        automount_service_account_token: Some(false),
-                        containers: vec![container],
-                        image_pull_secrets: Some(
-                            self.image_pull_secrets
-                                .iter()
-                                .cloned()
-                                .map(|name| LocalObjectReference { name })
-                                .collect(),
-                        ),
-                        restart_policy: Some("Never".into()),
-                        volumes: Some(volumes),
-                        ..Default::default()
-                    }),
+                    spec: Some(stages::build_pod(
+                        self,
+                        base_image,
+                        &name,
+                        &destination,
+                        registry_host,
+                    )),
                 },
                 ..Default::default()
             }),
@@ -1378,8 +1233,8 @@ mod tests {
          * Registry config. Effects: E1 Job and Pod template expose the exact
          * recipe fingerprint and destination; E2 no C2 material enters
          * annotations; E3 both objects select the canonical sandbox default-deny
-         * plus open-egress policies; E4 the build UID alone gets read-only access
-         * to the 0400 Secret file. Rule R1=C1+C2+C3+C4=>E1+E2+E3+E4. The termination
+         * plus open-egress policies; E4 the trusted-stage group alone gets read-only access
+         * to the 0440 Secret file. Rule R1=C1+C2+C3+C4=>E1+E2+E3+E4. The termination
          * message remains the immutable
          * build result; these two fields are correlation only, not another build
          * record or completion authority.
@@ -1424,9 +1279,10 @@ mod tests {
         );
         assert_eq!(pod_labels, Some(&expected_labels), "R1/E3 Pod");
         let pod_spec = job.spec.as_ref().unwrap().template.spec.as_ref().unwrap();
-        assert!(
-            pod_spec.security_context.is_none(),
-            "R1/E4 no shared fsGroup"
+        assert_eq!(
+            pod_spec.security_context.as_ref().unwrap().fs_group,
+            Some(10001),
+            "R1/E4 trusted-stage fsGroup"
         );
         assert_eq!(
             pod_spec.containers[0]
@@ -1434,7 +1290,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .run_as_user,
-            Some(0),
+            Some(10001),
             "R1/E4"
         );
         let credential_mode = pod_spec
@@ -1447,7 +1303,7 @@ mod tests {
             .and_then(|secret| secret.items.as_ref())
             .and_then(|items| items.first())
             .and_then(|item| item.mode);
-        assert_eq!(credential_mode, Some(0o400), "R1/E4");
+        assert_eq!(credential_mode, Some(0o440), "R1/E4");
 
         for annotations in [job_annotations, pod_annotations] {
             assert_eq!(
@@ -1845,14 +1701,15 @@ mod tests {
 
     #[tokio::test]
     async fn package_builder_job_is_kaniko_bounded_and_registry_backed() {
-        // Causes: C1 admitted recipe; C2 explicit insecure destination; C3 mirror;
-        // C4 proxy; C5 malformed config. Effects: E1 same recipe/destination;
-        // E2 host-scoped HTTP only; E3 one tokenless non-privileged root executor
-        // with RuntimeDefault (no userns helpers); E4 ordinary-file context and
-        // exact termination receipt; E5 proxy in executor + RUN, no image ENV;
-        // E6 reject before API writes. Rules R1=C1=>E1+E3+E4;
-        // R2=C2=>E2; R3=C3=>selected image; R4=C4=>E5; R5=C5=>E6.
-        // TLS/no-proxy and credential combinations are covered in the table below.
+        // C1 admitted recipe -> R1 deterministic input/destination and bounded
+        // serial Job. C2 optional proxy/HTTP -> R2 host-scoped transport in all
+        // stages, no global TLS bypass. C3 untrusted RUN -> R3 no credential or
+        // receipt mount, RO base cache, no publish/cache push/ambient helpers.
+        // C4 trusted push -> R4 non-root/RO-rootfs and regular-file-only input.
+        // C5 invalid registry/image/proxy -> R5 reject before API mutation.
+        use crate::package_realization::{
+            KANIKO_BUILD_CONTAINER, KANIKO_PREFETCH_CONTAINER, KANIKO_PUSH_CONTAINER,
+        };
         let client = awaken_outbound_http::kubernetes_control_client(kube::Config::new(
             "http://127.0.0.1:1/".parse().unwrap(),
         ))
@@ -1865,7 +1722,7 @@ mod tests {
             true,
         )
         .unwrap()
-        .with_kaniko_image("registry.local:5000/system/kaniko:v1.29.1-debug")
+        .with_kaniko_image("registry.local/kaniko:debug")
         .unwrap()
         .with_registry_push_secret("registry-push")
         .unwrap()
@@ -1884,201 +1741,195 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            destination,
-            format!("registry.local:5000/environments/awaken-packages:{fingerprint}"),
-            "R1/E1"
-        );
-        assert_eq!(
             config.data.unwrap(),
             BTreeMap::from([("Dockerfile".into(), recipe)]),
-            "R1/E1 no second recipe or daemon config"
+            "R1 one recipe"
+        );
+        assert_eq!(
+            destination,
+            format!("registry.local:5000/environments/awaken-packages:{fingerprint}")
         );
         let spec = job.spec.unwrap();
-        assert_eq!(
-            spec.backoff_limit,
-            Some(0),
-            "R1/E3 retry owner stays Coordinator"
-        );
-        assert!(
-            (30 * 60..60 * 60).contains(&spec.active_deadline_seconds.unwrap()),
-            "R1 bounded cold build"
-        );
+        assert_eq!(spec.backoff_limit, Some(0));
+        assert_eq!(spec.active_deadline_seconds, Some(1800));
         let pod = spec.template.spec.unwrap();
-        assert_eq!(pod.automount_service_account_token, Some(false), "R1/E3");
-        assert_eq!(pod.containers.len(), 1, "R1/E3");
-        assert!(pod.init_containers.is_none(), "R1/E3 no second image");
+        assert_eq!(pod.automount_service_account_token, Some(false));
+        assert_eq!(pod.share_process_namespace, Some(false));
         assert_eq!(
             pod.image_pull_secrets.as_ref().unwrap()[0].name,
             "registry-pull"
         );
-        assert!(
-            pod.volumes
-                .as_ref()
-                .unwrap()
-                .iter()
-                .all(|v| v.host_path.is_none()),
-            "R1 no host socket/mount"
-        );
-        assert!(
-            pod.volumes
-                .as_ref()
-                .unwrap()
-                .iter()
-                .any(|v| v.name == "build-context" && v.empty_dir.is_some()),
-            "R1/E4"
-        );
-        let executor = &pod.containers[0];
-        assert_eq!(executor.name, "kaniko");
-        // Budget causes/effects: B1 a package build exists => E1 nonzero
-        // CPU/memory/disk scheduling requests, E2 independent hard ceilings,
-        // E3 bounded recipe-only EmptyDir. Values use the same quantity owner
-        // as Session Pods; the existing failed-Job table forbids Ready on a
-        // resource-terminated build. Each budget enters the exact spec hash.
-        let resources = executor.resources.as_ref().unwrap();
-        let requests = resources.requests.as_ref().unwrap();
-        let limits = resources.limits.as_ref().unwrap();
-        assert_eq!(requests["cpu"].0, "100m", "B1/E1");
-        assert_eq!(requests["memory"].0, "268435456", "B1/E1");
-        assert_eq!(requests["ephemeral-storage"].0, "1073741824", "B1/E1");
-        assert_eq!(limits["cpu"].0, "2", "B1/E2");
-        assert_eq!(limits["memory"].0, "2147483648", "B1/E2");
-        assert_eq!(limits["ephemeral-storage"].0, "8589934592", "B1/E2");
-        let context = pod
-            .volumes
-            .as_ref()
-            .unwrap()
-            .iter()
-            .find(|v| v.name == "build-context")
-            .unwrap();
+        let init = pod.init_containers.as_ref().unwrap();
+        assert_eq!(init.len(), 2);
+        assert_eq!(init[0].name, KANIKO_PREFETCH_CONTAINER);
+        assert_eq!(init[0].command.as_ref().unwrap(), &["/kaniko/warmer"]);
+        assert_eq!(init[1].name, KANIKO_BUILD_CONTAINER);
+        assert_eq!(pod.containers.len(), 1);
+        assert_eq!(pod.containers[0].name, KANIKO_PUSH_CONTAINER);
+        let build = &init[1];
+        for stage in init.iter().chain(pod.containers.iter()) {
+            assert_eq!(stage.image.as_deref(), Some("registry.local/kaniko:debug"));
+            let resources = stage.resources.as_ref().unwrap();
+            let requests = resources.requests.as_ref().unwrap();
+            let limits = resources.limits.as_ref().unwrap();
+            assert_eq!(requests["cpu"].0, "100m");
+            assert_eq!(requests["memory"].0, "268435456");
+            assert_eq!(requests["ephemeral-storage"].0, "1073741824");
+            assert_eq!(limits["cpu"].0, "2");
+            assert_eq!(limits["memory"].0, "2147483648");
+            assert_eq!(limits["ephemeral-storage"].0, "8589934592");
+            assert_eq!(
+                stage.security_context.as_ref().unwrap().privileged,
+                Some(false)
+            );
+            assert_eq!(
+                stage
+                    .security_context
+                    .as_ref()
+                    .unwrap()
+                    .allow_privilege_escalation,
+                Some(false)
+            );
+            assert_eq!(
+                stage
+                    .security_context
+                    .as_ref()
+                    .unwrap()
+                    .seccomp_profile
+                    .as_ref()
+                    .unwrap()
+                    .type_,
+                "RuntimeDefault"
+            );
+            assert!(
+                stage
+                    .args
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a == "--insecure-registry=registry.local:5000"),
+                "R2"
+            );
+            assert!(
+                !stage
+                    .args
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a == "--insecure" || a.contains("skip-tls")),
+                "R2"
+            );
+            for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
+                assert!(
+                    stage.env.as_ref().unwrap().iter().any(|v| v.name == name
+                        && v.value.as_deref() == Some("http://proxy.internal:8080")),
+                    "R2"
+                );
+            }
+        }
         assert_eq!(
-            context
-                .empty_dir
-                .as_ref()
-                .unwrap()
-                .size_limit
-                .as_ref()
-                .unwrap()
-                .0,
-            "1048576",
-            "B1/E3"
+            build.security_context.as_ref().unwrap().run_as_user,
+            Some(0)
         );
-        assert_eq!(
-            executor.image.as_deref(),
-            Some("registry.local:5000/system/kaniko:v1.29.1-debug"),
+        let mounts = build.volume_mounts.as_ref().unwrap();
+        assert!(
+            !mounts
+                .iter()
+                .any(|m| m.name == "registry-auth" || m.name == "push-receipt"),
             "R3"
         );
-        let security = executor.security_context.as_ref().unwrap();
-        assert_eq!(security.privileged, Some(false), "R1/E3");
-        assert_eq!(security.run_as_user, Some(0), "R1/E3 unpack base rootfs");
-        assert_eq!(security.allow_privilege_escalation, Some(false), "R1/E3");
-        assert_eq!(
-            security.seccomp_profile.as_ref().unwrap().type_,
-            "RuntimeDefault",
-            "R1/E3"
-        );
         assert!(
-            security.app_armor_profile.is_none(),
-            "R1/E3 no Unconfined override"
+            mounts
+                .iter()
+                .any(|m| m.name == "base-cache" && m.read_only == Some(true)),
+            "R3"
         );
-        assert!(
-            security.capabilities.is_none(),
-            "R1/E3 no extra capabilities"
-        );
-        assert_eq!(executor.command.as_ref().unwrap(), &["/busybox/sh", "-ceu"]);
-        let args = executor.args.as_ref().unwrap();
-        assert!(
-            args[0].contains("/busybox/cp -L /input/Dockerfile /workspace/Dockerfile"),
-            "R1/E4"
-        );
-        assert!(
-            args[0].contains("exec /kaniko/executor \"$@\""),
-            "R1/E4 propagate actual exit code"
-        );
-        for required in [
-            "--context=dir:///workspace",
-            "--dockerfile=/workspace/Dockerfile",
-            "--image-name-with-digest-file=/dev/termination-log",
-            "--snapshot-mode=full",
-            "--cache=false",
-            "--insecure-registry=registry.local:5000",
+        for flag in [
+            "--no-push",
+            "--no-push-cache",
+            "--cache-run-layers=false",
+            "--cache-copy-layers=false",
+            "--credential-helpers=",
+            "--tar-path=/output/image.tar",
             "--build-arg=HTTP_PROXY=http://proxy.internal:8080",
         ] {
             assert!(
-                args.iter().any(|a| a == required),
-                "R1/R2/R4 missing {required}"
+                build.args.as_ref().unwrap().iter().any(|a| a == flag),
+                "R3 {flag}"
             );
         }
-        assert!(
-            args.iter()
-                .any(|a| a == &format!("--destination={destination}")),
-            "R1/E1"
+        let push = &pod.containers[0];
+        assert_eq!(
+            push.security_context.as_ref().unwrap().run_as_user,
+            Some(10001)
+        );
+        assert_eq!(
+            push.security_context
+                .as_ref()
+                .unwrap()
+                .read_only_root_filesystem,
+            Some(true)
         );
         assert!(
-            !args
+            push.args.as_ref().unwrap()[0].contains("test ! -L /output/image.tar"),
+            "R4 no symlink/OCI-directory traversal"
+        );
+        assert!(
+            push.volume_mounts
+                .as_ref()
+                .unwrap()
                 .iter()
-                .any(|a| a == "--insecure" || a == "--insecure-pull" || a.contains("skip-tls")),
-            "R2 no global weakening"
+                .any(|m| m.name == "build-output" && m.read_only == Some(true))
         );
-        let environment = executor.env.as_ref().unwrap();
-        for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
-            assert!(
-                environment
-                    .iter()
-                    .any(|v| v.name == name
-                        && v.value.as_deref() == Some("http://proxy.internal:8080")),
-                "R4/E5 {name}"
-            );
-        }
         assert!(
-            environment.iter().any(|v| v.name == "NO_PROXY"
-                && v.value.as_ref().unwrap().contains("registry.local:5000")),
-            "R4 local Registry bypass"
+            pod.volumes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|v| v.host_path.is_none())
         );
         assert!(
             K8sPackageImageProvisioner::new(
-                client,
+                client.clone(),
                 "awaken-system",
-                "registry.local/environments\n[registry.\"attacker\"]",
+                "registry.local/bad\ninput",
                 Vec::new(),
-                true,
+                false
             )
             .is_err(),
             "R5"
         );
         assert!(
             K8sPackageImageProvisioner::new(
-                awaken_outbound_http::kubernetes_control_client(kube::Config::new(
-                    "http://127.0.0.1:1/".parse().unwrap()
-                ))
-                .unwrap(),
+                client.clone(),
                 "awaken-system",
-                "registry.local/environments",
+                "registry.local/images",
                 Vec::new(),
-                true,
+                false
             )
             .unwrap()
-            .with_kaniko_image("registry.local/bad image")
+            .with_kaniko_image("bad image")
             .is_err(),
-            "R7 an invalid mirrored builder reference must fail before a Kubernetes write"
+            "R5"
         );
-        assert!(
-            K8sPackageImageProvisioner::new(
-                awaken_outbound_http::kubernetes_control_client(kube::Config::new(
-                    "http://127.0.0.1:1/".parse().unwrap()
-                ))
-                .unwrap(),
-                "awaken-system",
-                "registry.local/environments",
-                Vec::new(),
-                true,
-            )
-            .unwrap()
-            .with_forward_proxy(ForwardProxy {
-                url: "file:///tmp/not-a-proxy".into(),
-            })
-            .is_err(),
-            "R9 an invalid package-build proxy must fail before a Kubernetes write"
-        );
+        for url in [
+            "file:///tmp/proxy",
+            "http://user:password@proxy.internal:8080",
+        ] {
+            assert!(
+                K8sPackageImageProvisioner::new(
+                    client.clone(),
+                    "awaken-system",
+                    "registry.local/images",
+                    Vec::new(),
+                    false
+                )
+                .unwrap()
+                .with_forward_proxy(ForwardProxy { url: url.into() })
+                .is_err(),
+                "R5 credential-free transport"
+            );
+        }
     }
     #[tokio::test]
     async fn kaniko_credentials_and_tls_are_explicit_independent_inputs() {
@@ -2124,7 +1975,7 @@ mod tests {
                     "E1/E2"
                 );
                 if let Some(secret) = secret {
-                    assert_eq!(secret.items.unwrap()[0].mode, Some(0o400), "E2");
+                    assert_eq!(secret.items.unwrap()[0].mode, Some(0o440), "E2");
                 }
                 let executor = &pod.containers[0];
                 assert_eq!(
@@ -2132,7 +1983,15 @@ mod tests {
                     Some(awaken_container_contract::DEFAULT_K8S_KANIKO_IMAGE),
                     "one default owner"
                 );
-                assert!(executor.env.as_ref().unwrap().is_empty(), "E3");
+                assert!(
+                    !executor
+                        .env
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .any(|v| v.name.contains("PROXY")),
+                    "E3 no proxy"
+                );
                 assert!(
                     !executor
                         .args

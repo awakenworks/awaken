@@ -469,3 +469,24 @@ ephemeral storage. The recipe-only context EmptyDir is capped at 1 MiB.
 The shared Kubernetes Pod resource projection in `awaken-worker-fleet-kubernetes`
 owns quantity encoding for both build and Session Pods. Node admission still
 decides scheduling; a resource-terminated build cannot produce Ready.
+
+### Credential isolation amendment (2026-11-13)
+
+The canonical build Job uses the pinned complete Kaniko image for three serial
+roles: a trusted prefetch init container runs its bundled warmer, an untrusted
+build init container executes package RUN steps without any Registry credential
+mount, and the trusted main container pushes the regular-file image tarball.
+Only prefetch and push mount the explicitly selected Registry Secret. The build
+receives the prefetched base cache read-only, disables remote layer caching and
+push, and has an empty credential-helper selection. It cannot access the push
+receipt volume or another container's process namespace. The push phase never
+executes image contents; it refuses symlink/directory artifacts before reading.
+Its successful, trusted Kaniko push log supplies the digest record, followed by
+the existing mandatory independent kubelet digest check. The existing claim,
+lease, deadline and retry owner still encloses exactly one Kubernetes Job.
+
+Package-realization contract v3 requires both successful init terminations as
+well as the successful push container. Missing/failed/ambiguous init evidence or
+a credential-bearing build mount is rejected even with copied projection hashes.
+Older v1/v2 Job and ConfigMap incarnations require the same controlled retirement
+before reuse; existing Registry images can still follow the recovery path.

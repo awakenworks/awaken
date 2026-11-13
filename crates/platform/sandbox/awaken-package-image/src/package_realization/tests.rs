@@ -107,7 +107,11 @@ fn default_no_execute_toleration(key: &str) -> Toleration {
 }
 
 fn apply_api_job_template_defaults(pod: &mut k8s_openapi::api::core::v1::PodSpec) {
-    for container in &mut pod.containers {
+    for container in pod
+        .containers
+        .iter_mut()
+        .chain(pod.init_containers.iter_mut().flatten())
+    {
         // API-default cause/effect: absent resources => empty default; an
         // authored CPU/memory/disk budget => preserve it exactly. Defaults
         // cannot erase explicit bounds or make a drifted Pod admissible.
@@ -203,10 +207,32 @@ fn successful_job_pod(
         }),
         ..Default::default()
     };
+    let init_statuses = spec.init_containers.as_ref().map(|containers| {
+        containers
+            .iter()
+            .map(|container| ContainerStatus {
+                name: container.name.clone(),
+                image: container.image.clone().unwrap(),
+                image_id: image_id.into(),
+                ready: false,
+                restart_count: 0,
+                state: Some(ContainerState {
+                    terminated: Some(ContainerStateTerminated {
+                        exit_code: 0,
+                        reason: Some("Completed".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .collect()
+    });
     Pod {
         metadata,
         spec: Some(spec),
         status: Some(PodStatus {
+            init_container_statuses: init_statuses,
             container_statuses: Some(vec![status]),
             phase: Some("Succeeded".into()),
             ..Default::default()
@@ -856,8 +882,8 @@ async fn retired_executor_evidence_cannot_be_adopted_as_kaniko() {
     // Causes: C1 retired contract version; C2 retired daemon input; C3 retired
     // build container, even with recomputed projection hashes. Each alone must
     // yield E1 no proof. R1=C1=>E1; R2=C2=>E1; R3=C3=>E1. Positive control:
-    // the unchanged canonical fixture yields one fresh v2 proof.
-    assert_eq!(canonical_fixture().verify().unwrap().contract_version, "v2");
+    // the unchanged canonical fixture yields one fresh v3 proof.
+    assert_eq!(canonical_fixture().verify().unwrap().contract_version, "v3");
     let mut fixture = canonical_fixture();
     fixture.config_maps[0]
         .metadata
@@ -998,4 +1024,72 @@ async fn kaniko_receipt_decodes_one_line_without_weakening_image_identity() {
         "R3/C5 failed process cannot publish a valid-looking receipt"
     );
     assert!(fixture.verify().is_err(), "R3/C5 retained observer");
+}
+
+#[tokio::test]
+async fn serial_build_requires_successful_credential_free_init_evidence() {
+    // C1 both init stages succeeded; C2 one init missing/failed/duplicated;
+    // C3 a credential mount is injected into RUN with hashes recomputed.
+    // R1=C1=>proof; R2=C2=>reject; R3=C3=>reject independently of copied hashes.
+    canonical_fixture().verify().expect("R1");
+    for mutation in 0..3 {
+        let mut fixture = canonical_fixture();
+        let pod = fixture.job_pod_index(PACKAGE_BUILD_JOB_KIND);
+        let statuses = fixture.pods[pod]
+            .status
+            .as_mut()
+            .unwrap()
+            .init_container_statuses
+            .as_mut()
+            .unwrap();
+        match mutation {
+            0 => {
+                statuses.pop();
+            }
+            1 => {
+                statuses[1]
+                    .state
+                    .as_mut()
+                    .unwrap()
+                    .terminated
+                    .as_mut()
+                    .unwrap()
+                    .exit_code = 23;
+            }
+            _ => {
+                statuses[1] = statuses[0].clone();
+            }
+        }
+        assert_rejected(fixture, "R2");
+    }
+    let mut fixture = canonical_fixture();
+    let index = fixture.job_index(PACKAGE_BUILD_JOB_KIND);
+    fixture.jobs[index]
+        .spec
+        .as_mut()
+        .unwrap()
+        .template
+        .spec
+        .as_mut()
+        .unwrap()
+        .init_containers
+        .as_mut()
+        .unwrap()[1]
+        .volume_mounts
+        .as_mut()
+        .unwrap()
+        .push(k8s_openapi::api::core::v1::VolumeMount {
+            name: "registry-auth".into(),
+            mount_path: "/stolen".into(),
+            read_only: Some(true),
+            ..Default::default()
+        });
+    bind_package_job_to_config(
+        &mut fixture.jobs[index],
+        &fixture.config_maps[0],
+        PACKAGE_BUILD_JOB_KIND,
+    )
+    .unwrap();
+    stamp_realization(&mut fixture.jobs[index]).unwrap();
+    assert_rejected(fixture, "R3");
 }
