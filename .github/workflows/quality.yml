@@ -224,7 +224,7 @@ jobs:
         run: python3 scripts/ci/check_sdk_consumer.py --qualify-artifact
       - name: Qualify complete SDK pre-release source SemVer
         if: github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == 'semver'
-        run: python3 scripts/ci/check_sdk_consumer.py --qualify-semver --baseline-rev 50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940
+        run: python3 scripts/ci/check_sdk_consumer.py --qualify-semver --baseline-rev bc827fddd1560d2bc3edc6624118b17bcedf31aa
       - name: Install repository test dependencies
         run: |
           # E2E lock decision table: C1 package.json and package-lock.json agree

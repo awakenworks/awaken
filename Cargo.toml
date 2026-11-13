@@ -20,7 +20,7 @@ license = "Apache-2.0"
 # scripts/ci/check_sdk_semver.py). Move it to the release commit when the SDK
 # is published.
 [workspace.metadata.awaken]
-sdk_semver_baseline = "50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940"
+sdk_semver_baseline = "bc827fddd1560d2bc3edc6624118b17bcedf31aa"
 
 [workspace.dependencies]
 awaken-conversation = { path = "crates/sdk/runtime/awaken-conversation", version = "0.1.0" }
@@ -109,24 +109,24 @@ awaken-admin-config-api = { path = "crates/platform/config/awaken-admin-config-a
 awaken-control = { path = "crates/apps/awaken-control" }
 # Foundation contract half (ADR-0043): RFC-9457 ApiError, pagination, and the
 # allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
-awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "fa24b9061f7f9f235f1a5dd1f83b7b0d2650a321" }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "fa24b9061f7f9f235f1a5dd1f83b7b0d2650a321" }
+awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "36f855b929a3e22133229af2b0e3158281e22e51" }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "36f855b929a3e22133229af2b0e3158281e22e51" }
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken
 # authn (argon2id at rest) + grant-based authz gating /v1/config/* and
 # /v1/vaults/* in awaken-coordinator, opt-in via AWAKEN_MGMT_IAM=embedded.
 # All IAM crates pin ONE rev so the contract types line up. awaken-iam-server's
 # SqlStore/migrations back the embedded authz rows instead of a hand-rolled
-# schema; its SQLite driver links the same patched libsqlite3-sys 0.39 as SQLx
+# schema; its SQLite driver shares the reviewed bundled SQLite FFI with SQLx
 # (ADR-0087 item 6).
-awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "349e95b0a8053be5501f90e878a275ae95f1d0c0", version = "=0.2.0-dev" }
-awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "349e95b0a8053be5501f90e878a275ae95f1d0c0", version = "=0.2.0-dev" }
-awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "349e95b0a8053be5501f90e878a275ae95f1d0c0", version = "=0.2.0-dev" }
-awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "349e95b0a8053be5501f90e878a275ae95f1d0c0", version = "=0.2.0-dev" }
-awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "349e95b0a8053be5501f90e878a275ae95f1d0c0", version = "=0.2.0-dev" }
+awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "894118071039cced27556756d3210916c8cf0b64", version = "=0.2.0-dev" }
+awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "894118071039cced27556756d3210916c8cf0b64", version = "=0.2.0-dev" }
+awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "894118071039cced27556756d3210916c8cf0b64", version = "=0.2.0-dev" }
+awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "894118071039cced27556756d3210916c8cf0b64", version = "=0.2.0-dev" }
+awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "894118071039cced27556756d3210916c8cf0b64", version = "=0.2.0-dev" }
 # The assembly layer (ADR-0048): one IamGate (authn+authz PDP) + auth_layer PEP,
 # three modes (Open/Local/Remote). Local mode is the single-machine embed over
 # migrated <data_dir>/iam.sqlite, seeded roles, and one-time browser setup.
-awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "349e95b0a8053be5501f90e878a275ae95f1d0c0", version = "=0.2.0-dev" }
+awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "894118071039cced27556756d3210916c8cf0b64", version = "=0.2.0-dev" }
 awaken-store-conformance = { path = "crates/platform/committed-truth/awaken-store-conformance" }
 awaken-sql-storage = { path = "crates/platform/storage/awaken-sql-storage" }
 awaken-sqlite-pool = { path = "crates/platform/storage/awaken-sqlite-pool" }
@@ -202,9 +202,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # One audited SQLite driver graph, shared with Foundation. This is the
 # official SQLx 0.9 source with the SQLite 0.39 security fix, not a fork.
-sqlx = { git = "https://github.com/transact-rs/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c", version = "=0.9.0", default-features = false }
-sqlx-core = { git = "https://github.com/transact-rs/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c", version = "=0.9.0", default-features = false }
-libsqlite3-sys = { version = ">=0.39.1, <0.40", features = ["bundled"] }
+sqlx = { git = "https://github.com/launchbadge/sqlx.git", rev = "4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4", version = "=0.9.1", default-features = false }
+sqlx-core = { git = "https://github.com/launchbadge/sqlx.git", rev = "4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4", version = "=0.9.1", default-features = false }
+libsqlite3-sys = { version = "=0.39.1", features = ["bundled"] }
 serde-saphyr = { version = "0.0.29", default-features = false, features = ["deserialize"] }
 kube = { version = "4.2.0", default-features = false }
 k8s-openapi = { version = "0.28", features = ["v1_32"] }

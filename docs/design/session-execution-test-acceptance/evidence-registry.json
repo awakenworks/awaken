@@ -815,7 +815,7 @@
   },
   {
     "id": "E42W",
-    "receipt": "target/session-acceptance-evidence/archive/e16bbe33906e3e27f971534f564cb4f85920d24d1a129b397fa4ecc38b15be15/receipt.json",
+    "receipt": "docs/design/session-execution-test-acceptance/evidence/E42-materializer-revocation-windows/receipt.json",
     "receipt_sha256": "e16bbe33906e3e27f971534f564cb4f85920d24d1a129b397fa4ecc38b15be15",
     "source": {
       "head": "365606709d19819fde31221c6eef5b655addc30a",
@@ -847,7 +847,7 @@
   },
   {
     "id": "E43",
-    "receipt": "target/session-acceptance-evidence/archive/2b34d71e7af55ae1b8330b860da7a7b543bef9399203cb981e02e3798b95428c/receipt.json",
+    "receipt": "docs/design/session-execution-test-acceptance/evidence/E43-materializer-revocation-windows/receipt.json",
     "receipt_sha256": "2b34d71e7af55ae1b8330b860da7a7b543bef9399203cb981e02e3798b95428c",
     "source": {
       "head": "365606709d19819fde31221c6eef5b655addc30a",

@@ -415,7 +415,7 @@ dependencies = [
 [[package]]
 name = "awaken-api-contract"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=fa24b9061f7f9f235f1a5dd1f83b7b0d2650a321#fa24b9061f7f9f235f1a5dd1f83b7b0d2650a321"
+source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=36f855b929a3e22133229af2b0e3158281e22e51#36f855b929a3e22133229af2b0e3158281e22e51"
 dependencies = [
  "serde",
  "serde_json",
@@ -1804,7 +1804,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-client"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=349e95b0a8053be5501f90e878a275ae95f1d0c0#349e95b0a8053be5501f90e878a275ae95f1d0c0"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=894118071039cced27556756d3210916c8cf0b64#894118071039cced27556756d3210916c8cf0b64"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1821,7 +1821,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-contract"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=349e95b0a8053be5501f90e878a275ae95f1d0c0#349e95b0a8053be5501f90e878a275ae95f1d0c0"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=894118071039cced27556756d3210916c8cf0b64#894118071039cced27556756d3210916c8cf0b64"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -1833,7 +1833,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-core"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=349e95b0a8053be5501f90e878a275ae95f1d0c0#349e95b0a8053be5501f90e878a275ae95f1d0c0"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=894118071039cced27556756d3210916c8cf0b64#894118071039cced27556756d3210916c8cf0b64"
 dependencies = [
  "argon2",
  "awaken-iam-contract",
@@ -1849,7 +1849,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-host"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=349e95b0a8053be5501f90e878a275ae95f1d0c0#349e95b0a8053be5501f90e878a275ae95f1d0c0"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=894118071039cced27556756d3210916c8cf0b64#894118071039cced27556756d3210916c8cf0b64"
 dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
@@ -1868,7 +1868,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-preset"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=349e95b0a8053be5501f90e878a275ae95f1d0c0#349e95b0a8053be5501f90e878a275ae95f1d0c0"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=894118071039cced27556756d3210916c8cf0b64#894118071039cced27556756d3210916c8cf0b64"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1877,7 +1877,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-server"
 version = "0.2.0-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=349e95b0a8053be5501f90e878a275ae95f1d0c0#349e95b0a8053be5501f90e878a275ae95f1d0c0"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=894118071039cced27556756d3210916c8cf0b64#894118071039cced27556756d3210916c8cf0b64"
 dependencies = [
  "async-trait",
  "atomicwrites",
@@ -3195,7 +3195,7 @@ dependencies = [
 [[package]]
 name = "awaken-scoped-migration"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=fa24b9061f7f9f235f1a5dd1f83b7b0d2650a321#fa24b9061f7f9f235f1a5dd1f83b7b0d2650a321"
+source = "git+https://github.com/awakenworks/awaken-foundation.git?rev=36f855b929a3e22133229af2b0e3158281e22e51#36f855b929a3e22133229af2b0e3158281e22e51"
 dependencies = [
  "sha2 0.10.9",
  "sqlx",
@@ -8573,8 +8573,8 @@ dependencies = [
 
 [[package]]
 name = "sqlx"
-version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+version = "0.9.1"
+source = "git+https://github.com/launchbadge/sqlx.git?rev=4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4#4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4"
 dependencies = [
  "sqlx-core",
  "sqlx-macros",
@@ -8585,8 +8585,8 @@ dependencies = [
 
 [[package]]
 name = "sqlx-core"
-version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+version = "0.9.1"
+source = "git+https://github.com/launchbadge/sqlx.git?rev=4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4#4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -8621,8 +8621,8 @@ dependencies = [
 
 [[package]]
 name = "sqlx-macros"
-version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+version = "0.9.1"
+source = "git+https://github.com/launchbadge/sqlx.git?rev=4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4#4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8633,8 +8633,8 @@ dependencies = [
 
 [[package]]
 name = "sqlx-macros-core"
-version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+version = "0.9.1"
+source = "git+https://github.com/launchbadge/sqlx.git?rev=4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4#4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4"
 dependencies = [
  "cfg-if",
  "dotenvy",
@@ -8658,8 +8658,8 @@ dependencies = [
 
 [[package]]
 name = "sqlx-mysql"
-version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+version = "0.9.1"
+source = "git+https://github.com/launchbadge/sqlx.git?rev=4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4#4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4"
 dependencies = [
  "bitflags 2.13.1",
  "byteorder",
@@ -8684,8 +8684,8 @@ dependencies = [
 
 [[package]]
 name = "sqlx-postgres"
-version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+version = "0.9.1"
+source = "git+https://github.com/launchbadge/sqlx.git?rev=4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4#4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4"
 dependencies = [
  "atoi",
  "base64 0.22.1",
@@ -8719,8 +8719,8 @@ dependencies = [
 
 [[package]]
 name = "sqlx-sqlite"
-version = "0.9.0"
-source = "git+https://github.com/transact-rs/sqlx?rev=10462fa4414c6c7f1ed1d39bb31678e3b726878c#10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+version = "0.9.1"
+source = "git+https://github.com/launchbadge/sqlx.git?rev=4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4#4f22dcfd42cbc15ea7a977cb38a39ef0ce6b3be4"
 dependencies = [
  "atoi",
  "flume",

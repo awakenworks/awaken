@@ -491,7 +491,7 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
         ("Qualify SDK archive consumer tasks", "artifact",
          "python3 scripts/ci/check_sdk_consumer.py --qualify-artifact"),
         ("Qualify complete SDK pre-release source SemVer", "semver",
-         "python3 scripts/ci/check_sdk_consumer.py --qualify-semver --baseline-rev 50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940"),
+         "python3 scripts/ci/check_sdk_consumer.py --qualify-semver --baseline-rev bc827fddd1560d2bc3edc6624118b17bcedf31aa"),
     ):
         step = re.search(r"^      - name: " + re.escape(label) + r"\n(?:(?!^      - ).|\n)*",
                          full_job.group(0) if full_job else "", re.MULTILINE)
@@ -1469,7 +1469,7 @@ def self_test() -> None:
         ("--qualify-artifact\n", "--qualify-artifact || true\n"),
         ("github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == 'artifact'",
          "inputs.sdk_qualification == 'artifact'"),
-        ("--baseline-rev 50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940", "--baseline-rev HEAD"),
+        ("--baseline-rev bc827fddd1560d2bc3edc6624118b17bcedf31aa", "--baseline-rev HEAD"),
     ):
         changed = dict(workflows)
         changed[QUALITY_WORKFLOW] = quality_source.replace(original, changed_text, 1)

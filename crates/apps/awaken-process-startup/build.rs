@@ -1,6 +1,5 @@
 use std::env;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 mod build_support;
 
@@ -14,69 +13,32 @@ fn main() {
         .ancestors()
         .nth(3)
         .expect("awaken-process-startup must live under crates/apps/awaken-process-startup");
-    let web = workspace.join("web");
-
-    println!("cargo:rerun-if-changed={}", web.join("src").display());
-    for input in [
-        "index.html",
-        "package.json",
-        "tsconfig.json",
-        "vite.config.ts",
-    ] {
-        println!("cargo:rerun-if-changed={}", web.join(input).display());
-    }
-    println!(
-        "cargo:rerun-if-changed={}",
-        workspace.join("pnpm-lock.yaml").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        workspace.join("pnpm-workspace.yaml").display()
-    );
-
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let dist = out_dir.join("console");
-    println!(
-        "cargo:rerun-if-changed={}",
-        workspace.join("package.json").display()
+    let graph = build_support::console_workspace_command(cfg!(windows), workspace)
+        .command()
+        .output()
+        .expect("query Console workspace dependencies");
+    assert!(
+        graph.status.success(),
+        "pnpm workspace graph failed: {}",
+        String::from_utf8_lossy(&graph.stderr)
     );
-    build_console(workspace, &dist);
-    build_support::write_console_manifest(workspace, &dist);
+    let inputs = build_support::console_source_inputs(workspace, &graph.stdout);
+    for input in &inputs {
+        println!("cargo:rerun-if-changed={}", input.display());
+    }
+    let staged = build_support::stage_console_workspace(workspace, &out_dir, &inputs);
+    let dist = staged.join("console");
+    let [install, build] = build_support::console_commands(cfg!(windows), &staged, &dist);
+    run(&install);
+    run(&build);
+    build_support::write_console_manifest(&staged, &dist);
     build_support::generate_embedded_assets(&dist, &out_dir);
 }
 
-fn build_console(workspace: &Path, dist: &Path) {
-    let [install, build] = build_support::console_commands(cfg!(windows), workspace, dist);
-    run(&install);
-    let workspace = command(&build_support::console_workspace_command(
-        cfg!(windows),
-        workspace,
-    ))
-    .output()
-    .expect("query Console workspace dependencies");
-    assert!(
-        workspace.status.success(),
-        "pnpm workspace graph failed: {}",
-        String::from_utf8_lossy(&workspace.stderr)
-    );
-    for input in build_support::console_package_inputs(&workspace.stdout) {
-        println!("cargo:rerun-if-changed={}", input.display());
-    }
-    run(&build);
-}
-
-fn command(spec: &build_support::ConsoleCommand) -> Command {
-    // Ambient E2E TS loaders must not affect pnpm's package resolution.
-    let mut command = Command::new(spec.program);
-    command
-        .env_remove("NODE_OPTIONS")
-        .current_dir(&spec.current_dir)
-        .args(&spec.args);
-    command
-}
-
 fn run(spec: &build_support::ConsoleCommand) {
-    let status = command(spec)
+    let status = spec
+        .command()
         .status()
         .unwrap_or_else(|error| panic!("start {}: {error}", spec.program));
     assert!(

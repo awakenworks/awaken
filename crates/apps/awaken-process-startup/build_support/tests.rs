@@ -33,6 +33,10 @@ fn console_build_repairs_partial_dependency_state_before_building() {
         let graph = console_workspace_command(windows, workspace);
         assert_eq!(graph.program, program);
         assert_eq!(graph.current_dir, workspace);
+        assert_eq!(
+            graph.args,
+            ["--recursive", "list", "--depth", "-1", "--json"].map(OsString::from)
+        );
     }
 }
 
@@ -242,3 +246,6 @@ fn cached_asset_table_survives_an_independent_frontend_build() {
         String::from_utf8_lossy(&result.stderr),
     );
 }
+
+#[path = "staging_tests.rs"]
+mod staging_tests;

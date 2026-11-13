@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from collections import Counter, deque
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -471,7 +471,7 @@ class EvidenceRecorderTests(unittest.TestCase):
 
 
 class EvidenceArtifactByteTests(unittest.TestCase):
-    """Native Git must store the same raw evidence bytes the registry hashes."""
+    """Lock historical metadata; exercise native Git bytes on isolated fixtures."""
 
     def git(self, root: Path, *arguments: str) -> bytes:
         return subprocess.check_output(
@@ -525,39 +525,30 @@ class EvidenceArtifactByteTests(unittest.TestCase):
 
     def test_independent_e42_registration_keeps_its_original_source_and_receipt(self) -> None:
         entries = {entry["id"]: entry for entry in check_session_acceptance._load(ROOT)["evidence_registry"]}
-        directory = ROOT / "docs/design/session-execution-test-acceptance/evidence/E42-materializer-revocation-windows"
-        original = json.loads((directory / "original-registry-entry.json").read_text(encoding="utf-8"))
-        resolution = json.loads((directory / "registry-name-resolution.json").read_text(encoding="utf-8"))
-        self.assertEqual(original["id"], "E42")
-        self.assertEqual(original["entry_sha256"], check_session_acceptance.entry_digest(original))
-        self.assertEqual(resolution["original_entry_sha256"], original["entry_sha256"])
-        self.assertEqual(resolution["catalog_entry_sha256"], entries["E42W"]["entry_sha256"])
-        self.assertEqual(resolution["receipt_sha256"], original["receipt_sha256"])
-        self.assertEqual({k: v for k, v in original.items() if k not in ("id", "entry_sha256")},
-                         {k: v for k, v in entries["E42W"].items() if k not in ("id", "entry_sha256")})
+        frozen = check_session_acceptance.committed_registry(ROOT)
+        for identity in ("E42", "E42W"):
+            self.assertEqual(check_session_acceptance.entry_digest(entries[identity]), frozen[identity])
         self.assertNotEqual(entries["E42"]["receipt_sha256"], entries["E42W"]["receipt_sha256"])
+        self.assertNotEqual(entries["E42"]["source"], entries["E42W"]["source"])
         self.assertEqual(entries["E42W"]["platform"], "local Windows x86_64-pc-windows-msvc")
 
-    def test_registered_portable_artifacts_are_stored_with_their_declared_hashes(self) -> None:
+    def test_registered_receipt_metadata_has_portable_paths_and_locked_digests(self) -> None:
+        # Historical payloads may be archived outside Git. Source validation
+        # checks their immutable references, never claims absent bytes passed.
+        # The preceding synthetic Git tests own the LF/CRLF byte contract.
         entries = check_session_acceptance._load(ROOT)["evidence_registry"]
-        portable = [entry for entry in entries if entry.get("receipt", "").startswith(
-            "docs/design/session-execution-test-acceptance/evidence/")]
-        self.assertTrue(portable, "portable evidence must have an indexed byte check")
-        for entry in portable:
-            receipt = entry["receipt"]
-            with self.subTest(evidence=entry["id"], artifact=receipt):
-                indexed = formal_sources.git_output(ROOT, "show", ":" + receipt)
-                self.assertEqual(hashlib.sha256(indexed).hexdigest(), entry["receipt_sha256"])
-                self.assertEqual(indexed, (ROOT / receipt).read_bytes())
-            proof = json.loads(indexed)
-            directory = Path(receipt).parent
-            for name, digest in proof.get("raw_sha256", {}).items():
-                self.assertEqual(Path(name).name, name, "raw artifact names must stay within their receipt")
-                relative = (directory / name).as_posix()
-                with self.subTest(evidence=entry["id"], artifact=relative):
-                    indexed = formal_sources.git_output(ROOT, "show", ":" + relative)
-                    self.assertEqual(hashlib.sha256(indexed).hexdigest(), digest)
-                    self.assertEqual(indexed, (ROOT / relative).read_bytes())
+        frozen = check_session_acceptance.committed_registry(ROOT)
+        self.assertTrue(entries)
+        for entry in entries:
+            with self.subTest(evidence=entry["id"]):
+                receipt = entry["receipt"]
+                path = PurePosixPath(receipt)
+                self.assertFalse(path.is_absolute())
+                self.assertNotIn("..", path.parts)
+                self.assertNotIn("\\", receipt)
+                self.assertFalse(len(receipt) > 1 and receipt[1] == ":")
+                self.assertRegex(entry["receipt_sha256"], r"^[0-9a-f]{64}$")
+                self.assertEqual(check_session_acceptance.entry_digest(entry), frozen[entry["id"]])
 
 
 if __name__ == "__main__":

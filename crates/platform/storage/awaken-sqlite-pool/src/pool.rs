@@ -835,4 +835,136 @@ mod tests {
         .await
         .expect("R1/R2 release must settle or retire the connection within 5 seconds");
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn metadata_operations_hold_a_paused_clock_still() {
+        use sqlx::{Executor as _, SqlSafeStr as _, Statement as _};
+
+        let pool = EmbeddedSqlite::memory().open().await.unwrap();
+        sqlx::query("CREATE TABLE metadata_fact (id INTEGER PRIMARY KEY, value TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let started = tokio::time::Instant::now();
+        // awaken-allow(wait): The pending timer proves metadata I/O holds virtual time still; it does not settle a product operation.
+        let timer = tokio::spawn(tokio::time::sleep(Duration::from_secs(1)));
+        for _ in 0..25 {
+            let statement = (&pool)
+                .prepare("SELECT value FROM metadata_fact WHERE id = ?1".into_sql_str())
+                .await
+                .expect("M1 prepare metadata");
+            assert_eq!(statement.columns().len(), 1, "M1 selected column");
+            let description = (&pool)
+                .describe("SELECT value FROM metadata_fact WHERE id = ?1".into_sql_str())
+                .await
+                .expect("M2 describe metadata");
+            assert_eq!(description.columns().len(), 1, "M2 selected column");
+            assert!(
+                description.parameters().is_some(),
+                "M2 bound parameter metadata"
+            );
+        }
+        assert_eq!(started.elapsed(), Duration::ZERO, "M1/M2 keep time still");
+        assert!(!timer.is_finished(), "M1/M2 cannot finish the timer");
+        timer.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pool_custom_begin_native_insert_acknowledged_and_invalid_boundaries_preserve_rollback()
+    {
+        // H5: the real worker executes an evidence INSERT inside custom BEGIN,
+        // then its single-use update hook blocks before validation/ACK. Only
+        // after that native witness does the caller cancel the actual future.
+        // H6: acknowledged BEGIN + write, then drop the returned Transaction.
+        // H7: a custom statement that opens no transaction returns BeginFailed.
+        // All paths must admit the next BEGIN at depth zero, discard every
+        // uncommitted row, and preserve the same private in-memory database.
+        // SQLx validates custom BEGIN in the worker before its single ACK;
+        // counting a second public Pending poll would invent an old boundary.
+        let pool = memory_pool().await;
+        for boundary in ["before-ack", "acknowledged-drop", "invalid-statement"] {
+            let mut exercised = 0;
+            for attempt in 0..32 {
+                let mut connection = pool.acquire().await.unwrap();
+                match boundary {
+                    "before-ack" => {
+                        let (started, observed) = tokio::sync::oneshot::channel();
+                        let mut started = Some(started);
+                        let (release, released) = std::sync::mpsc::channel::<()>();
+                        {
+                            let mut handle = connection.lock_handle().await.unwrap();
+                            handle.set_update_hook(move |event| {
+                                if event.database == "main"
+                                    && event.table == "evidence"
+                                    && event.operation == sqlx::sqlite::SqliteOperation::Insert
+                                    && let Some(started) = started.take()
+                                {
+                                    let _ = started.send(());
+                                    // This callback runs on SQLite's own worker,
+                                    // never a Tokio executor. Sender drop also
+                                    // releases it on timeout, panic or unwind.
+                                    let _ = released.recv();
+                                }
+                            });
+                        }
+                        let mut beginning = Box::pin(sqlx::Connection::begin_with(
+                            &mut *connection,
+                            "BEGIN IMMEDIATE; INSERT INTO evidence VALUES (1)",
+                        ));
+                        tokio::time::timeout(Duration::from_secs(5), async {
+                            tokio::select! {
+                                witness = observed => witness.expect("H5 native INSERT witness"),
+                                result = &mut beginning => panic!(
+                                    "H5 BEGIN completed before the native witness: {:?}",
+                                    result.err()
+                                ),
+                            }
+                        })
+                        .await
+                        .expect("H5 worker must reach the native INSERT before ACK");
+                        drop(beginning);
+                        drop(release);
+                        connection.lock_handle().await.unwrap().remove_update_hook();
+                    }
+                    "acknowledged-drop" => {
+                        let mut transaction =
+                            sqlx::Connection::begin_with(&mut *connection, "BEGIN IMMEDIATE")
+                                .await
+                                .expect("H6 acknowledged BEGIN");
+                        sqlx::query("INSERT INTO evidence VALUES (2)")
+                            .execute(&mut *transaction)
+                            .await
+                            .expect("H6 actual uncommitted write");
+                        drop(transaction);
+                    }
+                    "invalid-statement" => {
+                        let error = match sqlx::Connection::begin_with(&mut *connection, "SELECT 1")
+                            .await
+                        {
+                            Err(error) => error,
+                            Ok(_) => panic!("H7 a non-BEGIN statement cannot create a Transaction"),
+                        };
+                        assert!(matches!(error, sqlx::Error::BeginFailed), "H7 {error}");
+                    }
+                    _ => unreachable!("closed fixture boundaries"),
+                }
+                exercised += 1;
+                drop(connection);
+                let next = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    pool.begin_with("BEGIN IMMEDIATE"),
+                )
+                .await
+                .expect("H5-H7 next admission must not remain blocked")
+                .unwrap_or_else(|error| panic!("boundary {boundary}, attempt {attempt}: {error}"));
+                next.rollback().await.unwrap();
+                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM evidence")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                assert_eq!(count, 0, "E2 retain the same in-memory database");
+            }
+            assert_eq!(exercised, 32, "boundary {boundary} actually exercised");
+        }
+    }
 }

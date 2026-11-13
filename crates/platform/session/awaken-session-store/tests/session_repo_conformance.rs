@@ -97,7 +97,7 @@ async fn owned_postgres_pool(url: &str, tag: &str) -> (sqlx::PgPool, String) {
     (pool, schema)
 }
 
-async fn close_postgres_pool(pool: sqlx::PgPool, schema: &str) {
+async fn drop_postgres_schema(pool: &sqlx::PgPool, schema: &str) {
     assert!(
         schema.starts_with("t_session_")
             && schema
@@ -108,6 +108,10 @@ async fn close_postgres_pool(pool: sqlx::PgPool, schema: &str) {
     pool.execute(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .await
         .expect("drop exact owned Session schema");
+}
+
+async fn close_postgres_pool(pool: sqlx::PgPool, schema: &str) {
+    drop_postgres_schema(&pool, schema).await;
     pool.close().await;
 }
 
@@ -119,19 +123,29 @@ async fn postgres_backend_conforms() {
     let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
         return;
     };
-    let fixtures = tokio::sync::Mutex::new(Vec::new());
+    // Retain only schema identities for cleanup. Keeping every finished case's
+    // pool alive accumulates idle connections across the full suite and its
+    // independent bounded-stack/configuration-contract processes.
+    let schemas = tokio::sync::Mutex::new(Vec::new());
     run_suite(|| async {
         let (pool, schema) = owned_postgres_pool(&url, "conformance").await;
-        let repo = awaken_session_store::PostgresManagedSessionRepository::with_pool(pool.clone())
+        let repo = awaken_session_store::PostgresManagedSessionRepository::with_pool(pool)
             .await
             .expect("PostgreSQL Session repository migrations");
-        fixtures.lock().await.push((pool, schema));
+        schemas.lock().await.push(schema);
         repo
     })
     .await;
-    for (pool, schema) in fixtures.into_inner() {
-        close_postgres_pool(pool, &schema).await;
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect(&url)
+        .await
+        .expect("connect for exact owned Session schema cleanup");
+    for schema in schemas.into_inner() {
+        drop_postgres_schema(&admin, &schema).await;
     }
+    admin.close().await;
 }
 
 #[test]

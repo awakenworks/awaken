@@ -67,6 +67,8 @@ import tempfile
 import time
 from collections import Counter
 from pathlib import Path
+
+from _session_acceptance_locations import location_line
 from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -186,8 +188,9 @@ def _binding_errors(binding: dict, registry: dict, root: Path, cache: dict) -> l
         elif not _defines(lines, location["path"], binding["name"]):
             errors.append(f"L03 {binding['id']} {location['path']} does not define {binding['name']}")
         elif binding["relation"] == CLAUSE_RELATION:
-            line = location.get("line", 0)
-            if not (0 < line <= len(lines)) or binding["name"] not in lines[line - 1]:
+            line = location_line(root, LEDGER, binding, "source_locations", location, lines,
+                                 lambda text: binding["name"] in text, cache)
+            if line is None or not (0 < line <= len(lines)) or binding["name"] not in lines[line - 1]:
                 errors.append(f"L03 {binding['id']} {location['path']}:{line} is not {binding['name']}")
     if binding["relation"] == GAP_RELATION:
         for location in binding["source_locations"]:
@@ -204,8 +207,9 @@ def _binding_errors(binding: dict, registry: dict, root: Path, cache: dict) -> l
             errors.append(f"L04 {binding['id']} cites no assertion")
         for site in sites:
             lines = _source_lines(root, site["path"], cache)
-            line = site.get("line", 0)
-            if lines is None or not (0 < line <= len(lines)) or not ASSERTION.search(lines[line - 1]):
+            line = location_line(root, LEDGER, binding, "assertion_locations", site, lines or [],
+                                 ASSERTION.search, cache)
+            if lines is None or line is None or not (0 < line <= len(lines)) or not ASSERTION.search(lines[line - 1]):
                 errors.append(f"L04 {binding['id']} {site['path']}:{line} is not an assertion")
         if not binding["execution_witnesses"]:
             errors.append(f"L05 {binding['id']} has no execution witness")
@@ -296,13 +300,31 @@ def ledger_errors(data: dict, root: Path = ROOT, frozen: dict | None = None) -> 
 
 
 def committed_registry(root: Path, revision: str = "HEAD") -> dict:
-    """Digest each evidence entry as the base revision recorded it."""
-    path = (LEDGER / "evidence-registry.json").as_posix()
-    shown = subprocess.run(["git", "-C", str(root), "show", f"{revision}:{path}"],
-                           capture_output=True, check=False)
-    if shown.returncode != 0:
-        return {}
-    return {e["id"]: entry_digest(e) for e in json.loads(shown.stdout.decode("utf-8"))}
+    """Freeze the declared commitments from every registry part at the base."""
+    import formal_sources
+
+    def show(path: Path):
+        result = subprocess.run(["git", "-C", str(root), "show", f"{revision}:{path.as_posix()}"],
+                                capture_output=True, check=False,
+                                env=formal_sources.detached_git_environment())
+        return json.loads(result.stdout.decode("utf-8")) if result.returncode == 0 else None
+
+    catalog = show(LEDGER / "catalog.json")
+    parts = ([part["file"] for part in catalog["parts"] if part["key"] == "evidence_registry"]
+             if catalog is not None else ["evidence-registry.json"])
+    frozen = {}
+    for part in parts:
+        entries = show(LEDGER / part)
+        if entries is None:
+            continue
+        for entry in entries:
+            identity = entry["id"]
+            # The declared digest commits the original registration. Freezing
+            # an already-corrupted body would require preserving corruption.
+            # A duplicate base identity cannot supply an unambiguous commitment.
+            frozen[identity] = (None if identity in frozen else
+                                entry.get("entry_sha256", entry_digest(entry)))
+    return frozen
 
 
 def _fixture(root: Path) -> dict:

@@ -11,6 +11,18 @@ pub(crate) struct ConsoleCommand {
     pub(crate) args: Vec<OsString>,
 }
 
+impl ConsoleCommand {
+    pub(crate) fn command(&self) -> std::process::Command {
+        // Ambient E2E TS loaders must not affect pnpm's package resolution.
+        let mut command = std::process::Command::new(self.program);
+        command
+            .env_remove("NODE_OPTIONS")
+            .current_dir(&self.current_dir)
+            .args(&self.args);
+        command
+    }
+}
+
 fn pnpm(windows: bool) -> &'static str {
     if windows { "pnpm.cmd" } else { "pnpm" }
 }
@@ -39,21 +51,15 @@ pub(crate) fn console_commands(
     ]
 }
 
+// Frozen install owns every workspace importer, including packages outside the
+// Console dependency closure. Querying the graph must not install into sources.
 pub(crate) fn console_workspace_command(windows: bool, workspace: &Path) -> ConsoleCommand {
     ConsoleCommand {
         program: pnpm(windows),
         current_dir: workspace.to_owned(),
-        args: [
-            "--filter",
-            "awaken-console...",
-            "--recursive",
-            "list",
-            "--depth",
-            "-1",
-            "--json",
-        ]
-        .map(OsString::from)
-        .into(),
+        args: ["--recursive", "list", "--depth", "-1", "--json"]
+            .map(OsString::from)
+            .into(),
     }
 }
 
@@ -240,6 +246,10 @@ fn collect_files(root: &Path, dir: &Path, files: &mut Vec<(String, PathBuf)>) {
         }
     }
 }
+
+#[path = "build_support/staging.rs"]
+mod staging;
+pub(crate) use staging::{console_source_inputs, stage_console_workspace};
 
 #[cfg(test)]
 #[path = "build_support/tests.rs"]
