@@ -290,6 +290,28 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
         "M1/E2"
     );
     assert_eq!(realizer.stage_calls.load(Ordering::SeqCst), 1, "M1/E2");
+    // The effect was Unavailable, not terminal: the common budget keeps the
+    // logical MCP generation Realizing while closing only this physical lease.
+    // Exact command replay must recover that SAME desired generation under a
+    // successor claim, without inventing another failed configuration version.
+    let pending = durable_after_failure.mcp.desired_attachments();
+    assert_eq!(pending.len(), 1, "M1/E2 one desired generation");
+    assert_eq!(
+        pending[0].state,
+        crate::session_mcp::McpAttachmentState::Realizing,
+        "M1/E2 transient remains pending"
+    );
+    let pending_generation = pending[0].generation.clone();
+    let old_claim = pending[0].realization.clone().unwrap();
+    assert_eq!(
+        durable_after_failure
+            .realization
+            .as_ref()
+            .unwrap()
+            .expires_at_unix_ms,
+        0,
+        "M1/E2 exact failed lease closed"
+    );
 
     let replayed = app
         .update_commands
@@ -309,13 +331,13 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     assert_eq!(desired.len(), 1, "M2/E3");
     assert_eq!(
         replayed.session.mcp.attachments.len(),
-        2,
-        "M2/E3 one failed generation plus one exact recovery generation"
+        1,
+        "M2/E3 one retained transient generation, no redundant failed version"
     );
     assert_eq!(
         desired[0].generation.version(),
-        2,
-        "M2/E3 Failed -> N+1 uses the canonical MCP retry rule"
+        1,
+        "M2/E3 a transient attempt does not become a new logical version"
     );
     assert_eq!(
         desired[0].state,
@@ -323,6 +345,19 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
         "M2/E3"
     );
     assert!(desired[0].publication_acknowledged, "M2/E3");
+    assert_eq!(
+        desired[0].generation, pending_generation,
+        "M2/E3 immutable definition preserved"
+    );
+    assert!(
+        desired[0].realization.as_ref().unwrap().lease_epoch > old_claim.lease_epoch,
+        "M2/E3 fresh physical authority"
+    );
+    assert_ne!(
+        desired[0].realization.as_ref().unwrap().realization_id,
+        old_claim.realization_id,
+        "M2/E3 old closed attempt cannot reopen"
+    );
     assert_eq!(realizer.stage_calls.load(Ordering::SeqCst), 2, "M2/E3");
     assert_eq!(
         repo.idempotency_receipt(&SessionId::from(session_id), &receipt_key)

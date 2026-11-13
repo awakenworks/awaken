@@ -1224,3 +1224,16 @@ an activity nor a second realization driver. A mismatched or failed ACK emits
 no hint, and an exact ACK replay remains write-, fact- and wake-idempotent.
 The existing idle-preparation decision table and registered-Worker inline-Agent
 multi-Run regression enforce both liveness and the unchanged authority fences.
+
+### Idle MCP preparation uses the common failure budget (2026-11-13)
+
+The current Idle Run-free failure is planned by the same existing typed
+retry-class and uncounted-failure budget as other recovery work. A temporary
+failure below budget retains the pending generation and expires its exact lease
+through the original root CAS; the next claimed recovery receives a fresh epoch.
+A terminal failure or exhausted budget fails the unpublished generation, while
+not-ready deferrals do not consume budget. Already serving generations remain
+unchanged. The obsolete Idle-only absorbing override is removed: it prematurely
+failed a Realizing replacement after the Worker rejected a stale time proof.
+Normal hot updates keep their original same-lease, retained-receipt protocol.
+Closed leases remain closed; neither clock rules nor observation deadlines change.

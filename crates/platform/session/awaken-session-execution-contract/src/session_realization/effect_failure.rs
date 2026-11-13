@@ -215,7 +215,7 @@ pub fn effect_failure_disposition(error: &RunError) -> SessionRealizationControl
 }
 
 /// The Session aggregate's decision for one exact, current realization
-/// failure of an initial (non-Idle) realization.
+/// failure of initial realization or uncounted recovery/Run-free preparation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RealizationFailureOutcome {
     /// Keep the execution state and expire the lease; `refund_attempt` returns
@@ -314,18 +314,14 @@ impl FailSessionRealization {
         session: &PersistedSession,
         budget: u32,
     ) -> Result<RealizationFailureOutcome, crate::SessionRealizationControlFailure> {
-        let outcome = realization_failure_outcome(
+        realization_failure_outcome(
             self.retryable,
             self.not_ready,
             session.execution,
             spent_realization_budget(session),
             budget,
         )
-        .map_err(|reason| crate::SessionRealizationControlFailure::Invalid(reason.into()))?;
-        if session.execution == SessionExecutionState::Idle {
-            return Ok(RealizationFailureOutcome::Absorb);
-        }
-        Ok(outcome)
+        .map_err(|reason| crate::SessionRealizationControlFailure::Invalid(reason.into()))
     }
 }
 

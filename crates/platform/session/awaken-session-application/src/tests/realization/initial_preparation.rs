@@ -1265,140 +1265,154 @@ async fn idle_unpublished_mcp_failures_end_by_class_and_budget() {
     // | B2   | retryable  | below budget     | E1     |
     // | B3   | retryable  | budget reached   | E2     |
     // | B4   | not-ready  | any (4 rounds)   | E1 and nothing counted |
-    for (rule, retryable, not_ready, rounds, fails) in [
-        ("B1", false, false, 1, true),
-        ("B2+B3", true, false, 2, true),
-        ("B4", true, true, 4, false),
+    // C3 the replacement is either newly Requested (claim -> Realizing) or
+    // already Active but unpublished. The same budget law must retain both
+    // below budget, instead of absorbing Realizing after its first failure.
+    for (initial_state, retry_state) in [
+        (
+            crate::session_mcp::McpAttachmentState::Requested,
+            crate::session_mcp::McpAttachmentState::Realizing,
+        ),
+        (
+            crate::session_mcp::McpAttachmentState::Active,
+            crate::session_mcp::McpAttachmentState::Active,
+        ),
     ] {
-        let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                .await
-                .unwrap(),
-        );
-        let id = SessionId::from("idle-unpublished");
-        let mut root = idle_mcp_update(id.as_str(), false, false);
-        root.mcp.attachments[0].state = crate::session_mcp::McpAttachmentState::Active;
-        root.mcp.attachments[0].publication_acknowledged = false;
-        create(repo.as_ref(), root).await;
-        let observations = Arc::new(RecordingWorkerObservations::default());
-        let application = configured_application(
-            Arc::new(NoopRuntime),
-            SessionPersistence::new(repo.clone(), system_clock()),
-            Arc::new(RecordingEnvironmentSource::default()),
-            SessionApplicationConfiguration {
-                realization_retry_budget: 2,
-                ..Default::default()
-            },
-            None,
-            {
-                let probe = Arc::new(crate::ExecutionObservationProbe::default());
-                crate::SessionExecutionAdmission::new(
-                    probe.clone(),
-                    observations.clone(),
-                    Arc::new(FixtureSessionPlacement),
-                )
-            },
-        );
-        let target = awaken_session_execution_contract::SessionRealizationTarget {
-            owner: "worker".into(),
-            runtime_incarnation: "worker:1:boot".into(),
-            lease_expires_at_unix_ms: u64::MAX,
-            reassign_existing_lease: false,
-        };
+        for (rule, retryable, not_ready, rounds, fails) in [
+            ("B1", false, false, 1, true),
+            ("B2+B3", true, false, 2, true),
+            ("B4", true, true, 4, false),
+        ] {
+            let repo = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .await
+                    .unwrap(),
+            );
+            let id = SessionId::from("idle-unpublished");
+            let mut root = idle_mcp_update(id.as_str(), false, false);
+            root.mcp.attachments[0].state = initial_state;
+            root.mcp.attachments[0].publication_acknowledged = false;
+            create(repo.as_ref(), root).await;
+            let observations = Arc::new(RecordingWorkerObservations::default());
+            let application = configured_application(
+                Arc::new(NoopRuntime),
+                SessionPersistence::new(repo.clone(), system_clock()),
+                Arc::new(RecordingEnvironmentSource::default()),
+                SessionApplicationConfiguration {
+                    realization_retry_budget: 2,
+                    ..Default::default()
+                },
+                None,
+                {
+                    let probe = Arc::new(crate::ExecutionObservationProbe::default());
+                    crate::SessionExecutionAdmission::new(
+                        probe.clone(),
+                        observations.clone(),
+                        Arc::new(FixtureSessionPlacement),
+                    )
+                },
+            );
+            let target = awaken_session_execution_contract::SessionRealizationTarget {
+                owner: "worker".into(),
+                runtime_incarnation: "worker:1:boot".into(),
+                lease_expires_at_unix_ms: u64::MAX,
+                reassign_existing_lease: false,
+            };
 
-        observations.replace(vec![terminal_cleanup_worker(
-            &target,
-            terminal_cleanup_manifest(),
-        )]);
-        drop(observations);
+            observations.replace(vec![terminal_cleanup_worker(
+                &target,
+                terminal_cleanup_manifest(),
+            )]);
+            drop(observations);
 
-        // The per-incarnation cursor advances past an examined root and wraps
-        // on a later poll, so one claim may take up to two polls.
-        let claim = |target: awaken_session_execution_contract::SessionRealizationTarget| {
-            let application = &application;
-            async move {
-                for _ in 0..3 {
-                    if let Some(assignment) = application
-                        .realizations
-                        .claim_next_session_preparation(target.clone())
-                        .await
-                        .unwrap()
-                    {
-                        return Some(assignment);
+            // The per-incarnation cursor advances past an examined root and wraps
+            // on a later poll, so one claim may take up to two polls.
+            let claim = |target: awaken_session_execution_contract::SessionRealizationTarget| {
+                let application = &application;
+                async move {
+                    for _ in 0..3 {
+                        if let Some(assignment) = application
+                            .realizations
+                            .claim_next_session_preparation(target.clone())
+                            .await
+                            .unwrap()
+                        {
+                            return Some(assignment);
+                        }
                     }
+                    None
                 }
-                None
-            }
-        };
-        for round in 1..=rounds {
-            let assignment = claim(target.clone())
-                .await
-                .unwrap_or_else(|| panic!("{rule} round {round} claims the root"));
-            application
-                .realizations
-                .fail_session_realization(
-                    awaken_session_execution_contract::FailSessionRealization {
-                        session_id: id.clone(),
-                        lease: assignment.directive.authority.lease,
-                        prepared_resource_revision: None,
-                        retryable,
-                        not_ready,
-                        source_run_id: None,
-                        reason: "sealed credential envelope is expired".into(),
+            };
+            for round in 1..=rounds {
+                let assignment = claim(target.clone())
+                    .await
+                    .unwrap_or_else(|| panic!("{rule} round {round} claims the root"));
+                application
+                    .realizations
+                    .fail_session_realization(
+                        awaken_session_execution_contract::FailSessionRealization {
+                            session_id: id.clone(),
+                            lease: assignment.directive.authority.lease,
+                            prepared_resource_revision: None,
+                            retryable,
+                            not_ready,
+                            source_run_id: None,
+                            reason: "sealed credential envelope is expired".into(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let after = repo.get(&id).await.unwrap();
+                let last = round == rounds;
+                let expect_failed = fails && last;
+                assert_eq!(
+                    after.mcp.attachments[0].state,
+                    if expect_failed {
+                        crate::session_mcp::McpAttachmentState::Failed
+                    } else {
+                        retry_state
                     },
-                )
-                .await
-                .unwrap();
+                    "{rule} round {round}"
+                );
+                assert_eq!(
+                    after.is_run_free_preparation_candidate(),
+                    !expect_failed,
+                    "{rule} round {round} demand"
+                );
+                assert_eq!(
+                    after.realization.as_ref().unwrap().expires_at_unix_ms,
+                    0,
+                    "{rule} round {round} lease explicitly closed"
+                );
+                assert_eq!(
+                    after.execution,
+                    SessionExecutionState::Idle,
+                    "{rule} stays Idle"
+                );
+                assert_eq!(
+                    after.realization_progress().uncounted_failures(),
+                    if not_ready {
+                        0
+                    } else {
+                        u32::try_from(round).unwrap()
+                    },
+                    "{rule} round {round} counted"
+                );
+            }
             let after = repo.get(&id).await.unwrap();
-            let last = round == rounds;
-            let expect_failed = fails && last;
-            assert_eq!(
-                after.mcp.attachments[0].state,
-                if expect_failed {
-                    crate::session_mcp::McpAttachmentState::Failed
-                } else {
-                    crate::session_mcp::McpAttachmentState::Active
-                },
-                "{rule} round {round}"
-            );
-            assert_eq!(
-                after.is_run_free_preparation_candidate(),
-                !expect_failed,
-                "{rule} round {round} demand"
-            );
-            assert_eq!(
-                after.realization.as_ref().unwrap().expires_at_unix_ms,
-                0,
-                "{rule} round {round} lease explicitly closed"
-            );
-            assert_eq!(
-                after.execution,
-                SessionExecutionState::Idle,
-                "{rule} stays Idle"
-            );
-            assert_eq!(
-                after.realization_progress().uncounted_failures(),
-                if not_ready {
-                    0
-                } else {
-                    u32::try_from(round).unwrap()
-                },
-                "{rule} round {round} counted"
-            );
-        }
-        let after = repo.get(&id).await.unwrap();
-        assert_eq!(claim(target).await.is_some(), !fails, "{rule} re-claim");
-        if fails {
-            assert_eq!(
-                repo.get(&id).await.unwrap(),
-                after,
-                "{rule} exhausted root is not touched again"
-            );
-            assert_eq!(
-                after.mcp.attachments[0].last_error.as_deref(),
-                Some("sealed credential envelope is expired"),
-                "{rule}"
-            );
+            assert_eq!(claim(target).await.is_some(), !fails, "{rule} re-claim");
+            if fails {
+                assert_eq!(
+                    repo.get(&id).await.unwrap(),
+                    after,
+                    "{rule} exhausted root is not touched again"
+                );
+                assert_eq!(
+                    after.mcp.attachments[0].last_error.as_deref(),
+                    Some("sealed credential envelope is expired"),
+                    "{rule}"
+                );
+            }
         }
     }
 }
