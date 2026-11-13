@@ -18,7 +18,7 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::api::core::v1::{ContainerPort, ExecAction, Probe};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 
-use super::pod_security::{egress_label, hardened_security_context, pod_resources};
+use super::pod_security::{egress_label, hardened_security_context};
 use super::{K8sRepositoryGatewayTrust, lifecycle, live_inputs, memory, projection};
 use awaken_provisioning_contract::SandboxEffectFence;
 use awaken_sandbox_container::engine::{WritableRootTopology, writable_root_topology};
@@ -27,6 +27,7 @@ use awaken_worker_fleet_kubernetes::managed_names::pod_name;
 use awaken_worker_fleet_kubernetes::managed_names::{
     cfg_owner_label, configmap_name, credential_secret_name,
 };
+use awaken_worker_fleet_kubernetes::pod_resources::pod_resources;
 use awaken_worker_fleet_kubernetes::sandbox_network_labels;
 
 pub const DEFAULT_REPOSITORY_GIT_CONTROL_PORT: u16 = 7778;

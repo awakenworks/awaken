@@ -108,7 +108,10 @@ fn default_no_execute_toleration(key: &str) -> Toleration {
 
 fn apply_api_job_template_defaults(pod: &mut k8s_openapi::api::core::v1::PodSpec) {
     for container in &mut pod.containers {
-        container.resources = Some(Default::default());
+        // API-default cause/effect: absent resources => empty default; an
+        // authored CPU/memory/disk budget => preserve it exactly. Defaults
+        // cannot erase explicit bounds or make a drifted Pod admissible.
+        container.resources.get_or_insert_with(Default::default);
         container.termination_message_path = Some("/dev/termination-log".into());
         container.termination_message_policy = Some("File".into());
     }

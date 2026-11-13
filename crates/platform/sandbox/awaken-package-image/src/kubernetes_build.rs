@@ -34,6 +34,7 @@ use awaken_worker_fleet_kubernetes::{
 };
 
 use awaken_container_contract::DEFAULT_K8S_KANIKO_IMAGE;
+use awaken_worker_fleet_kubernetes::pod_resources::{byte_quantity, pod_resources};
 // A cold desktop/multimedia image installs hundreds of Debian packages. On a
 // fresh k3d node the package indexes alone can consume most of ten minutes, so
 // the former ten-minute deadline killed a healthy package-build Job while it was
@@ -438,7 +439,10 @@ exec /kaniko/executor "$@"
             },
             Volume {
                 name: "build-context".into(),
-                empty_dir: Some(Default::default()),
+                empty_dir: Some(k8s_openapi::api::core::v1::EmptyDirVolumeSource {
+                    size_limit: Some(byte_quantity(1024 * 1024)),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         ];
@@ -485,6 +489,21 @@ exec /kaniko/executor "$@"
         }
         let container = Container {
             name: "kaniko".into(),
+            // Build Pods reserve capacity and bound unpack/snapshot writes;
+            // the shared Session projection owns the Kubernetes quantity codec.
+            resources: pod_resources(
+                &pc::ResourceRequests {
+                    cpu_millis: Some(100),
+                    memory_bytes: Some(256 * 1024 * 1024),
+                    disk_bytes: Some(1024 * 1024 * 1024),
+                },
+                &pc::ResourceLimits {
+                    cpu_millis: Some(2000),
+                    memory_bytes: Some(2 * 1024 * 1024 * 1024),
+                    disk_bytes: Some(8 * 1024 * 1024 * 1024),
+                    pids: None,
+                },
+            ),
             image: Some(self.kaniko_image.clone()),
             image_pull_policy: Some("IfNotPresent".into()),
             command: Some(vec!["/busybox/sh".into(), "-ceu".into()]),
@@ -1910,6 +1929,39 @@ mod tests {
         );
         let executor = &pod.containers[0];
         assert_eq!(executor.name, "kaniko");
+        // Budget causes/effects: B1 a package build exists => E1 nonzero
+        // CPU/memory/disk scheduling requests, E2 independent hard ceilings,
+        // E3 bounded recipe-only EmptyDir. Values use the same quantity owner
+        // as Session Pods; the existing failed-Job table forbids Ready on a
+        // resource-terminated build. Each budget enters the exact spec hash.
+        let resources = executor.resources.as_ref().unwrap();
+        let requests = resources.requests.as_ref().unwrap();
+        let limits = resources.limits.as_ref().unwrap();
+        assert_eq!(requests["cpu"].0, "100m", "B1/E1");
+        assert_eq!(requests["memory"].0, "268435456", "B1/E1");
+        assert_eq!(requests["ephemeral-storage"].0, "1073741824", "B1/E1");
+        assert_eq!(limits["cpu"].0, "2", "B1/E2");
+        assert_eq!(limits["memory"].0, "2147483648", "B1/E2");
+        assert_eq!(limits["ephemeral-storage"].0, "8589934592", "B1/E2");
+        let context = pod
+            .volumes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|v| v.name == "build-context")
+            .unwrap();
+        assert_eq!(
+            context
+                .empty_dir
+                .as_ref()
+                .unwrap()
+                .size_limit
+                .as_ref()
+                .unwrap()
+                .0,
+            "1048576",
+            "B1/E3"
+        );
         assert_eq!(
             executor.image.as_deref(),
             Some("registry.local:5000/system/kaniko:v1.29.1-debug"),

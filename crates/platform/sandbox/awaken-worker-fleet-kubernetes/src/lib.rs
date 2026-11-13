@@ -28,6 +28,7 @@ pub mod api_defaults;
 pub mod managed_names;
 pub mod object_realization;
 pub mod pod_metadata;
+pub mod pod_resources;
 
 pub use api_error::{KubernetesFailure, api_conflict, api_not_found, backend, get_optional};
 pub use client::connect_control_client;

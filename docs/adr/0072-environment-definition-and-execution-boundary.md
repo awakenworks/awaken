@@ -462,3 +462,10 @@ UID/resourceVersion deletion preconditions. Do not delete Session Pods,
 Coordinator rows or Registry images. Reconciliation then reuses matching
 Registry destinations through the ordinary exact image-check path. Same-name
 old objects are rejected rather than overwritten or silently adopted.
+
+The Kubernetes build container reserves 100m CPU, 256 MiB memory and 1 GiB
+ephemeral storage, with independent limits of 2 CPU, 2 GiB memory and 8 GiB
+ephemeral storage. The recipe-only context EmptyDir is capped at 1 MiB.
+The shared Kubernetes Pod resource projection in `awaken-worker-fleet-kubernetes`
+owns quantity encoding for both build and Session Pods. Node admission still
+decides scheduling; a resource-terminated build cannot produce Ready.

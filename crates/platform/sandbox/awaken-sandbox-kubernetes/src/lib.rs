@@ -95,6 +95,8 @@ pub(crate) use awaken_worker_fleet_kubernetes::managed_names::k8s_runtime_id;
 pub(crate) use awaken_worker_fleet_kubernetes::managed_names::{
     continuation_claim_for_pod, pod_name,
 };
+#[cfg(test)]
+use awaken_worker_fleet_kubernetes::pod_resources::pod_resources;
 pub(crate) use awaken_worker_fleet_kubernetes::sandbox_network_labels;
 use awaken_worker_fleet_kubernetes::{PodProcessObserver, api_defaults, api_not_found};
 pub(crate) use awaken_worker_fleet_kubernetes::{backend, get_optional};
@@ -126,8 +128,6 @@ pub use pod_projection::{
     pod_for_plan_with_control_forwarder,
 };
 use pod_projection::{build_pod_with_continuation, content_binds};
-#[cfg(test)]
-use pod_security::pod_resources;
 use pod_security::{
     admit_network, egress_label, hardened_security_context, unenforceable_k8s_limit,
 };
