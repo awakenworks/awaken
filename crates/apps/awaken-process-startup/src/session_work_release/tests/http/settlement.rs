@@ -3,7 +3,6 @@ use super::*;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_agent_contract::thread::commit::{RunDisposition, coordinator::Coordinator as _};
-use awaken_dispatch_contract::DispatchAttemptControl as _;
 use awaken_dispatch_contract::DispatchSettlement as _;
 use awaken_session_run_delivery::{
     AuthorityCommits, BackgroundRuns, CommittedReads, CompletionRegistry, MemoryBindingCompiler,
@@ -13,25 +12,6 @@ use awaken_session_run_delivery::{
 
 struct FrozenMemory;
 
-async fn finish_fixture_attempt(fixture: &Fixture, entry: &Entry) {
-    // Entry creates and then closes this exact fixture-owned physical slot.
-    // Ordinary ACK is fenced after close; only the existing trusted closure
-    // record can retire it. No model/provider execution is started by Entry.
-    let closure = awaken_dispatch_contract::AttemptClosureRecord::try_new(
-        entry.attempt.clone(),
-        awaken_dispatch_contract::AttemptClosureKind::ControlledExecutionClosed,
-        format!("http-memory-fixture-closure-{}", entry.id.as_str()),
-    )
-    .unwrap();
-    assert_eq!(
-        fixture
-            .dispatch
-            .finish_attempt_closure(&closure)
-            .await
-            .unwrap(),
-        awaken_dispatch::SettleOutcome::Applied
-    );
-}
 #[async_trait::async_trait]
 impl awaken_resource_contract::LiveResourceBindingVerifier for FrozenMemory {
     async fn verify_memory_binding(

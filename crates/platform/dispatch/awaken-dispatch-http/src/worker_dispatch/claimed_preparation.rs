@@ -61,24 +61,47 @@ impl ClaimedSessionCredentialPreparationContext for ClaimedPreparation<'_> {
                 "claimed preparation guard is poisoned".into(),
             )
         })?;
-        if guard.request() != &self.request
-            || self.request.run_id() != &self.claim.run_id
-            || self.request.activation.thread_id != *self.request.thread_id()
-            || self.work.session_id().as_str() != self.session_id()
-            || self.work.worker_owner() != self.claim.owner
-        {
+        // Keep the held-context's exact guard identity check. The shared
+        // predicate below also serves the PostgreSQL final observation gate.
+        if guard.request() != &self.request {
             return Err(SessionRealizationControlFailure::Invalid(
                 "claimed preparation does not match the original Run and Session Work".into(),
             ));
         }
-        if !guard.is_live_at(now) || guard.cancellation_requested() {
-            return Err(SessionRealizationControlFailure::StaleOwnership);
-        }
-        if !guard.permits_settlement() {
-            return Err(SessionRealizationControlFailure::NotReady);
-        }
-        Ok(())
+        require_worker_claimed_preparation(guard.observation(), &self.claim, &self.work, now)
     }
+}
+
+/// Check the original preparation law against a protected current row.
+/// This predicate grants no claim: the caller must retain its held backend
+/// fence, or use the selected PostgreSQL final Root gate on that transaction.
+/// Each caller retains its original frozen binding check before this predicate.
+pub fn require_worker_claimed_preparation(
+    observation: &awaken_dispatch_contract::CommitEpochObservation,
+    claim: &awaken_worker_contract::RunClaim,
+    work: &awaken_session_application_contract::SessionWorkAuthorityReceipt,
+    now: u64,
+) -> Result<(), SessionRealizationControlFailure> {
+    let original = &observation.request;
+    if original.run_id() != &claim.run_id
+        || original.activation.thread_id != *original.thread_id()
+        || work.session_id().as_str() != original.session_thread_id().0
+        || work.worker_owner() != claim.owner
+    {
+        return Err(SessionRealizationControlFailure::Invalid(
+            "claimed preparation does not match the original Run and Session Work".into(),
+        ));
+    }
+    if !awaken_time::Expiry::from_epoch_ms(observation.expires_ms)
+        .is_live_at(awaken_time::UtcTime::from_epoch_ms(now))
+        || observation.cancellation_requested
+    {
+        return Err(SessionRealizationControlFailure::StaleOwnership);
+    }
+    if !observation.physical_slot.permits_settlement() {
+        return Err(SessionRealizationControlFailure::NotReady);
+    }
+    Ok(())
 }
 
 /// Authenticated transport preparation borrows the original Dispatch exclusion;
@@ -138,7 +161,16 @@ mod tests {
             (PhysicalAttemptSlot::OtherClaim, false, 9, false),
             (PhysicalAttemptSlot::Corrupt, false, 9, false),
         ] {
-            let mut guard = CommitEpochGuard::new((), request.clone(), 10, cancelled, slot);
+            let mut guard = CommitEpochGuard::new(
+                (),
+                awaken_dispatch_contract::CommitEpochObservation {
+                    request: request.clone(),
+                    expires_ms: 10,
+                    cancellation_requested: cancelled,
+                    physical_slot: slot,
+                    physical_attempt: None,
+                },
+            );
             let context = ClaimedPreparation::new(&mut guard, &claim, &work);
             assert_eq!(
                 context.verify_at(now).is_ok(),
@@ -153,7 +185,16 @@ mod tests {
         }
         let mut foreign = claim.clone();
         foreign.run_id = awaken_agent_contract::RunId("foreign".into());
-        let mut guard = CommitEpochGuard::new((), request, 10, false, PhysicalAttemptSlot::Empty);
+        let mut guard = CommitEpochGuard::new(
+            (),
+            awaken_dispatch_contract::CommitEpochObservation {
+                request,
+                expires_ms: 10,
+                cancellation_requested: false,
+                physical_slot: PhysicalAttemptSlot::Empty,
+                physical_attempt: None,
+            },
+        );
         assert!(
             ClaimedPreparation::new(&mut guard, &foreign, &work)
                 .verify_at(9)
@@ -177,7 +218,16 @@ mod tests {
             "authority": {"kind": "not_required"},
         }))
         .unwrap();
-        let mut guard = CommitEpochGuard::new((), request, 10, false, PhysicalAttemptSlot::Empty);
+        let mut guard = CommitEpochGuard::new(
+            (),
+            awaken_dispatch_contract::CommitEpochObservation {
+                request,
+                expires_ms: 10,
+                cancellation_requested: false,
+                physical_slot: PhysicalAttemptSlot::Empty,
+                physical_attempt: None,
+            },
+        );
         let context = ClaimedPreparation::new(&mut guard, &claim, &work);
         let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _held = context

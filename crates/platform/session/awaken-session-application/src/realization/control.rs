@@ -212,11 +212,7 @@ impl SessionRealizations {
     > {
         Box::pin(async move {
             validate_target(&command, self.clock.now_ms())?;
-            let admission = self
-                .executable_projections
-                .refresh()
-                .await
-                .map_err(unavailable)?;
+            let admission = self.refresh_executable_admission().await?;
             admission
                 .enter(|| self.begin_session_realization_after_refresh_using(command, commit))
                 .await

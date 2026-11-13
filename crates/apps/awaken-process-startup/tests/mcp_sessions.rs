@@ -669,6 +669,9 @@ async fn frozen_publication(app: &Router, session: &str) -> (StatusCode, Value) 
 #[tokio::test(flavor = "multi_thread")]
 async fn registered_worker_inline_agent_publication_is_frozen_session_scoped_and_erased_with_its_session()
  {
+    // The existing task-owned observer is inert unless this exact diagnostic
+    // child supplies its directory; record-only observation never drives a phase.
+    awaken_scenario_host::realization_observation::install_from_environment();
     let (first_url, first_calls) = counting_calc_mcp().await;
     let (second_url, second_calls) = counting_calc_mcp().await;
     let process = build_all_in_one_router().await;
@@ -742,6 +745,13 @@ async fn registered_worker_inline_agent_publication_is_frozen_session_scoped_and
     );
 
     // I2: an update replaces the Session overlay; the publication is never mutated.
+    if let Some(directory) = std::env::var_os("AWAKEN_REALIZATION_OBSERVATION_DIR") {
+        std::fs::write(
+            std::path::PathBuf::from(directory).join("armed.json"),
+            json!({"session_id":id, "boundary":"record_only"}).to_string(),
+        )
+        .unwrap();
+    }
     let (s, updated) = call(
         &app,
         "POST",

@@ -13,7 +13,7 @@ use awaken_runtime_contract::runs::RunError;
 use awaken_session_configuration_contract::SessionToolConfiguration;
 use awaken_session_configuration_contract::mcp::McpAttachmentState;
 use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
-use awaken_session_contract::{IdempotencyRecord, PersistedSession};
+use awaken_session_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
 use awaken_session_contract::{SessionFieldUpdate, SessionUpdateChanges};
 use awaken_session_types::SessionRevision;
 

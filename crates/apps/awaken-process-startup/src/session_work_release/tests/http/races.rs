@@ -199,24 +199,131 @@ async fn live_postgres_http_same_claim_cold_absence_recovers_the_one_accepted_re
 #[tokio::test]
 #[ignore = "live PostgreSQL controlled actual-HTTP cold preparation takeover"]
 async fn live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_root_write() {
-    // H5 cause/effect table: A passed original D/Work admission and cold
-    // preparation; B takes over at the selected real boundary on cap1.
-    // R1 ReadValidation: the unchanged credential preparation reaches its
-    // original read fence. R2 RootCommit: that read fence already accepted,
-    // and the existing Session assignment reaches its actual Root writer.
-    // Both rows must refuse A (400), retain the full Root/Work from the cut,
-    // and preserve B plus the predecessor physical record. Checking Root before
-    // HTTP status also exposes a stale persisted assignment even if a later
-    // boundary refuses the response. No production ordering is changed.
-    for cut_kind in [
-        FinalAdmissionCutKind::PreparedResumeReadValidation,
-        FinalAdmissionCutKind::PreparedResumeRootCommit,
-    ] {
+    // H5 cause/effect table: original actual-HTTP cap1 gate, two existing cuts.
+    // C1 takeover adds a later claim; C2 cancellation revokes the old lease
+    // WITHOUT an explicit subsequent claim. Both lose admitted Begin authority
+    // and return typed StaleOwnership409. C3 the same live claim gains a physical
+    // slot => typed NotReady. C4 reaches exact Dispatch lease expiry on the
+    // original ManualClock AFTER the cut => typed StaleOwnership, before Work.
+    // Registry/target admission already happened before this final boundary. R1 validates the original early read; R2 reaches
+    // the actual final Root writer after that read accepted. All rows retain
+    // Root/Work as observed AT the cut and preserve the resulting physical row.
+    // Optional continuation renewal is legal before Begin exclusion: these
+    // assertions never claim whole-request zero mutation before such renewal.
+    // R3 selects the fourth original ReadValidation: bootstrap repository read
+    // and final directive (two matches), then unchanged continuation repository
+    // read and final no-op directive. Assert the bootstrap count and unchanged
+    // Root at the cut; this row really reaches the post-cold no-write return.
+    // No production hook/order changes and no sleeps select this boundary.
+    #[derive(Clone, Copy, Debug)]
+    enum Change {
+        Takeover,
+        CancelOnly,
+        Occupy,
+        ExpireAtLeaseBoundary,
+    }
+    for (cut_kind, skip, final_noop, change) in [
+        (
+            FinalAdmissionCutKind::PreparedResumeReadValidation,
+            0,
+            false,
+        ),
+        (FinalAdmissionCutKind::PreparedResumeRootCommit, 0, false),
+        (FinalAdmissionCutKind::PreparedResumeReadValidation, 3, true),
+    ]
+    .into_iter()
+    .flat_map(|(cut, skip, final_noop)| {
+        let changes = if final_noop {
+            [
+                Change::CancelOnly,
+                Change::Occupy,
+                Change::Takeover,
+                Change::ExpireAtLeaseBoundary,
+            ]
+        } else {
+            [
+                Change::Takeover,
+                Change::CancelOnly,
+                Change::Occupy,
+                Change::ExpireAtLeaseBoundary,
+            ]
+        };
+        changes.map(move |change| (cut, skip, final_noop, change))
+    }) {
         let f = Fixture::new(1, true, true).await;
-        let cut = Arc::new(FinalAdmissionTestCut::new(cut_kind));
+        let cut = Arc::new(FinalAdmissionTestCut::after_matching(cut_kind, skip));
         let http = HttpFixture::with_cut(&f, cut.clone()).await;
-        let entry = f.entry_for(&http.identity.lease_owner()).await;
+        let mut entry = f.entry_for(&http.identity.lease_owner()).await;
+        finish_fixture_attempt(&f, &entry).await;
+        // Closing retires the old physical epoch permanently. Obtain a real
+        // successor before the request; never reopen that retired attempt.
+        let retired_epoch = entry.claim.epoch;
+        // Relinquish preserves an uncancelled Run and its retry budget;
+        // cancellation is absorbing and cannot prepare a fresh executable row.
+        assert_eq!(
+            f.dispatch.relinquish_claim(&entry.claim).await.unwrap(),
+            awaken_dispatch::SettleOutcome::Applied
+        );
+        let fresh = f
+            .dispatch
+            .claim_run(
+                &entry.claim.run_id,
+                &http.identity.lease_owner(),
+                60_000,
+                &Default::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        entry.claim = RunClaim::from(&fresh.lease);
+        assert!(entry.claim.epoch > retired_epoch);
+        let fresh_guard = f
+            .dispatch
+            .lock_commit_epoch(&entry.claim)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !fresh_guard.cancellation_requested(),
+            "fresh execution is uncancelled"
+        );
+        assert!(
+            fresh_guard.permits_settlement(),
+            "fresh execution has no physical slot"
+        );
+        fresh_guard.release().await.unwrap();
         let receipt = http.receipt(&f, &entry).await;
+        let (continuation, no_op_root) = if final_noop {
+            let directive = tokio::time::timeout(
+                PROGRESS,
+                http.client.resume_session(
+                    &http.identity,
+                    &entry.claim,
+                    entry.id.as_str(),
+                    Some(&receipt),
+                    None,
+                ),
+            )
+            .await
+            .expect("bootstrap progresses")
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                cut.remaining_skips(),
+                1,
+                "two original bootstrap validations"
+            );
+            let root = f
+                .managed
+                .session_application()
+                .session_repository_handle()
+                .get(&entry.id)
+                .await
+                .unwrap();
+            (Some(directive.authority.lease), Some(root))
+        } else {
+            (None, None)
+        };
         let upstream = http.upstream.clone();
         let identity = http.identity.clone();
         let old_claim = entry.claim.clone();
@@ -225,7 +332,7 @@ async fn live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_r
             let path = "/v1/worker/session/resume";
             let url = format!("{}{}", upstream.base_url(), path);
             upstream.authorize("POST", path, upstream.client().post(url)).unwrap()
-                .json(&serde_json::json!({"identity":identity, "claim":old_claim, "session_id":session, "session_work_authority":receipt, "continuation":null}))
+                .json(&serde_json::json!({"identity":identity, "claim":old_claim, "session_id":session, "session_work_authority":receipt, "continuation":continuation}))
                 .send().await.unwrap()
         });
         tokio::time::timeout(PROGRESS, cut.reached())
@@ -233,29 +340,66 @@ async fn live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_r
             .expect("cold preparation reaches final gate without owning D");
         let repository = f.managed.session_application().session_repository_handle();
         let prepared = repository.get(&entry.id).await.unwrap();
+        if let Some(before) = no_op_root {
+            assert_eq!(
+                prepared, before,
+                "the continuation Begin at this cut made no Root write"
+            );
+        }
         let work = f.work_row(&entry.id).await;
+        let successor = tokio::time::timeout(PROGRESS, async {
+            match change {
+                Change::Takeover => {
+                    f.dispatch.cancel(&entry.claim.run_id).await.unwrap();
+                    Some(
+                        f.dispatch
+                            .claim_run(
+                                &entry.claim.run_id,
+                                "http-successor",
+                                60_000,
+                                &Default::default(),
+                            )
+                            .await
+                            .unwrap()
+                            .unwrap(),
+                    )
+                }
+                Change::CancelOnly => {
+                    f.dispatch.cancel(&entry.claim.run_id).await.unwrap();
+                    None
+                }
+                Change::Occupy => {
+                    assert_eq!(
+                        f.dispatch.begin_attempt(&entry.claim, None).await.unwrap(),
+                        awaken_dispatch::AttemptAdmission::Applied
+                    );
+                    None
+                }
+                Change::ExpireAtLeaseBoundary => {
+                    let guard = f
+                        .dispatch
+                        .lock_commit_epoch(&entry.claim)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    let expires_ms = guard.observation().expires_ms;
+                    guard.release().await.unwrap();
+                    f.clock.set(expires_ms);
+                    None
+                }
+            }
+        })
+        .await
+        .expect("the cut holds no D connection while the real row changes");
+        let successor_claim = successor.as_ref().map(|next| RunClaim::from(&next.lease));
+        if let Some(next) = &successor_claim {
+            assert!(next.epoch > entry.claim.epoch);
+        }
         let physical = f
             .dispatch
             .load_physical_attempt(&entry.claim.run_id)
             .await
             .unwrap();
-        let successor = tokio::time::timeout(PROGRESS, async {
-            f.dispatch.cancel(&entry.claim.run_id).await.unwrap();
-            f.dispatch
-                .claim_run(
-                    &entry.claim.run_id,
-                    "http-successor",
-                    60_000,
-                    &Default::default(),
-                )
-                .await
-                .unwrap()
-                .unwrap()
-        })
-        .await
-        .expect("cold preparation retains no D connection across takeover");
-        let successor_claim = RunClaim::from(&successor.lease);
-        assert!(successor_claim.epoch > entry.claim.epoch);
         cut.release();
         let response = tokio::time::timeout(PROGRESS, request)
             .await
@@ -266,11 +410,24 @@ async fn live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_r
             prepared,
             "zero stale-claim Root assignment at {cut_kind:?}"
         );
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap();
         assert_eq!(
-            response.status(),
-            axum::http::StatusCode::BAD_REQUEST,
-            "stale A is refused at {cut_kind:?}"
+            status,
+            axum::http::StatusCode::CONFLICT,
+            "refused at {cut_kind:?}/{change:?}, final_noop={final_noop}, skip={skip}, body={body}"
         );
+        {
+            let expected = if matches!(change, Change::Occupy) {
+                "not_ready"
+            } else {
+                "stale_ownership"
+            };
+            assert_eq!(
+                body["realization_error"]["kind"], expected,
+                "original typed wire cause"
+            );
+        }
         assert_eq!(
             f.work_row(&entry.id).await,
             work,
@@ -283,14 +440,16 @@ async fn live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_r
                 .unwrap(),
             physical
         );
-        let guard = f
-            .dispatch
-            .lock_commit_epoch(&successor_claim)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(guard.request(), &successor.request);
-        guard.release().await.unwrap();
+        if let (Some(successor_claim), Some(successor)) = (&successor_claim, &successor) {
+            let guard = f
+                .dispatch
+                .lock_commit_epoch(successor_claim)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(guard.request(), &successor.request);
+            guard.release().await.unwrap();
+        }
         drop(repository);
         drop(http);
         f.cleanup().await;

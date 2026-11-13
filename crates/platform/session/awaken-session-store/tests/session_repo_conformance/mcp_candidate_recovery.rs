@@ -5,8 +5,8 @@
 //! | Rule | Retained root | Expected candidate / Worker demand |
 //! |---|---|---|
 //! | M0 | published v1, Idle, original Worker | absent / one |
-//! | M1 | replacement v2 committed, Idle | exact root / one |
-//! | M2 | same v2 pending, admitted activity Running | absent / one |
+//! | M1 | published v1 admits its activity before any replacement | absent / one |
+//! | M2 | replacement v2 committed on that already-busy root | absent / one |
 //! | M3 | final activity settled back to Idle | exact root / one |
 //! | M4 | close and reopen independent clients | same M2/M3 root and lease |
 //! | M5 | old index hides M3 | prove hidden, operational reopen restores it |
@@ -144,9 +144,15 @@ async fn seed<R: SessionStore>(repo: &R, self_hosted: bool) -> PersistedSession 
     let initial = create_session(repo, SCOPE, root, Vec::new()).await;
     observe(repo, &initial, false).await;
 
-    // Commit a real successor intent after the original generation was
-    // published. An initially Requested attachment alone is not this case.
-    let mut updated = initial.clone();
+    // M1 opens the existing activity while v1 is published. G66 forbids
+    // opening a NEW activity after a desired generation becomes pending.
+    let busy = activity(repo, true).await;
+    observe(repo, &busy, false).await;
+    // M2 retains a real successor intent on that already-busy root. This is
+    // store/index recovery evidence, not a public authoring-admission grant.
+    // M3 later observes the same Idle-pending eligibility after settlement;
+    // its predicate does not depend on the settled activity's epoch/history.
+    let mut updated = busy;
     let plan = updated
         .mcp
         .request_full_replacement(vec![mcp_draft("v2")], None)
@@ -156,7 +162,10 @@ async fn seed<R: SessionStore>(repo: &R, self_hosted: bool) -> PersistedSession 
     assert_eq!(updated.mcp.attachments[0], initial.mcp.attachments[0]);
     let pending = replace_session(repo, SCOPE, updated, "mcp-replace-v2", Vec::new()).await;
     assert_eq!(pending.realization, initial.realization);
-    assert!(pending.is_run_free_preparation_candidate());
+    assert!(
+        !pending.is_run_free_preparation_candidate(),
+        "M2 pending busy root cannot prepare"
+    );
     pending
 }
 
@@ -239,10 +248,8 @@ async fn sqlite_hot_mcp_candidates_survive_busy_idle_reopen_and_operational_inde
         let file = dir.path().join("mcp.db");
         let path = file.to_str().unwrap();
         let a = SqliteManagedSessionRepository::open(path).await.unwrap();
-        let first = seed(&a, self_hosted).await;
+        let busy = seed(&a, self_hosted).await;
         let b = SqliteManagedSessionRepository::open(path).await.unwrap();
-        observe(&b, &first, true).await;
-        let busy = activity(&a, true).await;
         observe(&b, &busy, false).await;
         a.close().await;
         b.close().await;
@@ -315,13 +322,11 @@ async fn postgres_hot_mcp_candidates_survive_busy_idle_new_pools_and_operational
         let a = awaken_session_store::PostgresManagedSessionRepository::with_pool(pa.clone())
             .await
             .unwrap();
-        let first = seed(&a, self_hosted).await;
+        let busy = seed(&a, self_hosted).await;
         let b =
             awaken_session_store::PostgresManagedSessionRepository::with_existing_pool(pb.clone())
                 .await
                 .unwrap();
-        observe(&b, &first, true).await;
-        let busy = activity(&a, true).await;
         observe(&b, &busy, false).await;
         drop((a, b));
         pa.close().await;

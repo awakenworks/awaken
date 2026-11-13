@@ -12,6 +12,26 @@ use awaken_worker_contract::{WorkerHeartbeat, WorkerIdentity};
 use awaken_worker_registry::MemoryWorkerDirectory;
 use awaken_worker_transport_security::WorkerUpstream;
 
+async fn finish_fixture_attempt(fixture: &Fixture, entry: &Entry) {
+    use awaken_dispatch_contract::DispatchAttemptControl as _;
+    // Entry creates and then closes this exact fixture-owned physical slot.
+    // Ordinary ACK is fenced after close; only the existing trusted closure
+    // record can retire it. No model/provider execution is started by Entry.
+    let closure = awaken_dispatch_contract::AttemptClosureRecord::try_new(
+        entry.attempt.clone(),
+        awaken_dispatch_contract::AttemptClosureKind::ControlledExecutionClosed,
+        format!("http-memory-fixture-closure-{}", entry.id.as_str()),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture
+            .dispatch
+            .finish_attempt_closure(&closure)
+            .await
+            .unwrap(),
+        awaken_dispatch::SettleOutcome::Applied
+    );
+}
 struct HttpFixture {
     client: WorkerControlClient,
     identity: WorkerIdentity,
@@ -180,6 +200,7 @@ async fn live_postgres_http_cap_one_resumes_the_selected_session() {
     let fixture = Fixture::new(1, true, true).await;
     let http = HttpFixture::new(&fixture).await;
     let entry = fixture.entry_for(&http.identity.lease_owner()).await;
+    finish_fixture_attempt(&fixture, &entry).await;
     let receipt = http.receipt(&fixture, &entry).await;
     let before = fixture.work_row(&entry.id).await;
     let resumed = tokio::time::timeout(
@@ -204,6 +225,87 @@ async fn live_postgres_http_cap_one_resumes_the_selected_session() {
     let after = fixture.work_row(&entry.id).await;
     assert_eq!(after.0, before.0, "H3 Resume does not stop the Work");
     assert_eq!(after.2, before.2, "H3 Resume retains the exact Work epoch");
+    // H3 wire decision table: C1 stale continuation is a real renewal Control
+    // refusal => 409 + exact StaleOwnership; C2 missing Work is a Runtime input
+    // refusal => original400 one-field Boundary; C3 an invalid INITIAL claim
+    // stays Runtime400, unlike lost admitted Begin authority. None authors Root.
+    // Work observation before a renewal refusal remains permitted by main.
+    let repository = fixture
+        .managed
+        .session_application()
+        .session_repository_handle();
+    let root_before_refusals = repository.get(&entry.id).await.unwrap();
+    let mut stale = resumed.authority.lease.clone();
+    stale.epoch = awaken_lease_contract::fence::Epoch::from_persisted(stale.epoch)
+        .unwrap()
+        .next()
+        .unwrap()
+        .get();
+    let mut invalid_claim = entry.claim.clone();
+    invalid_claim.epoch = awaken_lease_contract::fence::Epoch::from_persisted(invalid_claim.epoch)
+        .unwrap()
+        .next()
+        .unwrap()
+        .get();
+    for (claim, work, continuation, expected_status, expected_control, boundary_message) in [
+        (
+            entry.claim.clone(),
+            Some(receipt.clone()),
+            Some(stale),
+            axum::http::StatusCode::CONFLICT,
+            true,
+            "",
+        ),
+        (
+            entry.claim.clone(),
+            None,
+            None,
+            axum::http::StatusCode::BAD_REQUEST,
+            false,
+            "Session resume requires exact Work authority",
+        ),
+        (
+            invalid_claim,
+            Some(receipt.clone()),
+            None,
+            axum::http::StatusCode::BAD_REQUEST,
+            false,
+            "Session claim is stale",
+        ),
+    ] {
+        let path = "/v1/worker/session/resume";
+        let url = format!("{}{}", http.upstream.base_url(), path);
+        let response = tokio::time::timeout(PROGRESS, async {
+            http.upstream
+                .authorize("POST", path, http.upstream.client().post(url))
+                .unwrap()
+                .json(&serde_json::json!({"identity":http.identity, "claim":claim,
+                    "session_id":entry.id, "session_work_authority":work,
+                    "continuation":continuation}))
+                .send()
+                .await
+                .unwrap()
+        })
+        .await
+        .expect("selected PG wire refusal progresses on cap1");
+        assert_eq!(response.status(), expected_status);
+        let body: serde_json::Value = response.json().await.unwrap();
+        if expected_control {
+            let cause: awaken_session_execution_contract::SessionRealizationControlFailure =
+                serde_json::from_value(body["realization_error"].clone()).unwrap();
+            assert_eq!(
+                cause,
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership
+            );
+        } else {
+            assert_eq!(body, serde_json::json!({"error":boundary_message}));
+        }
+        assert_eq!(
+            repository.get(&entry.id).await.unwrap(),
+            root_before_refusals
+        );
+    }
+    drop(repository);
     drop(http);
     fixture.cleanup().await;
 }
@@ -223,6 +325,7 @@ async fn live_postgres_http_cap_two_resumes_distinct_claims() {
     let fixture = Fixture::new(2, true, true).await;
     let http = HttpFixture::new(&fixture).await;
     let parent = fixture.entry_for(&http.identity.lease_owner()).await;
+    finish_fixture_attempt(&fixture, &parent).await;
     let receipt = http.receipt(&fixture, &parent).await;
     let mut claims = Vec::new();
     for suffix in ["left", "right"] {
@@ -425,6 +528,7 @@ async fn live_postgres_http_resume_partial_affinity_keeps_original_owners() {
         let fixture = Fixture::new(1, roots, work).await;
         let http = HttpFixture::new(&fixture).await;
         let entry = fixture.entry_for(&http.identity.lease_owner()).await;
+        finish_fixture_attempt(&fixture, &entry).await;
         let receipt = http.receipt(&fixture, &entry).await;
         let before = fixture.work_row(&entry.id).await;
         let directive = tokio::time::timeout(

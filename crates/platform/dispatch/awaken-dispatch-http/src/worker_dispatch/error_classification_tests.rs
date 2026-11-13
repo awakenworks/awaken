@@ -6,6 +6,10 @@ use awaken_session_execution_contract::SessionRealizationControlFailure as C;
 
 #[test]
 fn realization_http_preserves_each_cause_status_and_wire_shape() {
+    // R1: every SessionControl cause (renew, generation binding or Begin) retains
+    // its typed status and golden wire; NotReady is 409, never a Runtime503.
+    // R2: genuine Runtime claim/Work/input errors keep the one-field Boundary
+    // envelope, not Binding's code nor a fabricated realization_error.
     // All nine causes have independent status and golden wire expectations.
     // Misleading identical prose cannot decide status or retry disposition.
     let detail = "offline corrupt conflict not found";
@@ -61,6 +65,24 @@ fn realization_http_preserves_each_cause_status_and_wire_shape() {
             serde_json::from_value::<C>(value["realization_error"].clone()).unwrap(),
             cause
         );
+    }
+    use awaken_runtime_contract::runs::RunError;
+    for (error, expected) in [
+        (RunError::bad_request(detail), StatusCode::BAD_REQUEST),
+        (RunError::conflict(detail), StatusCode::CONFLICT),
+        (
+            RunError::unavailable(detail),
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        (
+            RunError::internal(detail),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    ] {
+        let (status, Json(body)) =
+            respond_realization(Err(RealizationHttpError::worker_boundary(error)));
+        assert_eq!(status, expected, "R2 same prose, original Runtime cause");
+        assert_eq!(body, json!({"error":detail}), "R2 exact Boundary envelope");
     }
     let success = json!({"original": [1, "data"]});
     let (status, Json(value)) = respond_realization(Ok(success.clone()));

@@ -129,19 +129,23 @@ pub enum SessionStateViolation {
     Budget(#[from] awaken_session_contract::ManagedListPriceError),
 }
 
-/// Lossless typed admission refusal retained beside a cloneable CAS error.
-/// The Runtime's diagnostic-only RunError deliberately is not Clone/Eq.
+/// One lossless admission cause beside the cloneable CAS error. Runtime
+/// diagnostics and original realization Control causes never duplicate state.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{message}")]
-pub struct SessionAdmissionFailure {
-    kind: awaken_runtime_contract::runs::RunErrorKind,
-    code: String,
-    message: String,
+pub enum SessionAdmissionFailure {
+    #[error("{message}")]
+    Runtime {
+        kind: awaken_runtime_contract::runs::RunErrorKind,
+        code: String,
+        message: String,
+    },
+    #[error(transparent)]
+    Control(awaken_session_execution_contract::SessionRealizationControlFailure),
 }
 
 impl From<awaken_runtime_contract::runs::RunError> for SessionAdmissionFailure {
     fn from(error: awaken_runtime_contract::runs::RunError) -> Self {
-        Self {
+        Self::Runtime {
             kind: error.kind,
             code: error.code,
             message: error.message,
@@ -151,10 +155,17 @@ impl From<awaken_runtime_contract::runs::RunError> for SessionAdmissionFailure {
 
 impl From<SessionAdmissionFailure> for awaken_runtime_contract::runs::RunError {
     fn from(error: SessionAdmissionFailure) -> Self {
-        Self {
-            kind: error.kind,
-            code: error.code,
-            message: error.message,
+        match error {
+            SessionAdmissionFailure::Runtime {
+                kind,
+                code,
+                message,
+            } => Self {
+                kind,
+                code,
+                message,
+            },
+            SessionAdmissionFailure::Control(cause) => cause.into(),
         }
     }
 }
@@ -193,6 +204,14 @@ impl SessionMutationError {
     #[must_use]
     pub fn admission(error: awaken_runtime_contract::runs::RunError) -> Self {
         Self::Admission(error.into())
+    }
+}
+
+impl From<awaken_session_execution_contract::SessionRealizationControlFailure>
+    for SessionMutationError
+{
+    fn from(cause: awaken_session_execution_contract::SessionRealizationControlFailure) -> Self {
+        Self::Admission(SessionAdmissionFailure::Control(cause))
     }
 }
 
@@ -238,16 +257,17 @@ impl From<SessionMutationError>
 {
     fn from(error: SessionMutationError) -> Self {
         match error {
-            SessionMutationError::Admission(error) => match error.kind {
-                awaken_runtime_contract::runs::RunErrorKind::BadRequest => {
-                    Self::Invalid(error.message)
-                }
+            SessionMutationError::Admission(SessionAdmissionFailure::Control(cause)) => cause,
+            SessionMutationError::Admission(SessionAdmissionFailure::Runtime {
+                kind,
+                message,
+                ..
+            }) => match kind {
+                awaken_runtime_contract::runs::RunErrorKind::BadRequest => Self::Invalid(message),
                 awaken_runtime_contract::runs::RunErrorKind::Conflict => Self::Conflict,
-                awaken_runtime_contract::runs::RunErrorKind::Internal => {
-                    Self::Internal(error.message)
-                }
+                awaken_runtime_contract::runs::RunErrorKind::Internal => Self::Internal(message),
                 awaken_runtime_contract::runs::RunErrorKind::Unavailable => {
-                    Self::Unavailable(error.message)
+                    Self::Unavailable(message)
                 }
             },
             SessionMutationError::NotFound => Self::NotFound,
@@ -789,3 +809,61 @@ impl SessionRootCommit for SessionMutations {
 
 #[cfg(any(test, kani))]
 mod observation_proofs;
+
+#[cfg(test)]
+mod admission_cause_tests {
+    use super::*;
+    use awaken_runtime_contract::runs::{RunError, RunErrorKind};
+    use awaken_session_execution_contract::SessionRealizationControlFailure as Control;
+
+    #[test]
+    fn admission_retains_original_runtime_or_control_cause() {
+        // Cause/effect graph: R1 Runtime cause => preserve kind/code/message;
+        // R2 original Control cause => preserve the exact closed variant through
+        // the cloneable CAS error. Identical text cannot classify either cause.
+        // The old Runtime inlet and new Begin-only inlet share one carrier;
+        // Control::NotReady must not become generic Unavailable, and stale must
+        // not become an ordinary Root CAS Conflict. All closed causes are total.
+        for kind in [
+            RunErrorKind::BadRequest,
+            RunErrorKind::Conflict,
+            RunErrorKind::Internal,
+            RunErrorKind::Unavailable,
+        ] {
+            let original = RunError {
+                kind,
+                code: "same-code".into(),
+                message: "same-text".into(),
+            };
+            let mutation = SessionMutationError::admission(original);
+            let round: RunError = mutation.into();
+            assert_eq!(
+                (round.kind, round.code.as_str(), round.message.as_str()),
+                (kind, "same-code", "same-text"),
+                "R1"
+            );
+        }
+        for cause in [
+            Control::NotFound,
+            Control::NotReady,
+            Control::Retired,
+            Control::Terminal,
+            Control::StaleOwnership,
+            Control::Conflict,
+            Control::Invalid("same-text".into()),
+            Control::Unavailable("same-text".into()),
+            Control::Internal("same-text".into()),
+        ] {
+            let mutation: SessionMutationError = cause.clone().into();
+            let round: Control = mutation.clone().into();
+            assert_eq!(round, cause, "R2 exact Control, independent of text");
+            let run: RunError = mutation.into();
+            let expected: RunError = cause.into();
+            assert_eq!(
+                (run.kind, run.code, run.message),
+                (expected.kind, expected.code, expected.message),
+                "R2 neutral projection"
+            );
+        }
+    }
+}

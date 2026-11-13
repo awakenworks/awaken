@@ -665,9 +665,10 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
 /// | Q4 | broad cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
 /// | Q5 | policy cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
 /// | Q6 | local broad cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
-/// | Q7 | broad | malformed Session projection | - | valid row | skip malformed, claim valid |
-/// | Q8 | exact | malformed Session projection | - | - | typed admission error, no mutation |
-/// | Q9 | exact cancel | malformed Session projection | not used by cancel | - | claim without execution credentials |
+/// | Q0 | enqueue | malformed Session projection | - | repaired valid row | reject InvalidSessionMcpProjection before row/claim/credentials; repaired row progresses at epoch1 |
+/// | Q7 | broad | valid MCP projection, unsupported Platform holder | F | valid row | skip incompatible row, claim valid |
+/// | Q8 | exact | same valid unsupported-holder projection | F | - | explicit holder admission error, no epoch mutation |
+/// | Q9 | exact cancel | same non-remote projection | not used by cancel | - | claim without execution credentials at epoch1 |
 async fn incompatible_credentials_do_not_poison_broad_claims(
     store: &dyn ConformanceDispatch,
     ns: &str,
@@ -928,12 +929,164 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
         .await
         .expect("Q6 settle credential-free cancellation");
 
-    let invalid_runtime = dispatch(
+    // Q0 structural rejection is an enqueue boundary, not a poisonous queue
+    // row. Reuse the original projection fixture for the corrected retry.
+    let malformed_runtime = dispatch(
         ns,
-        "poison-runtime-invalid",
-        "poison-runtime-invalid-thread",
+        "reject-runtime-malformed",
+        "reject-runtime-malformed-thread",
     )
     .with_session_runtime(SessionRuntimeEnvelope::new("{"));
+    assert_eq!(
+        malformed_runtime.validate_worker_codec_requirements(),
+        Err(awaken_worker_contract::Incompatibility::InvalidSessionMcpProjection),
+        "Q0 codec cause"
+    );
+    let rejected = store
+        .enqueue(malformed_runtime.clone())
+        .await
+        .expect_err("Q0 malformed projection refuses before insertion");
+    assert!(
+        matches!(&rejected, DispatchError::Rejected(detail)
+        if detail.contains("InvalidSessionMcpProjection")),
+        "Q0 exact rejection: {rejected}"
+    );
+    assert_eq!(
+        store
+            .observe_session_run_admission(malformed_runtime.run_id())
+            .await
+            .unwrap(),
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Missing,
+        "Q0 no stored row/bindings"
+    );
+    assert!(
+        store
+            .claim_run(
+                malformed_runtime.run_id(),
+                "malformed-worker",
+                LEASE_MS,
+                &Default::default()
+            )
+            .await
+            .unwrap()
+            .is_none(),
+        "Q0 no claim side effect"
+    );
+    assert!(
+        store
+            .load_physical_attempt(malformed_runtime.run_id())
+            .await
+            .unwrap()
+            .is_none(),
+        "Q0 no physical side effect"
+    );
+    let repaired_runtime =
+        projected_dispatch(ns, "reject-runtime-malformed", "environment-a", true);
+    store
+        .enqueue(repaired_runtime.clone())
+        .await
+        .expect("Q0 valid retry of rejected command");
+    let repaired = store
+        .claim_run(
+            repaired_runtime.run_id(),
+            "repaired-runtime-worker",
+            LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        repaired.lease.epoch(),
+        1,
+        "Q0 rejected input minted no epoch"
+    );
+    assert!(
+        repaired.credential_bindings.is_empty(),
+        "Q0 no credential side effect"
+    );
+    store
+        .settle(
+            repaired_runtime.run_id(),
+            repaired.lease.epoch(),
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .unwrap();
+
+    // Q7-Q9 remain claim-time tests. The published requirement and envelope
+    // come from one structurally valid, paired MCP projection. Platform holder
+    // delivery is unsupported at claim; missing expiry/issuer metadata adds no
+    // validity codec demand and cancellation never compiles this MCP material.
+    let mut invalid_runtime =
+        projected_dispatch(ns, "poison-runtime-invalid", "environment-a", true);
+    let platform = PlaintextHolder::new(PlaintextBoundary::Platform, "platform");
+    let target = awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test/").unwrap();
+    let mut projection: awaken_session_configuration_contract::SessionRuntimeProjection =
+        serde_json::from_str(&runtime_projection_json("environment-a")).unwrap();
+    projection.environment.credential_realization.mcp_holder = platform.clone();
+    projection.mcp_stages = Some(vec![
+        awaken_session_configuration_contract::mcp::StageMcpAttachment {
+            workspace_id: ns.into(),
+            generation:
+                awaken_session_configuration_contract::mcp::McpGenerationRef::from_persisted(
+                    invalid_runtime.session_thread_id().0.clone().into(),
+                    awaken_session_configuration_contract::mcp::McpGeneration::of_bare_target(
+                        awaken_session_configuration_contract::mcp::McpAttachmentId(
+                            "unsupported-platform".into(),
+                        ),
+                        1,
+                        &target,
+                    ),
+                    "platform-fixture".into(),
+                    1,
+                    1_000_000,
+                )
+                .unwrap(),
+            realization_id: "platform-fixture".into(),
+            stage_idempotency_key: "stage-platform".into(),
+            name: "unsupported-platform".into(),
+            target,
+            prompts_as_skills: false,
+            credential: Some(
+                CredentialAccess::new(
+                    CredentialRef {
+                        id: format!("{ns}-mcp"),
+                        revision: 1,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::HttpHeader {
+                        name: "authorization".into(),
+                        scheme: Some("Bearer".into()),
+                    },
+                    CredentialExecutionPolicy::exact(
+                        platform.clone(),
+                        ModelExposurePolicy::Forbidden,
+                    ),
+                )
+                .with_target(
+                    awaken_agent_contract::credential::CredentialTarget::new(
+                        awaken_agent_contract::credential::CredentialPurpose::McpAuthorization,
+                        "https://mcp.example.test/",
+                    ),
+                ),
+            ),
+            selected_plaintext_holder: Some(platform),
+        },
+    ]);
+    invalid_runtime.placement.session_mcp_credentials = Some(
+        projection
+            .mcp_credential_requirements()
+            .expect("Q7 structurally valid paired MCP requirements"),
+    );
+    invalid_runtime.session_runtime =
+        Some(SessionRuntimeEnvelope::new(projection.encode().unwrap()));
+    invalid_runtime = invalid_runtime.with_worker_codec_requirements();
+    assert!(
+        invalid_runtime.validate_worker_codec_requirements().is_ok(),
+        "Q7 valid enqueue shape"
+    );
     let valid_runtime = dispatch(ns, "poison-runtime-valid", "poison-runtime-valid-thread");
     store
         .enqueue_with(
@@ -944,7 +1097,7 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
             },
         )
         .await
-        .expect("Q7 enqueue malformed Session projection");
+        .expect("Q7 enqueue valid unsupported-holder Session projection");
     store
         .enqueue(valid_runtime.clone())
         .await
@@ -978,17 +1131,17 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
             &Default::default(),
         )
         .await
-        .expect_err("Q8 exact claim rejects malformed Session projection");
+        .expect_err("Q8 exact claim rejects unsupported Session MCP holder");
     assert!(
         exact_error
             .to_string()
-            .contains("Session runtime credential projection is invalid"),
+            .contains(&awaken_dispatch_contract::DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder.to_string()),
         "Q8: {exact_error}"
     );
     store
         .cancel(invalid_runtime.run_id())
         .await
-        .expect("Q9 persist cancel for malformed execution projection");
+        .expect("Q9 persist cancel for unsupported MCP execution projection");
     clock.set(50_009);
     let cancellation = store
         .claim_run(
@@ -1011,7 +1164,7 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
             &[],
         )
         .await
-        .expect("Q9 settle malformed-projection cancellation");
+        .expect("Q9 settle unsupported-holder cancellation");
 }
 
 /// Claim-credential cause-effect graph:

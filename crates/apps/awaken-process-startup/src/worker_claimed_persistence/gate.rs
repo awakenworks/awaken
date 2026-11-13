@@ -12,15 +12,33 @@ use awaken_session_types::SessionRevision;
 use sqlx::PgConnection;
 
 impl RootGate {
-    pub(super) async fn check(&self, connection: &mut PgConnection) -> Result<(), RunError> {
+    pub(super) async fn check(
+        &self,
+        connection: &mut PgConnection,
+    ) -> Result<(), SessionMutationError> {
         let observation = self
             .selected
             .observe(connection, &self.claim, self.purpose)
-            .await?;
+            .await
+            .map_err(SessionMutationError::Admission)?;
         if !observation.request.same_original_dispatch(&self.original) {
-            return Err(RunError::bad_request(
+            return Err(SessionMutationError::admission(RunError::bad_request(
                 "guarded dispatch changed during Session preparation",
-            ));
+            )));
+        }
+        if matches!(self.purpose, ClaimPurpose::ResumeBegin) {
+            let WorkAdmission::Asserted(receipt) = &self.work else {
+                return Err(SessionMutationError::Internal(
+                    "Resume Begin requires its original Work authority".into(),
+                ));
+            };
+            awaken_dispatch_http::require_worker_claimed_preparation(
+                &observation,
+                &self.claim,
+                receipt,
+                awaken_time::WallClockExt::now_ms(self.selected.clock.as_ref()),
+            )
+            .map_err(SessionMutationError::from)?;
         }
         if let ClaimPurpose::Activity(mode) = self.purpose {
             awaken_dispatch_http::require_worker_run_activity(
@@ -31,33 +49,36 @@ impl RootGate {
                 &self.claim.run_id,
                 mode,
                 awaken_time::WallClockExt::now_ms(self.selected.clock.as_ref()),
-            )?;
+            )
+            .map_err(SessionMutationError::admission)?;
             if !observation.physical_slot.permits_settlement() {
-                return Err(RunError::internal(
+                return Err(SessionMutationError::admission(RunError::internal(
                     "prepared reservation requires a live claim and empty physical slot",
-                ));
+                )));
             }
         }
         if let WorkAdmission::Asserted(receipt) = &self.work {
             self.selected
                 .work(connection, &observation.request, receipt, &self.claim.owner)
-                .await?;
+                .await
+                .map_err(SessionMutationError::admission)?;
         }
         if let Some(frozen) = &self.committed {
             if &frozen.thread != self.original.thread_id() || &frozen.run != self.original.run_id()
             {
-                return Err(RunError::internal(
+                return Err(SessionMutationError::admission(RunError::internal(
                     "committed read fence differs from its claimed scope",
-                ));
+                )));
             }
             let observed = self
                 .selected
                 .recovery_on(connection, &self.original, Some(frozen.prefix))
-                .await?;
+                .await
+                .map_err(SessionMutationError::admission)?;
             if !matches!(observed, LoadedRunRecovery::Reuse { .. }) {
-                return Err(RunError::conflict(
+                return Err(SessionMutationError::admission(RunError::conflict(
                     "committed Thread changed during Session admission",
-                ));
+                )));
             }
         }
         Ok(())
@@ -79,9 +100,7 @@ impl SessionRootCommit for RootGate {
             .transaction(self.purpose)
             .await
             .map_err(SessionMutationError::admission)?;
-        self.check(&mut transaction)
-            .await
-            .map_err(SessionMutationError::admission)?;
+        self.check(&mut transaction).await?;
         if matches!(self.purpose, ClaimPurpose::Activity(_)) {
             let session = SessionId::from(self.original.session_thread_id().0.clone());
             // H9: a cold negative receipt observation is not final rejection.
@@ -153,7 +172,7 @@ impl SessionRootCommit for RootGate {
         revision: SessionRevision,
     ) -> Result<bool, SessionMutationError> {
         #[cfg(test)]
-        if matches!(self.purpose, ClaimPurpose::Resume)
+        if matches!(self.purpose, ClaimPurpose::ResumeBegin)
             && let Some(cut) = &self.selected.cut
         {
             cut.pause(super::test_cut::FinalAdmissionCutKind::PreparedResumeReadValidation)
@@ -164,9 +183,7 @@ impl SessionRootCommit for RootGate {
             .transaction(self.purpose)
             .await
             .map_err(SessionMutationError::admission)?;
-        self.check(&mut transaction)
-            .await
-            .map_err(SessionMutationError::admission)?;
+        self.check(&mut transaction).await?;
         let current = self
             .selected
             .root(&mut transaction, session)
@@ -198,7 +215,7 @@ impl SessionRootCommit for RootGate {
             )));
         }
         #[cfg(test)]
-        if matches!(self.purpose, ClaimPurpose::Resume)
+        if matches!(self.purpose, ClaimPurpose::ResumeBegin)
             && let Some(cut) = &self.selected.cut
         {
             cut.pause(super::test_cut::FinalAdmissionCutKind::PreparedResumeRootCommit)
@@ -209,9 +226,7 @@ impl SessionRootCommit for RootGate {
             .transaction(self.purpose)
             .await
             .map_err(SessionMutationError::admission)?;
-        self.check(&mut transaction)
-            .await
-            .map_err(SessionMutationError::admission)?;
+        self.check(&mut transaction).await?;
         let staged = match self.selected.roots {
             ClaimConnectionUse::Borrowed => {
                 awaken_session_store::PostgresManagedSessionRepository::commit_on(

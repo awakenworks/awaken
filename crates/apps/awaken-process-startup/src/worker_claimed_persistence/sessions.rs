@@ -7,6 +7,7 @@ use super::{
 };
 use awaken_dispatch_http::{WorkerSessionClaims, WorkerSessionResumeCommand};
 use awaken_runtime_contract::runs::RunError;
+use awaken_session_application::SessionRootCommit as _;
 use awaken_session_execution_contract::{
     BeginSessionRealization, RenewSessionRealization, SessionRealizationDirective,
 };
@@ -48,31 +49,39 @@ impl WorkerSessionClaims for PostgresWorkerClaims {
     async fn resume(
         &self,
         command: WorkerSessionResumeCommand,
-    ) -> Result<Option<SessionRealizationDirective>, RunError> {
-        // Validate affinity before the original Work renewal can be committed.
-        let mut transaction = self.transaction(ClaimPurpose::Resume).await?;
-        let current = self
-            .observe(&mut transaction, &command.claim, ClaimPurpose::Resume)
+    ) -> Result<Option<SessionRealizationDirective>, awaken_dispatch_http::RealizationHttpError>
+    {
+        // Existing Runtime refusals keep the original selected-PG Boundary
+        // envelope. Do not route them through From<RunError>'s Binding variant.
+        let (mut gate, expected_resources, receipt) = async {
+            // Validate affinity before the original Work renewal can be committed.
+            let mut transaction = self.transaction(ClaimPurpose::Resume).await?;
+            let current = self
+                .observe(&mut transaction, &command.claim, ClaimPurpose::Resume)
+                .await?;
+            let expected_resources = command.resources_for(&current.request)?;
+            let receipt = command.work_receipt()?.clone();
+            self.work(
+                &mut transaction,
+                &current.request,
+                &receipt,
+                &command.claim.owner,
+            )
             .await?;
-        let expected_resources = command.resources_for(&current.request)?;
-        let receipt = command.work_receipt()?.clone();
-        self.work(
-            &mut transaction,
-            &current.request,
-            &receipt,
-            &command.claim.owner,
-        )
-        .await?;
-        command.validate_continuation()?;
-        let gate = RootGate {
-            selected: Arc::new(self.clone()),
-            claim: command.claim.clone(),
-            original: current.request,
-            purpose: ClaimPurpose::Resume,
-            work: WorkAdmission::Asserted(receipt.clone()),
-            committed: None,
-        };
-        transaction.commit().await.map_err(unavailable)?;
+            command.validate_continuation()?;
+            let gate = RootGate {
+                selected: Arc::new(self.clone()),
+                claim: command.claim.clone(),
+                original: current.request,
+                purpose: ClaimPurpose::Resume,
+                work: WorkAdmission::Asserted(receipt.clone()),
+                committed: None,
+            };
+            transaction.commit().await.map_err(unavailable)?;
+            Ok::<_, RunError>((gate, expected_resources, receipt))
+        }
+        .await
+        .map_err(awaken_dispatch_http::RealizationHttpError::worker_boundary)?;
         let control = self.application.realizations();
         if let Some(asserted) = &command.continuation {
             let renewed = control
@@ -88,11 +97,21 @@ impl WorkerSessionClaims for PostgresWorkerClaims {
                     &gate,
                 )
                 .await
-                .map_err(RunError::from)?;
+                .map_err(awaken_dispatch_http::RealizationHttpError::Control)?;
             if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(&renewed, asserted) {
-                return Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership.into());
+                return Err(awaken_dispatch_http::RealizationHttpError::Control(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+                ));
             }
         }
+        // Match the original HTTP sequence: optional exact renewal precedes
+        // the Begin-only cancellation/physical-quiescence exclusion. Both
+        // phases use this same Gate and Read Committed transaction policy.
+        gate.purpose = ClaimPurpose::ResumeBegin;
+        gate.validate_claim()
+            .await
+            .map_err(awaken_session_execution_contract::SessionRealizationControlFailure::from)
+            .map_err(awaken_dispatch_http::RealizationHttpError::Control)?;
         // All cold credential/context work is outside D; only the existing
         // mutation kernel re-enters this final gate. No second CAS loop exists.
         let directive = control
@@ -105,21 +124,25 @@ impl WorkerSessionClaims for PostgresWorkerClaims {
                 &gate,
             )
             .await
-            .map_err(RunError::from)?;
+            .map_err(awaken_dispatch_http::RealizationHttpError::Control)?;
         if !receipt.binds_realization(
             command.session_id.as_str(),
             &directive.authority.lease.runtime_incarnation,
             directive.projection.baseline.environment.self_hosted,
             &directive.projection.baseline.environment.environment_id,
         ) {
-            return Err(RunError::bad_request(
-                "Session realization directive does not match claimed Work authority",
+            return Err(awaken_dispatch_http::RealizationHttpError::worker_boundary(
+                RunError::bad_request(
+                    "Session realization directive does not match claimed Work authority",
+                ),
             ));
         }
         if let Some(asserted) = &command.continuation
             && !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(&directive.authority.lease, asserted)
         {
-            return Err(awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership.into());
+            return Err(awaken_dispatch_http::RealizationHttpError::Control(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+                ));
         }
         Ok(Some(directive))
     }

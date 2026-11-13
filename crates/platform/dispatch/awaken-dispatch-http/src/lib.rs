@@ -19,9 +19,10 @@ pub use durable_ops::{
 };
 pub use worker_dispatch::respond as worker_transport_response;
 pub use worker_dispatch::{
-    RegisteredDispatchDependencies, WORKER_DISPATCH_MAX_ATTEMPTS, WORKER_REGISTRY_TTL_MS,
-    WorkerDispatchService, dispatch_transport_router_with_service, registered_dispatch_router,
-    registered_worker_transport_router_with_services, worker_environment_warmup_router,
+    RealizationHttpError, RegisteredDispatchDependencies, WORKER_DISPATCH_MAX_ATTEMPTS,
+    WORKER_REGISTRY_TTL_MS, WorkerDispatchService, dispatch_transport_router_with_service,
+    registered_dispatch_router, registered_worker_transport_router_with_services,
+    require_worker_claimed_preparation, worker_environment_warmup_router,
     worker_source_retention_router, worker_task_control_router,
 };
 

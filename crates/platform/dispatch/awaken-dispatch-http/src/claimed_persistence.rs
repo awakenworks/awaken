@@ -108,7 +108,7 @@ pub trait WorkerSessionClaims: Send + Sync {
     async fn resume(
         &self,
         command: WorkerSessionResumeCommand,
-    ) -> Result<Option<SessionRealizationDirective>, RunError>;
+    ) -> Result<Option<SessionRealizationDirective>, crate::RealizationHttpError>;
 
     async fn admit_model_request(
         &self,

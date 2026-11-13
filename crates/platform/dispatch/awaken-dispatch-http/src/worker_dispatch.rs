@@ -48,6 +48,7 @@ use awaken_worker_transport_security::{
 };
 
 mod claimed_preparation;
+pub use claimed_preparation::require_worker_claimed_preparation;
 mod registry_endpoints;
 use registry_endpoints::{
     deregister_worker, drain_worker, heartbeat_worker, quiesce_worker, register_worker,
@@ -682,10 +683,20 @@ pub fn respond(result: Result<Value, ApplicationError>) -> (StatusCode, Json<Val
     }
 }
 
-enum RealizationHttpError {
+#[derive(Debug)]
+pub enum RealizationHttpError {
     Boundary(ApplicationError),
     Control(awaken_session_execution_contract::SessionRealizationControlFailure),
     Binding(awaken_runtime_contract::runs::RunError),
+}
+
+impl RealizationHttpError {
+    /// Retain the existing selected-PG application envelope for Runtime faults.
+    /// The generic From<RunError> deliberately remains the separate Binding path.
+    #[must_use]
+    pub fn worker_boundary(error: awaken_runtime_contract::runs::RunError) -> Self {
+        Self::Boundary(crate::worker_application_error(error))
+    }
 }
 
 impl From<ApplicationError> for RealizationHttpError {

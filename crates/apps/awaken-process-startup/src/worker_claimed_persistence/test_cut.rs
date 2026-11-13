@@ -15,22 +15,39 @@ pub(crate) enum FinalAdmissionCutKind {
 pub(crate) struct FinalAdmissionTestCut {
     kind: FinalAdmissionCutKind,
     armed: AtomicBool,
+    skip_matches: AtomicUsize,
     read_basis_moves: AtomicUsize,
     reached: Notify,
     proceed: Semaphore,
 }
 impl FinalAdmissionTestCut {
     pub(crate) fn new(kind: FinalAdmissionCutKind) -> Self {
+        Self::after_matching(kind, 0)
+    }
+    pub(crate) fn after_matching(kind: FinalAdmissionCutKind, skip: usize) -> Self {
         Self {
             kind,
             armed: AtomicBool::new(true),
+            skip_matches: AtomicUsize::new(skip),
             read_basis_moves: AtomicUsize::new(0),
             reached: Notify::new(),
             proceed: Semaphore::new(0),
         }
     }
     pub(super) async fn pause(&self, kind: FinalAdmissionCutKind) {
-        if self.kind == kind && self.armed.swap(false, Ordering::AcqRel) {
+        if self.kind != kind {
+            return;
+        }
+        if self
+            .skip_matches
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return;
+        }
+        if self.armed.swap(false, Ordering::AcqRel) {
             // This point is before BEGIN/claim locking. The concurrent real
             // request or takeover must retain the original cap1 connection.
             self.reached.notify_one();
@@ -40,6 +57,9 @@ impl FinalAdmissionTestCut {
                 .expect("the fixture keeps its gate")
                 .forget();
         }
+    }
+    pub(crate) fn remaining_skips(&self) -> usize {
+        self.skip_matches.load(Ordering::Acquire)
     }
     pub(super) fn observe_claim_result(
         &self,

@@ -72,11 +72,22 @@ renew the credential.
 ### Borrowed claimed preparation
 
 The authenticated Session-resume adapter first verifies the Worker, exact
-Dispatch claim and current native Session Work receipt. It retains the original
-`CommitEpochGuard` while exposing `ClaimedSessionCredentialPreparationContext`.
+Dispatch claim and current native Session Work receipt. The independent-store
+path retains the original `CommitEpochGuard` while exposing
+`ClaimedSessionCredentialPreparationContext`.
 The context includes the original frozen activation, raw Run and Thread,
 Session affinity, execution scope and Work receipt. It is not serialized or
 installed in task-local or process-global state.
+
+The selected PostgreSQL path releases the Dispatch connection during cold
+Session preparation. Its existing Root commit gate rechecks the exact claim,
+frozen dispatch and Work on the transaction that validates or commits the Root
+([ADR-0089](0089-session-realization-single-owner.md)). Begin additionally
+requires the same live, uncancelled, empty-slot observation before preparation
+and at its final write or no-write validation. Optional continuation renewal
+keeps its original position before this Begin-only exclusion. This path exposes
+no held context and installs no product Vault rollout preparer; the current
+native realization control performs ordinary realization under that gate.
 
 Every preparation mutation requires a live, uncancelled claim and an empty
 physical-attempt slot from that same locked row. An exact occupied slot, another

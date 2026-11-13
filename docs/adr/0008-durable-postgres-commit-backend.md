@@ -236,6 +236,14 @@ Recovery reconstructs its existing derived execution view from committed facts.
 The dependency pool carries these repository operations through their original
 ports and validation.
 
+Ordinary recovery through those ports opens its Repeatable Read transaction on
+the dependency pool and delegates to `load_postgres_recovery_on`. The selected
+claim-bound Session operation uses that same SQL kernel on its caller-owned
+Repeatable Read transaction when committed truth shares the authority database.
+It keeps the claim, Session Root/Work and committed-prefix observations inside
+their original atomic boundary without acquiring another connection. Both
+routes retain one recovery implementation and its prefix validation.
+
 This allocation follows the Dispatch and Committed Truth bounded contexts.
 `CoordinatorPersistence` owns physical connection composition, the Registry owns
 Worker facts, and `PostgresCommitCoordinator` owns committed facts and replay.

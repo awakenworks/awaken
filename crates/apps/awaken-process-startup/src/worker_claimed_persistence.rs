@@ -12,7 +12,9 @@ use awaken_dispatch::{CommitEpochObservation, RunClaim, RunDispatch};
 use awaken_dispatch_erasure::RuntimeAuthority;
 use awaken_dispatch_http::WorkerClaimPersistence;
 use awaken_runtime_contract::runs::RunError;
-use awaken_session_application::{SessionApplication, SessionMutationError};
+use awaken_session_application::{
+    SessionAdmissionFailure, SessionApplication, SessionMutationError,
+};
 use awaken_session_application_contract::{
     SessionWorkAuthorityReceipt, SessionWorkGrant, SessionWorkOwnership,
 };
@@ -98,12 +100,16 @@ struct PostgresWorkerClaims {
 enum ClaimPurpose {
     Recovery,
     Resume,
+    ResumeBegin,
     Model,
     Activity(awaken_session_execution_contract::SessionRunActivityAdmissionMode),
 }
 impl ClaimPurpose {
     fn needs_live(self) -> bool {
-        matches!(self, Self::Resume | Self::Model | Self::Activity(_))
+        matches!(
+            self,
+            Self::Resume | Self::ResumeBegin | Self::Model | Self::Activity(_)
+        )
     }
 }
 
@@ -149,7 +155,7 @@ impl PostgresWorkerClaims {
         // distinct child claims serialize renewal of their shared parent Work.
         // Recovery and Model/Activity prefix witnesses retain one Repeatable
         // Read snapshot, established before the first claim FOR UPDATE.
-        if !matches!(purpose, ClaimPurpose::Resume) {
+        if !matches!(purpose, ClaimPurpose::Resume | ClaimPurpose::ResumeBegin) {
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
                 .execute(&mut *transaction)
                 .await
@@ -163,7 +169,7 @@ impl PostgresWorkerClaims {
         connection: &mut PgConnection,
         claim: &RunClaim,
         purpose: ClaimPurpose,
-    ) -> Result<CommitEpochObservation, RunError> {
+    ) -> Result<CommitEpochObservation, SessionAdmissionFailure> {
         let observation = match purpose {
             ClaimPurpose::Activity(_) => {
                 awaken_dispatch::lock_session_run_reservation_for_admission(connection, claim).await
@@ -172,14 +178,25 @@ impl PostgresWorkerClaims {
         }
         .map_err(internal)?
         .ok_or_else(|| match purpose {
-            ClaimPurpose::Recovery => RunError::conflict("run claim is stale"),
-            _ => RunError::bad_request("Session claim is stale"),
+            // Begin follows successful input/Work admission. Losing that exact
+            // authority during cold preparation is not an invalid initial input.
+            ClaimPurpose::ResumeBegin => SessionAdmissionFailure::Control(
+                awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+            ),
+            ClaimPurpose::Recovery => RunError::conflict("run claim is stale").into(),
+            _ => RunError::bad_request("Session claim is stale").into(),
         })?;
         if purpose.needs_live()
             && !awaken_time::Expiry::from_epoch_ms(observation.expires_ms)
                 .is_live_at(self.clock.now())
         {
-            return Err(RunError::bad_request("Session claim lease has expired"));
+            return Err(if matches!(purpose, ClaimPurpose::ResumeBegin) {
+                SessionAdmissionFailure::Control(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
+                )
+            } else {
+                RunError::bad_request("Session claim lease has expired").into()
+            });
         }
         Ok(observation)
     }
