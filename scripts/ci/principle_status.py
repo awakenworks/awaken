@@ -138,7 +138,7 @@ def baseline_entries(document: object) -> int:
 
 
 def python_lines(scripts: Path) -> int:
-    """V1 "Python lines": every line of the top-level scripts/ci/*.py (check_python_ceiling.py holds it)."""
+    """V1 "Python lines": every line of the top-level scripts/ci/*.py (reported, never enforced)."""
     return sum(len(path.read_text(encoding="utf-8").splitlines()) for path in scripts.glob("*.py"))
 
 

@@ -769,3 +769,9 @@ Base main `268ae92c5c`. Lines are `scripts/ci/*.py` as counted by
 | Removed or changed rule | New holder | Negative example (command → result) |
 |---|---|---|
 | the V1 target "Python lines about 72,000" (reported by `principle_status.py --guards`, never enforced) | "no growth": `check_python_ceiling.py` (pre-commit `python-ceiling`, `check-all.sh` static) holds `scripts/ci/*.py` at the ceiling in `python_lines_baseline.json`, 76,047 lines when it landed; the same `principle_status.python_lines` count; `--tighten` lowers it, raising it is `--write-baseline --reason '<JSON review>'` | `check_python_ceiling.py --self-test` C2: one line over → exit 1 "1 line over the ceiling"; C5: a raise without a review → refused, bytes unchanged |
+
+### 2026-11-14 Python CI ceiling retired
+
+| Removed or changed rule | New holder | Negative example (command → result) |
+|---|---|---|
+| `check_python_ceiling.py` "no growth" ceiling (pre-commit `python-ceiling`, static gate) | none: the user decided the line count is not a goal (2026-11-14). It blocked 6 of 23 script-only commits in its first week without protecting behaviour. `principle_status.py --guards` still reports the count. | not applicable: the rule held no behaviour, only a size |
