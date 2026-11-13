@@ -42,6 +42,7 @@ async fn first_admissible_in_band(
         let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
         let operation = claim_credential_operation(terminal_resolution, cancellation_requested);
         if crate::sql_claim_generation_admits(reported, &run_id, lease_epoch)
+            && request.worker_codec_admission(None).is_ok()
             && next_claim_epoch(lease_epoch).is_ok_and(|epoch| {
                 can_admit_claim_credentials(&request, capabilities, epoch, now_ms, operation)
             })

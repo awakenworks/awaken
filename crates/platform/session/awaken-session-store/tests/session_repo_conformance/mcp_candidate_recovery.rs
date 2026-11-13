@@ -6,11 +6,12 @@
 //! |---|---|---|
 //! | M0 | published v1, Idle, original Worker | absent / one |
 //! | M1 | replacement v2 committed, Idle | exact root / one |
-//! | M2 | same v2 pending, admitted activity Running | absent / one |
+//! | M2 | activity already Running before v2 intent | absent / one |
 //! | M3 | final activity settled back to Idle | exact root / one |
 //! | M4 | close and reopen independent clients | same M2/M3 root and lease |
 //! | M5 | old index hides M3 | prove hidden, operational reopen restores it |
 //! | M6 | PostgreSQL server opener sees M5 | explicit refusal, no index repair |
+//! | M7 | new activity while v2 pending, Idle or Running | NotReady, unchanged root |
 use super::*;
 use awaken_session_application::SessionStore;
 use awaken_session_contract::{
@@ -36,7 +37,11 @@ fn mcp_draft(version: &str) -> awaken_session_configuration_contract::mcp::McpAt
     }
 }
 
-async fn seed<R: SessionStore>(repo: &R, self_hosted: bool) -> PersistedSession {
+async fn seed<R: SessionStore>(
+    repo: &R,
+    self_hosted: bool,
+    initially_busy: bool,
+) -> PersistedSession {
     let template = session(SESSION, "pending hot MCP");
     let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
         template.baseline
@@ -143,6 +148,12 @@ async fn seed<R: SessionStore>(repo: &R, self_hosted: bool) -> PersistedSession 
     assert!(!root.is_run_free_preparation_candidate());
     let initial = create_session(repo, SCOPE, root, Vec::new()).await;
     observe(repo, &initial, false).await;
+    let initial = if initially_busy {
+        activity(repo, true).await
+    } else {
+        initial
+    };
+    observe(repo, &initial, false).await;
 
     // Commit a real successor intent after the original generation was
     // published. An initially Requested attachment alone is not this case.
@@ -156,7 +167,18 @@ async fn seed<R: SessionStore>(repo: &R, self_hosted: bool) -> PersistedSession 
     assert_eq!(updated.mcp.attachments[0], initial.mcp.attachments[0]);
     let pending = replace_session(repo, SCOPE, updated, "mcp-replace-v2", Vec::new()).await;
     assert_eq!(pending.realization, initial.realization);
-    assert!(pending.is_run_free_preparation_candidate());
+    assert_eq!(pending.is_run_free_preparation_candidate(), !initially_busy);
+    let mut blocked = SessionAggregate::try_from(pending.clone()).unwrap();
+    assert_eq!(
+        blocked.activity().open(None, false, false, 30, 0, None),
+        SessionActivityAdmissionPlan::NotReady,
+        "M7 pending MCP blocks new activity"
+    );
+    assert_eq!(
+        blocked.snapshot(),
+        &pending,
+        "M7 failed admission preserves the whole root"
+    );
     pending
 }
 
@@ -234,24 +256,28 @@ async fn activity<R: SessionStore>(repo: &R, busy: bool) -> PersistedSession {
 
 #[tokio::test]
 async fn sqlite_hot_mcp_candidates_survive_busy_idle_reopen_and_operational_index_repair() {
-    for self_hosted in [false, true] {
+    for (self_hosted, initially_busy) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("mcp.db");
         let path = file.to_str().unwrap();
         let a = SqliteManagedSessionRepository::open(path).await.unwrap();
-        let first = seed(&a, self_hosted).await;
+        let first = seed(&a, self_hosted, initially_busy).await;
         let b = SqliteManagedSessionRepository::open(path).await.unwrap();
-        observe(&b, &first, true).await;
-        let busy = activity(&a, true).await;
-        observe(&b, &busy, false).await;
+        observe(&b, &first, !initially_busy).await;
         a.close().await;
         b.close().await;
         drop((a, b));
 
         let a = SqliteManagedSessionRepository::open(path).await.unwrap();
         let b = SqliteManagedSessionRepository::open(path).await.unwrap();
-        observe(&b, &busy, false).await;
-        let idle = activity(&a, false).await;
+        observe(&b, &first, !initially_busy).await;
+        let idle = if initially_busy {
+            activity(&a, false).await
+        } else {
+            first.clone()
+        };
         observe(&b, &idle, true).await;
         a.close().await;
         b.close().await;
@@ -306,7 +332,9 @@ async fn second_pool(url: &str, schema: &str) -> sqlx::PgPool {
 
 #[tokio::test]
 async fn postgres_hot_mcp_candidates_survive_busy_idle_new_pools_and_operational_index_repair() {
-    for self_hosted in [false, true] {
+    for (self_hosted, initially_busy) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
         let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
             return;
         };
@@ -315,14 +343,12 @@ async fn postgres_hot_mcp_candidates_survive_busy_idle_new_pools_and_operational
         let a = awaken_session_store::PostgresManagedSessionRepository::with_pool(pa.clone())
             .await
             .unwrap();
-        let first = seed(&a, self_hosted).await;
+        let first = seed(&a, self_hosted, initially_busy).await;
         let b =
             awaken_session_store::PostgresManagedSessionRepository::with_existing_pool(pb.clone())
                 .await
                 .unwrap();
-        observe(&b, &first, true).await;
-        let busy = activity(&a, true).await;
-        observe(&b, &busy, false).await;
+        observe(&b, &first, !initially_busy).await;
         drop((a, b));
         pa.close().await;
         pb.close().await;
@@ -337,8 +363,12 @@ async fn postgres_hot_mcp_candidates_survive_busy_idle_new_pools_and_operational
             awaken_session_store::PostgresManagedSessionRepository::with_existing_pool(pb.clone())
                 .await
                 .unwrap();
-        observe(&b, &busy, false).await;
-        let idle = activity(&a, false).await;
+        observe(&b, &first, !initially_busy).await;
+        let idle = if initially_busy {
+            activity(&a, false).await
+        } else {
+            first.clone()
+        };
         observe(&b, &idle, true).await;
         assert_eq!(
             sqlx::query(STALE_INDEX)

@@ -665,9 +665,10 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
 /// | Q4 | broad cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
 /// | Q5 | policy cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
 /// | Q6 | local broad cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
-/// | Q7 | broad | malformed Session projection | - | valid row | skip malformed, claim valid |
-/// | Q8 | exact | malformed Session projection | - | - | typed admission error, no mutation |
-/// | Q9 | exact cancel | malformed Session projection | not used by cancel | - | claim without execution credentials |
+/// | Q7 | enqueue | malformed Session projection | - | valid row | reject without mutation, claim valid peer |
+/// | Q8 | exact | rejected malformed Session projection | - | - | absent, never reserved |
+/// Persisted legacy corruption and cancellation quarantine are covered by
+/// the SQLite/PostgreSQL legacy_runtime_projection integration tests.
 async fn incompatible_credentials_do_not_poison_broad_claims(
     store: &dyn ConformanceDispatch,
     ns: &str,
@@ -935,7 +936,8 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
     )
     .with_session_runtime(SessionRuntimeEnvelope::new("{"));
     let valid_runtime = dispatch(ns, "poison-runtime-valid", "poison-runtime-valid-thread");
-    store
+    let before = store.list_dispatches().await.expect("Q7 original rows");
+    let error = store
         .enqueue_with(
             invalid_runtime.clone(),
             SubmitOptions {
@@ -944,7 +946,16 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
             },
         )
         .await
-        .expect("Q7 enqueue malformed Session projection");
+        .expect_err("Q7 malformed Session projection is rejected at enqueue");
+    assert!(
+        matches!(error, DispatchError::Rejected(ref message) if message.contains("InvalidSessionMcpProjection")),
+        "Q7: {error}"
+    );
+    assert_eq!(
+        store.list_dispatches().await.unwrap(),
+        before,
+        "Q7 no mutation"
+    );
     store
         .enqueue(valid_runtime.clone())
         .await
@@ -970,48 +981,19 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
         .await
         .expect("Q7 settle valid row");
     clock.set(50_008);
-    let exact_error = store
-        .claim_run(
-            invalid_runtime.run_id(),
-            "runtime-projection-exact-worker",
-            LEASE_MS,
-            &Default::default(),
-        )
-        .await
-        .expect_err("Q8 exact claim rejects malformed Session projection");
     assert!(
-        exact_error
-            .to_string()
-            .contains("Session runtime credential projection is invalid"),
-        "Q8: {exact_error}"
+        store
+            .claim_run(
+                invalid_runtime.run_id(),
+                "runtime-projection-exact-worker",
+                LEASE_MS,
+                &Default::default(),
+            )
+            .await
+            .expect("Q8 rejected projection never reached the queue")
+            .is_none(),
+        "Q8 rejected projection cannot acquire a reservation"
     );
-    store
-        .cancel(invalid_runtime.run_id())
-        .await
-        .expect("Q9 persist cancel for malformed execution projection");
-    clock.set(50_009);
-    let cancellation = store
-        .claim_run(
-            invalid_runtime.run_id(),
-            "runtime-projection-cancel-worker",
-            LEASE_MS,
-            &Default::default(),
-        )
-        .await
-        .expect("Q9 cancellation uses its operation-specific admission")
-        .expect("Q9 canceled row is claimable");
-    assert!(cancellation.cancellation_requested, "Q9");
-    assert!(cancellation.credential_bindings.is_empty(), "Q9");
-    assert_eq!(cancellation.lease.epoch(), 1, "Q8 did not mutate the row");
-    store
-        .settle(
-            invalid_runtime.run_id(),
-            cancellation.lease.epoch(),
-            DispatchOutcome::Done,
-            &[],
-        )
-        .await
-        .expect("Q9 settle malformed-projection cancellation");
 }
 
 /// Claim-credential cause-effect graph:
