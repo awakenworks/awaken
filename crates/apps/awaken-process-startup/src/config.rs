@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use awaken_deployment_config::DeploymentConfig;
 #[cfg(test)]
 use awaken_deployment_config::{ContentRedaction, PackageImageBuilder};
-use awaken_deployment_config::{DispatchBackend, StoreKind};
+use awaken_deployment_config::{DispatchBackend, StoreKind, Wake};
 mod browser_access;
 mod cloud_iam;
 mod deployment;
@@ -399,15 +399,24 @@ mod tests {
         // R3 configured && = 0 => E3
         let defaulted = resolve(FileConfig::default(), ConfigOverrides::default());
         assert!(defaulted.runtime.postgres_max_connections.get() > 0, "R1");
+        assert_eq!(defaulted.runtime.postgres_min_connections, 0);
 
         let explicit = resolve(
             FileConfig {
                 postgres_max_connections: Some(23),
+                postgres_min_connections: Some(23),
                 ..Default::default()
             },
             ConfigOverrides::default(),
         );
         assert_eq!(explicit.runtime.postgres_max_connections.get(), 23, "R2");
+        assert_eq!(
+            explicit
+                .runtime
+                .coordinator_storage()
+                .postgres_min_connections,
+            23
+        );
 
         let error = crate::config::resolve_test_file(
             ConfigOverrides::default(),
@@ -420,6 +429,41 @@ mod tests {
         )
         .expect_err("R3");
         assert!(error.contains("postgres_max_connections"), "R3: {error}");
+        let error = crate::config::resolve_test_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                postgres_max_connections: Some(2),
+                postgres_min_connections: Some(3),
+                ..Default::default()
+            },
+        )
+        .expect_err("minimum above the maximum");
+        assert!(error.contains("postgres_min_connections"));
+    }
+
+    #[test]
+    fn cross_process_dispatch_wake_requires_a_postgres_queue() {
+        for wake in ["pg-notify", "nats"] {
+            let error = crate::config::resolve_test_file(
+                ConfigOverrides::default(),
+                Some(PathBuf::from("/home/dev")),
+                PathBuf::from("/home/dev/.awaken/config.toml"),
+                FileConfig {
+                    dispatch_wake: Some(wake.to_owned()),
+                    ..Default::default()
+                },
+            )
+            .expect_err("SQLite cannot activate a cross-process wake");
+            assert!(error.contains("dispatch_wake") && error.contains("runtime_database_url"));
+        }
+        assert_eq!(
+            resolve(FileConfig::default(), ConfigOverrides::default())
+                .runtime
+                .wake,
+            Wake::None,
+        );
     }
 
     #[test]

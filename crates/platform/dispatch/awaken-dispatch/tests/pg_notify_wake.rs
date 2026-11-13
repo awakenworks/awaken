@@ -200,10 +200,6 @@ async fn listener_reconnects_after_its_connection_is_dropped() {
 
 #[tokio::test]
 async fn listener_ownership_releases_connection_on_shutdown_and_last_drop() {
-    // C1 one-connection pool is pinned by LISTEN; C2 shared owner released;
-    // C3 final owner shutdown/drop. R1 C1+C2 => listener remains alive;
-    // R2 C1+C3 => connection becomes available without closing the shared pool.
-    // R3 shutdown during pool acquisition cancels that wait and joins promptly.
     let Some(url) = pg_url() else {
         return;
     };
@@ -212,36 +208,31 @@ async fn listener_ownership_releases_connection_on_shutdown_and_last_drop() {
         .connect(&url)
         .await
         .unwrap();
+    let monitor = PgPoolOptions::new().connect(&url).await.unwrap();
     for explicit in [false, true] {
-        let wake = std::sync::Arc::new(PgNotifyWake::new(pool.clone(), "awaken_wake_lifecycle"));
-        // C1 the listener acquires the only pool connection; C2 a peer Arc
-        // remains; C3 last owner shuts down/drops. R1 C1+C2 => connection
-        // remains held; R2 C1+C3 => acquisition succeeds. The acquisition
-        // probe avoids a stale pg_stat_activity LISTEN statement.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            match tokio::time::timeout(Duration::from_millis(20), pool.acquire()).await {
-                Err(_) => break,
-                Ok(Ok(connection)) => drop(connection),
-                Ok(Err(error)) => panic!("acquire lifecycle pool: {error}"),
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the listener did not hold the one-connection pool"
-            );
-        }
+        let channel = format!("awaken_wake_lifecycle_{}_{}", std::process::id(), explicit);
+        let wake = std::sync::Arc::new(PgNotifyWake::new(pool.clone(), &channel));
+        let task_wake = wake.clone();
+        let wait_task = tokio::spawn(async move { task_wake.wait().await });
+        assert!(publish_until_woken(wake.as_ref(), wait_task, Duration::from_secs(5)).await);
+        let business_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let listener_pid: i32 = sqlx::query_scalar(
+            "SELECT pid FROM pg_stat_activity WHERE datname = current_database()
+             AND btrim(query, ';') = $1",
+        )
+        .bind(format!("LISTEN \"{channel}\""))
+        .fetch_one(&monitor)
+        .await
+        .expect("dedicated LISTEN connection is established");
+        assert_ne!(business_pid, listener_pid);
         let peer = wake.clone();
         drop(wake);
-        assert!(
-            std::sync::Arc::try_unwrap(peer.clone()).is_err(),
-            "shared owner cannot consume shutdown"
-        );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), pool.acquire())
-                .await
-                .is_err(),
-            "R1"
-        );
+        let task_wake = peer.clone();
+        let wait_task = tokio::spawn(async move { task_wake.wait().await });
+        assert!(publish_until_woken(peer.as_ref(), wait_task, Duration::from_secs(5)).await);
         let wake = match std::sync::Arc::try_unwrap(peer) {
             Ok(wake) => wake,
             Err(_) => panic!("last owner"),
@@ -251,19 +242,29 @@ async fn listener_ownership_releases_connection_on_shutdown_and_last_drop() {
         } else {
             drop(wake);
         }
-        drop(
-            tokio::time::timeout(Duration::from_secs(5), pool.acquire())
+        // awaken-allow(wait): observe disappearance of this exact listener backend.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)",
+            )
+            .bind(listener_pid)
+            .fetch_one(&monitor)
+            .await
+            .unwrap()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("last owner releases its server connection");
+        assert_eq!(
+            sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()")
+                .fetch_one(&pool)
                 .await
-                .unwrap()
                 .unwrap(),
+            business_pid,
+            "listener teardown leaves the business pool open",
         );
     }
-    let held = pool.acquire().await.unwrap();
-    let wake = PgNotifyWake::new(pool.clone(), "awaken_wake_acquisition");
-    tokio::task::yield_now().await;
-    tokio::time::timeout(Duration::from_secs(1), wake.shutdown())
-        .await
-        .expect("R3");
-    drop(held);
     pool.close().await;
 }

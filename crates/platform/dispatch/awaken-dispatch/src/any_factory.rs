@@ -147,8 +147,8 @@ async fn with_postgres_pool_and_wake_access(
     Ok((from_postgres_store(store), wake))
 }
 
-/// Connect the Postgres backend and, sharing its pool, a `PgNotifyWake` over
-/// `channel`: the served pool's wake fires `pg_notify` on the same database it
+/// Connect the Postgres backend and a `PgNotifyWake` over
+/// `channel`: the wake fires `pg_notify` on the same database it
 /// enqueues into, so a peer node's `LISTEN` is nudged with no extra
 /// infrastructure (ADR-0019/0024). Returns the store plus the ready wake signal;
 /// keeps sqlx out of the host crate. Only Postgres carries a cross-node wake —

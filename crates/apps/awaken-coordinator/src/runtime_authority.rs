@@ -435,6 +435,9 @@ async fn open_dispatch(
 ) -> Result<(Arc<AnyCoordinatorDispatch>, Option<Arc<dyn WakeSignal>>), String> {
     match storage.dispatch_backend {
         DispatchBackend::Sqlite => {
+            if storage.wake != Wake::None {
+                return Err("cross-process dispatch wake requires PostgreSQL dispatch".to_owned());
+            }
             let root = storage.storage_dir.as_deref().ok_or_else(|| {
                 "Coordinator SQLite dispatch requires runtime.storage_dir; refusing volatile dispatch authority"
                     .to_owned()
@@ -873,6 +876,7 @@ pub(crate) mod tests {
             nats_url: None,
             database_url: None,
             postgres_max_connections: std::num::NonZeroU32::new(8).expect("non-zero"),
+            postgres_min_connections: 0,
         }
     }
 
@@ -970,6 +974,25 @@ pub(crate) mod tests {
         authority.stream_checkpoint("a/b").expect("A2 checkpoint");
         assert!(root.path().join("dispatch.db").exists(), "A2 dispatch");
         assert!(root.path().join("a_2fb.db").exists(), "A2 commit");
+
+        for wake in [Wake::PgNotify, Wake::Nats] {
+            let incompatible = CoordinatorStorage {
+                wake,
+                ..durable.clone()
+            };
+            let error = match open_dispatch(
+                &incompatible,
+                SchemaAccess::Verify,
+                None,
+                awaken_time::system_clock(),
+            )
+            .await
+            {
+                Ok(_) => panic!("SQLite cannot supply a cross-process wake"),
+                Err(error) => error,
+            };
+            assert!(error.contains("requires PostgreSQL dispatch"));
+        }
 
         #[cfg(not(feature = "nats"))]
         {

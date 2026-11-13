@@ -53,6 +53,7 @@ pub(super) struct FileConfig {
     pub(super) runtime_database_url: Option<String>,
     pub(super) runtime_database_url_file: Option<PathBuf>,
     pub(super) postgres_max_connections: Option<u32>,
+    pub(super) postgres_min_connections: Option<u32>,
     pub(super) log_filter: Option<String>,
     pub(super) log_format: Option<String>,
     pub(super) trace_file: Option<PathBuf>,

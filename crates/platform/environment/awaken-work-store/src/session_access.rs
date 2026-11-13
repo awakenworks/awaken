@@ -422,32 +422,47 @@ impl SqliteWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
+        may_claim: bool,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        let created_at = self.clock.observed_at();
         let mut conn = self.connection().await?;
-        let work_id = Self::insert(
-            &mut conn,
-            env_id,
-            "session",
-            Some(session_id.as_str()),
-            created_at,
-        )
-        .await?;
+        if may_claim {
+            Self::insert(
+                &mut conn,
+                env_id,
+                "session",
+                Some(session_id.as_str()),
+                self.clock.observed_at(),
+            )
+            .await?;
+        }
         let mut tx = backends::immediate(&mut conn).await?;
         // The one reading this grant is minted and judged on, sampled under the
         // write lock so no later writer can commit an earlier deadline.
         let now_ms = self.clock.now_ms();
         let started_at = awaken_time::utc::epoch_millis_to_rfc3339(now_ms);
-        Self::reclaim_lapsed(&mut tx, env_id, now_ms).await?;
-        let current: (String, Option<String>, i64, Option<i64>, Option<i64>) = sqlx::query_as(
-            "SELECT state, lease_owner, lease_epoch, lease_expires_ms, lease_refreshed_ms FROM work_queue_item \
-             WHERE work_id = ?1 AND environment_id = ?2",
-        )
-        .bind(&work_id)
-        .bind(env_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(storage)?;
+        if may_claim {
+            Self::reclaim_lapsed(&mut tx, env_id, now_ms).await?;
+        }
+        let Some((work_id, state, owner, epoch, expires_at, refreshed_at)) =
+            sqlx::query_as::<_, (String, String, Option<String>, i64, Option<i64>, Option<i64>)>(
+                "SELECT work_id, state, lease_owner, lease_epoch, lease_expires_ms, lease_refreshed_ms \
+                 FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'session' AND data_id = ?2 \
+                 ORDER BY seq ASC LIMIT 1",
+            )
+            .bind(env_id)
+            .bind(session_id.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage)?
+        else {
+            return Ok(None);
+        };
+        if !may_claim
+            && (state != "active" || expires_at.is_none_or(|expiry| expiry <= db_millis(now_ms)))
+        {
+            return Ok(None);
+        }
+        let current = (state, owner, epoch, expires_at, refreshed_at);
         if current.0 == "active" && current.1.as_deref() != Some(worker_owner) {
             let owner = current.1.clone().ok_or_else(|| {
                 WorkQueueError::Storage("active Session Work has no lease owner".into())
@@ -588,6 +603,7 @@ impl PostgresWorkQueue {
         self.book
             .record_poll(env_id, poller_id, self.clock.now_ms());
         let mut tx = self.pool.begin().await.map_err(storage)?;
+        crate::backends::lock_postgres_environment(&mut tx, env_id).await?;
         let cleared = reclaimed_lease_authority();
         let _: Vec<String> = sqlx::query_scalar(
             "SELECT work_id FROM work_queue_item WHERE environment_id = $1 FOR UPDATE",

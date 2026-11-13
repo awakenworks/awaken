@@ -91,6 +91,14 @@ impl SessionWorkerAssignment for UnusedEnvironmentPorts {
 
 #[async_trait::async_trait]
 impl SessionWorkerLeases for UnusedEnvironmentPorts {
+    async fn renew_session(
+        &self,
+        _environment_id: &str,
+        _session_id: &SessionId,
+        _worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, RunError> {
+        panic!("private Root fixture must not renew a Work lease")
+    }
     async fn acquire_session(
         &self,
         _environment_id: &str,

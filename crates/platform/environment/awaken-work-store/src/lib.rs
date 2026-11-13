@@ -51,6 +51,7 @@
 mod postgres_session_leases;
 pub use postgres_session_leases::{
     acquire_postgres_session_work_on, release_postgres_session_work_on,
+    renew_postgres_session_work_on,
 };
 
 use std::collections::BTreeMap;
@@ -589,7 +590,17 @@ impl SessionWorkerLeaseStore for SqliteWorkQueue {
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        self.acquire_session_inner(env_id, session_id, worker_owner)
+        self.acquire_session_inner(env_id, session_id, worker_owner, true)
+            .await
+    }
+
+    async fn renew_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        self.acquire_session_inner(env_id, session_id, worker_owner, false)
             .await
     }
 }
@@ -880,9 +891,15 @@ impl SessionWorkStore for PostgresWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<String, WorkQueueError> {
-        let work_id = self
-            .insert(env_id, "session", Some(session_id.as_str()))
-            .await?;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let work_id = backends::insert_postgres_work_on(
+            &mut tx,
+            self.clock.as_ref(),
+            env_id,
+            "session",
+            Some(session_id.as_str()),
+        )
+        .await?;
         sqlx::query(
             "UPDATE work_queue_item SET state = 'queued', acknowledged_at = NULL, \
              latest_heartbeat_at = NULL, started_at = NULL, stop_requested_at = NULL, \
@@ -893,9 +910,10 @@ impl SessionWorkStore for PostgresWorkQueue {
         .bind(&work_id)
         .bind(env_id)
         .bind(session_id.as_str())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(work_id)
     }
 
@@ -904,13 +922,15 @@ impl SessionWorkStore for PostgresWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        backends::lock_postgres_environment(&mut tx, env_id).await?;
         let work_id: Option<String> = sqlx::query_scalar(
             "SELECT work_id FROM work_queue_item WHERE environment_id = $1 \
              AND data_type = 'session' AND data_id = $2 ORDER BY seq ASC LIMIT 1",
         )
         .bind(env_id)
         .bind(session_id.as_str())
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(storage)?;
         let Some(work_id) = work_id else {
@@ -928,15 +948,35 @@ impl SessionWorkStore for PostgresWorkQueue {
         .bind(cleared.refreshed_at)
         .bind(&work_id)
         .bind(env_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         self.fetch_owned(env_id, &work_id).await
     }
 }
 
 #[async_trait]
 impl SessionWorkerLeaseStore for PostgresWorkQueue {
+    async fn renew_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let result = renew_postgres_session_work_on(
+            &mut tx,
+            self.clock.as_ref(),
+            env_id,
+            session_id,
+            worker_owner,
+        )
+        .await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(result)
+    }
+
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
         let cleared = reclaimed_lease_authority();
         let released = sqlx::query(
@@ -970,24 +1010,16 @@ impl SessionWorkerLeaseStore for PostgresWorkQueue {
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        let work_id = self
-            .insert(env_id, "session", Some(session_id.as_str()))
-            .await?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let (result, completed) = postgres_session_leases::acquire_existing_on(
+        let (result, _) = acquire_postgres_session_work_on(
             &mut tx,
             self.clock.as_ref(),
-            work_id,
             env_id,
             session_id,
             worker_owner,
         )
         .await?;
-        if completed {
-            tx.commit().await.map_err(storage)?;
-        } else {
-            tx.rollback().await.map_err(storage)?;
-        }
+        tx.commit().await.map_err(storage)?;
         Ok(result)
     }
 }

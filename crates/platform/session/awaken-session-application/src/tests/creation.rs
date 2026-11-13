@@ -638,6 +638,17 @@ impl awaken_session_application_contract::SessionWorkerAssignment for AdmissionE
 
 #[async_trait::async_trait]
 impl awaken_session_application_contract::SessionWorkerLeases for AdmissionEnvironment {
+    async fn renew_session(
+        &self,
+        _environment_id: &str,
+        _session_id: &awaken_session_types::SessionId,
+        _worker_owner: &str,
+    ) -> Result<
+        Option<awaken_session_types::SessionWorkLease>,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        Ok(None)
+    }
     async fn acquire_session(
         &self,
         _environment_id: &str,

@@ -476,6 +476,8 @@ pub struct DeploymentConfig {
     /// Exact maximum size of each runtime Postgres pool. Resolved once by the
     /// process startup and injected into commit/dispatch stores.
     pub postgres_max_connections: NonZeroU32,
+    /// Warm connections retained in each pool, defaulting to zero.
+    pub postgres_min_connections: u32,
     /// The dispatch lease owner (`AWAKEN_DISPATCH_OWNER`), distinct per process/node.
     pub dispatch_owner: String,
     /// Maximum fallback wait before a pool checks durable dispatch again after a
@@ -745,6 +747,7 @@ impl DeploymentConfig {
             nats_url: None,
             database_url: None,
             postgres_max_connections: default_postgres_max_connections(),
+            postgres_min_connections: 0,
             dispatch_owner: "embedded-worker".to_string(),
             dispatch_poll_interval: DEFAULT_DISPATCH_POLL_INTERVAL,
             sample_dispatch_queue_depth: true,
@@ -768,11 +771,20 @@ impl DeploymentConfig {
             storage_dir: self.storage_dir.clone(),
             store: self.store,
             dispatch_backend: self.dispatch_backend,
-            wake: self.wake,
-            wake_channel: self.wake_channel.clone(),
-            nats_url: self.nats_url.clone(),
+            wake: if self.disable_local_pool {
+                Wake::None
+            } else {
+                self.wake
+            },
+            wake_channel: if self.disable_local_pool {
+                DEFAULT_WAKE_CHANNEL.to_owned()
+            } else {
+                self.wake_channel.clone()
+            },
+            nats_url: self.nats_url.clone().filter(|_| !self.disable_local_pool),
             database_url: self.database_url.clone(),
             postgres_max_connections: self.postgres_max_connections,
+            postgres_min_connections: self.postgres_min_connections,
         }
     }
 

@@ -22,10 +22,15 @@ def main() -> None:
     # Missing pin or divergent base => fail before paid cluster setup. This
     # static contract proves identity, not registry availability or TLS health.
     management = (Path(__file__).parent.parent / "images" / "management" / "Dockerfile").read_text(encoding="utf-8")
-    runtime_base = next(line for line in dockerfile.splitlines() if line.startswith("FROM "))
-    management_base = next(line for line in management.splitlines() if line.startswith("FROM "))
+    runtime_base = next(line.split()[1] for line in dockerfile.splitlines() if line.startswith("FROM "))
+    management_base = next(line.split()[1] for line in management.splitlines() if line.startswith("FROM "))
     assert "@sha256:" in runtime_base
     assert runtime_base == management_base, "K3D must use the production Ubuntu base"
+    server_image_path = Path(__file__).parent / "Dockerfile.server"
+    for image in (dockerfile, server_image_path.read_text(encoding="utf-8")):
+        assert "ARG RUNTIME_BASE=runtime_dependencies" in image
+        assert f"FROM {management_base} AS runtime_dependencies" in image
+        assert "FROM ${RUNTIME_BASE}" in image
     install = dockerfile.split("COPY --chmod=0755 awaken-server", 1)[0]
     for package in ("bubblewrap", "ca-certificates", "libssl3", "python3"):
         assert package in install, f"K3D product image is missing runtime package: {package}"
@@ -48,7 +53,7 @@ def main() -> None:
     # Each image owns the executable mode at COPY, independently of build-host
     # policy. Static coverage locks every shared/production entry path; the live
     # container probe supplies restrictive inputs and executes as UID 10001.
-    image_entries = [(Path(__file__).parent / "Dockerfile.server", "awaken-server")] + [
+    image_entries = [(server_image_path, "awaken-server")] + [
         (Path(__file__).parent.parent / "images" / role / "Dockerfile", f"awaken-{role}")
         for role in ("worker", "control", "coordinator", "sandbox")
     ]

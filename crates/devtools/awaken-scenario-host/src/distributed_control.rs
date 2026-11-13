@@ -230,6 +230,15 @@ async fn distributed_provider_message(
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
     }
+    if let Some(suffix) = text.strip_prefix("ADR71-DISPATCH-SATURATION-") {
+        let delay_seconds = suffix
+            .strip_prefix("hold")
+            .and_then(|value| value.split_once('-'))
+            .and_then(|(seconds, _)| seconds.parse::<u64>().ok())
+            .filter(|seconds| (5..=60).contains(seconds))
+            .unwrap_or(5);
+        tokio::time::sleep(std::time::Duration::from_secs(delay_seconds)).await;
+    }
     let reply = format!("ADR71-PROVIDER:{text}");
     let checkpoint = text.starts_with(CHECKPOINT_MARKER_PREFIX);
     let returned = request["messages"]

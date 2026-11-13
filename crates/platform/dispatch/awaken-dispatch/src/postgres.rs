@@ -403,11 +403,8 @@ impl PostgresDispatchStore {
         })
     }
 
-    /// A clone of the connection pool for a [`PgNotifyWake`](crate::wake::PgNotifyWake):
-    /// the wake listener shares the dispatch store's database (a `pg_notify` fired
-    /// inside the enqueue transaction reaches a peer's `LISTEN` on the same pool), so
-    /// the served pool can wake cross-node with no extra infrastructure. Cloning a
-    /// `PgPool` clones the handle, not the connections.
+    /// The dispatch pool used by [`PgNotifyWake`](crate::wake::PgNotifyWake) to
+    /// publish. LISTEN opens its own session with these connection options.
     pub fn wake_pool(&self) -> PgPool {
         self.pool.clone()
     }

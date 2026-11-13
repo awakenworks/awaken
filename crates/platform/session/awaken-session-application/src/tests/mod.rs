@@ -5125,6 +5125,18 @@ impl awaken_session_application_contract::SessionWorkerAssignment for RecordingE
 
 #[async_trait::async_trait]
 impl awaken_session_application_contract::SessionWorkerLeases for RecordingEnvironmentSource {
+    async fn renew_session(
+        &self,
+        environment_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<
+        Option<awaken_session_types::SessionWorkLease>,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        self.acquire_session(environment_id, session_id, worker_owner)
+            .await
+    }
     async fn acquire_session(
         &self,
         environment_id: &str,

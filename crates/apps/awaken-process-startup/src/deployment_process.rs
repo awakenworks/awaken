@@ -102,7 +102,8 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     };
     let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(
         deployment.runtime.postgres_max_connections.get(),
-    );
+    )
+    .with_minimum(deployment.runtime.postgres_min_connections);
     if let Some(pool) = persistence.postgres_pool.clone() {
         postgres_pools.seed(
             deployment

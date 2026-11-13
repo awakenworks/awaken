@@ -113,25 +113,19 @@ impl ConditionalSessionWorkRelease for PostgresSessionWorkRelease {
                 return Ok(true);
             };
             let grant = match self.work {
-                ClaimConnectionUse::Borrowed => {
-                    let (grant, completed) = awaken_work_store::acquire_postgres_session_work_on(
-                        &mut tx,
-                        self.clock.as_ref(),
-                        &environment,
-                        &session_id,
-                        &claim.owner,
-                    )
-                    .await
-                    .map_err(DispatchError::unavailable)?;
-                    if !completed {
-                        return Ok(false);
-                    }
-                    grant
-                }
+                ClaimConnectionUse::Borrowed => awaken_work_store::renew_postgres_session_work_on(
+                    &mut tx,
+                    self.clock.as_ref(),
+                    &environment,
+                    &session_id,
+                    &claim.owner,
+                )
+                .await
+                .map_err(DispatchError::unavailable)?,
                 ClaimConnectionUse::Independent => self
                     .views
                     .leases
-                    .acquire_session(&environment, &session_id, &claim.owner)
+                    .renew_session(&environment, &session_id, &claim.owner)
                     .await
                     .map_err(DispatchError::unavailable)?,
             };

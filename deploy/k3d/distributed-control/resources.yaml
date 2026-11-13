@@ -131,7 +131,6 @@ stringData:
     control_internal_url = "http://control:3001"
     control_service_token_file = "/etc/awaken-auth/control-service-token"
     sandbox_tier = "namespace"
-    dispatch_wake = "pg-notify"
     dispatch_owner = "adr71-coordinator"
     [worker_kubernetes]
     namespace = "awaken-adr71"

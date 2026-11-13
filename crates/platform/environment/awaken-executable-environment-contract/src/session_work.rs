@@ -624,6 +624,15 @@ pub trait SessionWorkerLeaseStore: Send + Sync {
         session_id: &SessionId,
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
+
+    /// Renew a live lease for this owner, or report a live foreign lease.
+    /// Missing, expired, queued and stopped Work grant no authority.
+    async fn renew_session(
+        &self,
+        env_id: &str,
+        session_id: &SessionId,
+        worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
 }
 
 /// Read-only persisted owner occupancy, including expired but unreleased claims.

@@ -75,6 +75,10 @@ spec:
             - -c
             - max_connections=500
             - -c
+            - shared_preload_libraries=pg_stat_statements
+            - -c
+            - track_commit_timestamp=on
+            - -c
             - max_wal_senders=10
             - -c
             - wal_keep_size=256MB

@@ -180,6 +180,29 @@ impl ResolvedDeployment {
             file.control_service_token_file.clone(),
         )?;
         let runtime_settings = runtime_settings::resolve(&file, &data_dir)?;
+        // Registered Workers have execution slots and receive claims from the
+        // Coordinator. Only AllInOne can attach a wake adapter to its queue.
+        let owns_local_dispatch = role == Role::AllInOne && run_local_pool;
+        let wake = if owns_local_dispatch {
+            runtime_settings.wake
+        } else {
+            Wake::None
+        };
+        if dispatch_backend == DispatchBackend::Sqlite && wake != Wake::None {
+            return Err(
+                "dispatch_wake requires runtime_database_url for PostgreSQL dispatch".into(),
+            );
+        }
+        let mut deprecations = Vec::new();
+        if !owns_local_dispatch
+            && (runtime_settings.wake != Wake::None
+                || file.nats_url.is_some()
+                || file.dispatch_wake_channel.is_some())
+        {
+            deprecations.push(
+                "dispatch_wake, dispatch_wake_channel and nats_url are ignored without a local Coordinator claim pool; remove the legacy notification settings from this process configuration".to_owned(),
+            );
+        }
         let configured_acp_clis = file.acp_clis.as_ref().map(|_| {
             runtime_settings
                 .acp
@@ -195,6 +218,10 @@ impl ResolvedDeployment {
             })
             .transpose()?
             .unwrap_or_else(awaken_deployment_config::default_postgres_max_connections);
+        let postgres_min_connections = file.postgres_min_connections.unwrap_or(0);
+        if postgres_min_connections > postgres_max_connections.get() {
+            return Err("postgres_min_connections cannot exceed postgres_max_connections".into());
+        }
         for (field, value) in [
             ("otlp_protocol", file.otlp_protocol.as_deref()),
             ("otlp_traces_protocol", file.otlp_traces_protocol.as_deref()),
@@ -284,14 +311,16 @@ impl ResolvedDeployment {
                 StoreKind::Sqlite
             },
             dispatch_backend,
-            wake: runtime_settings.wake,
+            wake,
             wake_channel: file
                 .dispatch_wake_channel
                 .clone()
+                .filter(|_| owns_local_dispatch)
                 .unwrap_or_else(|| DEFAULT_WAKE_CHANNEL.to_owned()),
-            nats_url: file.nats_url.clone(),
+            nats_url: file.nats_url.clone().filter(|_| owns_local_dispatch),
             database_url: dispatch_url.clone(),
             postgres_max_connections,
+            postgres_min_connections,
             dispatch_owner,
             dispatch_poll_interval: file
                 .dispatch_poll_interval_ms
@@ -320,7 +349,6 @@ impl ResolvedDeployment {
             runtime.database_url = None;
             runtime.dispatch_backend = DispatchBackend::Sqlite;
             runtime.store = StoreKind::Sqlite;
-            runtime.nats_url = None;
         }
         let shared_management_database = file
             .management_database_url_file
@@ -507,7 +535,7 @@ impl ResolvedDeployment {
             resources,
             workspace_data_lease_guard,
             seal_key,
-            deprecations: Vec::new(),
+            deprecations,
             origins,
         })
     }

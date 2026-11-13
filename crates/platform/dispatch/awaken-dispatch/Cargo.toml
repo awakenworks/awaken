@@ -127,6 +127,10 @@ name = "dispatch_claim_perf"
 required-features = ["test-support"]
 
 [[test]]
+name = "dispatch_wake_latency"
+required-features = ["test-support", "nats"]
+
+[[test]]
 name = "discovery_keyset"
 required-features = ["test-support"]
 

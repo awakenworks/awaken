@@ -93,8 +93,7 @@ impl SessionWorkOwnership {
 /// Cause authorizing a private registered Worker to acquire Session Work.
 /// A live claimed Run may repair a stopped Work projection after an admission /
 /// predecessor-retirement race. Realization renewal carries no driving event
-/// and may only renew or acquire already-dispatched Work; it cannot resurrect a
-/// stopped Session after its Run has settled.
+/// and may only renew a live Work lease held by that Worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionWorkAcquisition {
     ClaimedRun,

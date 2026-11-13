@@ -6,7 +6,8 @@
 # Both binaries are built ON THE HOST (rustc 1.96) and copied in — a fast copy, no
 # in-container Rust toolchain. ubuntu:24.04 matches the host glibc 2.39 and provides
 # libssl3 the server binary links; `sh` for the hand's bash tool.
-FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+ARG RUNTIME_BASE=runtime_dependencies
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS runtime_dependencies
 
 # Optional host CA trust is mounted only during package bootstrap. apt's
 # unprivileged fetch helper needs read access; no CA input enters an image layer.
@@ -22,6 +23,7 @@ RUN --mount=type=secret,id=k3d_apt_ca,mode=0444 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/lib/awaken/control /var/lib/awaken/coordinator /workspace /outputs
 
+FROM ${RUNTIME_BASE}
 # Deterministic scenario HTTP surface used by the focused durability fixtures.
 COPY --chmod=0755 awaken-server /usr/local/bin/awaken-server
 # Scenario-specific auxiliary executable. Callers that override the default

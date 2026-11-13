@@ -28,16 +28,60 @@ pub async fn acquire_postgres_session_work_on(
         Some(session_id.as_str()),
     )
     .await?;
-    acquire_existing_on(connection, clock, work_id, env_id, session_id, worker_owner).await
+    acquire_existing_on(
+        connection,
+        clock,
+        work_id,
+        env_id,
+        session_id,
+        worker_owner,
+        true,
+    )
+    .await
 }
 
-pub(super) async fn acquire_existing_on(
+/// Renew an existing live Session Work lease using the caller's transaction.
+pub async fn renew_postgres_session_work_on(
+    connection: &mut sqlx::PgConnection,
+    clock: &dyn WallClock,
+    env_id: &str,
+    session_id: &awaken_session_types::SessionId,
+    worker_owner: &str,
+) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+    super::backends::lock_postgres_environment(connection, env_id).await?;
+    let work_id: Option<String> = sqlx::query_scalar(
+        "SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND data_type = 'session' \
+         AND data_id = $2 ORDER BY seq ASC LIMIT 1",
+    )
+    .bind(env_id)
+    .bind(session_id.as_str())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(storage)?;
+    let Some(work_id) = work_id else {
+        return Ok(None);
+    };
+    let (lease, _) = acquire_existing_on(
+        connection,
+        clock,
+        work_id,
+        env_id,
+        session_id,
+        worker_owner,
+        false,
+    )
+    .await?;
+    Ok(lease)
+}
+
+async fn acquire_existing_on(
     connection: &mut sqlx::PgConnection,
     clock: &dyn WallClock,
     work_id: String,
     env_id: &str,
     session_id: &awaken_session_types::SessionId,
     worker_owner: &str,
+    may_claim: bool,
 ) -> Result<(Option<SessionWorkLease>, bool), WorkQueueError> {
     let _: Vec<String> = sqlx::query_scalar(
         "SELECT work_id FROM work_queue_item WHERE environment_id = $1 FOR UPDATE",
@@ -49,21 +93,23 @@ pub(super) async fn acquire_existing_on(
     // The one reading this grant is minted and judged on, sampled under the
     // Environment lock so no later writer can commit an earlier deadline.
     let now_ms = clock.now_ms();
-    let cleared = reclaimed_lease_authority();
-    sqlx::query(
-            "UPDATE work_queue_item SET state = 'queued', lease_owner = $1, \
-             lease_expires_ms = $2, lease_refreshed_ms = $3, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
-             WHERE environment_id = $4 AND state = 'active' \
-             AND (lease_expires_ms IS NULL OR lease_expires_ms <= $5)",
-        )
-        .bind(cleared.owner)
-        .bind(cleared.expires_at)
-        .bind(cleared.refreshed_at)
-        .bind(env_id)
-        .bind(db_millis(now_ms))
-        .execute(&mut *connection)
-        .await
-        .map_err(storage)?;
+    if may_claim {
+        let cleared = reclaimed_lease_authority();
+        sqlx::query(
+                "UPDATE work_queue_item SET state = 'queued', lease_owner = $1, \
+                 lease_expires_ms = $2, lease_refreshed_ms = $3, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
+                 WHERE environment_id = $4 AND state = 'active' \
+                 AND (lease_expires_ms IS NULL OR lease_expires_ms <= $5)",
+            )
+            .bind(cleared.owner)
+            .bind(cleared.expires_at)
+            .bind(cleared.refreshed_at)
+            .bind(env_id)
+            .bind(db_millis(now_ms))
+            .execute(&mut *connection)
+            .await
+            .map_err(storage)?;
+    }
     let current: (String, Option<String>, i64, Option<i64>, Option<i64>) = sqlx::query_as(
             "SELECT state, lease_owner, lease_epoch, lease_expires_ms, lease_refreshed_ms FROM work_queue_item \
              WHERE work_id = $1 AND environment_id = $2",
@@ -73,6 +119,11 @@ pub(super) async fn acquire_existing_on(
         .fetch_one(&mut *connection)
         .await
         .map_err(storage)?;
+    if !may_claim
+        && (current.0 != "active" || current.3.is_none_or(|expiry| expiry <= db_millis(now_ms)))
+    {
+        return Ok((None, false));
+    }
     if current.0 == "active" && current.1.as_deref() != Some(worker_owner) {
         let owner = current.1.clone().ok_or_else(|| {
             WorkQueueError::Storage("active Session Work has no lease owner".into())

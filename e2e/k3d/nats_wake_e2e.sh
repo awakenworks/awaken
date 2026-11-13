@@ -68,7 +68,7 @@ diagnostics() {
   k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" get events --sort-by=.lastTimestamp || true
   k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" exec deploy/postgres -- \
     env PGPASSWORD=test psql -U postgres -d awaken -v ON_ERROR_STOP=1 -tA -F ' ' -c \
-    "SELECT d.thread_id, d.status, d.attempt_count, d.lease_epoch, d.retry_not_before, (EXTRACT(EPOCH FROM statement_timestamp()) * 1000)::bigint AS database_now_ms, d.lease_owner, d.active_attempt_owner, COALESCE(m.message_count, 0) FROM runtime_dispatch d LEFT JOIN (SELECT thread_id, count(*) AS message_count FROM runtime_message GROUP BY thread_id) m USING (thread_id) WHERE d.thread_id LIKE 'natswake-%' OR d.thread_id LIKE 'natspoll-%' ORDER BY d.thread_id LIMIT 64" || true
+      "SELECT d.thread_id, d.status, d.attempt_count, d.lease_epoch, d.retry_not_before, (EXTRACT(EPOCH FROM statement_timestamp()) * 1000)::bigint AS database_now_ms, d.lease_owner, d.active_attempt_owner, COALESCE(m.message_count, 0) FROM runtime_dispatch d LEFT JOIN (SELECT thread_id, count(*) AS message_count FROM runtime_message GROUP BY thread_id) m USING (thread_id) WHERE d.thread_id LIKE 'natswake-%' OR d.thread_id LIKE 'natspoll-%' OR d.thread_id LIKE 'natsrestored-%' ORDER BY d.thread_id LIMIT 64" || true
   k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" logs -l app=brain \
     --all-containers=true --prefix --tail=80 --max-log-requests=3 || true
   if [[ -n "${MONITOR_PORT:-}" ]] \
@@ -187,6 +187,8 @@ main() {
   MONITOR_PID=$(k3d_start_port_forward "$NS" svc/nats "$MONITOR_PORT" 8222 "$RUN_DIR/monitor-forward.log")
   wait_nats
   cp "$RUN_DIR/nats-current.json" "$RUN_DIR/nats-before.json"
+  local brain_instance
+  brain_instance=$(kubectl -n "$NS" get pod -l app=brain -o jsonpath='{.items[0].metadata.uid}|{.items[0].status.containerStatuses[0].containerID}')
 
   # S6 cause/effect table: C1 Postgres authority available; C2 NATS available at
   # startup; C3 NATS available after enqueue; C4 unique accepted Thread per run.
@@ -207,7 +209,20 @@ main() {
   kubectl -n "$NS" wait --for=delete pod -l app=nats --timeout=60s
   submit_batch natspoll
   wait_batch "$((M * 2))"
-  log "NATS wake E2E PASSED: $M live-hint and $M broker-loss Threads"
+  log 'restore NATS and verify delivery from the original Brain process'
+  kill "$MONITOR_PID" 2>/dev/null || true
+  wait "$MONITOR_PID" 2>/dev/null || true
+  MONITOR_PID=
+  kubectl -n "$NS" scale deployment/nats --replicas=1 >/dev/null
+  kubectl -n "$NS" rollout status deploy/nats --timeout=90s
+  MONITOR_PID=$(k3d_start_port_forward "$NS" svc/nats "$MONITOR_PORT" 8222 "$RUN_DIR/monitor-forward.log")
+  wait_nats
+  cp "$RUN_DIR/nats-current.json" "$RUN_DIR/nats-restored.json"
+  submit_batch natsrestored
+  wait_batch "$((M * 3))"
+  wait_nats "$RUN_DIR/nats-restored.json"
+  [[ "$(kubectl -n "$NS" get pod -l app=brain -o jsonpath='{.items[0].metadata.uid}|{.items[0].status.containerStatuses[0].containerID}')" == "$brain_instance" ]]
+  log "NATS wake E2E PASSED: $M live, $M broker-loss and $M restored Threads"
 }
 
 if [[ "${BASH_SOURCE[0]}" = "$0" ]]; then

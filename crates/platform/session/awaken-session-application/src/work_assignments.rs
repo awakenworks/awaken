@@ -234,6 +234,15 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Sessio
         else {
             return Ok(SessionWorkOwnership::NotRequired);
         };
+        if acquisition == SessionWorkAcquisition::RealizationRenewal {
+            return Ok(self
+                .leases
+                .renew_session(&environment_id, session_id, worker_owner)
+                .await?
+                .map(SessionWorkGrant::from_transfer)
+                .map(SessionWorkOwnership::Leased)
+                .unwrap_or(SessionWorkOwnership::Unowned));
+        }
         let acquired = self
             .leases
             .acquire_session(&environment_id, session_id, worker_owner)

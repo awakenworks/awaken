@@ -20,9 +20,13 @@
 //! The suite itself lives in `awaken_store_conformance::work_queue` so a closed
 //! backend can run the identical checks; this file only supplies the backends.
 
-use awaken_executable_environment_contract::{EnvironmentWorkLifecycle, WorkQueries};
+use awaken_executable_environment_contract::{
+    EnvironmentWorkLifecycle, SessionWorkStore, SessionWorkerLeaseStore, WorkQueries,
+};
+use awaken_session_types::SessionId;
 use awaken_store_conformance::work_queue::run_suite;
 use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS, PostgresWorkQueue, SqliteWorkQueue};
+use std::sync::Arc;
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
     // The SQLite backend's pool admission is a timed wait, so the runtime needs
@@ -128,4 +132,129 @@ async fn work_fixture_cleanup_preserves_another_live_schema() {
     );
     drop(second_store);
     second.cleanup().await;
+}
+
+#[tokio::test]
+async fn postgres_session_claim_is_independent_of_another_environments_writer() {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let fixture = work_postgres_fixture::WorkPostgresFixture::new(&url, 4).await;
+    let store = PostgresWorkQueue::with_pool(fixture.pool.clone(), awaken_time::system_clock())
+        .await
+        .unwrap();
+    let session = SessionId::from("runnable-session");
+    store.enqueue_healthcheck("blocked").await.unwrap();
+    store.enqueue_session("runnable", &session).await.unwrap();
+
+    let mut writer = fixture.pool.begin().await.unwrap();
+    // Holding a row-level write in a different Environment must not stall an
+    // existing Session's claim. The old table lock conflicts with this writer.
+    sqlx::query("UPDATE work_queue_item SET metadata_json = '{}' WHERE environment_id = 'blocked'")
+        .execute(&mut *writer)
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        store.acquire_session("runnable", &session, "worker"),
+    )
+    .await;
+    writer.rollback().await.unwrap();
+    drop(store);
+    fixture.cleanup().await;
+
+    let grant = result
+        .expect("an unrelated Environment writer must not block Session Work")
+        .unwrap()
+        .unwrap();
+    assert_eq!(grant.owner(), "worker");
+}
+
+async fn assert_renewal_does_not_take_queued_session(
+    store: &(impl SessionWorkStore + SessionWorkerLeaseStore + WorkQueries),
+    clock: &awaken_lease_testkit::ManualClock,
+) {
+    let session = SessionId::from("handoff");
+    let env = "handoff";
+    let original = store
+        .acquire_session(env, &session, "old")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(store.release_session(&original).await.unwrap());
+    let work_id = store.wake_session(env, &session).await.unwrap();
+    assert_eq!(work_id, original.work_id());
+    assert!(
+        store
+            .renew_session(env, &session, "old")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let successor = store
+        .acquire_session(env, &session, "new")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(successor.owner(), "new");
+    assert!(successor.epoch() > original.epoch());
+
+    clock.set(1_000);
+    let foreign = store
+        .renew_session(env, &session, "old")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(foreign, successor);
+    let renewed = store
+        .renew_session(env, &session, "new")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renewed.epoch(), successor.epoch());
+    assert!(renewed.expires_at_unix_ms() > successor.expires_at_unix_ms());
+
+    clock.set(renewed.expires_at_unix_ms());
+    assert!(
+        store
+            .renew_session(env, &session, "new")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .renew_session("missing", &session, "old")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.list("missing").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn local_session_work_renewal_does_not_take_queued_work() {
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = InMemoryWorkQueue::new(clock.clone());
+    assert_renewal_does_not_take_queued_session(&store, &clock).await;
+    clock.set(0);
+    let store = SqliteWorkQueue::open_in_memory(clock.clone())
+        .await
+        .unwrap();
+    assert_renewal_does_not_take_queued_session(&store, &clock).await;
+}
+
+#[tokio::test]
+async fn postgres_session_work_renewal_does_not_take_queued_work() {
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let fixture = work_postgres_fixture::WorkPostgresFixture::new(&url, 4).await;
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = PostgresWorkQueue::with_pool(fixture.pool.clone(), clock.clone())
+        .await
+        .unwrap();
+    assert_renewal_does_not_take_queued_session(&store, &clock).await;
+    drop(store);
+    fixture.cleanup().await;
 }

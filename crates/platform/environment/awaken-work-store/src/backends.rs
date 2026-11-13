@@ -191,10 +191,7 @@ pub(super) async fn insert_postgres_work_on(
     data_type: &str,
     session_id: Option<&str>,
 ) -> Result<String, WorkQueueError> {
-    sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
-        .execute(&mut *connection)
-        .await
-        .map_err(storage)?;
+    lock_postgres_environment(connection, env_id).await?;
     if data_type == "healthcheck" {
         postgres_require_healthcheck(&mut *connection, env_id).await?;
     }
@@ -306,6 +303,23 @@ impl PostgresWorkQueue {
         .map(|row| pg_row_to_item(&row))
         .transpose()
     }
+}
+
+/// Serialize queue membership and admission for one Environment, including
+/// when it has no rows to lock. The relation OID separates independent stores.
+pub(super) async fn lock_postgres_environment(
+    connection: &mut sqlx::PgConnection,
+    env_id: &str,
+) -> Result<(), WorkQueueError> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended(\
+         jsonb_build_array('work_queue_item'::regclass::oid, $1::text)::text, 0))",
+    )
+    .bind(env_id)
+    .execute(connection)
+    .await
+    .map_err(storage)?;
+    Ok(())
 }
 
 fn operation_name(operation: Operation) -> &'static str {
@@ -539,10 +553,7 @@ impl EnvironmentWorkLifecycle for PostgresWorkQueue {
         operation: Operation,
     ) -> Result<Outcome, EnvironmentWorkRevisionError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
+        lock_postgres_environment(&mut tx, env_id).await?;
         let current = postgres_watermark(&mut tx, env_id).await?;
         let outcome = admit_environment_work_revision(env_id, revision, operation, current)?;
         if outcome != Outcome::Applied {
@@ -575,10 +586,7 @@ impl EnvironmentWorkLifecycle for PostgresWorkQueue {
     }
     async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
+        lock_postgres_environment(&mut tx, env_id).await?;
         postgres_require_healthcheck(&mut tx, env_id).await?;
         let id = postgres_ensure_healthcheck(&mut tx, env_id, self.clock.observed_at()).await?;
         tx.commit().await.map_err(storage)?;
@@ -586,10 +594,7 @@ impl EnvironmentWorkLifecycle for PostgresWorkQueue {
     }
     async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?;
+        lock_postgres_environment(&mut tx, env_id).await?;
         let ids = postgres_remove_work(&mut tx, env_id, false).await?;
         tx.commit().await.map_err(storage)?;
         self.book.forget_env(env_id, &ids);

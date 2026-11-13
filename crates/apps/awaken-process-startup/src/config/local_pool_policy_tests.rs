@@ -112,6 +112,94 @@ fn process_role_owns_one_local_pool_meaning() {
 }
 
 #[test]
+fn dispatch_wake_is_only_enabled_for_a_colocated_coordinator_pool() {
+    let postgres = || FileConfig {
+        runtime_database_url: Some("postgres://coordinator/db".into()),
+        resource_database_url: Some("postgres://resource/db".into()),
+        internal_bind: Some("127.0.0.1:8081".into()),
+        control_internal_url: Some("http://control:3000".into()),
+        control_service_token_file: Some("/run/control-service-token".into()),
+        ..Default::default()
+    };
+    for (setting, expected) in [
+        (None, Wake::None),
+        (Some("none"), Wake::None),
+        (Some("pg-notify"), Wake::PgNotify),
+        (Some("nats"), Wake::Nats),
+    ] {
+        for (role, local) in [
+            (Role::Coordinator, false),
+            (Role::AllInOne, false),
+            (Role::AllInOne, true),
+        ] {
+            let nats_url =
+                (expected == Wake::Nats).then(|| "nats://broker.invalid:4222".to_owned());
+            let mut file = postgres();
+            file.dispatch_wake = setting.map(str::to_owned);
+            file.nats_url = nats_url.clone();
+            if expected != Wake::None {
+                file.dispatch_wake_channel = Some("legacy-dispatch-wake".to_owned());
+            }
+            if role == Role::AllInOne {
+                file.run_local_pool = Some(local);
+                file.control_internal_url = None;
+                file.control_service_token_file = None;
+            }
+            let resolved = resolve(
+                file,
+                ConfigOverrides {
+                    role: Some(role),
+                    ..Default::default()
+                },
+            );
+            let effective = if local { expected } else { Wake::None };
+            assert_eq!(resolved.runtime.wake, effective);
+            assert_eq!(resolved.runtime.coordinator_storage().wake, effective);
+            assert_eq!(resolved.runtime.nats_url, nats_url.filter(|_| local));
+            assert_eq!(
+                resolved.runtime.wake_channel,
+                if local && expected != Wake::None {
+                    "legacy-dispatch-wake"
+                } else {
+                    DEFAULT_WAKE_CHANNEL
+                }
+            );
+            assert_eq!(
+                resolved.deprecations.len(),
+                usize::from(!local && expected != Wake::None)
+            );
+            assert!(
+                resolved
+                    .deprecations
+                    .iter()
+                    .all(|warning| !warning.contains("broker.invalid"))
+            );
+            if !local {
+                let report: serde_json::Value =
+                    serde_json::from_str(&resolved.report(true)).unwrap();
+                assert_eq!(report["dispatch_wake"], "poll");
+                assert!(!report.to_string().contains("broker.invalid"));
+            }
+        }
+    }
+
+    let worker = resolve(
+        FileConfig {
+            dispatch_wake: Some("nats".into()),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            role: Some(Role::Worker),
+            worker_server: Some("http://coordinator".into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(worker.runtime.wake, Wake::None);
+    assert!(worker.runtime.database_url.is_none());
+    assert_eq!(worker.deprecations.len(), 1);
+}
+
+#[test]
 fn local_pool_axis_matches_the_cli_and_new_name_wins() {
     // Keep the historical inventory name, not its obsolete alias semantics.
     // The removed Executor test-only parser accepted string/number spellings

@@ -37,6 +37,14 @@ pub trait SessionWorkerLeases: Send + Sync {
         session_id: &SessionId,
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, RunError>;
+    /// Extend a live lease for this owner, or report the current foreign lease.
+    /// A renewal cannot claim queued Work or create a new Work item.
+    async fn renew_session(
+        &self,
+        environment_id: &str,
+        session_id: &SessionId,
+        worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, RunError>;
     async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, RunError>;
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, RunError>;
 }

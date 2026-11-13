@@ -34,8 +34,8 @@ for invalid in --all '../other' 'awaken bad'; do
 done
 # Q1 Cargo and the canonical sandbox builder see current sources on every run;
 # Q2 capacity admission includes every application image before cluster create.
-# A tag-existence bypass can pass against old binaries, so no diagnostic reuse
-# switch may bypass either build. Incremental caching stays Cargo/Docker-owned.
+# The full Sandbox qualification always sees the current Sandbox build inputs.
+# The separate Dispatch benchmark may reuse its unused Sandbox image.
 ! grep -q 'ADR71_REUSE_IMAGE\|--ensure-hand' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq "import('@anthropic-ai/sdk')" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'npm ci --prefix e2e' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
@@ -45,13 +45,17 @@ grep -Fq 'CONTROL_BIN=$(resolve_cargo_executable awaken-control-process awaken-c
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'COORDINATOR_BIN=$(resolve_cargo_executable awaken-coordinator-process awaken-coordinator --features container-k8s)' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" && -n "${ADR71_CACHED_SANDBOX_IMAGE:-}" ]]; then' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'SANDBOX_BUILD_IMAGE="${ADR71_SANDBOX_BUILD_IMAGE:-awaken-sandbox:local}"' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq '"$REPO_ROOT/deploy/images/sandbox/build.sh" --ensure-current "$SANDBOX_BUILD_IMAGE" ""' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'SANDBOX_IMAGE=$(k3d_image_digest "$SANDBOX_BUILD_IMAGE")' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -Fq 'k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'cluster_images=("$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine)' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'cluster_images+=(nats:2)' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "${cluster_images[@]}"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'k3d_import_storage_images "$CLUSTER" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # D12 host build failure occurs before cluster creation and must not query an
 # ambient kubectl context; after creation every diagnostic uses the harness's

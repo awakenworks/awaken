@@ -777,17 +777,46 @@ impl awaken_dispatch_contract::DispatchControlClaims for PostgresDispatchStore {
     async fn claim_placed(
         &self,
         requester: &WorkerSnapshot,
-        workers: Vec<WorkerSnapshot>,
+        mut workers: Vec<WorkerSnapshot>,
         policy: std::sync::Arc<dyn PlacementPolicy>,
         lease_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let capabilities = installed_worker_credential_capabilities(requester)?;
+        // A heartbeat can still report a full pool after all of its Runs
+        // settled. Conversely, it misses claims whose preparation is in flight.
+        // Rank pull requests against live queue reservations on the store clock.
+        // The Worker pool still owns the local limit on physical execution.
+        let owners: Vec<String> = workers.iter().map(|w| w.identity.lease_owner()).collect();
+        let running: std::collections::HashMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+            "SELECT lease_owner, count(*) FROM runtime_dispatch \
+             WHERE lease_owner = ANY($1) AND status = 'running' \
+               AND lease_until > extract(epoch FROM clock_timestamp()) * 1000 \
+             GROUP BY lease_owner",
+        )
+        .bind(&owners)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?
+        .into_iter()
+        .collect();
+        for (worker, owner) in workers.iter_mut().zip(owners) {
+            worker.in_flight =
+                u32::try_from(running.get(&owner).copied().unwrap_or(0)).unwrap_or(u32::MAX);
+        }
+        let mut requester = requester.clone();
+        requester.in_flight = u32::try_from(
+            running
+                .get(&requester.identity.lease_owner())
+                .copied()
+                .unwrap_or(0),
+        )
+        .unwrap_or(u32::MAX);
         self.claim_discovered(
             &requester.identity.lease_owner(),
             lease_ms,
             &capabilities,
             CandidateAudience::Placed {
-                requester,
+                requester: &requester,
                 workers: &workers,
                 policy: policy.as_ref(),
             },

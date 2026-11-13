@@ -279,6 +279,18 @@ impl SessionWorkStore for RebuildsMutationResult {
 
 #[async_trait]
 impl SessionWorkerLeaseStore for RebuildsMutationResult {
+    // The negative control changes ack and stop results only.
+    // Renewal uses the reference store's ownership checks.
+    async fn renew_session(
+        &self,
+        env_id: &str,
+        session_id: &SessionId,
+        worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        self.inner
+            .renew_session(env_id, session_id, worker_owner)
+            .await
+    }
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
         self.inner.release_owner(worker_owner).await
     }
@@ -301,18 +313,6 @@ impl SessionWorkerLeaseStore for RebuildsMutationResult {
 impl WorkerLeaseObservation for RebuildsMutationResult {
     async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError> {
         self.inner.has_owner_claims(worker_owner).await
-    }
-}
-
-#[async_trait]
-impl WorkMetadataPatch for RebuildsMutationResult {
-    async fn update_metadata(
-        &self,
-        env_id: &str,
-        wid: &str,
-        patch: BTreeMap<String, Option<String>>,
-    ) -> Result<Option<WorkItem>, WorkQueueError> {
-        self.inner.update_metadata(env_id, wid, patch).await
     }
 }
 
@@ -414,4 +414,16 @@ fn postgres_reopen_preserves_authority_fixture_admission() {
     awaken_reliability_testkit::assert_postgres_fixture_child_contract(
         "postgres_reopen_preserves_authority_through_an_independent_pool",
     );
+}
+
+#[async_trait]
+impl WorkMetadataPatch for RebuildsMutationResult {
+    async fn update_metadata(
+        &self,
+        env_id: &str,
+        wid: &str,
+        patch: BTreeMap<String, Option<String>>,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        self.inner.update_metadata(env_id, wid, patch).await
+    }
 }

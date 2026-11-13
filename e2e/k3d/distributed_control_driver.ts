@@ -5,12 +5,13 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 // The shared E2E harness is intentionally JavaScript-owned and has no parallel
 // declaration shim; Node executes this import directly in the K3D lane.
 // @ts-expect-error -- harness.mjs is the canonical runtime implementation.
 import {
+  bindSandboxExecutionPolicy,
   listManagedSessionEvents,
   managedFileUploadForm,
   retryableReadStatus,
@@ -789,6 +790,19 @@ async function createFleetEnvironments(client: Anthropic, concurrency: number) {
   );
 }
 
+async function createDispatchBenchmarkSessions(base: string, client: Anthropic, concurrency: number) {
+  const suffix = Date.now();
+  const environments = await Promise.all(Array.from({ length: concurrency }, async (_, index) => {
+    const id = `adr71-dispatch-${suffix}-${index}`;
+    const environment = await client.beta.environments.create({
+      name: id, config: { type: 'self_hosted' }, betas: BETAS,
+    });
+    await bindSandboxExecutionPolicy(base, environment.id, { id, config: {}, provisioning: 'on_tool_use' });
+    return environment.id;
+  }));
+  return createParallelSessions(client, validateFleetEnvironmentIds(environments, concurrency));
+}
+
 async function createFleetSessions(client: Anthropic, concurrency: number) {
   return createParallelSessions(client, await createFleetEnvironments(client, concurrency));
 }
@@ -994,6 +1008,10 @@ async function load(base: string) {
   // | L4 | yes | bounded + active/active | every full-history marker exactly once |
   const {count,concurrency,rounds} = loadShape(process.env);
   const arrival = arrivalShape(process.env);
+  const wakeMarker = process.env.ADR71_WAKE_LOAD_MARKER;
+  const laneIntervalMs = wakeMarker ? Number(process.env.ADR71_WAKE_LANE_INTERVAL_MS ?? 0) : 0;
+  assert.ok(Number.isFinite(laneIntervalMs) && laneIntervalMs >= 0 && (!laneIntervalMs || !arrival),
+    'invalid Dispatch benchmark lane interval');
   assert.ok(!arrival || count >= 100, 'open-arrival requires at least 100 planned completions for a numeric p99');
   const windows: any[] = [];
   // Five seconds is a performance regression gate for the complete
@@ -1002,7 +1020,9 @@ async function load(base: string) {
   const p95Limit = Number(process.env.ADR71_TURN_P95_MS ?? 5_000);
   const coldStartLimit = Number(process.env.ADR71_COLD_START_MAX_MS ?? 30_000);
   const managed = clientFor(base);
-  const sessions = await createFleetSessions(managed, concurrency);
+  const sessions = wakeMarker
+    ? await createDispatchBenchmarkSessions(base, managed, concurrency)
+    : await createFleetSessions(managed, concurrency);
   try {
   // L2 must precede L1's timer after a database promotion: these GETs neither
   // materialize a Resource Pod nor execute a turn, but establish that the
@@ -1027,12 +1047,25 @@ async function load(base: string) {
     assertProviderResponseCount(observation.events, coldMarkers[index]);
     assertProviderResponsesAreUnique(observation.events);
   });
-  // The completed cold turns leave these exact Resource Pods resident for L3.
-  // L6 repeats use these same resident Sessions and the same per-window gate.
+  // Reuse the same warmed Sessions across windows. The fleet fixture also
+  // leaves its Resource Pods resident.
   // No averaging or best-of selection can hide a failed window; an assertion
   // stops later writes, retaining every prior audit and the failed evidence.
   for (let round = 1; round <= rounds; round += 1) {
-    const markers = Array.from({length:count}, (_,index) => `ADR71-LOAD-${Date.now()}-${round}-${index}`);
+    const loadPrefix = wakeMarker && process.env.ADR71_WAKE_REQUIRE_SATURATION === '1'
+      ? 'ADR71-DISPATCH-SATURATION' : 'ADR71-LOAD';
+    const hold = wakeMarker ? Number(process.env.ADR71_WAKE_PROVIDER_HOLD_SECONDS ?? 5) : 5;
+    assert.ok(Number.isInteger(hold) && hold >= 5 && hold <= 60, 'invalid Provider hold');
+    const holdMarker = hold === 5 ? '' : `-hold${hold}`;
+    const markers = Array.from({length:count}, (_,index) => `${loadPrefix}${holdMarker}-${Date.now()}-${round}-${index}`);
+    if (round === 1 && wakeMarker) {
+      const marker = wakeMarker;
+      writeFileSync(`${marker}.sessions`, JSON.stringify(sessions));
+      writeFileSync(`${marker}.warm`, '');
+      await waitForValue(async () => existsSync(`${marker}.counted`), Boolean,
+        'SQL counter captured after warmup', { timeoutMs: 15_000, pollMs: 50 });
+      writeFileSync(marker, new Date().toISOString() + '\n');
+    }
     const latencies: number[] = [];
     const samples: { marker: string; admissionMs: number; observationMs: number }[] = [];
     async function send(index: number, scheduledAt = performance.now()) {
@@ -1045,16 +1078,44 @@ async function load(base: string) {
         assert.equal(receipt.data?.length, 1, `one exact Event receipt for ${markers[index]}`);
         const receiptId = receipt.data?.[0]?.id;
         assert.equal(typeof receiptId, 'string', `SDK receipt id for ${markers[index]}`);
-        await waitForRecentSessionEventReceipt(
-          managed, sessions[clientIndex], receiptId, markers[index], 300_000,
-        );
+        if (wakeMarker) {
+          const marker = markers[index];
+          await waitForSessionEventReceipt(
+            managed, sessions[clientIndex], receiptId, BETAS,
+            ({ delta }: { delta: any[] }) => {
+              if (hasCompletedProviderMarker(delta, marker)) return true;
+              const end = delta.find((event) => event.type === 'session.status_idle');
+              if (end) {
+                const failure = delta.find((event) => event.type === 'session.error');
+                throw new Error(
+                  `Dispatch benchmark receipt ${receiptId} ended with ${end.stop_reason?.type} without ${marker}: `
+                  + JSON.stringify(failure?.error ?? end),
+                );
+              }
+              return false;
+            },
+            `Dispatch benchmark receipt ${receiptId} to complete`,
+            { timeoutMs: 120_000, pollMs: 3_000, retryReadError: (error: unknown) => retryableReadStatus(error) !== null },
+          );
+        } else {
+          await waitForRecentSessionEventReceipt(
+            managed, sessions[clientIndex], receiptId, markers[index], 300_000,
+          );
+        }
         const observedAt = performance.now();
         const elapsed = observedAt - scheduledAt;
         latencies.push(elapsed);
         samples.push({ marker: markers[index], admissionMs: acceptedAt - scheduledAt, observationMs: observedAt - acceptedAt });
     }
     async function runClient(clientIndex: number) {
+      // awaken-allow(wait): pace benchmark arrivals on each Session according to the configured schedule.
       for (let index = clientIndex; index < markers.length; index += concurrency) {
+        if (laneIntervalMs) {
+          const laneOffset = clientIndex / concurrency;
+          const target = windowStarted + (Math.floor(index / concurrency) + laneOffset) * laneIntervalMs;
+          const delay = target - performance.now();
+          if (delay > 0) await new Promise<void>((resolve) => setTimeout(resolve, delay));
+        }
         await send(index);
       }
     }
@@ -1064,6 +1125,12 @@ async function load(base: string) {
     const offered = arrival ? await runArrivalWindow(count, arrival, send) : null;
     const clients = arrival ? [] : await Promise.allSettled(Array.from({ length: concurrency }, (_, index) => runClient(index)));
     const elapsedMs = performance.now() - windowStarted;
+    if (round === 1 && wakeMarker) {
+      const marker = wakeMarker;
+      writeFileSync(`${marker}.done`, '');
+      await waitForValue(async () => existsSync(`${marker}.done-counted`), Boolean,
+        'SQL counter captured after drain', { timeoutMs: 15_000, pollMs: 50 });
+    }
     const markersBySession = sessions.map(() => [] as string[]);
     markers.forEach((marker, index) => markersBySession[index % concurrency].push(marker));
     // Refresh durable history after all clients settle, including those whose
@@ -1087,7 +1154,7 @@ async function load(base: string) {
       audit.errors.push(`p99 missing or above ${arrival.p99LimitMs}ms`);
     }
     const observation = { ...audit, round, rounds, coldMs: coldElapsed, samples,
-      mode: arrival ? 'open-arrival' : 'closed', concurrency,
+      mode: arrival ? 'open-arrival' : 'closed', concurrency, laneIntervalMs,
       offeredRate: arrival?.rate ?? null, offered, elapsedMs,
       completedPerSecond: audit.completed * 1_000 / elapsedMs };
     windows.push(observation);
@@ -1102,9 +1169,26 @@ async function load(base: string) {
         + `turn_p50_ms=${audit.p50} turn_p95_ms=${audit.p95} turn_max_ms=${audit.max}`,
     );
   }
-  } finally {
-    await disposeFixtureSessions(sessions, (sessionId) => managed.beta.sessions.delete(sessionId, { betas: BETAS }));
+  } catch (error) {
+    try {
+      await disposeFixtureSessions(sessions, (sessionId) => managed.beta.sessions.delete(sessionId, { betas: BETAS }));
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'load and fixture disposal both failed');
+    }
+    throw error;
   }
+  await disposeFixtureSessions(sessions, (sessionId) => managed.beta.sessions.delete(sessionId, { betas: BETAS }));
+}
+
+async function prepareDispatchLoad(base: string) {
+  await expectRawStatus(base, 'PUT', `/v1/config/agents/${AGENT}`, 200, {
+    name: 'Dispatch latency benchmark',
+    system: 'Return the configured provider response.',
+    model: { id: 'adr71-echo' },
+    tools: [],
+    skills: [],
+  });
+  await expectRawStatus(base, 'POST', `/v1/config/agents/${AGENT}/publish`, 200);
 }
 
 async function main() {
@@ -1128,6 +1212,7 @@ async function main() {
     case 'dispose-batch': return disposeBatch(base, args[0]);
     case 'create-independent-session': return createIndependentSession(base, args[0]);
     case 'load': return load(base);
+    case 'prepare-dispatch-load': return prepareDispatchLoad(base);
     default: throw new Error(`unknown mode ${mode}`);
   }
 }

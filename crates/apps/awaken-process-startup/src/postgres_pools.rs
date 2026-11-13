@@ -34,6 +34,7 @@ fn database_options(options: &PgConnectOptions) -> Database {
 /// registry: consuming adapters retain the existing SQLx pool handles.
 pub(super) struct ProcessPostgresPools {
     maximum: u32,
+    minimum: u32,
     pools: BTreeMap<Database, (String, PgPool)>,
 }
 
@@ -42,8 +43,14 @@ impl ProcessPostgresPools {
         assert!(maximum > 0, "process pool capacity is positive");
         Self {
             maximum,
+            minimum: 0,
             pools: BTreeMap::new(),
         }
+    }
+
+    pub(super) fn with_minimum(mut self, minimum: u32) -> Self {
+        self.minimum = minimum;
+        self
     }
 
     pub(super) fn seed(&mut self, url: &str, pool: PgPool) -> Result<(), String> {
@@ -56,7 +63,9 @@ impl ProcessPostgresPools {
         if self.pools.contains_key(&key) {
             return Err("process PostgreSQL pool was already supplied".to_owned());
         }
-        if pool.options().get_max_connections() != self.maximum {
+        if pool.options().get_max_connections() != self.maximum
+            || pool.options().get_min_connections() != self.minimum
+        {
             return Err("injected PostgreSQL pool differs from the process capacity".to_owned());
         }
         self.pools.insert(key, (url.to_owned(), pool));
@@ -76,6 +85,7 @@ impl ProcessPostgresPools {
         }
         let pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(self.maximum)
+            .min_connections(self.minimum)
             .connect(url)
             .await
             .map_err(|_| "connect process-owned PostgreSQL pool failed".to_owned())?;
@@ -130,6 +140,12 @@ mod tests {
         assert!(
             ProcessPostgresPools::new(2)
                 .seed("postgres://pool.invalid/another-database", pool.clone())
+                .is_err()
+        );
+        assert!(
+            ProcessPostgresPools::new(2)
+                .with_minimum(1)
+                .seed(url, pool.clone())
                 .is_err()
         );
         assert!(ProcessPostgresPools::new(3).seed(url, pool).is_err());

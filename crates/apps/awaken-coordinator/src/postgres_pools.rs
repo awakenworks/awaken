@@ -49,8 +49,17 @@ pub(crate) async fn open_postgres_pools(
     let Some(url) = database_url(storage)? else {
         return Ok((None, None));
     };
-    let options = awaken_sql_storage::postgres_pool_options()
-        .max_connections(storage.postgres_max_connections.get());
+    if storage.postgres_min_connections > storage.postgres_max_connections.get() {
+        return Err("postgres_min_connections cannot exceed postgres_max_connections".into());
+    }
+    let mut options = awaken_sql_storage::postgres_pool_options()
+        .max_connections(storage.postgres_max_connections.get())
+        .min_connections(storage.postgres_min_connections);
+    if storage.postgres_min_connections == storage.postgres_max_connections.get() {
+        // A fixed-size pool should keep warm connections even across bursts.
+        // Checkout still verifies each connection and replaces failures.
+        options = options.idle_timeout(None).max_lifetime(None);
+    }
     let pool = options
         .clone()
         .connect(url)

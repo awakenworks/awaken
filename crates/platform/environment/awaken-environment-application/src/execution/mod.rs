@@ -367,6 +367,22 @@ impl awaken_session_application_contract::SessionWorkerAssignment
 
 #[async_trait::async_trait]
 impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExecutionApplication {
+    async fn renew_session(
+        &self,
+        environment_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<
+        Option<awaken_session_types::SessionWorkLease>,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        self.work
+            .worker_leases
+            .renew_session(environment_id, session_id, worker_owner)
+            .await
+            .map_err(session_work_error(session_id.as_str()))
+    }
+
     async fn release_session(
         &self,
         lease: &awaken_session_types::SessionWorkLease,
@@ -1511,6 +1527,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SessionWorkerLeaseStore for FailingConvergenceQueue {
+        async fn renew_session(
+            &self,
+            env: &str,
+            session: &awaken_session_types::SessionId,
+            worker: &str,
+        ) -> Result<Option<awaken_session_types::SessionWorkLease>, WorkQueueError> {
+            self.require_session_storage("renew")?;
+            self.inner.renew_session(env, session, worker).await
+        }
         async fn release_session(
             &self,
             lease: &awaken_session_types::SessionWorkLease,

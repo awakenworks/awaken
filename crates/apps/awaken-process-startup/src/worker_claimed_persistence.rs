@@ -237,25 +237,19 @@ impl PostgresWorkerClaims {
             .and_then(awaken_session_application::session_work_environment)
         {
             let transfer = match self.work {
-                ClaimConnectionUse::Borrowed => {
-                    let (lease, completed) = awaken_work_store::acquire_postgres_session_work_on(
-                        connection,
-                        self.clock.as_ref(),
-                        &environment,
-                        &session,
-                        owner,
-                    )
-                    .await
-                    .map_err(unavailable)?;
-                    if !completed {
-                        return Err(RunError::bad_request("Session Work authority is stale"));
-                    }
-                    lease
-                }
+                ClaimConnectionUse::Borrowed => awaken_work_store::renew_postgres_session_work_on(
+                    connection,
+                    self.clock.as_ref(),
+                    &environment,
+                    &session,
+                    owner,
+                )
+                .await
+                .map_err(unavailable)?,
                 ClaimConnectionUse::Independent => {
                     self.views
                         .leases
-                        .acquire_session(&environment, &session, owner)
+                        .renew_session(&environment, &session, owner)
                         .await?
                 }
             };

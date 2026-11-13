@@ -79,19 +79,15 @@ pub struct PgNotifyWake {
 impl PgNotifyWake {
     /// Wake over `channel` on the same database as the dispatch store `pool`.
     ///
-    /// Spawns ONE background listener holding a single dedicated connection; each
-    /// `pg_notify` fans out to every waiter through an in-process [`Notify`]. This is
-    /// deliberate: `PgListener::connect_with` takes a pool connection and holds it for
-    /// the whole `recv`, so a per-`wait` listener (the previous design) had every one
-    /// of the pool's `available_parallelism()` drain tasks pin a connection while idle
-    /// — starving the claim/commit/settle path in a fleet, so a concurrent burst
-    /// stranded. With one listener, `wait` costs no pool connection. A missed hint
-    /// (listener reconnect, or a notify with no waiter yet) only defers a drain to the
-    /// poll fallback, which stays authoritative.
+    /// Each instance reserves one extra database connection for LISTEN, using
+    /// the dispatch pool's connection options. It never takes an authority
+    /// checkout while listening or reconnecting. NOTIFY uses the dispatch pool.
     pub fn new(pool: sqlx::postgres::PgPool, channel: impl Into<String>) -> Self {
         let channel = channel.into();
         let local = Arc::new(Notify::new());
-        let listen_pool = pool.clone();
+        let listen_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy_with((*pool.connect_options()).clone());
         let listen_channel = channel.clone();
         let waiters = local.clone();
         let shutdown = CancellationToken::new();
@@ -103,7 +99,9 @@ impl PgNotifyWake {
                         sqlx::postgres::PgListener::connect_with(&listen_pool).await
                         && listener.listen(&listen_channel).await.is_ok()
                     {
-                        while listener.recv().await.is_ok() {
+                        // Keep reconnects under this task's backoff and cancellation.
+                        listener.eager_reconnect(false);
+                        while matches!(listener.try_recv().await, Ok(Some(_))) {
                             waiters.notify_waiters();
                         }
                     }
@@ -117,6 +115,10 @@ impl PgNotifyWake {
                 _ = cancelled.cancelled() => {}
                 _ = listen => {}
             }
+            // SQLx unregisters LISTEN while returning the connection. Bound
+            // shutdown even when the database has stopped answering.
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(5), listen_pool.close()).await;
         });
         Self {
             pool,

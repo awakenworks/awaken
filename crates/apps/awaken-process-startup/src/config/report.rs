@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use awaken_deployment_config::DispatchBackend;
+use awaken_deployment_config::{DispatchBackend, Wake};
 
 use super::{ResolvedDeployment, Role};
 
@@ -29,6 +29,13 @@ impl ResolvedDeployment {
             }
         } else {
             "not owned by this role"
+        };
+        let dispatch_wake = match self.runtime.wake {
+            Wake::None if owns_coordinator && !self.run_local_pool => "poll",
+            Wake::None if owns_coordinator => "local",
+            Wake::None => "not applicable",
+            Wake::PgNotify => "pg-notify",
+            Wake::Nats => "nats",
         };
         let control_databases = if owns_control {
             BTreeMap::from([
@@ -97,6 +104,7 @@ impl ResolvedDeployment {
                     "credential_source": cloud_credential_source,
                 },
                 "runtime_dispatch_backend": runtime_backend,
+                "dispatch_wake": dispatch_wake,
                 "resource_backend": resource_backend,
                 "control_databases": control_databases,
                 "coordinator_databases": coordinator_databases,
@@ -145,6 +153,7 @@ impl ResolvedDeployment {
             }
         }
         if owns_coordinator {
+            report.push_str(&format!("\nDispatch wake         {dispatch_wake}\n"));
             report.push_str(&format!(
                 "\nCoordinator databases (schema: {database_migrations})\n"
             ));

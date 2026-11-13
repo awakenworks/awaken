@@ -307,7 +307,8 @@ async fn prepare_control_process_with_model_supply_and_installations(
     let background_services = std::mem::take(&mut managed_services.background_services);
     let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(
         deployment.runtime.postgres_max_connections.get(),
-    );
+    )
+    .with_minimum(deployment.runtime.postgres_min_connections);
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
         agent_governance: deployment.cloud_iam.agent_governance.clone(),

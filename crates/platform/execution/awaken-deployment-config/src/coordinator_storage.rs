@@ -58,4 +58,6 @@ pub struct CoordinatorStorage {
     pub database_url: Option<String>,
     /// The process-owned Postgres pool capacity.
     pub postgres_max_connections: NonZeroU32,
+    /// Warm connections retained by each process-owned PostgreSQL pool.
+    pub postgres_min_connections: u32,
 }

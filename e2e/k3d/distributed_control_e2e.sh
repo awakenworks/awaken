@@ -605,7 +605,13 @@ log "1/11 build production roles and the protocol-only Provider fixture"
 # Build the Sandbox before staging the four disposable role binaries inside the
 # same Docker context. Those role bytes are not Sandbox inputs; staging them
 # first invalidates BuildKit's otherwise reusable environment layers.
-"$REPO_ROOT/deploy/images/sandbox/build.sh" --ensure-current "$SANDBOX_BUILD_IMAGE" ""
+if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" && -n "${ADR71_CACHED_SANDBOX_IMAGE:-}" ]]; then
+  # The dispatch-only fixture uses a Native Agent without Sandbox tools.
+  SANDBOX_BUILD_IMAGE=$ADR71_CACHED_SANDBOX_IMAGE
+  docker image inspect "$SANDBOX_BUILD_IMAGE" >/dev/null
+else
+  "$REPO_ROOT/deploy/images/sandbox/build.sh" --ensure-current "$SANDBOX_BUILD_IMAGE" ""
+fi
 SANDBOX_IMAGE=$(k3d_image_digest "$SANDBOX_BUILD_IMAGE")
 echo "using immutable Sandbox image $SANDBOX_IMAGE"
 CONTROL_BIN=$(resolve_cargo_executable awaken-control-process awaken-control)
@@ -648,12 +654,19 @@ done
 ok "all role artifacts execute as UID 10001 with normalized mode and unchanged bytes"
 # Reuse the shared nested-node reserve and actual capacity admission.
 e2e_docker_init distributed-control
-k3d_ensure_images "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
+cluster_images=("$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine)
+if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" ]]; then
+  cluster_images+=(nats:2)
+fi
+k3d_ensure_images "${cluster_images[@]}"
 e2e_docker_create_volume "awaken.e2e.cluster=$CLUSTER"
 CONTINUATION_VOLUME="$E2E_CREATED_VOLUME"
-k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
+k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "${cluster_images[@]}"
 CLUSTER_CREATED=1
 k3d_bind_private_kubeconfig "$CLUSTER"
+if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" ]]; then
+  k3d_import_images "$CLUSTER" nats:2
+fi
 # The installed local-path provisioner owns PVC/PV lifecycle. Its shared-filesystem
 # mode removes node affinity because this exact Docker volume is mounted on every
 # node. This is a node-crash fixture, not a proof of production storage durability.
@@ -788,6 +801,11 @@ kubectl -n "$NS" wait --for=condition=complete job/control-migrate --timeout=240
 kubectl -n "$NS" wait --for=condition=complete job/coordinator-migrate --timeout=240s
 wait_roles || { diagnostics; exit 1; }
 start_public_endpoint
+
+if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" ]]; then
+  bash "$REPO_ROOT/e2e/k3d/dispatch_wake_benchmark.sh" "$NS" "$API_URL"
+  exit
+fi
 
 # N0: place the target Session on a known non-database agent. Otherwise node
 # chaos can miss its Sandbox entirely and pass without exercising reconstruction.

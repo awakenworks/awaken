@@ -777,20 +777,38 @@ async fn with_owner_drives_a_durable_run_over_any_sqlite() {
 
 #[tokio::test]
 async fn postgres_factory_pairs_the_selected_store_with_its_wake() {
-    // Causes: C1 a reachable isolated PostgreSQL schema; C2 the factory builds
-    // its dispatch store and PG-NOTIFY wake from one supplied pool; C3 the
-    // hint is published after claim. Effects: E1 the store claims the exact row
-    // under the requested owner; E2 publish succeeds but cannot admit a foreign
-    // claim. Rules: W1 !C1 => environmental skip; W2 C1+C2 => E1; W3 C1+C2+C3
-    // => E2. The existing pg_notify_wake e2e owns cross-connection listener
-    // delivery; this case owns factory pairing and dispatch authority.
-    let Some(pool) = harness::schema_pool("t_any_factory_wake").await else {
+    // W1 optional missing fixture -> skip. W2 a live LISTEN must leave the only
+    // business connection available for publish, enqueue, and exact claim.
+    // W3 another hint cannot let a foreign owner claim that Run.
+    const SCHEMA: &str = "t_any_factory_wake";
+    let Some(pool) = harness::schema_pool(SCHEMA).await else {
         return;
     };
+    pool.close().await;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&harness::database_url_in_schema(SCHEMA))
+        .await
+        .unwrap();
     let (store, wake) =
         awaken_dispatch::with_postgres_dispatch_pool_and_wake(pool, "t_any_factory_wake_channel")
             .await
             .expect("W2 factory pairs the PostgreSQL store and wake");
+    // Establish actual delivery before exercising the only business slot.
+    // awaken-allow(wait): re-publish until a real listener delivers or time out.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::select! {
+            _ = wake.wait() => {},
+            _ = async {
+                loop {
+                    wake.publish().await.expect("publish with the one-slot business pool");
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+            } => unreachable!(),
+        }
+    })
+    .await
+    .expect("the live listener must not monopolize the business pool");
     store
         .enqueue(RunDispatch::new(activation("wake-run")))
         .await

@@ -391,6 +391,11 @@ k3d_docker_build() {
     return 2
   }
   local -a build_options=()
+  if [[ -n "${AWAKEN_K3D_RUNTIME_BASE:-}" ]]; then
+    # An offline runtime base must already contain the system dependencies.
+    docker image inspect --format '{{.Id}}' "$AWAKEN_K3D_RUNTIME_BASE" >/dev/null || return
+    build_options+=(--build-arg "RUNTIME_BASE=$AWAKEN_K3D_RUNTIME_BASE")
+  fi
   if [[ -n "${AWAKEN_K3D_BUILD_NETWORK:-}" ]]; then
     build_options+=(--network "$AWAKEN_K3D_BUILD_NETWORK")
   fi
@@ -1087,7 +1092,14 @@ k3d_import_images() {
   # There is no second images-volume store or transport-file cleanup path.
   (( status == 0 )) || return "$status"
   (( cleanup_status == 0 )) || return "$cleanup_status"
-  kubectl --context "$context" -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
+  local ready
+  ready=$(kubectl --context "$context" -n kube-system get deploy coredns \
+    -o jsonpath='{.status.readyReplicas}') || return "$?"
+  if [[ "${ready:-0}" == 0 ]]; then
+    # A cold offline cluster may have backed off after a failed image pull.
+    # A healthy running replica already has its image and must keep serving.
+    kubectl --context "$context" -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
+  fi
   kubectl --context "$context" -n kube-system rollout status deploy/coredns --timeout=90s
 }
 
@@ -2490,10 +2502,15 @@ print(json.dumps(value))
   # This mock rejects ambient-context calls, including when the caller's current
   # context is unavailable or names another cluster.
   k3d_export_image() { docker_saves+=("$1"); }
+  local dns_ready=2 dns_deletes=0
   kubectl() {
     [[ "$1 $2" = "--context k3d-awaken-test" ]] || return 98
     shift 2
-    if [[ "$*" = *"get deploy coredns"* ]]; then
+    if [[ "$*" = *"delete pod -l k8s-app=kube-dns"* ]]; then
+      dns_deletes=$((dns_deletes + 1))
+    elif [[ "$*" = *"readyReplicas"* ]]; then
+      printf '%s' "$dns_ready"
+    elif [[ "$*" = *"get deploy coredns"* ]]; then
       printf '%s' 'rancher/mirrored-coredns-coredns:1.10.1'
     fi
   }
@@ -2506,6 +2523,11 @@ print(json.dumps(value))
     "2 --eviction-threshold 128Mi rancher/mirrored-pause:3.6 rancher/mirrored-coredns-coredns:1.10.1 app:latest postgres:16" ]]
   [[ "${k3d_calls[0]}" = *'--mode direct' ]]
   [[ "${docker_execs[*]}" != *'find /k3d/images'* ]]
+  (( dns_deletes == 0 ))
+  dns_ready=0
+  k3d_import_images "awaken-test" app:latest
+  (( dns_deletes == 1 ))
+  dns_ready=2
 
   # Post-create capacity decision table: I1 the exact running hard and minimum
   # policies agree => import admission uses that quantity; I2 either setting is
@@ -2559,9 +2581,10 @@ print(json.dumps(value))
   # Build-transport decision table: B1 no override => one default Docker
   # build; B2 host network => only its network changes; B3 an existing CA file
   # => the same build receives a BuildKit secret; B4 missing CA => no build.
+  # B5 a local runtime base is passed to Docker; B6 a missing one fails early.
   # The secret is an apt trust input, never a copied image layer or runtime
   # credential. These branches share one deadline and one Docker invocation.
-  unset AWAKEN_K3D_BUILD_NETWORK AWAKEN_K3D_BUILD_CA_BUNDLE
+  unset AWAKEN_K3D_BUILD_NETWORK AWAKEN_K3D_BUILD_CA_BUNDLE AWAKEN_K3D_RUNTIME_BASE
   k3d_docker_build --load -t fixture:latest .
   [[ "${docker_builds[${#docker_builds[@]} - 1]}" = "build --load -t fixture:latest ." ]]
   [[ "${deadline_calls[${#deadline_calls[@]} - 1]}" = "${K3D_BUILD_TIMEOUT_SECONDS}:docker build --load -t fixture:latest ." ]]
@@ -2581,6 +2604,14 @@ print(json.dumps(value))
   fi
   [[ "${#docker_builds[@]}" -eq "$builds_before" ]]
   rm -f -- "$ca_fixture"
+  image_observation_status=0
+  AWAKEN_K3D_RUNTIME_BASE=runtime-fixture:local AWAKEN_K3D_BUILD_NETWORK=none \
+    k3d_docker_build --load -t fixture:latest .
+  [[ "${docker_builds[${#docker_builds[@]} - 1]}" = "build --build-arg RUNTIME_BASE=runtime-fixture:local --network none --load -t fixture:latest ." ]]
+  builds_before=${#docker_builds[@]}
+  image_observation_status=1
+  ! AWAKEN_K3D_RUNTIME_BASE=missing-runtime:local k3d_docker_build --load -t must-not-run .
+  [[ "${#docker_builds[@]}" -eq "$builds_before" ]]
   local saved_build_timeout="$K3D_BUILD_TIMEOUT_SECONDS"
   K3D_BUILD_TIMEOUT_SECONDS=invalid
   ! k3d_docker_build --load -t must-not-run .

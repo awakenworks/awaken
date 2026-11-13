@@ -1,11 +1,13 @@
 # Server/worker runtime image for k3d scenarios that do not launch a hand plane.
 # The host-built scenario binary selects its role through AWAKEN_ROLE.
-FROM ubuntu:24.04
+ARG RUNTIME_BASE=runtime_dependencies
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS runtime_dependencies
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
+FROM ${RUNTIME_BASE}
 COPY --chmod=0755 awaken-server /usr/local/bin/awaken-server
 
 ENTRYPOINT ["/usr/local/bin/awaken-server"]

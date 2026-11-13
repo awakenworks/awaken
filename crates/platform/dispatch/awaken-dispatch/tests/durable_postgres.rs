@@ -1353,12 +1353,14 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
         .expect("dispatch");
     let (directory, identity) =
         awaken_dispatch_testkit::worker_http::ready_worker("page-worker").await;
-    let worker = directory
+    let mut worker = directory
         .current(&identity.worker_id)
         .await
         .unwrap()
         .unwrap()
         .snapshot;
+    worker.manifest.capacity.max_concurrent = 2;
+    worker.capability_fingerprint = worker.manifest.fingerprint().unwrap();
     let mut gpu = PlacementRequirements::remote_required();
     gpu.required_capabilities.insert("gpu".into());
     harness::seed_placement_candidate_prefix(
@@ -1713,6 +1715,67 @@ async fn exhausted_epoch_deep_discovery_preserves_remote_audiences_and_expired_r
             .is_none(),
         "A3/E3 expired exhausted Run cannot be reclaimed"
     );
+}
+
+#[tokio::test]
+async fn placed_claim_uses_live_reservations_instead_of_stale_heartbeat_load() {
+    let Some(pool) = harness::schema_pool("t_pg_placed_claim_live_load").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool).await.unwrap();
+    let (directory, first_id) =
+        awaken_dispatch_testkit::worker_http::ready_worker("live-load-a").await;
+    let (other_directory, second_id) =
+        awaken_dispatch_testkit::worker_http::ready_worker("live-load-b").await;
+    let mut first = directory
+        .current(&first_id.worker_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot;
+    let mut second = other_directory
+        .current(&second_id.worker_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot;
+    first.manifest.capacity.max_concurrent = 1;
+    second.manifest.capacity.max_concurrent = 1;
+    first.capability_fingerprint = first.manifest.fingerprint().unwrap();
+    second.capability_fingerprint = second.manifest.fingerprint().unwrap();
+    second.in_flight = 1;
+    let workers = vec![first.clone(), second.clone()];
+    for (run, thread) in [("load-a", "thread-a"), ("load-b", "thread-b")] {
+        store
+            .enqueue(
+                RunDispatch::new(activation_on(run, thread))
+                    .with_placement(PlacementRequirements::remote_required())
+                    .with_worker_codec_requirements(),
+            )
+            .await
+            .unwrap();
+    }
+    let policy = Arc::new(LeastLoadedPolicy);
+    let first_claim = store
+        .claim_placed(&first, workers.clone(), policy.clone(), 60_000)
+        .await
+        .unwrap()
+        .expect("first available Worker reserves the queue head");
+    assert_eq!(first_claim.lease.run_id().0, "load-a");
+    assert!(
+        store
+            .claim_placed(&first, workers.clone(), policy.clone(), 60_000)
+            .await
+            .unwrap()
+            .is_none(),
+        "the live preparation consumes the first Worker's capacity"
+    );
+    let second_claim = store
+        .claim_placed(&second, workers, policy, 60_000)
+        .await
+        .unwrap()
+        .expect("the second Worker can pull despite its old full heartbeat");
+    assert_eq!(second_claim.lease.run_id().0, "load-b");
 }
 
 #[tokio::test]
