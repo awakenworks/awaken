@@ -687,6 +687,32 @@ def dx_summary(root, days, now=None):
             for name, row in sorted(cohorts.items())]
 
 
+def dx_refusals(root, days, now=None):
+    """``[(cause, count)]`` of the repository's own 75 refusals (gate_tools.py records them)."""
+    now = time.time() if now is None else now
+    cutoff = now - days * 86400
+    counts = {}
+    for path in root.glob('build-observations-*/refusals.jsonl'):
+        try:
+            if path.stat().st_mtime < cutoff:
+                continue
+            lines = path.read_text(encoding='utf-8').splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or (row.get('at_unix') or 0) < cutoff:
+                continue
+            # Measured values vary per run; the cause is the rule that refused.
+            detail = '; '.join(row.get('problems') or []) or row.get('reason', '')
+            cause = f"{row.get('stage', '?')}: " + re.sub(r'\d+(\.\d+)?', 'N', detail)
+            counts[cause] = counts.get(cause, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
 def dx_table(rows, days):
     def cell(value):
         return '-' if value is None else f'{value:.0f}'
@@ -780,6 +806,11 @@ def main():
         # --path names the observation root; default: the same root TaskRun writes.
         root = args.path or Path(os.environ.get('AWAKEN_BUILD_OBSERVATIONS') or Path.home() / '.local/state/awaken-builds')
         print(dx_table(dx_summary(root, args.days), args.days))
+        refusals = dx_refusals(root, args.days)
+        if refusals:
+            print('\nResource refusals (exit 75 before any work, by cause):')
+            for cause, count in refusals:
+                print(f'- {count}x {cause}')
         return 0
     if args.mode == 'invocations':
         snapshot = json.loads(args.snapshot.read_text()) if args.snapshot else host_observation_query('--observations', args.root)
@@ -1326,6 +1357,23 @@ class PerformanceTests(unittest.TestCase):
             self.assertEqual(rows['check-all --group postgres']['run_p90'], 2700)
             self.assertIn('| pre-push: check-rust.sh --push | 1 | 0 | 600 | 600 | 100 | 100 | 500 | 500 |',
                           dx_table(list(rows.values()), 7))
+
+    def test_dx_refusals_group_causes_and_ignore_old_or_malformed_rows(self):
+        # Y1 the same rule with different measured values is one cause; Y2 rows
+        # outside the window and malformed lines are ignored.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            directory = root / 'build-observations-r'
+            directory.mkdir()
+            now = time.time()
+            rows = [{'stage': 'resources:cargo', 'problems': ['io PSI full avg10=84.25% exceeds 20.00%'], 'at_unix': now},
+                    {'stage': 'resources:cargo', 'problems': ['io PSI full avg10=31.10% exceeds 20.00%'], 'at_unix': now},
+                    {'stage': 'disk:rust-full', 'reason': '12.0G free at /t, 30G required', 'at_unix': now},
+                    {'stage': 'disk:rust-full', 'reason': 'old', 'at_unix': now - 30 * 86400}]
+            (directory / 'refusals.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows) + 'not json\n')
+            self.assertEqual(dx_refusals(root, 7, now), [
+                ('resources:cargo: io PSI full avgN=N% exceeds N%', 2),
+                ('disk:rust-full: NG free at /t, NG required', 1)])
 
     def test_quantiles_include_non_progress_singular_output_and_missing_data(self):
         self.assertIsNone(test_costs('')['p95_seconds'])

@@ -41,6 +41,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -688,6 +689,23 @@ def free_gigabytes(path: Path) -> float:
     return shutil.disk_usage(probe).free / (1000**3)
 
 
+def record_refusal(stage: str, reason: str, problems: list | None = None) -> None:
+    """Keep a 75's cause beside the run's observations, not only on its terminal.
+
+    `ci_performance.py dx` reports these. Telemetry never fails the gate.
+    """
+    directory = os.environ.get("AWAKEN_BUILD_RUN_DIRECTORY")
+    if not directory:
+        return
+    row = {"stage": stage, "reason": reason, "problems": [str(problem) for problem in problems or []],
+           "at_unix": time.time()}
+    try:
+        with open(Path(directory) / "refusals.jsonl", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
 def command_disk(manifest: dict, stage: str, path: str | None, override: float | None) -> int:
     """Refuse a long stage the filesystem cannot hold.
 
@@ -715,6 +733,7 @@ def command_disk(manifest: dict, stage: str, path: str | None, override: float |
     )
     for suggestion in manifest["cleanup_suggestions"]:
         print(f"      - {expand(suggestion)}", file=sys.stderr)
+    record_refusal(f"disk:{stage}", f"{free:.1f}G free at {target}, {required:.0f}G required")
     return 75
 
 
@@ -732,6 +751,7 @@ def command_resources(manifest: dict, profile: str, *, require_host: bool = Fals
     if not found.usable or not found.where:
         if require_host:
             print('full gate requires the canonical awaken-build-admission command', file=sys.stderr)
+            record_refusal(f"resources:{profile}", "awaken-build-admission is absent")
             return 75
         print('host resource observation unavailable; runner must supply its resource contract')
         return 0
@@ -752,10 +772,13 @@ def command_resources(manifest: dict, profile: str, *, require_host: bool = Fals
             raise ValueError('inconsistent host resource observation')
     except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError) as error:
         print(f'host resource qualification unavailable: {error}', file=sys.stderr)
+        record_refusal(f"resources:{profile}", f"host resource qualification unavailable: {error}")
         return 75
     print('host resources: ' + json.dumps(report, sort_keys=True))
     if result.stderr:
         print(result.stderr, file=sys.stderr, end='')
+    if result.returncode == 75:
+        record_refusal(f"resources:{profile}", "host admission refused", report['problems'])
     return result.returncode
 
 
@@ -792,6 +815,18 @@ def _host_resource_problems() -> list[str]:
         if _quiet(lambda: command_resources(fixture, 'qualification', require_host=True)) != 75:
             errors.append('missing host admitted full gate')
         child.assert_not_called()
+    # R6 a refusal leaves its cause in the run's observation directory.
+    import tempfile
+    with tempfile.TemporaryDirectory() as run_directory, \
+            patch.dict(os.environ, {'AWAKEN_BUILD_RUN_DIRECTORY': run_directory}), \
+            patch(__name__ + '.locate', return_value=Found('present', '/fixture/observer')), \
+            patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 75, json.dumps(
+                {'schema_version': 1, 'profile': 'cargo', 'eligible': False, 'problems': ['pressure']}), '')):
+        _quiet(lambda: command_resources(fixture, 'cargo'))
+        recorded = (Path(run_directory) / 'refusals.jsonl').read_text(encoding='utf-8') \
+            if (Path(run_directory) / 'refusals.jsonl').exists() else ''
+        if '"resources:cargo"' not in recorded or '"pressure"' not in recorded:
+            errors.append('a host refusal did not record its cause')
     for response in ('not-json', '[]', '{"schema_version":true,"profile":"qualification","eligible":true,"problems":[]}'):
         with patch(__name__ + '.locate', return_value=Found('present', '/fixture/observer')), \
                 patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, response, '')):
