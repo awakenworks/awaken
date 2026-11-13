@@ -6,7 +6,7 @@ use awaken_provisioning_contract as pc;
 
 /// Package resolution may depend on an external registry, but it must never
 /// occupy an Environment activation forever. Keep this aligned with the
-/// Kubernetes BuildKit Job deadline.
+/// Kubernetes Kaniko Job deadline.
 pub(crate) const PACKAGE_BUILD_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30 * 60);
 

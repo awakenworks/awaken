@@ -164,11 +164,7 @@ pub(super) fn config_fact(
     let data = config.data.as_ref().ok_or_else(|| {
         K8sPackageRealizationError::invalid("package ConfigMap has no Dockerfile data")
     })?;
-    if !data.contains_key("Dockerfile")
-        || data
-            .keys()
-            .any(|key| !matches!(key.as_str(), "Dockerfile" | "buildkitd.toml"))
-    {
+    if !data.contains_key("Dockerfile") || data.keys().any(|key| key != "Dockerfile") {
         return Err(K8sPackageRealizationError::invalid(
             "package ConfigMap does not contain the canonical bounded input set",
         ));
@@ -287,7 +283,7 @@ pub(super) fn job_fact(job: &Job, namespace: &str) -> Result<JobFact, K8sPackage
     }
     let container = &pod.containers[0];
     match kind {
-        PACKAGE_BUILD_JOB_KIND if container.name == "buildkit" => {
+        PACKAGE_BUILD_JOB_KIND if container.name == "kaniko" => {
             let config_name = package_build_name(fingerprint)
                 .map_err(|error| K8sPackageRealizationError::invalid(error.to_string()))?;
             let config_volumes = pod

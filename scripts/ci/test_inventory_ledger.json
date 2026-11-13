@@ -82,6 +82,7 @@
     "exact_acp_mcp_bearer_uses_the_existing_recipient_envelope": "exact_mcp_bearer_preserves_the_selected_relay_or_acp_client",
     "e1_refusal_names_the_guarded_state_and_is_an_error": "e1_refusal_names_the_guarded_state",
     "only_path_and_domain_are_selections": "only_path_domain_and_header_are_selections",
-    "hosted_draft_store_uses_only_the_run_execution_workspace": "hosted_execution_scope_does_not_authorize_definition_effects"
+    "hosted_draft_store_uses_only_the_run_execution_workspace": "hosted_execution_scope_does_not_authorize_definition_effects",
+    "package_builder_job_is_rootless_bounded_and_registry_backed": "package_builder_job_is_kaniko_bounded_and_registry_backed"
   }
 }

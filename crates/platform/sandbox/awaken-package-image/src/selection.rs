@@ -46,7 +46,7 @@ pub fn podman_package_image_provisioner(
         .with_package_cache_ttl(build.local_cache_ttl))
 }
 
-/// The Kubernetes BuildKit builder; it requires the registry its Pods pull
+/// The Kubernetes Kaniko builder; it requires the registry its Pods pull
 /// from. A Worker creates builder Pods through its brokered `create_transport`;
 /// the Coordinator creates them directly.
 #[cfg(feature = "k8s")]
@@ -68,8 +68,13 @@ pub async fn kubernetes_package_image_provisioner(
     )
     .await
     .map_err(|error| format!("Kubernetes package builder: {error}"))?
-    .with_buildkit_image(build.buildkit_image.clone())
+    .with_kaniko_image(build.kaniko_image.clone())
     .map_err(|error| format!("Kubernetes package builder: {error}"))?;
+    if let Some(secret) = &build.push_secret {
+        provisioner = provisioner
+            .with_registry_push_secret(secret.clone())
+            .map_err(|error| format!("Kubernetes package builder: {error}"))?;
+    }
     if let Some(proxy) = build.forward_proxy.clone() {
         provisioner = provisioner
             .with_forward_proxy(proxy)
@@ -92,7 +97,8 @@ mod tests {
             local_cache_ttl: std::time::Duration::from_secs(60),
             cluster_namespace: "awaken".into(),
             image_pull_secrets: Vec::new(),
-            buildkit_image: "moby/buildkit:v0.30.0-rootless".into(),
+            kaniko_image: awaken_container_contract::DEFAULT_K8S_KANIKO_IMAGE.into(),
+            push_secret: None,
             forward_proxy: None,
         }
     }

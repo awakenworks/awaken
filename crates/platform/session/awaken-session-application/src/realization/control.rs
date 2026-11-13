@@ -732,6 +732,10 @@ impl SessionRealizations {
             if ready_fact.is_some() {
                 self.lifecycle.notify_fact();
             }
+            // A hot MCP publication can unblock an existing queued command
+            // while the Session is already Idle. This wake follows the root
+            // CAS and grants no new activity or realization authority.
+            self.lifecycle.request_reconciliation();
             self.realization_directive(
                 owner_scope,
                 &session,

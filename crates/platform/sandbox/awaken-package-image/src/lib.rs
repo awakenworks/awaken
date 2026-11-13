@@ -11,7 +11,7 @@
 //! and optionally publish it to a shared registry.
 //!
 //! The Kubernetes builder ([`K8sPackageImageProvisioner`], feature `k8s`)
-//! runs rootless BuildKit Jobs that publish to a shared Registry and kubelet
+//! runs Kaniko Jobs that publish to a shared Registry and kubelet
 //! image checks that prove availability. [`package_realization`] is the
 //! versioned, read-only evidence binding a built image to its ConfigMap, Job,
 //! Pod and the Sandbox Pod release that runs it, shared by that builder, the

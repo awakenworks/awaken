@@ -1,5 +1,6 @@
 use super::*;
 use awaken_session_execution_contract::SessionPreparationControl;
+use futures_util::FutureExt;
 
 struct FixtureSessionPlacement;
 
@@ -284,6 +285,12 @@ async fn idle_mcp_preparation_reuses_the_bound_worker_and_refuses_a_foreign_owne
     // R1=C1+C2+C3+same -> Stage the exact generation under the SAME lease;
     // R2=C1+C2+C3+foreign -> no assignment and byte-identical root. Neither
     // row creates a model Run, changes execution, or opts into initial work.
+    // C5 a hot generation is staged/published while already Idle; C6 its ACK
+    // matches the complete generation set; C7 that exact ACK is replayed.
+    // R3=C5+C6=>commit publication readiness and wake the existing supervisor,
+    // without a new activity/initial-idle fact. R4=C5+!C6=>no root write/wake.
+    // R5=C7=>same root, no duplicate fact/wake. These are the ACK liveness and
+    // authority effects reused by the real inline-Agent multi-Run regression.
     for self_hosted in [false, true] {
         let repo = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -381,6 +388,102 @@ async fn idle_mcp_preparation_reuses_the_bound_worker_and_refuses_a_foreign_owne
             repo.worker_demand().await.unwrap(),
             1,
             "R1 no extra replica"
+        );
+        let receipt = NoopMcpRealizer
+            .stage_mcp_attachment(mcp_stages.into_iter().next().unwrap())
+            .await
+            .unwrap();
+        let directive = application
+            .realizations
+            .activate_session_realization(
+                awaken_session_execution_contract::ActivateSessionRealization {
+                    session_id: id.clone(),
+                    lease: assignment.directive.authority.lease,
+                    prepared_resource_revision: None,
+                    mcp_receipts: vec![receipt],
+                },
+            )
+            .await
+            .unwrap();
+        let awaken_session_execution_contract::SessionRealizationAction::Publish { publish, drain } =
+            directive.action
+        else {
+            panic!("R3 active generation requires publication acknowledgement");
+        };
+        let command = awaken_session_execution_contract::AcknowledgeSessionRealization {
+            continuation: None,
+            session_id: id.clone(),
+            lease: directive.authority.lease,
+            published: publish,
+            drained: drain,
+        };
+        let _ = application.lifecycle.notified().now_or_never();
+        let before_ack = repo.get(&id).await.unwrap();
+        let facts = repo.pending_lifecycle().await.unwrap();
+        let mut mismatched = command.clone();
+        mismatched.published.clear();
+        assert!(
+            matches!(
+                application
+                    .realizations
+                    .acknowledge_session_realization(mismatched)
+                    .await,
+                Err(
+                    awaken_session_execution_contract::SessionRealizationControlFailure::Invalid(_)
+                )
+            ),
+            "R4 mismatched publication set"
+        );
+        assert_eq!(repo.get(&id).await.unwrap(), before_ack, "R4");
+        assert!(
+            application.lifecycle.notified().now_or_never().is_none(),
+            "R4 no wake"
+        );
+        let acknowledged = application
+            .realizations
+            .acknowledge_session_realization(command.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                acknowledged.action,
+                awaken_session_execution_contract::SessionRealizationAction::Complete
+            ),
+            "R3"
+        );
+        assert!(
+            application.lifecycle.notified().now_or_never().is_some(),
+            "R3 successful hot ACK wakes durable work"
+        );
+        let ready = repo.get(&id).await.unwrap();
+        assert!(ready.mcp.attachments[0].publication_acknowledged, "R3");
+        assert_eq!(
+            ready.execution, before.execution,
+            "R3 no activity admission"
+        );
+        assert_eq!(
+            ready.active_activity_epochs, before.active_activity_epochs,
+            "R3"
+        );
+        assert_eq!(
+            repo.pending_lifecycle().await.unwrap(),
+            facts,
+            "R3 no initial-idle fact"
+        );
+        application
+            .realizations
+            .acknowledge_session_realization(command)
+            .await
+            .unwrap();
+        assert_eq!(repo.get(&id).await.unwrap(), ready, "R5 no duplicate write");
+        assert!(
+            application.lifecycle.notified().now_or_never().is_none(),
+            "R5 no duplicate wake"
+        );
+        assert_eq!(
+            repo.pending_lifecycle().await.unwrap(),
+            facts,
+            "R5 no duplicate fact"
         );
     }
 }
