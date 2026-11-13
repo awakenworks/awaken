@@ -85,7 +85,7 @@ impl PgNotifyWake {
     pub fn new(pool: sqlx::postgres::PgPool, channel: impl Into<String>) -> Self {
         let channel = channel.into();
         let local = Arc::new(Notify::new());
-        let listen_pool = sqlx::postgres::PgPoolOptions::new()
+        let listen_pool = awaken_sql_storage::postgres_pool_options()
             .max_connections(1)
             .connect_lazy_with((*pool.connect_options()).clone());
         let listen_channel = channel.clone();
