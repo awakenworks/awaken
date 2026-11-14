@@ -44,6 +44,12 @@ report() {
   # headroom and what could be reclaimed belong in the same report as the tools.
   python3 scripts/ci/reclaim_build_space.py --summary
   echo ""
+  # A gate nobody saw pass is the other silent failure: the frontend group went
+  # unverified for weeks because a refused or never-run gate prints nothing.
+  # Silent when every gate passed on this host within the last week.
+  python3 scripts/ci/check_gate_freshness.py --local-groups --stale-days 7 || true
+  echo ""
+  echo "run scripts/ci/ci_performance.py dx to see gate timings and refusals by cause."
   echo "run scripts/ci/doctor.sh --fix to install what local caches can supply (Node roots)."
   echo "run scripts/ci/check-all.sh --list-groups to see every group."
   echo "run scripts/ci/gate_tools.py require --gate <group> to precheck one group."

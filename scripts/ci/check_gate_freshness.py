@@ -43,6 +43,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -320,6 +321,196 @@ def report(repo: Path, path: Path, strict: bool) -> int:
     return 1 if (strict and state == EXPIRED) else 0
 
 
+# ------------------------------------------------- local per-group freshness
+#
+# The record above covers one complete run. Between two of them each group is
+# run on its own (`check-all.sh --group`), and nothing said when a group had
+# last passed: the frontend group had no passing run in 60 days and the full
+# gate no run at all, and only a manual read of timings showed it. The build
+# observations on this host already hold every check-all run, so this reads
+# them: one line per group with no passing run in --stale-days, saying whether
+# nobody ran it or how its runs ended. A 75 is a refusal before any work, not a
+# failure anyone reads, so it is counted apart, with its recorded cause.
+
+HEALTH_LOOKBACK_DAYS = 60
+INTERRUPTED_EXITS = frozenset({124, 129, 130, 143})
+
+
+def observation_root() -> Path:
+    """The root build observations are written to (ci_performance.TaskRun's default)."""
+
+    return Path(os.environ.get("AWAKEN_BUILD_OBSERVATIONS")
+                or Path.home() / ".local/state/awaken-builds")
+
+
+def local_gate_runs(root: Path, cutoff: float) -> list[tuple]:
+    """``[(gate, started_at, exit_code, status, directory)]`` check-all recorded since cutoff.
+
+    Only ``check-all.sh`` records a gate run; a script run directly
+    (check_formal.sh, pg_tests.sh) leaves nothing here. Synthetic and
+    source-less runs are test fixtures and never count.
+    """
+
+    rows = []
+    for directory in root.glob("build-observations-*"):
+        try:
+            if directory.stat().st_mtime < cutoff:
+                continue
+            run = json.loads((directory / "evidence.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        match = re.fullmatch(r"check-all:([a-z0-9-]+):full=([01])", str(run.get("label", "")))
+        started = run.get("started_at_unix")
+        if (not match or run.get("kind") != "build-observations"
+                or not isinstance(started, (int, float)) or started < cutoff
+                or run.get("observation_kind") == "synthetic"
+                or (run.get("source") or {}).get("available") is False):
+            continue
+        gate = "full-gate" if match.group(2) == "1" else match.group(1)
+        rows.append((gate, started, run.get("exit_code"), run.get("status"), directory))
+    return rows
+
+
+def last_refusal(directory: Path) -> str | None:
+    try:
+        lines = (directory / "refusals.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            detail = "; ".join(str(problem) for problem in row.get("problems") or []) \
+                or str(row.get("reason", ""))
+            return f"{row.get('stage', '?')}: {detail}"
+    return None
+
+
+def local_gate_health(root: Path, days: float, stale_days: float, groups: list[str],
+                      now: float | None = None) -> list[dict]:
+    """One row per group and the full gate: last pass, and how runs in the window ended."""
+
+    now = time.time() if now is None else now
+    window = now - days * 86400
+    runs = local_gate_runs(root, now - max(days, stale_days, HEALTH_LOOKBACK_DAYS) * 86400)
+    health = []
+    for gate in [*groups, "full-gate"]:
+        mine = sorted((row for row in runs if row[0] == gate), key=lambda row: row[1])
+        passes = [row[1] for row in mine if row[3] == "passed"]
+        counts = {"passed": 0, "failed": 0, "refused": 0, "interrupted": 0}
+        for _, started, code, status, _ in mine:
+            if started < window:
+                continue
+            if status == "passed":
+                counts["passed"] += 1
+            elif code == 75:
+                counts["refused"] += 1
+            elif code in INTERRUPTED_EXITS or status in ("interrupted", "running"):
+                counts["interrupted"] += 1
+            else:
+                counts["failed"] += 1
+        refused = [row for row in mine if row[2] == 75]
+        last_pass = passes[-1] if passes else None
+        health.append({
+            "gate": gate, "last_pass_unix": last_pass, "last_run_unix": mine[-1][1] if mine else None,
+            **counts, "stale": last_pass is None or now - last_pass > stale_days * 86400,
+            "latest_refusal": (last_refusal(refused[-1][4]) or "no cause recorded") if refused else None,
+        })
+    return health
+
+
+def stale_lines(health: list[dict], stale_days: float, now: float | None = None) -> list[str]:
+    """One STALE line per stale gate, most runs gone wrong first; empty when all are fresh."""
+
+    now = time.time() if now is None else now
+    lines = []
+    stale = sorted((row for row in health if row["stale"]),
+                   key=lambda row: (row["last_run_unix"] is None,
+                                    -(row["refused"] + row["failed"]), row["gate"]))
+    for row in stale:
+        if row["last_run_unix"] is None:
+            what = f"no check-all.sh run recorded in {HEALTH_LOOKBACK_DAYS} days"
+        else:
+            last = (f"{(now - row['last_pass_unix']) / 86400:.0f} days ago"
+                    if row["last_pass_unix"] is not None else f"never in {HEALTH_LOOKBACK_DAYS} days")
+            what = (f"last passed {last}; in the window {row['failed']} failed, "
+                    f"{row['refused']} refused (75), {row['interrupted']} interrupted")
+            if row["latest_refusal"]:
+                what += f"; latest refusal: {row['latest_refusal']}"
+        lines.append(f"STALE {row['gate']}: no passing run in {stale_days:g} days ({what})")
+    return lines
+
+
+def local_groups_report(root: Path, days: float, stale_days: float, fail_on_stale: bool) -> int:
+    lines = stale_lines(local_gate_health(root, days, stale_days, all_groups()), stale_days) \
+        if root.is_dir() else []
+    for line in lines:
+        print(line)
+    return int(bool(lines) and fail_on_stale)
+
+
+def _health_problems() -> list[str]:
+    """H1-H7, against fixture observation directories.
+
+    | Rule | cause                                                   | effect                  |
+    |------|---------------------------------------------------------|-------------------------|
+    | H1   | a group whose runs in the window were all refused (75)  | stale, refusals counted |
+    | H2   | an old pass, then a failure and an interruption         | stale, each counted     |
+    | H3   | a group nobody ran                                      | stale, "no run"         |
+    | H4   | a recent pass                                           | fresh, no line          |
+    | H5   | a synthetic (fixture) pass                              | never counts            |
+    | H6   | the full gate                                           | its own row and cause   |
+    | H7   | the staleness rule dropped (any pass counts)            | H2 would pass: guarded  |
+    """
+
+    problems: list[str] = []
+    now = time.time()
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+
+        def run(name, label, age_days, code, *, refusal=None, kind="project"):
+            path = root / ("build-observations-" + name)
+            path.mkdir()
+            (path / "evidence.json").write_text(json.dumps({
+                "kind": "build-observations", "label": label, "started_at_unix": now - age_days * 86400,
+                "exit_code": code, "status": "passed" if code == 0 else "failed",
+                "observation_kind": kind, "source": {"commit": "c"}}), encoding="utf-8")
+            if refusal:
+                (path / "refusals.jsonl").write_text(json.dumps(refusal) + "\n", encoding="utf-8")
+
+        run("f1", "check-all:frontend:full=0", 3, 75,
+            refusal={"stage": "resources:cargo", "problems": ["io PSI full avg10=30.00% exceeds 20.00%"]})
+        run("f2", "check-all:frontend:full=0", 1, 75)
+        run("r1", "check-all:rust:full=0", 20, 0)
+        run("r2", "check-all:rust:full=0", 2, 1)
+        run("r3", "check-all:rust:full=0", 1, 143)
+        run("d1", "check-all:docs:full=0", 1, 0)
+        run("s1", "check-all:static:full=0", 1, 0, kind="synthetic")
+        run("g1", "check-all:all:full=1", 2, 75, refusal={"stage": "disk:rust-full", "reason": "9.0G free"})
+        health = {row["gate"]: row for row in local_gate_health(
+            root, 7, 7, ["static", "docs", "rust", "frontend"], now)}
+        if {gate: row["stale"] for gate, row in health.items()} != {
+                "static": True, "docs": False, "rust": True, "frontend": True, "full-gate": True}:
+            problems.append("H1-H6 staleness by gate is wrong")
+        if (health["frontend"]["refused"], health["frontend"]["latest_refusal"]) != (2, "no cause recorded"):
+            problems.append("H1 refused runs or their latest cause were miscounted")
+        if (health["rust"]["failed"], health["rust"]["interrupted"], health["rust"]["passed"]) != (1, 1, 0):
+            problems.append("H2 a failure and an interruption were miscounted")
+        lines = stale_lines(list(health.values()), 7, now)
+        if [line.split(":")[0] for line in lines] != [
+                "STALE frontend", "STALE full-gate", "STALE rust", "STALE static"]:
+            problems.append(f"H1-H6 stale lines in the wrong order: {lines}")
+        elif ("latest refusal: disk:rust-full: 9.0G free" not in lines[1]
+              or "last passed 20 days ago; in the window 1 failed, 0 refused (75), 1 interrupted" not in lines[2]
+              or "no check-all.sh run recorded in 60 days" not in lines[3]):
+            problems.append(f"H2/H3/H6 stale lines lost their detail: {lines}")
+        if stale_lines([row for row in health.values() if not row["stale"]], 7, now):
+            problems.append("H4 a fresh gate printed a line")
+    return problems
+
+
 # ---------------------------------------------------------------- self-test
 
 
@@ -401,9 +592,10 @@ def self_test() -> int:
     | S3   | no record at all, --require-fresh            | rejects                    |
     | W1   | --record with a partial group list           | refuses to write           |
     | G1   | an ambient GIT_DIR, as a hook runner exports | never reaches the fixture  |
+    | H1-7 | local per-group freshness (_health_problems)  | see that table             |
     """
 
-    problems: list[str] = []
+    problems: list[str] = _health_problems()
     groups = all_groups()
 
     table = [
@@ -530,10 +722,20 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--gates", default="")
     parser.add_argument("--expected-commit", default="")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--local-groups", action="store_true",
+                        help="one STALE line per check-all group with no passing run on this host")
+    parser.add_argument("--days", type=float, default=7, help="--local-groups: window for run counts")
+    parser.add_argument("--stale-days", type=float, default=7,
+                        help="--local-groups: flag a group with no passing run in this many days")
+    parser.add_argument("--observations", type=Path, help="--local-groups: observation root")
+    parser.add_argument("--fail-on-stale", action="store_true", help="--local-groups: exit 1 when any is stale")
     arguments = parser.parse_args(argv)
 
     if arguments.self_test:
         return self_test()
+    if arguments.local_groups:
+        return local_groups_report(arguments.observations or observation_root(), arguments.days,
+                                   arguments.stale_days, arguments.fail_on_stale)
     if arguments.record:
         return write_record(ROOT, arguments.gates.split(), RECORD, arguments.expected_commit)
     return report(ROOT, RECORD, arguments.require_fresh)
