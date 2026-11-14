@@ -50,12 +50,29 @@ validates. Evidence state and slices stay a reviewed edit. ``record`` refuses:
 | R05  | HEAD or the tree changed while the command ran              |
 | R06  | the id or its receipt directory already exists              |
 | R07  | the log does not name every case its summary counts         |
+
+Every refusal is printed with its next step (``remedy``). One cause is purely
+mechanical: an edit above a bound test moves its definition and assertions to
+other lines (L03 ``... is not NAME`` / L04 ``... is not an assertion``).
+``--fix`` re-points such a binding at the one definition of the same name in the
+same file, and each cited assertion at the line a diff of the file against HEAD
+moves it to (an edited line: the same text nearest its old place; when neither
+holds, every assertion line of the body, as ``bind`` derives them). It never
+renames a binding, changes a path, evidence, witness, state or count, and
+refuses (writing nothing for that binding):
+
+| Code | Cause                                                       |
+| ---- | ----------------------------------------------------------- |
+| X01  | the bound name is not defined exactly once in its file      |
+| X02  | the relocated test body has no assertion line to cite       |
+| X03  | a cited line was no assertion at HEAD either (a choice)     |
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import difflib
 import hashlib
 import json
 import os
@@ -645,6 +662,197 @@ def bind_test(root: Path, binding_id: str, name: str, source: str, evidence_id: 
     return binding
 
 
+FIX = "python3 scripts/ci/check_session_acceptance.py --fix"
+DRIFT = re.compile(r"^L0[34] (?P<binding>\S+) (?P<path>[^\s:]+):(?P<line>\d+) is not ")
+
+
+def _part_holding(root: Path, key: str, identity: str) -> str:
+    """The ledger part file that holds row ``identity`` of ``key``, for a message."""
+    for path in _part_files(root, key):
+        try:
+            rows = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if key == "groups":
+            if any(row["id"] == identity or any(case["id"] == identity for case in row["cases"])
+                   for row in rows):
+                return path.relative_to(root).as_posix()
+        elif any(row.get("id") == identity for row in rows):
+            return path.relative_to(root).as_posix()
+    return (LEDGER / "catalog.json").as_posix()
+
+
+def remedy(error: str, root: Path = ROOT) -> str:
+    """The one next step for a refusal: a command, or the decision and where to record it."""
+    code, _, rest = error.partition(" ")
+    subject = rest.split(" ", 1)[0]
+    try:
+        if DRIFT.match(error):
+            return f"the test moved within its file; run `{FIX}` to re-point {subject} at it"
+        if code == "L03":
+            name = error.rsplit(" ", 1)[-1]
+            return (f"{name} is gone from that file. Decide: renamed -> set {subject}.name and run `{FIX}` "
+                    "(its evidence still names the old case; record and bind again if the body changed); "
+                    f"moved to another file -> change {subject}.source_locations/assertion_locations paths "
+                    f"and run `{FIX}`; deleted -> bind the case to a test that proves it "
+                    f"(`check_session_acceptance.py bind ...`). `git log -S '{name}' --oneline` finds the change. "
+                    f"Edit {_part_holding(root, 'bindings', subject)}")
+        if code == "L02" and " source " in error:
+            return (f"the cited file moved or was deleted; `git log --follow --name-status -- <old path>` "
+                    f"finds it. Update {subject}'s paths in {_part_holding(root, 'bindings', subject)}, "
+                    f"then run `{FIX}`")
+        if code == "L02" and " entrypoint " in error:
+            return f"point {subject}.entrypoint at the group's current owner file in {_part_holding(root, 'groups', subject)}"
+        if code == "L02":
+            return "record the evidence first (`check_session_acceptance.py record ...`) or bind an existing id"
+        if code == "L04":
+            return (f"cite an assertion line of {subject}'s test body in "
+                    f"{_part_holding(root, 'bindings', subject)}, or bind it again with `check_session_acceptance.py bind`")
+        if code == "L11":
+            return (f"evidence entries are immutable: restore {subject} from `git show HEAD:{LEDGER.as_posix()}/<registry part>`; "
+                    "new evidence needs a new id from `check_session_acceptance.py record`")
+        if code == "L01":
+            return (f"if the case state change is intended, write the counts the cases produce into "
+                    f"{(LEDGER / 'catalog.json').as_posix()} counts; otherwise restore the case state")
+        if code in ("L05", "L06"):
+            return ("re-record a passing run with `check_session_acceptance.py record ...` and rebind with "
+                    "`check_session_acceptance.py bind ...`; a witness is never edited by hand")
+        if code in ("L07", "L08", "L09", "L10", "L12", "L14"):
+            return (f"decide the case's evidence state in {_part_holding(root, 'groups', subject)}: bind what it "
+                    "still lacks, or record the reason the decision table asks for")
+        if code == "L13":
+            return "give the duplicated row a new id"
+    except (OSError, ValueError, KeyError):
+        pass
+    return "see the decision table in scripts/ci/check_session_acceptance.py"
+
+
+def report(errors: list[str], root: Path = ROOT) -> str:
+    """Every refusal with its next step, then the one command when some are mechanical."""
+    lines = [f"session-acceptance: {error}\n  next: {remedy(error, root)}" for error in errors]
+    fixable = sum(bool(DRIFT.match(error)) for error in errors)
+    if fixable:
+        lines.append(f"session-acceptance: {fixable} of {len(errors)} refusal(s) are line drift; "
+                     f"run `{FIX}`, review the diff, and stage {LEDGER.as_posix()}/")
+    return "\n".join(lines)
+
+
+def _head_lines(root: Path, path: str) -> list[str] | None:
+    import formal_sources
+
+    try:
+        if not formal_sources.git_output(root, "ls-tree", "--name-only", "HEAD", "--", path).strip():
+            return None
+        return formal_sources.git_output(root, "show", f"HEAD:{path}").decode("utf-8").splitlines()
+    except (OSError, ValueError, subprocess.CalledProcessError, formal_sources.SourceError):
+        return None
+
+
+def _relocated_assertions(binding: dict, path: str, lines: list[str], start: int,
+                          head: list[str] | None) -> tuple[list[int], str]:
+    """Each cited assertion where the same line moved since HEAD, else every body assertion.
+
+    A cited line may sit in a helper the test calls, outside its body, so the
+    move is read from a line diff of the whole file against HEAD; an edited
+    line is found by its unchanged text nearest to where it would be.
+    """
+    body = [number for number in _test_body(lines, start, path) if ASSERTION.search(lines[number - 1])]
+    old_start = next((location["line"] for location in binding["source_locations"]
+                      if location["path"] == path), 0)
+    sites = [site for site in binding.get("assertion_locations", []) if site["path"] == path]
+    if head and 0 < old_start <= len(head) and binding["name"] in head[old_start - 1]:
+        unchanged: dict[int, int] = {}
+        matcher = difflib.SequenceMatcher(None, head, lines, autojunk=False)
+        for tag, old, old_end, new, _new_end in matcher.get_opcodes():
+            if tag == "equal":
+                unchanged.update({old + offset + 1: new + offset + 1 for offset in range(old_end - old)})
+        mapped = []
+        for site in sites:
+            line = site.get("line", 0)
+            text = head[line - 1].strip() if 0 < line <= len(head) else ""
+            if not ASSERTION.search(text):
+                # HEAD already cited a non-assertion: a choice, not a move.
+                raise Refused(f"X03 {binding['id']}: {path}:{line} was not an assertion at HEAD either; "
+                              "choose the assertion lines by hand")
+            if line in unchanged:
+                mapped.append(unchanged[line])
+                continue
+            matches = [number for number, current in enumerate(lines, 1) if current.strip() == text]
+            if not matches:
+                break
+            expected = start + (line - old_start)
+            mapped.append(min(matches, key=lambda number: (abs(number - expected), number)))
+        else:
+            return mapped, "same assertion lines"
+    return body, "every assertion of the body, as `bind` derives them"
+
+
+def relocate_bindings(root: Path = ROOT) -> tuple[list[str], list[str]]:
+    """Re-point bindings whose test moved within its file; write only line numbers.
+
+    Returns (what moved, what was refused). A refusal leaves its binding as it was.
+    """
+    moved, refused = [], []
+    cache: dict = {}
+    data = _load(root)
+    by_id = {binding["id"]: binding for binding in data["bindings"]}
+    stale = sorted({match["binding"] for error in ledger_errors(data, root)
+                    if (match := DRIFT.match(error))})
+    for identity in stale:
+        binding = by_id[identity]
+        updated, notes = copy.deepcopy(binding), []
+        try:
+            for location in updated["source_locations"]:
+                path = location["path"]
+                lines = _source_lines(root, path, cache)
+                if lines is None:
+                    continue
+                regex = re.compile(DEFINITION.format(name=re.escape(binding["name"])))
+                starts = [number for number, line in enumerate(lines, 1) if regex.search(line)]
+                if len(starts) != 1:
+                    raise Refused(f"X01 {identity}: {path} defines {binding['name']} {len(starts)} times; "
+                                  "bind exactly one definition by hand")
+                how = "definition only"
+                if updated["relation"] == CLAUSE_RELATION:
+                    assertions, how = _relocated_assertions(binding, path, lines, starts[0],
+                                                            _head_lines(root, path))
+                    if not assertions:
+                        raise Refused(f"X02 {identity}: {binding['name']} in {path} has no assertion line to cite")
+                    kept = [site for site in updated.get("assertion_locations", []) if site["path"] != path]
+                    updated["assertion_locations"] = kept + [{"path": path, "line": number}
+                                                             for number in assertions]
+                notes.append(f"{identity} {binding['name']}: {path}:{location['line']} -> {starts[0]} ({how})")
+                location["line"] = starts[0]
+        except Refused as refusal:
+            refused.append(str(refusal))
+            continue
+        by_id[identity] = updated
+        moved += notes
+    if not moved:
+        return moved, refused
+    for path in _part_files(root, "bindings"):
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        rewritten = [by_id.get(row["id"], row) for row in rows]
+        if rewritten != rows:
+            _write_json(path, rewritten)
+    return moved, refused
+
+
+def fix(root: Path = ROOT) -> int:
+    moved, refused = relocate_bindings(root)
+    for line in moved:
+        print(f"session-acceptance --fix: relocated {line}")
+    for line in refused:
+        print(f"session-acceptance --fix: refused {line}", file=sys.stderr)
+    errors = ledger_errors(_load(root), root, committed_registry(root))
+    if errors:
+        print(report(errors, root), file=sys.stderr)
+        return 1
+    if moved:
+        print(f"session-acceptance --fix: the ledger validates; review and stage {LEDGER.as_posix()}/")
+    return 1 if refused else 0
+
+
 def _subcommand(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="check_session_acceptance.py", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -684,14 +892,16 @@ def _subcommand(argv: list[str]) -> int:
 def main(argv: list[str]) -> int:
     if argv == ["--self-test"]:
         return self_test()
+    if argv == ["--fix"]:
+        return fix(ROOT)
     if argv[:1] in (["record"], ["bind"]):
         return _subcommand(argv)
     if argv:
-        print("usage: check_session_acceptance.py [--self-test | record ... | bind ...]", file=sys.stderr)
+        print("usage: check_session_acceptance.py [--self-test | --fix | record ... | bind ...]", file=sys.stderr)
         return 2
     errors = ledger_errors(_load(ROOT), ROOT, committed_registry(ROOT))
-    for error in errors:
-        print(f"session-acceptance: {error}", file=sys.stderr)
+    if errors:
+        print(report(errors, ROOT), file=sys.stderr)
     return 1 if errors else 0
 
 

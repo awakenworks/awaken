@@ -73,6 +73,12 @@ def reverse_dependants(metadata: dict, package: str) -> set[str]:
     return {names[identity] for identity in found}
 
 
+def assert_ledger_valid(case: unittest.TestCase, errors: list[str]) -> None:
+    """Fail with every refusal and its next step; unittest's list diff truncates both."""
+    if errors:
+        case.fail("the committed acceptance ledger refuses:\n" + check_session_acceptance.report(errors, ROOT))
+
+
 class BoundaryGateTests(unittest.TestCase):
     """Declarations, aliases and wrappers of Host/MCP/Environment/Memory."""
 
@@ -142,7 +148,7 @@ class BoundaryGateTests(unittest.TestCase):
 
     def test_every_group_owner_entrypoint_is_traceable_and_a_move_is_refused(self) -> None:
         data = check_session_acceptance._load(ROOT)
-        self.assertEqual(check_session_acceptance.ledger_errors(data, ROOT), [])
+        assert_ledger_valid(self, check_session_acceptance.ledger_errors(data, ROOT))
         for group in ("T01", "T16", "T20", "T22"):
             with self.subTest(group=group):
                 moved = copy.deepcopy(data)
@@ -335,7 +341,7 @@ class EvidenceValidityTests(unittest.TestCase):
     def test_committed_ledger_satisfies_every_rule(self) -> None:
         data = check_session_acceptance._load(ROOT)
         frozen = check_session_acceptance.committed_registry(ROOT)
-        self.assertEqual(check_session_acceptance.ledger_errors(data, ROOT, frozen), [])
+        assert_ledger_valid(self, check_session_acceptance.ledger_errors(data, ROOT, frozen))
         self.assertEqual(check_session_acceptance.self_test(), 0)
 
 
@@ -468,6 +474,132 @@ class EvidenceRecorderTests(unittest.TestCase):
             report = (root / entry["receipt"]).with_name("unittest.json")
             self.assertEqual(json.loads(report.read_bytes())["cases"]["ProbeTests.test_may_fail"],
                              "skipped")
+
+
+class LineDriftFixTests(unittest.TestCase):
+    """`--fix` moves a binding with its test inside one file and refuses every other change."""
+
+    git = EvidenceRecorderTests.git
+    ledger = EvidenceRecorderTests.ledger
+    record = EvidenceRecorderTests.record
+
+    def bound(self, directory: str) -> Path:
+        root = self.ledger(directory)
+        self.record(root)
+        check_session_acceptance.bind_test(root, "B900", "test_holds", "probe.py", "E90", "ProbeTests.test_holds",
+                                           "probe", "probe.py", "T00-C01", [0], True, "fixture")
+        self.git(root, "add", "--all")
+        self.git(root, "commit", "--quiet", "-m", "bound")
+        self.assertEqual(check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root), [])
+        return root
+
+    def ledger_bytes(self, root: Path) -> dict[str, bytes]:
+        return {path.name: path.read_bytes() for path in (root / check_session_acceptance.LEDGER).glob("*.json")}
+
+    def binding(self, root: Path) -> dict:
+        return check_session_acceptance._load(root)["bindings"][0]
+
+    def test_a_test_moved_within_its_file_is_relocated_and_the_ledger_validates(self) -> None:
+        for label, edit, start, assertion in (
+            ("lines above", lambda text: "# a\n# b\n# c\n" + text, 8, 10),
+            # The cited assertion text changed too: every assertion of the body is cited, as bind does.
+            ("assertion edited", lambda text: "# a\n" + text.replace("self.assertEqual(1 + 1, 2)",
+                                                                      "self.assertEqual(2, 2)"), 6, 8),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory(prefix="acceptance-drift-") as directory:
+                root = self.bound(directory)
+                before = self.binding(root)
+                probe = root / "probe.py"
+                probe.write_text(edit(probe.read_text(encoding="utf-8")), encoding="utf-8")
+                errors = check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root)
+                self.assertIn("L03 B900 probe.py:5 is not test_holds", errors)
+                text = check_session_acceptance.report(errors, root)
+                self.assertIn("next: the test moved within its file; run `python3 scripts/ci/"
+                              "check_session_acceptance.py --fix` to re-point B900", text)
+                moved, refused = check_session_acceptance.relocate_bindings(root)
+                self.assertEqual((len(moved), refused), (1, []))
+                self.assertEqual(check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root), [])
+                after = self.binding(root)
+                self.assertEqual(after["source_locations"][0]["line"], start)
+                self.assertEqual([site["line"] for site in after["assertion_locations"]], [assertion])
+                # Only coordinates move: evidence, witness, covers and review are the bound ones.
+                strip = {"source_locations", "assertion_locations"}
+                self.assertEqual({k: v for k, v in after.items() if k not in strip},
+                                 {k: v for k, v in before.items() if k not in strip})
+                self.assertEqual(after["source_locations"][0]["file_sha256"],
+                                 before["source_locations"][0]["file_sha256"])
+
+    def test_a_cited_helper_line_follows_its_own_move_not_a_twin_line(self) -> None:
+        # The test cites an assertion in a helper whose text also appears in its
+        # body. Only the helper moves; the citation must follow it, not the twin.
+        with tempfile.TemporaryDirectory(prefix="acceptance-drift-") as directory:
+            root = self.ledger(directory)
+            probe = root / "probe.py"
+            text = probe.read_text(encoding="utf-8")
+            marker = "\n\nclass NoisyStream:"
+            helper = "\n\nclass Helper:\n    def helper(self):\n        self.assertEqual(1 + 1, 2)\n"
+            probe.write_text(text.replace(marker, helper + marker, 1), encoding="utf-8")
+            self.git(root, "commit", "--quiet", "--all", "-m", "helper")
+            self.record(root)
+            check_session_acceptance.bind_test(root, "B900", "test_holds", "probe.py", "E90", "ProbeTests.test_holds",
+                                               "probe", "probe.py", "T00-C01", [0], True, "fixture")
+            lines = probe.read_text(encoding="utf-8").splitlines()
+            cited = lines.index("    def helper(self):") + 2
+            part = root / check_session_acceptance.LEDGER / "bindings-1.json"
+            rows = json.loads(part.read_text(encoding="utf-8"))
+            rows[0]["assertion_locations"].append({"path": "probe.py", "line": cited})
+            check_session_acceptance._write_json(part, rows)
+            self.git(root, "add", "--all")
+            self.git(root, "commit", "--quiet", "-m", "bound")
+            probe.write_text(probe.read_text(encoding="utf-8").replace(
+                "\n\nclass Helper:", "\n" + "# spacer\n" * 30 + "\n\nclass Helper:", 1), encoding="utf-8")
+            self.assertIn(f"L04 B900 probe.py:{cited} is not an assertion",
+                          check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root))
+            moved, refused = check_session_acceptance.relocate_bindings(root)
+            self.assertEqual((len(moved), refused), (1, []))
+            self.assertEqual([site["line"] for site in self.binding(root)["assertion_locations"]], [7, cited + 31])
+            self.assertEqual(check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root), [])
+
+    def test_a_rename_or_an_ambiguous_definition_is_refused_and_nothing_is_written(self) -> None:
+        for label, edit, code in (
+            ("renamed", lambda text: text.replace("def test_holds", "def test_renamed"), "does not define"),
+            ("defined twice", lambda text: "class Other:\n    def test_holds(self):\n        assert True\n\n" + text,
+             "is not test_holds"),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory(prefix="acceptance-drift-") as directory:
+                root = self.bound(directory)
+                probe = root / "probe.py"
+                probe.write_text(edit(probe.read_text(encoding="utf-8")), encoding="utf-8")
+                held = self.ledger_bytes(root)
+                errors = check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root)
+                self.assertTrue(any(code in error for error in errors), errors)
+                moved, refused = check_session_acceptance.relocate_bindings(root)
+                self.assertEqual(moved, [])
+                self.assertEqual(self.ledger_bytes(root), held)
+                self.assertEqual(check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root),
+                                 errors)
+                if label == "renamed":
+                    self.assertEqual(refused, [])
+                    self.assertIn("Decide: renamed -> set B900.name", check_session_acceptance.report(errors, root))
+                else:
+                    self.assertEqual(len(refused), 1)
+                    self.assertTrue(refused[0].startswith("X01 B900: probe.py defines test_holds 2 times"), refused)
+
+    def test_a_cited_line_that_was_no_assertion_at_head_is_not_rebound(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="acceptance-drift-") as directory:
+            root = self.bound(directory)
+            part = root / check_session_acceptance.LEDGER / "bindings-1.json"
+            rows = json.loads(part.read_text(encoding="utf-8"))
+            rows[0]["assertion_locations"] = [{"path": "probe.py", "line": 6}]  # the print line
+            check_session_acceptance._write_json(part, rows)
+            self.git(root, "commit", "--quiet", "--all", "-m", "a cited print")
+            errors = check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root)
+            self.assertIn("L04 B900 probe.py:6 is not an assertion", errors)
+            held = self.ledger_bytes(root)
+            moved, refused = check_session_acceptance.relocate_bindings(root)
+            self.assertEqual(moved, [])
+            self.assertTrue(refused and refused[0].startswith("X03 B900"), refused)
+            self.assertEqual(self.ledger_bytes(root), held)
 
 
 class EvidenceArtifactByteTests(unittest.TestCase):
