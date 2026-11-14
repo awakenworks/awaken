@@ -246,7 +246,7 @@ if [ "$mode" = "--self-test" ]; then
       AWAKEN_RUST_GATE_EVIDENCE="$lint_fixture/$3" AWAKEN_RUST_GATE_PLAN="$2" \
       scripts/ci/check-rust.sh "$1" > "$lint_fixture/$3/out" 2>&1
   }
-  affected_plan=$'scope=packages\nreason=self-test change\nawaken-self-test-leaf'
+  affected_plan=$'scope=packages\nreason=self-test change\nawaken-dispatch\nawaken-self-test-leaf'
   if ! lint_fixture_gate --quick "$affected_plan" quick || ! lint_fixture_gate --push "$affected_plan" push; then
     echo "check-rust self-test: L1 the Cargo half failed under recording Cargo (see $lint_fixture)" >&2
     exit 1
@@ -258,13 +258,24 @@ if [ "$mode" = "--self-test" ]; then
       exit 1
     fi
   done
-  # L3 the two passes never share Cargo directories: their CLIPPY_ARGS differ,
-  # so a shared unit is re-linted, with every consumer, on each run.
-  production_dir=$(sed -n '/^--target-dir$/{n;p;}' "$lint_fixture/quick/lint-production.arguments.txt")
-  if [ -z "$production_dir" ] || [ "$production_dir" = "${CARGO_TARGET_DIR%/}" ] \
-      || ! grep -Fxq "build.build-dir='$production_dir'" "$lint_fixture/quick/lint-production.arguments.txt" \
-      || grep -Fxq -- --target-dir "$lint_fixture/quick/lint-all-features.arguments.txt"; then
-    echo "check-rust self-test: L3 the production lint must keep its own target and build directory" >&2
+  # L3 one Cargo directory per CLIPPY_ARGS value: Cargo hashes a unit without
+  # them, so two clippy steps that share a directory and differ after `--`
+  # re-lint each other's units, with every consumer, on each run. Every clippy
+  # step either run recorded is checked (the plan also names awaken-dispatch).
+  lint_directories=""
+  for arguments in "$lint_fixture"/quick/*.arguments.txt "$lint_fixture"/push/*.arguments.txt; do
+    [ "$(sed -n 2p "$arguments")" = clippy ] || continue
+    lint_directory=$(sed -n '/^--target-dir$/{n;p;}' "$arguments")
+    if [ "$(sed -n "s/^build\.build-dir='\(.*\)'$/\1/p" "$arguments")" != "$lint_directory" ]; then
+      echo "check-rust self-test: L3 $arguments moves its target but not its build directory" >&2
+      exit 1
+    fi
+    lint_directories+="${lint_directory:-main}"$'\t'"$(sed -n '/^--$/,$p' "$arguments" | tr '\n' ' ')"$'\n'
+  done
+  if [ "$(printf '%s' "$lint_directories" | sort -u | wc -l)" -lt 2 ] \
+      || [ -n "$(printf '%s' "$lint_directories" | sort -u | cut -f1 | uniq -d)" ] \
+      || [ ! -s "$lint_fixture/quick/run-ingress-neutral.arguments.txt" ]; then
+    echo "check-rust self-test: L3 clippy steps with different arguments must not share a Cargo directory" >&2
     exit 1
   fi
   for unaffected_plan in $'scope=none\nreason=self-test: no Rust input' \
@@ -503,6 +514,18 @@ scoped_step "sdk-consumer" "keep the public SDK usable from an ordinary external
   "$(consumed_packages examples/sdk-consumer/Cargo.toml)" \
   python3 scripts/ci/check_sdk_consumer.py
 
+# Clippy keeps one Cargo directory per CLIPPY_ARGS value. Cargo hashes a
+# unit without them, so two clippy runs that lint the same feature-less unit
+# (awaken-sync, ...) with different `--` arguments mark each other's
+# fingerprints dirty, and every consumer is re-linted on the next run: one
+# shared directory made each hook run re-lint ~140 workspace members (60-90 s
+# and 30-70 s) after a one-line change. The plain `-D warnings` runs
+# (run-ingress-neutral, lint-production) share this directory;
+# lint-all-features, whose `-A` list differs, keeps the main one. The argv,
+# graph and lints are the same as before; only where the artifacts are
+# cached moved. Cost: one cold build (~210 s, ~1.4 GB) per checkout.
+lint_production_target="${CARGO_TARGET_DIR%/}/lint-production"
+
 # Compile-surface decision table: CR2 a database-less Worker consumes Ingress
 # without durable/test support -> compile its production library warning-free;
 # CR3 a workspace peer enables durable -> that unified graph cannot substitute
@@ -512,7 +535,8 @@ scoped_step "sdk-consumer" "keep the public SDK usable from an ordinary external
 # CR5 cfg(test) activates memory fixtures, not SQL adapters: execute the same
 # pure kernels there; SQL migration fixtures stay in the default/durable suite.
 scoped_step "run-ingress-neutral" "keep store-only arithmetic out of the database-less Worker graph" \
-  "awaken-dispatch" cargo clippy -p awaken-dispatch --no-default-features --lib "${locked[@]}" -- -D warnings
+  "awaken-dispatch" cargo clippy -p awaken-dispatch --no-default-features --lib "${locked[@]}" \
+  --target-dir "$lint_production_target" --config "build.build-dir='$lint_production_target'" -- -D warnings
 scoped_step "run-ingress-neutral-unit" "keep memory and domain tests independent from optional SQL drivers" \
   "awaken-dispatch" cargo test -p awaken-dispatch --no-default-features --lib "${locked[@]}"
 
@@ -538,14 +562,6 @@ production_only_lints=(-A clippy::disallowed_methods -A clippy::disallowed_types
 # which switched test-support on and so was not a production graph.
 production_selection_text=$(python3 scripts/ci/rust_test_plan.py --production-selection) || exit 1
 mapfile -t production_selection <<< "$production_selection_text"
-# The production pass keeps its own Cargo directories (target and build).
-# Both passes lint the same feature-less crates (awaken-sync, ...) as the same
-# unit, but with different CLIPPY_ARGS (the -A list above), so in one directory
-# each pass marked the other's units dirty and every run re-linted ~140 of the
-# workspace members in both passes: 60-90 s and 30-70 s per hook run even
-# after a one-line change. Apart from where artifacts are cached, the argv,
-# graph and lints are the same. Cost: one cold build (~210 s, ~1.4 GB) per checkout.
-lint_production_target="${CARGO_TARGET_DIR%/}/lint-production"
 lint_production_fix="route the call through its owner (clippy.toml names it), state a reviewed #[expect(clippy::disallowed_methods, reason = ..)] on the composition-root item, or move a fixture-only call behind cfg(test)/test-support"
 
 # CR6 optional Pod transport and its production startup are not enabled by
