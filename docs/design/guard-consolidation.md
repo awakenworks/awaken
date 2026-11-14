@@ -794,3 +794,27 @@ Measured over 21 days of pre-commit runs on this host (non-synthetic): crate-bou
 | `ModelBinding::new call sites, baseline N` and the F2/F3 "rose from A to B" refusals named no site | the same refusals list the sites in each file whose own count grew (ModelBinding against HEAD via `git grep`, F2/F3 against the fence reference); the decision is still the total | `test_crate_boundary_fix.py ModelBindingSiteTests`, `_ownership_fence_fitness` F2s/F3s: drop the site text → fail; a held file is never listed |
 | ratchet falls, stale baseline crossings, a fallen sdk-engine-spi count, a ModelBinding count below its constant and a test-only `[dependencies]` entry each needed a hand edit | `check_crate_boundaries.py --fix` (`_crate_boundary_fix.py`): runs the owning guard's `--tighten`, deletes the one stale entry, lowers the one count or constant, moves a one-line entry to `[dev-dependencies]`, then re-runs the gate. It only lowers or removes allowances; an optional, `[features]`-named, target-specific or multi-line dependency is refused for a person. Every other refusal gets `next:` naming the list file (managed routes, `ROUTE_OWNER_FILES`, `ISOLATED_DEPENDENCIES`), the migration rule or the manifest that declares the edge; a summary line counts the mechanical ones | `test_crate_boundary_fix.py`: a stale crossing beside a new one → only the stale one removed, the new one still refused by `_bounded_context_fitness`; a guard whose `--tighten` refuses → reported, not fixed; an optional dependency → refused, manifest bytes unchanged; a stale "below" refusal cannot raise a count |
 | `formal surface: staged production sources carry unclassified safety surfaces` listed paths only | each path also gets the classification its nearest decided neighbours use (`neighbour_classifications`, same directory first) and the lines to paste; the choice stays the author's, so there is no `--fix`. The missing-reason refusal says where the reason line goes | `test_formal_surface.py`: the unclassified source is still refused (exit 1) with or without a classified sibling; the sibling's `requirement=` is shown only when one exists |
+
+### 2026-11-14 Commit-time clippy
+
+In 14 days `check-rust.sh --push` failed 15 of 41 runs, almost all on a clippy
+`-D warnings` error that `--quick` never looked for, so the lint surfaced only
+at push, several commits after it was introduced.
+
+| Removed or changed rule | New holder | Negative example (command → result) |
+|---|---|---|
+| the workspace clippy (`lint-all-features`, `lint-production`, `-D warnings`) ran only in `--push` and `--full`; `--quick` ran none | one lint block in the `--quick\|--push` arm of `check-rust.sh`, executed by both modes (same lines, so same argv; `--full` keeps the textually identical commands `check_test_orchestration.py` derives the push list from). It runs when the existing gate-scope selection has an affected Rust package (`rust_changed`); otherwise one `↷ lint-all-features, lint-production (unaffected: …)` line. The argv stays `--workspace`: a `-p` subset resolves another unified feature graph (P4) and, as with the former per-package `check`, would not narrow anything. Cargo freshness limits the work to the changed owners and their consumers | `check-rust.sh --self-test` L1, which runs the gate's real Cargo half with a recording `cargo`: lint block put back under `if [ "$mode" = "--push" ]`, deleted, or given a `--quick`-only `-A dead_code` → "L1 --quick must run lint-all-features with exactly --push's arguments", exit 1. L2: guard replaced by `if false` → "L2 --quick with no affected Rust package must run no clippy and say so once", exit 1 |
+| all clippy steps shared one Cargo directory although their `--` arguments (CLIPPY_ARGS) differ. Cargo hashes a unit without them, so `lint-all-features` (`-A` production-only list), `lint-production` and `run-ingress-neutral` (plain `-D warnings`) marked each other's feature-less units (`awaken-sync`, …) dirty, and every run re-linted ~132–139 members: 60–87 s + 30–32 s on a one-line leaf change, in every `--push` and `--full` too | one Cargo directory per CLIPPY_ARGS value: the plain `-D warnings` steps use `--target-dir`/`build.build-dir` `$CARGO_TARGET_DIR/lint-production`, `lint-all-features` keeps the main one. Argv, graph and lints are unchanged. One cold build per checkout (212 s, 1.4 GB measured). `--push` now finds the units `--quick` linted at the same bytes fresh | L3: `--target-dir` dropped from `lint-production` or `run-ingress-neutral` → "L3 clippy steps with different arguments must not share a Cargo directory"; `build.build-dir` dropped → "L3 … moves its target but not its build directory", exit 1. On the old layout `CARGO_LOG=cargo::core::compiler::fingerprint=info` shows `ChangedEnv { var: "CLIPPY_ARGS", … }` on `awaken-sync` |
+
+Cost, measured on a one-line change to the leaf `awaken-eval` (`--quick`, warm
+target, admission queue empty unless noted):
+
+| | check | lint-all-features | lint-production | gate wall |
+|---|---:|---:|---:|---:|
+| before (no clippy) | 2–3 s | — | — | 12–13 s |
+| clippy, shared directory | 3–4 s | 59–87 s | 30–32 s | 103–138 s |
+| clippy, one directory per argument set | 3–4 s | 2–3 s | 0–1 s | 16 s, 39 s; 86 s (about 70 s of it waiting for an admission slot) |
+
+`--push` right after such a commit (whole scope, because gate scripts
+changed): `lint-all-features` 2 s and `lint-production` 1 s, wall 52 s; the
+same run with the shared directory spent 75 s re-linting, wall 171 s.
