@@ -282,6 +282,8 @@ commit-checks:
 
     # One Rust gate owns source and boundary checks. Trigger it for checker
     # edits too; separate hook invocations would execute the same scan twice.
+    # It runs the pre-push workspace clippy (same argv) whenever the change has
+    # an affected Rust package, so a lint is refused at the commit that adds it.
     - name: rust-quick
       run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --quick
 
@@ -506,9 +508,10 @@ push-qualification:
     documentation:
       run: python3 scripts/ci/_native_shell.py scripts/ci/check-docs.sh
 
-    # --push is --quick plus workspace clippy (-D warnings) and the formal
-    # coverage ledger check: the two ways main has gone red after a green
-    # pre-commit, refused here before the push instead of at the full gate.
+    # --push is --quick (which already runs the workspace clippy, -D warnings)
+    # plus the CLI dev-feature union and the formal ledger checks: the ways main
+    # has gone red after a green pre-commit, refused before the push instead of
+    # at the full gate. Lints the commits already passed are fresh here.
     rust-quick:
       run: python3 scripts/ci/_native_shell.py scripts/ci/check-rust.sh --push
 

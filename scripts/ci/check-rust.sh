@@ -219,6 +219,54 @@ if [ "$mode" = "--self-test" ]; then
     echo "check-rust self-test: a failed test step did not print its repro command" >&2
     exit 1
   fi
+  # Commit-time lint (guard-consolidation.md, 2026-11-14). Causes: L1 the
+  # change has an affected Rust package; L2 it has none (scope none, or only
+  # gate scripts no lint executes). Effects: L1 --quick runs both workspace
+  # lint passes with the argv --push runs, byte for byte (the arguments each
+  # step recorded), so a commit --quick accepts cannot fail them at push on
+  # what it changed; L2 --quick starts no Cargo command and prints one "↷"
+  # line for the lints. The rows run this script's own Cargo half, with Cargo
+  # and the push-only ledger scans replaced by a recorder.
+  lint_fixture="$self_test_evidence/hook-lints"
+  mkdir -p "$lint_fixture/bin" || exit 1
+  printf '%s\n' '#!/bin/sh' 'printf "cargo %s\n" "$*" >> "$AWAKEN_LINT_FIXTURE_LOG"' \
+    > "$lint_fixture/bin/cargo" || exit 1
+  printf '%s\n' '#!/bin/sh' \
+    '[ "$1" = scripts/ci/rust_test_plan.py ] && exec "$AWAKEN_LINT_FIXTURE_PYTHON" "$@"' \
+    'printf "python3 %s\n" "$*" >> "$AWAKEN_LINT_FIXTURE_LOG"' > "$lint_fixture/bin/python3" || exit 1
+  chmod +x "$lint_fixture/bin/cargo" "$lint_fixture/bin/python3" || exit 1
+  lint_fixture_python=$(command -v python3) || exit 1
+  # lint_fixture_gate <mode> <scope plan> <run name>: the Cargo half under that plan.
+  lint_fixture_gate() {
+    mkdir -p "$lint_fixture/$3" || return 1
+    : > "$lint_fixture/$3/calls"
+    env -u AWAKEN_BUILD_RUN_DIRECTORY -u AWAKEN_BUILD_OBSERVE -u AWAKEN_RUST_GATE_ADMITTED_MARKER \
+      PATH="$lint_fixture/bin:$PATH" AWAKEN_LINT_FIXTURE_LOG="$lint_fixture/$3/calls" \
+      AWAKEN_LINT_FIXTURE_PYTHON="$lint_fixture_python" AWAKEN_RUST_GATE_PHASE=cargo \
+      AWAKEN_RUST_GATE_EVIDENCE="$lint_fixture/$3" AWAKEN_RUST_GATE_PLAN="$2" \
+      scripts/ci/check-rust.sh "$1" > "$lint_fixture/$3/out" 2>&1
+  }
+  affected_plan=$'scope=packages\nreason=self-test change\nawaken-self-test-leaf'
+  if ! lint_fixture_gate --quick "$affected_plan" quick || ! lint_fixture_gate --push "$affected_plan" push; then
+    echo "check-rust self-test: L1 the Cargo half failed under recording Cargo (see $lint_fixture)" >&2
+    exit 1
+  fi
+  for pass in lint-all-features lint-production; do
+    if [ ! -s "$lint_fixture/quick/$pass.arguments.txt" ] \
+        || ! cmp -s "$lint_fixture/quick/$pass.arguments.txt" "$lint_fixture/push/$pass.arguments.txt"; then
+      echo "check-rust self-test: L1 --quick must run $pass with exactly --push's arguments" >&2
+      exit 1
+    fi
+  done
+  for unaffected_plan in $'scope=none\nreason=self-test: no Rust input' \
+                         $'scope=packages\nreason=self-test: only gate scripts changed'; do
+    if ! lint_fixture_gate --quick "$unaffected_plan" unaffected \
+        || [ -s "$lint_fixture/unaffected/calls" ] \
+        || [ "$(grep -c '^↷ lint-' "$lint_fixture/unaffected/out")" -ne 1 ]; then
+      echo "check-rust self-test: L2 --quick with no affected Rust package must run no clippy and say so once" >&2
+      exit 1
+    fi
+  done
   echo "check-rust self-test: success, failure and streamed evidence are exact"
   exit 0
 fi
@@ -522,42 +570,51 @@ case "$mode" in
       # own test-support stays off. The maximal graph cannot prove this row.
       scoped_step "cli-dev-feature-union" "resolve inference at its owner without consumer-side cfg assumptions" \
         "awaken-cli" cargo check -p awaken-cli --no-default-features --example credential_reference_worker "${locked[@]}"
-      # Push cause/effect table. P1 a commit compiles but carries dead code or
-      # another `-D warnings` lint -> the quick check passes, main goes red at
-      # the first full run; the pre-push gate runs the same workspace clippy
-      # the full gate runs (same feature set, same locked graph) so the lint
-      # is refused before it leaves the machine. P2 a Kani harness cannot be
-      # planned (no @obligation anchor, a bad @kani tag, unreachable from its
-      # Cargo target) -> the formal group fails hours later; the ledger check
-      # derives the plan in seconds, so it runs here. Neither is
-      # a test run: the workspace suite stays in --full.
-      #
-      # P3 an optional feature is declared but no gate compiles it -> a renamed
-      # trait method, a deleted port or a builder added to one tier and not its
-      # sibling rots behind the feature wall and reaches main; worse, a crate
-      # that fails to compile stops its dependents from compiling, so one such
-      # rot hides the next.
-      #
-      # P1 and P3 used to be two steps over two different graphs: clippy saw one
-      # named feature, `cargo check` saw all 108. So the lint never ran over the
-      # graph that compiled -- a warning-free `--features awaken-cli/container-k8s`
-      # said nothing about the feature-gated code the maximal graph pulls in.
-      # One step, one graph, both questions: clippy compiles everything
-      # `cargo check` compiled and lints all of it. Compile only: these tiers
-      # need a live daemon to run, which their own integration gates provide.
-      #
-      # P4 this lint stays whole whenever any Rust input changed: --all-features
-      # enables every member's features, so a package subset resolves a
-      # different unified graph and cannot stand in for it. Only S3 "none"
-      # (nothing it compiles changed since the push base) skips it.
-      if [ "$rust_changed" -eq 0 ]; then
-        echo "↷ lint-all-features (unaffected: $scope_reason)"
-      else
-        step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
-          cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}"
-        step "lint-production" "$lint_production_fix" \
-          cargo clippy --workspace "${production_selection[@]}" --lib --bins "${locked[@]}" -- -D warnings
-      fi
+    fi
+    # Lint cause/effect table. P1 a commit compiles but carries dead code or
+    # another `-D warnings` lint -> the check above passes, main goes red at
+    # the first full run. Both hooks run the same workspace clippy the full
+    # gate runs (same feature set, same locked graph): one block below, run by
+    # --quick and --push alike, so the commit that introduces a lint is
+    # refused, not the push several commits later (15 of 41 pre-push runs in
+    # two weeks failed this way while --quick ran no clippy). Self-test L1/L2.
+    #
+    # P3 an optional feature is declared but no gate compiles it -> a renamed
+    # trait method, a deleted port or a builder added to one tier and not its
+    # sibling rots behind the feature wall and reaches main; worse, a crate
+    # that fails to compile stops its dependents from compiling, so one such
+    # rot hides the next.
+    #
+    # P1 and P3 used to be two steps over two different graphs: clippy saw one
+    # named feature, `cargo check` saw all 108. So the lint never ran over the
+    # graph that compiled -- a warning-free `--features awaken-cli/container-k8s`
+    # said nothing about the feature-gated code the maximal graph pulls in.
+    # One step, one graph, both questions: clippy compiles everything
+    # `cargo check` compiled and lints all of it. Compile only: these tiers
+    # need a live daemon to run, which their own integration gates provide.
+    #
+    # P4 the argv stays whole whenever any Rust input changed: --all-features
+    # enables every member's features, so a `-p` subset resolves a different
+    # unified graph (and different dependency artifacts) and cannot stand in
+    # for it. The affected selection decides whether the lints run at all
+    # (S3 "none", or only gate scripts no lint executes -> "↷"); Cargo's
+    # freshness decides what they re-lint: with this checkout's target warm,
+    # only the changed owners and their transitive consumers -- the same set
+    # the selection names. --push then finds those units fresh at the same
+    # bytes and does not lint them twice.
+    if [ "$rust_changed" -eq 0 ]; then
+      echo "↷ lint-all-features, lint-production (unaffected: $scope_reason)"
+    else
+      step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
+        cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}"
+      step "lint-production" "$lint_production_fix" \
+        cargo clippy --workspace "${production_selection[@]}" --lib --bins "${locked[@]}" -- -D warnings
+    fi
+    if [ "$mode" = "--push" ]; then
+      # P2 a Kani harness cannot be planned (no @obligation anchor, a bad
+      # @kani tag, unreachable from its Cargo target) -> the formal group fails
+      # hours later; the ledger check derives the plan in seconds, so it runs
+      # here. Neither it nor the lints is a test run: the suite stays in --full.
       gate_step "formal-coverage" "fix the harness anchors/@kani tags or formal/obligations/ as shown above" \
         python3 scripts/ci/check_formal_coverage.py
       # The formal-evidence pre-commit hook now triggers on every production
