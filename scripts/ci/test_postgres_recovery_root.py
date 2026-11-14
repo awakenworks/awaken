@@ -54,6 +54,11 @@ def fixture_environment(binary):
                       AWAKEN_FIXTURE_SCRIPT=str(binary / "docker"))
     values["AWAKEN_HOST_ADMISSION"] = str(observer)
     values["AWAKEN_TEST_DOCKER_STATE"] = str(binary / "docker-state.json")
+    # The fixture gate is its own observed run under the fixture directory, never
+    # a child of the gate running this test: its deliberate 75 (P18) used to be
+    # recorded in that real run's refusals.jsonl and counted by dx.
+    values.update(AWAKEN_BUILD_RUN_DIRECTORY="", AWAKEN_BUILD_RUN_ID="", AWAKEN_BUILD_INVOCATION_ID="",
+                  AWAKEN_BUILD_OBSERVATIONS=str(binary / "observations"))
     return values
 
 

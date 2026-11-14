@@ -783,12 +783,38 @@ def command_resources(manifest: dict, profile: str, *, require_host: bool = Fals
 
 
 def _host_resource_problems() -> list[str]:
+    # R7 the rows below refuse on purpose. Run inside a real gate they inherit
+    # its AWAKEN_BUILD_RUN_DIRECTORY, and their refusals used to land in that
+    # run's refusals.jsonl: `ci_performance.py dx` then counted 45 fixture
+    # "qualification unavailable" refusals in a week as real ones.
+    import tempfile
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as enclosing, \
+            patch.dict(os.environ, {'AWAKEN_BUILD_RUN_DIRECTORY': enclosing}):
+        errors = _host_resource_rows()
+        if (Path(enclosing) / 'refusals.jsonl').exists():
+            errors.append('a self-test fixture refusal reached the enclosing run')
+    return errors
+
+
+def _host_resource_rows() -> list[str]:
     # Resource adapter C/E table: R1 exact protocol/profile+eligible+zero -> run;
     # R2 unavailable+75 -> refusal; R3 status-only may observe R2 before canonical
     # admission tries GC; R4 malformed/inconsistent response -> 75; R5 required
     # host absent -> 75. No percentages/floors or fallback GC are defined here.
     from unittest.mock import patch
     errors = []
+    hermetic = patch.dict(os.environ)
+    hermetic.start()
+    os.environ.pop('AWAKEN_BUILD_RUN_DIRECTORY', None)
+    try:
+        return _host_resource_table(errors)
+    finally:
+        hermetic.stop()
+
+
+def _host_resource_table(errors: list[str]) -> list[str]:
+    from unittest.mock import patch
     row = {'name': 'awaken-build-admission', 'locate': 'path'}
     fixture = {'tools': [row]}
     for eligible, status, observe, expected in (
