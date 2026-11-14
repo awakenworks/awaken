@@ -334,7 +334,8 @@ def surfaces(found: list[Header]) -> tuple[dict[str, Surface], list[str]]:
             errors.append(f"{first.where}: surface classification {path} repeats an obligation id")
             continue
         if not reason:
-            errors.append(f"{first.where}: surface classification {path} needs a `// @formal reason:` line")
+            errors.append(f"{first.where}: surface classification {path} needs a `// @formal reason:` line; "
+                          "add `// @formal reason: <why this classification holds>` after its `// @formal surface` line(s)")
             continue
         if owners and kind != "exclude":
             errors.append(f"{first.where}: `// @formal owner` lines belong to an exclude= surface only")

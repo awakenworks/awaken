@@ -64,7 +64,7 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
             ("S2", ["surface obligation=x.y", "surface obligation=x.z", "reason: r"], (None, ("x.y", "x.z"), None, "r", ())),
             ("S3", ["surface exclude=wire_dto", "owner crates/o.rs", "reason: r"], (None, (), "wire_dto", "r", ("crates/o.rs",))),
             ("S4", ["reason: r"], "needs a `// @formal surface` line"),
-            ("S5", ["surface requirement=a.b"], "needs a `// @formal reason:` line"),
+            ("S5", ["surface requirement=a.b"], "needs a `// @formal reason:` line; add `// @formal reason: "),
             ("S6", ["surface requirement=a.b", "owner crates/o.rs", "reason: r"], "belong to an exclude= surface only"),
             ("S7", ["surface proof=a.b", "reason: r"], "expected `// @formal surface <requirement|obligation|exclude>=<value>`"),
             ("S8", ["surface requirement=a.b", "surface exclude=wire_dto", "reason: r"], "duplicate surface classification"),
@@ -511,6 +511,47 @@ class FormalSurfaceStagedSubjectTests(unittest.TestCase):
                 self.assertEqual(status, 1)
                 self.assertIn(self.POLICY, error)
                 self.assertIn("unclassified", error)
+
+    def test_unclassified_refusal_names_the_decision_and_the_neighbours_it_could_follow(self) -> None:
+        # C1 a classified sibling in the same directory; C2 none anywhere.
+        # E1 the refusal stays a refusal; E2 it names the sibling's decision
+        # and the exact lines to paste; E3 without one it points at features.json.
+        other = "crates/runtime/example/src/other.rs"
+        for sibling in (True, False):
+            with self.subTest(sibling=sibling), self.fixture() as root:
+                if sibling:
+                    (root / self.POLICY).write_text(self.CLASSIFIED)
+                    self.git(root, "add", self.POLICY)
+                (root / other).write_text("fn authorize_request() {}\n")
+                self.git(root, "add", other)
+                status, _, error = self.invoke([other])
+                self.assertEqual(status, 1, "E1")
+                self.assertIn(f"  {other} [authorization]", error)
+                self.assertIn("decide which requirement or obligation this file's behaviour serves", error)
+                if sibling:
+                    self.assertIn("decided neighbours under crates/runtime/example/src/: "
+                                  "requirement=fixture.policy (1)", error, "E2")
+                    self.assertIn("      // @formal surface requirement=fixture.policy\n", error, "E2")
+                else:
+                    self.assertIn("no neighbour is classified; pick a requirement id from formal/features.json",
+                                  error, "E3")
+                    self.assertIn("// @formal surface requirement=<feature.requirement>", error, "E3")
+
+    def test_neighbour_search_widens_to_the_nearest_decided_directory(self) -> None:
+        exclusions = {"crates/a/src/x/dto.rs": {"boundary": "wire_dto"}}
+        classifications = {
+            "crates/a/src/policy.rs": {"requirement_id": "f.r"},
+            "crates/a/src/y/z.rs": {"obligation_ids": ["o.1", "o.2"]},
+        }
+        ledger = {"crates/a/src/x/proof.rs": [{"id": "o.3"}]}
+        found = MODULE.neighbour_classifications("crates/a/src/x/new.rs", ledger, exclusions, classifications)
+        self.assertEqual(found, ("crates/a/src/x", [("exclude=wire_dto", 1), ("obligation=o.3", 1)]))
+        found = MODULE.neighbour_classifications("crates/a/src/w/new.rs", {}, exclusions, classifications)
+        self.assertEqual(found[0], "crates/a/src")
+        self.assertEqual(dict(found[1]), {"exclude=wire_dto": 1, "requirement=f.r": 1,
+                                          "obligation=o.1": 1, "obligation=o.2": 1})
+        self.assertEqual(MODULE.neighbour_classifications("crates/b/src/new.rs", {}, exclusions, classifications),
+                         ("", []))
 
     def test_selected_index_requires_exactly_one_source_authority(self) -> None:
         # R18-R21: direct ledger link x staged classification. Exactly one

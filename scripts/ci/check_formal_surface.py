@@ -418,6 +418,73 @@ def under_production_root(path: pathlib.Path) -> bool:
     return any(root == path or root in path.parents for root in PRODUCTION_ROOTS)
 
 
+def neighbour_classifications(
+    relative: str,
+    by_source: dict[str, list[dict[str, object]]],
+    exclusions: dict[str, dict[str, object]],
+    classifications: dict[str, dict[str, object]],
+) -> tuple[str, list[tuple[str, int]]]:
+    """How the nearest already-decided sources around ``relative`` are classified.
+
+    Walks up from the file's directory and stops at the first directory, below
+    ``crates/``, under which some other source carries a decision. The result
+    is evidence for the author's choice, never the choice itself: a sibling's
+    requirement is not this file's requirement until someone says so.
+    """
+
+    labels: dict[str, list[str]] = {}
+    for path, classification in classifications.items():
+        if "requirement_id" in classification:
+            labels.setdefault(path, []).append(f"requirement={classification['requirement_id']}")
+        labels.setdefault(path, []).extend(
+            f"obligation={item}" for item in classification.get("obligation_ids", [])
+        )
+    for path, exclusion in exclusions.items():
+        labels.setdefault(path, []).append(f"exclude={exclusion['boundary']}")
+    for path, obligations in by_source.items():
+        labels.setdefault(path, []).extend(f"obligation={item['id']}" for item in obligations)
+    directory = pathlib.PurePosixPath(relative).parent
+    while len(directory.parts) > 1:
+        prefix = directory.as_posix() + "/"
+        counts: dict[str, int] = {}
+        for path, found in labels.items():
+            if path != relative and path.startswith(prefix):
+                for label in dict.fromkeys(found):
+                    counts[label] = counts.get(label, 0) + 1
+        if counts:
+            return directory.as_posix(), sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        directory = directory.parent
+    return "", []
+
+
+def unclassified_guidance(
+    relative: str,
+    signals: list[str],
+    by_source: dict[str, list[dict[str, object]]],
+    exclusions: dict[str, dict[str, object]],
+    classifications: dict[str, dict[str, object]],
+) -> str:
+    """One unclassified source: what was detected, the decision, and the lines to add."""
+
+    scope, labels = neighbour_classifications(relative, by_source, exclusions, classifications)
+    lines = [f"  {relative} [{','.join(signals)}]"]
+    if labels:
+        shown = ", ".join(f"{label} ({count})" for label, count in labels[:3])
+        lines.append(f"    decided neighbours under {scope}/: {shown}")
+        example = labels[0][0]
+    else:
+        lines.append("    no neighbour is classified; pick a requirement id from formal/features.json")
+        example = "requirement=<feature.requirement>"
+    lines += [
+        "    decide which requirement or obligation this file's behaviour serves, then add as its first lines:",
+        f"      // @formal surface {example}",
+        "      // @formal reason: <why this file is that boundary>",
+        "    or, if it decides nothing safety-relevant: `// @formal surface exclude=<boundary>`",
+        "      and a reason line (plus `// @formal owner <path>` where the behaviour lives elsewhere)",
+    ]
+    return "\n".join(lines)
+
+
 def check_staged(paths: list[str]) -> None:
     """Apply the existing surface predicate to one selected index subject.
 
@@ -482,7 +549,10 @@ def check_staged(paths: list[str]) -> None:
                 "staged production sources carry unclassified safety surfaces; classify each in "
                 "its own opening lines (`// @formal surface requirement=|obligation=|exclude=` "
                 "with a `// @formal reason:`):\n"
-                + "\n".join(f"  {relative} [{','.join(signals)}]" for relative, signals in unclassified)
+                + "\n".join(
+                    unclassified_guidance(relative, signals, by_source, exclusions, classifications)
+                    for relative, signals in unclassified
+                )
             )
         subject = "index" if staged else "explicit disk fixture"
         print(f"formal source surface: {checked} production Rust candidate(s) checked "
