@@ -234,7 +234,7 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Sessio
         else {
             return Ok(SessionWorkOwnership::NotRequired);
         };
-        if acquisition == SessionWorkAcquisition::RealizationRenewal {
+        if !acquisition.may_take_dispatched_work() {
             return Ok(self
                 .leases
                 .renew_session(&environment_id, session_id, worker_owner)

@@ -2955,6 +2955,12 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
     // | W3 | present | self-hosted/nonterminal | stopped | wake + Leased |
     // | W4 | present | self-hosted/terminal | stopped | Unowned; no wake |
     // | W5 | present | self-hosted/nonterminal renewal | stopped | Unowned; no wake |
+    // | W6 | present | self-hosted/nonterminal claimed preparation | stopped | Unowned; no wake |
+    // | W7 | present | self-hosted/nonterminal claimed preparation | dispatched | Leased; no wake |
+    //
+    // C6 a claimed Run-free preparation: the root's own obligation may take
+    // the Session's dispatched Work (W7) so its Environment effects are
+    // fenced, but like renewal it never revives stopped Work (W6).
     use awaken_session_application_contract::{SessionWorkAcquisition, SessionWorkOwnership};
 
     use awaken_session_application_contract::SessionWorkerLeaseAuthority;
@@ -2963,6 +2969,7 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
     create(repo.as_ref(), persisted("cloud-work", false, "idle")).await;
     create(repo.as_ref(), persisted("self-work", true, "idle")).await;
     create(repo.as_ref(), persisted("renewal-work", true, "idle")).await;
+    create(repo.as_ref(), persisted("preparation-work", true, "idle")).await;
     create(
         repo.as_ref(),
         persisted("terminal-work", true, "terminated"),
@@ -3052,6 +3059,45 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
             .contains("renewal-work"),
         "W5"
     );
+    assert_eq!(
+        app.work_assignments
+            .acquire_session_work(
+                &SessionId::from("preparation-work"),
+                "preparation-owner",
+                SessionWorkAcquisition::ClaimedPreparation,
+            )
+            .await
+            .expect("W6"),
+        SessionWorkOwnership::Unowned,
+        "W6"
+    );
+    assert!(
+        !environments
+            .awakened
+            .lock()
+            .unwrap()
+            .contains("preparation-work"),
+        "W6"
+    );
+    // The fixture queue leases exactly the Work it holds dispatched.
+    environments
+        .awakened
+        .lock()
+        .unwrap()
+        .insert("preparation-work".into());
+    let SessionWorkOwnership::Leased(lease) = app
+        .work_assignments
+        .acquire_session_work(
+            &SessionId::from("preparation-work"),
+            "preparation-owner",
+            SessionWorkAcquisition::ClaimedPreparation,
+        )
+        .await
+        .expect("W7")
+    else {
+        panic!("W7 a claimed preparation takes the dispatched Session Work");
+    };
+    assert_eq!(lease.owner(), "preparation-owner", "W7");
 }
 
 #[tokio::test]

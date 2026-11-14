@@ -14,6 +14,8 @@ mod attempt_binding;
 mod cursor_protocol;
 #[path = "signed_worker_transport_http/error_classes.rs"]
 mod error_classes;
+#[path = "signed_worker_transport_http/preparation_work.rs"]
+mod preparation_work;
 #[path = "signed_worker_transport_http/realization_control.rs"]
 mod realization_control;
 #[path = "signed_worker_transport_http/registry_incarnation.rs"]

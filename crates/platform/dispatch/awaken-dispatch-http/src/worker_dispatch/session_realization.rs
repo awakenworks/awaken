@@ -44,11 +44,10 @@ pub(super) async fn session_preparation_claim_next(
                 "Session preparation claim outlives Worker authority",
             ))
         })?;
-        let control = &service.session_preparation_control;
-        let assignment = control
-            .claim_next_session_preparation(target)
-            .await
-            .map_err(RealizationHttpError::from)?;
+        let owner = request.identity.lease_owner();
+        let assignment =
+            super::preparation_work::claim_next_admitted_preparation(&service, target, &owner)
+                .await?;
         Ok(json!({ "assignment": assignment }))
     }
     .await;

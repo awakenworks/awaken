@@ -92,12 +92,26 @@ impl SessionWorkOwnership {
 
 /// Cause authorizing a private registered Worker to acquire Session Work.
 /// A live claimed Run may repair a stopped Work projection after an admission /
-/// predecessor-retirement race. Realization renewal carries no driving event
-/// and may only renew a live Work lease held by that Worker.
+/// predecessor-retirement race. A claimed Run-free preparation is the root's
+/// own durable obligation handed to exactly one Ready Worker: it may take the
+/// Session's already-dispatched Work, but it cannot revive stopped Work.
+/// Realization renewal carries no driving event and may only renew a live Work
+/// lease held by that Worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionWorkAcquisition {
     ClaimedRun,
+    ClaimedPreparation,
     RealizationRenewal,
+}
+
+impl SessionWorkAcquisition {
+    /// Whether this cause may take dispatched Work it does not already hold.
+    /// Renewal never takes Work: a released Session's queued item belongs to
+    /// the next claimed Run or preparation, not to the previous holder.
+    #[must_use]
+    pub const fn may_take_dispatched_work(self) -> bool {
+        !matches!(self, Self::RealizationRenewal)
+    }
 }
 
 /// Whether an absent Session Work lease may be repaired through the canonical
@@ -118,16 +132,34 @@ pub const fn session_work_revival_is_authorized(
 mod exhaustive {
     use super::*;
 
-    const EVERY_ACQUISITION: [SessionWorkAcquisition; 2] = [
+    const EVERY_ACQUISITION: [SessionWorkAcquisition; 3] = [
         SessionWorkAcquisition::ClaimedRun,
+        SessionWorkAcquisition::ClaimedPreparation,
         SessionWorkAcquisition::RealizationRenewal,
     ];
 
     const fn listed_acquisition(acquisition: SessionWorkAcquisition) -> usize {
         match acquisition {
             SessionWorkAcquisition::ClaimedRun => 0,
-            SessionWorkAcquisition::RealizationRenewal => 1,
+            SessionWorkAcquisition::ClaimedPreparation => 1,
+            SessionWorkAcquisition::RealizationRenewal => 2,
         }
+    }
+
+    #[test]
+    fn only_renewal_is_refused_dispatched_work() {
+        // Cause/effect decision table: C1 a claimed Run; C2 a claimed Run-free
+        // preparation; C3 a realization renewal. E1 may take the Session's
+        // dispatched (queued) Work; E2 may only renew a lease it already holds.
+        // Rules: R1=C1=>E1; R2=C2=>E1; R3=C3=>E2.
+        for (rule, acquisition, takes) in [
+            ("R1", SessionWorkAcquisition::ClaimedRun, true),
+            ("R2", SessionWorkAcquisition::ClaimedPreparation, true),
+            ("R3", SessionWorkAcquisition::RealizationRenewal, false),
+        ] {
+            assert_eq!(acquisition.may_take_dispatched_work(), takes, "{rule}");
+        }
+        assert_eq!(EVERY_ACQUISITION.len(), 3);
     }
 
     #[test]
@@ -137,7 +169,7 @@ mod exhaustive {
         }
     }
 
-    /// @exhaustive SessionWorkAcquisition(2) x bool(2) x bool(2) = 8
+    /// @exhaustive SessionWorkAcquisition(3) x bool(2) x bool(2) = 12
     /// @obligation session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
     #[test]
     fn stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run() {
@@ -158,7 +190,7 @@ mod exhaustive {
                 }
             }
         }
-        assert_eq!(cases, 8);
+        assert_eq!(cases, 12);
     }
 
     /// @exhaustive bool(2) = 2

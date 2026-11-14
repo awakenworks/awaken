@@ -54,6 +54,7 @@ use registry_endpoints::{
     deregister_worker, drain_worker, heartbeat_worker, quiesce_worker, register_worker,
 };
 
+mod preparation_work;
 mod run_dispatch_endpoints;
 mod session_coordination;
 mod session_realization;

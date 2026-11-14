@@ -164,7 +164,12 @@ registered attempt is rejected. Run claim checks and realization renewal renew
 the same Work lease, while every realization phase verifies the exact owner.
 `SessionWorkAcquisition` makes the trigger explicit: a live `ClaimedRun` may
 repair a stopped item when predecessor retirement wins a wake race, but
-`RealizationRenewal` cannot resurrect stopped Work after its Run settled.
+`RealizationRenewal` cannot resurrect stopped Work after its Run settled and
+renews only a live lease it already holds. A `ClaimedPreparation` (a Run-free
+preparation the Session root handed to one Ready Worker, such as an Idle MCP
+update) takes the Session's dispatched Work when it is claimed, so its later
+realization phases renew that lease; it never wakes stopped Work, and when the
+Work is held elsewhere the just-issued grant is retired instead of handed out.
 Delegated children use the existing `RunDispatch::session_thread_id()` parent
 affinity and borrow that Work; child settlement retains it for the waiting
 parent, while a root Run owns its release.
@@ -367,6 +372,7 @@ Worker trigger
   -> authenticate Worker incarnation and verify live Work + Run epochs
   -> claimed Run only: repair a stopped item and retry once after a lost wake
      realization renewal: never wake stopped Work
+     claimed Run-free preparation: take dispatched Work, never wake stopped Work
   -> delegated child: use parent session_thread_id and retain Work on child settle
   -> resume frozen Session projection
   -> acquire per-Session realization admission
@@ -442,7 +448,7 @@ authoritative path, not a compensating parallel mechanism.
 | Ordinary Cloud or non-Session Run reaches shared verifier | false rejection from an unrelated Work boundary | 6/4/5 · 120 | authority scope rules W1–W3 | missing/Cloud Session returns `NotRequired`; only frozen self-hosted Session requires Work ownership |
 | Registered Worker answer commits immediately before process restart | predecessor Work remains active and blocks every queued Session for one TTL | 8/4/4 · 128 | signed transport T20/T21, WorkQueue G1/G2, multi-restart CLI E2E | exact Run settlement releases its Session; exact graceful deregistration stops any residual owner rows; crash path retains TTL fencing |
 | Successor wake loses to predecessor retirement | approved/queued Run remains behind stopped Work | 9/3/5 · 135 | Session Work W3 and real same-Session continuation | live `ClaimedRun` reuses canonical wake after failed acquire and retries once; no second queue/state exists |
-| Realization renewal revives stopped Work after Run settlement | orphan active lease blocks every Session in the Environment | 9/3/5 · 135 | Session Work W5 and Native final-state inspection | `RealizationRenewal` may renew dispatched Work but never wake stopped Work; it stays unowned and the stale local projection is revoked |
+| Realization renewal revives stopped Work after Run settlement | orphan active lease blocks every Session in the Environment | 9/3/5 · 135 | Session Work W5 and Native final-state inspection | `RealizationRenewal` renews only the live Work lease it holds and never wakes stopped Work; it stays unowned and the stale local projection is revoked |
 | Child Run uses child thread for Work or releases borrowed parent Work | parent/child deadlock or waiting parent loses its fence | 10/2/5 · 100 | signed transport T22/T23 and durable child-run regression | use canonical `session_thread_id()` for Work/resume; only a root Run whose own thread equals that affinity releases |
 
 The reduced decision table for the interacting ownership causes is:
