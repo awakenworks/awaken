@@ -23,6 +23,7 @@ use awaken_runtime_contract::runs::{RunError, StepOutcome};
 
 use awaken_session_application_contract::LifecycleFactNotifier;
 use awaken_session_configuration_contract::SessionInit;
+use awaken_session_configuration_contract::mcp::{McpAttachmentState, StageMcpAttachment};
 use awaken_session_contract::{PersistedSession, SessionExecutionState};
 use awaken_session_execution_contract::{OutcomeDrive, SessionRuns};
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -627,6 +628,7 @@ enum HotStageMode {
     #[default]
     Success,
     FailNext,
+    TerminalNext,
     MismatchNext,
 }
 
@@ -644,6 +646,56 @@ struct HotRuntimeState {
         String,
         awaken_session_configuration_contract::SessionToolConfiguration,
     )>,
+}
+
+impl HotRuntimeState {
+    // Shared H5/R5 terminal and U-row oracles observe existing I/O snapshots;
+    // they never mutate the fixture, aggregate, retry budget or receipts.
+    fn assert_failed_attempt(&self, root: &PersistedSession, rule: &str) -> StageMcpAttachment {
+        let at_stage = self.durable_at_stage.last().unwrap();
+        let mut closed = at_stage.realization.clone().unwrap();
+        closed.expires_at_unix_ms = 0;
+        assert_eq!(
+            root.realization,
+            Some(closed),
+            "{rule} exact issued grant closes"
+        );
+        assert_eq!(
+            root.realization_progress().uncounted_failures(),
+            1,
+            "{rule}"
+        );
+        self.staged.last().unwrap().clone()
+    }
+    fn assert_successor(
+        &self,
+        before: &StageMcpAttachment,
+        root: &PersistedSession,
+        same_generation: bool,
+        rule: &str,
+    ) {
+        let next = self.staged.last().unwrap();
+        if same_generation {
+            assert_eq!(
+                next.generation.generation(),
+                before.generation.generation(),
+                "{rule} same immutable generation"
+            );
+        }
+        assert!(
+            next.generation.lease_epoch() > before.generation.lease_epoch(),
+            "{rule} fresh physical epoch"
+        );
+        assert_ne!(
+            next.realization_id, before.realization_id,
+            "{rule} closed attempt cannot reopen"
+        );
+        assert_eq!(
+            root.realization.as_ref().unwrap().epoch,
+            next.generation.to_wire().lease_epoch,
+            "{rule}"
+        );
+    }
 }
 
 struct HotRuntime {
@@ -1042,6 +1094,12 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for HotRuntime {
         let mode = std::mem::take(&mut state.mode);
         if matches!(mode, HotStageMode::FailNext) {
             return Err(RunError::internal("hot stage failed"));
+        }
+        if matches!(mode, HotStageMode::TerminalNext) {
+            return Err(RunError::classified(
+                "session_realization_invariant_violated",
+                "hot stage rejected",
+            ));
         }
         let receipt_fingerprint = request.fingerprint();
         let mut generation = request.generation;
@@ -1995,7 +2053,8 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
 ///   -> root-CAS Requested intent
 ///   -> root-CAS exact lease claim
 ///   -> stage + validate receipt
-///      -> failure/mismatch: Failed; keep previous Active
+///      -> terminal/mismatch: Failed; keep previous Active
+///      -> retryable below budget: Realizing; expire exact lease; retain generation
 ///      -> success: activation CAS -> publish -> exact old drain -> Removed
 /// ```
 ///
@@ -2007,11 +2066,16 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
 /// | H2 | add | absent | success | exact | gen1 Active; publish |
 /// | H3 | replace | Active gen1 | success | exact | gen2 Active; gen1 drain+Removed |
 /// | H4 | remove | Active | - | - | exact drain+Removed; empty projection |
-/// | H5 | replace | Active gen1 | failure | - | gen2 Failed; gen1 remains Active |
+/// | H5 | replace | Active gen1 | classified terminal | - | gen2 Failed; gen1 remains Active |
+/// | H5u | replace | Active gen1 | unclassified Internal | - | gen2 Realizing; old Active; expiry0, one uncounted failure |
 /// | H6 | retry same | Failed gen2 + Active gen1 | success | exact | gen3 Active |
+/// | H6u | retry same | Realizing gen2 + Active gen1 | success | exact | same gen2, fresh epoch/id, ACK |
 /// | H7 | add | absent | success | stale | Failed; hidden; compensating drain |
 /// | H8 | malformed | any | - | - | 400; no Runtime effect |
 ///
+/// U rows use the common budget (default 3), not a new hot-update retry owner.
+/// NotReady/exhaustion stay in the application B1-B4 matrix. Successful H3 keeps
+/// its live epoch; only failed attempts close and require a fresh physical fence.
 /// Constraint K0: this MCP-only fixture commits no Run, so every consistent
 /// Thread recovery read is `None`; no rule may assemble a prefix from split reads.
 #[tokio::test]
@@ -2026,7 +2090,6 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     .await
     .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
-
     let server_a = json!({"name": "calc", "type": "url", "url": "https://a.example/mcp"});
     let added = call(
         &h.app,
@@ -2052,7 +2115,6 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
             "H2 claim before I/O"
         );
     }
-
     let before = {
         let state = h.state.lock().unwrap();
         (
@@ -2082,7 +2144,6 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
             "H1"
         );
     }
-
     let server_b = json!({"name": "calc", "type": "url", "url": "https://b.example/mcp"});
     let replaced = call(
         &h.app,
@@ -2102,6 +2163,11 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         assert_eq!(version(staged), Some(2), "H3 staged");
         assert_eq!(version(state.published.last()), Some(2), "H3 published");
         assert_eq!(version(state.drained.last()), Some(1), "H3 drained");
+        assert_eq!(
+            state.staged[1].generation.lease_epoch(),
+            state.staged[0].generation.lease_epoch(),
+            "H3 successful hot update retains its live lease epoch"
+        );
     }
     let durable = h.repo.get(&SessionId::from(id)).await.expect("H3 durable");
     assert_eq!(durable.visible_mcp_servers().len(), 1, "H3");
@@ -2115,7 +2181,6 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
         "H3"
     );
-
     let removed = call(
         &h.app,
         "POST",
@@ -2137,76 +2202,104 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         2,
         "H4"
     );
-
-    let failed = hot_harness().await;
-    let created = call(
-        &failed.app,
-        "POST",
-        "/v1/sessions",
-        Some(session_with_mcp(
-            "hot-agent",
-            vec![json!({"type": "url", "name": "calc", "url": "https://old.example/mcp"})],
-            Vec::new(),
-        )),
-    )
-    .await
-    .expect(StatusCode::OK);
-    let failed_id = created["id"].as_str().unwrap();
-    failed.state.lock().unwrap().mode = HotStageMode::FailNext;
-    let desired = json!({"name": "calc", "type": "url", "url": "https://new.example/mcp"});
-    let _ = call(
-        &failed.app,
-        "POST",
-        &format!("/v1/sessions/{failed_id}"),
-        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
-    )
-    .await
-    .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "H5");
-    let durable = failed
-        .repo
-        .get(&SessionId::from(failed_id))
+    for (mode, retryable) in [
+        (HotStageMode::TerminalNext, false),
+        (HotStageMode::FailNext, true),
+    ] {
+        let rule = if retryable { "H5u/H6u" } else { "H5/H6" };
+        let failed = hot_harness().await;
+        let created = call(
+            &failed.app,
+            "POST",
+            "/v1/sessions",
+            Some(session_with_mcp(
+                "hot-agent",
+                vec![json!({"type": "url", "name": "calc", "url": "https://old.example/mcp"})],
+                Vec::new(),
+            )),
+        )
         .await
-        .expect("H5 durable");
-    assert_eq!(
-        durable.mcp.attachments[0].state,
-        awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
-        "H5"
-    );
-    assert_eq!(
-        durable.mcp.attachments[1].state,
-        awaken_session_configuration_contract::mcp::McpAttachmentState::Failed,
-        "H5"
-    );
-    assert_eq!(
-        durable.visible_mcp_servers()[0].target.http_url().unwrap(),
-        "https://old.example/mcp",
-        "H5"
-    );
-
-    let retried = call(
-        &failed.app,
-        "POST",
-        &format!("/v1/sessions/{failed_id}"),
-        Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
-    )
-    .await
-    .expect_for(StatusCode::OK, "H6");
-    assert_eq!(retried["agent"]["mcp_servers"], json!([desired]), "H6");
-    assert_eq!(
-        failed
-            .state
-            .lock()
-            .unwrap()
-            .staged
-            .last()
-            .unwrap()
-            .generation
-            .generation()
-            .version(),
-        3,
-        "H6"
-    );
-
+        .expect(StatusCode::OK);
+        let failed_id = created["id"].as_str().unwrap();
+        failed.state.lock().unwrap().mode = mode;
+        let desired = json!({"name": "calc", "type": "url", "url": "https://new.example/mcp"});
+        let error = call(
+            &failed.app,
+            "POST",
+            &format!("/v1/sessions/{failed_id}"),
+            Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+        )
+        .await
+        .expect_for(StatusCode::INTERNAL_SERVER_ERROR, rule);
+        assert_eq!(error["error"]["type"], "api_error", "{rule}");
+        let durable = failed
+            .repo
+            .get(&SessionId::from(failed_id))
+            .await
+            .expect("failed attempt root");
+        let expected = if retryable {
+            McpAttachmentState::Realizing
+        } else {
+            McpAttachmentState::Failed
+        };
+        assert_eq!(
+            durable.mcp.attachments[0].state,
+            McpAttachmentState::Active,
+            "{rule}"
+        );
+        assert_eq!(durable.mcp.attachments[1].state, expected, "{rule}");
+        assert_eq!(
+            durable.visible_mcp_servers()[0].target.http_url().unwrap(),
+            "https://old.example/mcp",
+            "{rule}"
+        );
+        let attempt = {
+            let state = failed.state.lock().unwrap();
+            assert_eq!(
+                (state.published.len(), state.drained.len()),
+                (1, 0),
+                "{rule}"
+            );
+            state.assert_failed_attempt(&durable, rule)
+        };
+        let retried = call(
+            &failed.app,
+            "POST",
+            &format!("/v1/sessions/{failed_id}"),
+            Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
+        )
+        .await
+        .expect_for(StatusCode::OK, rule);
+        assert_eq!(retried["agent"]["mcp_servers"], json!([desired]), "{rule}");
+        let repaired = failed.repo.get(&SessionId::from(failed_id)).await.unwrap();
+        let active = repaired.mcp.desired_attachments()[0];
+        assert_eq!(
+            repaired.mcp.attachments.len(),
+            if retryable { 2 } else { 3 },
+            "{rule}"
+        );
+        assert_eq!(active.state, McpAttachmentState::Active, "{rule}");
+        assert!(active.publication_acknowledged, "{rule} exact ACK");
+        let state = failed.state.lock().unwrap();
+        let next = state.staged.last().unwrap();
+        assert_eq!(
+            next.generation.generation().version(),
+            if retryable { 2 } else { 3 },
+            "{rule}"
+        );
+        state.assert_successor(&attempt, &repaired, retryable, rule);
+        assert_eq!(state.drained.len(), 1, "{rule}");
+        assert_eq!(
+            state.drained[0].generation(),
+            state.staged[0].generation.generation(),
+            "{rule} original logical generation drained"
+        );
+        assert_eq!(
+            repaired.mcp.attachments[0].state,
+            McpAttachmentState::Removed,
+            "{rule} old generation removed"
+        );
+    }
     let mismatch = hot_harness().await;
     let created = call(
         &mismatch.app,
@@ -2238,7 +2331,6 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         "H7"
     );
     assert!(durable.visible_mcp_servers().is_empty(), "H7");
-
     let effects = {
         let state = mismatch.state.lock().unwrap();
         (
@@ -2283,8 +2375,10 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
 /// | R2 | Active + expired lease | success | restaged + republished; remains Active |
 /// | R3 | Draining | success/unknown | Removed; no stage/publish |
 /// | R4 | Removed | - | not selected; no Runtime effect |
-/// | R5 | Requested on idle Session | stage failure | terminal Failed; Session remains idle |
+/// | R5 | Requested on idle Session | classified terminal | Failed; Session remains idle |
+/// | R5u | Requested on idle Session | unclassified Internal | Realizing; expiry0, one uncounted failure |
 /// | R6 | prior R5 Failed | same desired command | generation N+1 becomes Active |
+/// | R6u | prior R5u Realizing | same desired command | same generation, fresh epoch/id, exact ACK |
 ///
 /// Constraint K0: MCP realization recovery does not create a Run; the atomic
 /// Thread recovery authority therefore reports `None` throughout R1-R6.
@@ -2419,68 +2513,94 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
 }
 
 async fn mcp_recovery_retry_decision_table_case() {
-    let h = hot_harness().await;
-
-    let created = call(
-        &h.app,
-        "POST",
-        "/v1/sessions",
-        Some(json!({"agent": "retry-agent"})),
-    )
-    .await
-    .expect(StatusCode::OK);
-    let retry_id = created["id"].as_str().unwrap();
-    let mut retry = h.repo.get(&SessionId::from(retry_id)).await.unwrap();
-    retry
-        .mcp
-        .request_full_replacement(
-            vec![
-                awaken_session_configuration_contract::mcp::McpAttachmentDraft {
-                    name: "retry".into(),
-                    target: awaken_agent_contract::McpTarget::parse_http(
-                        "https://retry.example/mcp",
-                    )
-                    .unwrap(),
-                    credential: None,
-                    prompts_as_skills: false,
-                    origin:
-                        awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
-                },
-            ],
-            None,
+    for (mode, retryable) in [
+        (HotStageMode::TerminalNext, false),
+        (HotStageMode::FailNext, true),
+    ] {
+        let rule = if retryable { "R5u/R6u" } else { "R5/R6" };
+        let h = hot_harness().await;
+        let created = call(
+            &h.app,
+            "POST",
+            "/v1/sessions",
+            Some(json!({"agent": "retry-agent"})),
         )
-        .unwrap();
-    replace_session_fixture(h.repo.as_ref(), "default", retry, "test:recovery-retry").await;
-    h.state.lock().unwrap().mode = HotStageMode::FailNext;
-    assert_eq!(h.managed.reconcile_session_realizations().await, 0, "R5");
-    let failed_retry = h.repo.get(&SessionId::from(retry_id)).await.unwrap();
-    assert_eq!(
-        failed_retry.mcp.attachments[0].state,
-        awaken_session_configuration_contract::mcp::McpAttachmentState::Failed,
-        "R5"
-    );
-    assert_eq!(failed_retry.execution, SessionExecutionState::Idle, "R5");
-
-    let _ = call(
-        &h.app,
-        "POST",
-        &format!("/v1/sessions/{retry_id}"),
-        Some(json!({"agent": {"mcp_servers": [{
-            "type": "url",
-            "name": "retry",
-            "url": "https://retry.example/mcp"
-        }]}})),
-    )
-    .await
-    .expect_for(StatusCode::OK, "R6");
-    let retried = h.repo.get(&SessionId::from(retry_id)).await.unwrap();
-    assert_eq!(retried.mcp.attachments.len(), 2, "R6");
-    assert_eq!(
-        retried.mcp.attachments[1].state,
-        awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
-        "R6"
-    );
-    assert_eq!(retried.mcp.attachments[1].generation.version(), 2, "R6");
+        .await
+        .expect(StatusCode::OK);
+        let retry_id = created["id"].as_str().unwrap();
+        let mut retry = h.repo.get(&SessionId::from(retry_id)).await.unwrap();
+        retry
+            .mcp
+            .request_full_replacement(
+                vec![
+                    awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                        name: "retry".into(),
+                        target: awaken_agent_contract::McpTarget::parse_http(
+                            "https://retry.example/mcp",
+                        )
+                        .unwrap(),
+                        credential: None,
+                        prompts_as_skills: false,
+                        origin:
+                            awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
+                    },
+                ],
+                None,
+            )
+            .unwrap();
+        replace_session_fixture(h.repo.as_ref(), "default", retry, "test:recovery-retry").await;
+        h.state.lock().unwrap().mode = mode;
+        assert_eq!(h.managed.reconcile_session_realizations().await, 0, "R5");
+        let failed_retry = h.repo.get(&SessionId::from(retry_id)).await.unwrap();
+        assert_eq!(
+            failed_retry.mcp.attachments[0].state,
+            if retryable {
+                McpAttachmentState::Realizing
+            } else {
+                McpAttachmentState::Failed
+            },
+            "{rule}"
+        );
+        assert_eq!(failed_retry.execution, SessionExecutionState::Idle, "R5");
+        let attempt = {
+            let state = h.state.lock().unwrap();
+            assert!(
+                state.published.is_empty() && state.drained.is_empty(),
+                "{rule}"
+            );
+            state.assert_failed_attempt(&failed_retry, rule)
+        };
+        let _ = call(
+            &h.app,
+            "POST",
+            &format!("/v1/sessions/{retry_id}"),
+            Some(json!({"agent": {"mcp_servers": [{
+                "type": "url",
+                "name": "retry",
+                "url": "https://retry.example/mcp"
+            }]}})),
+        )
+        .await
+        .expect_for(StatusCode::OK, "R6");
+        let retried = h.repo.get(&SessionId::from(retry_id)).await.unwrap();
+        assert_eq!(
+            retried.mcp.attachments.len(),
+            if retryable { 1 } else { 2 },
+            "{rule}"
+        );
+        let active = retried.mcp.desired_attachments()[0];
+        assert_eq!(active.state, McpAttachmentState::Active, "{rule}");
+        assert!(active.publication_acknowledged, "{rule} exact ACK");
+        assert_eq!(
+            active.generation.version(),
+            if retryable { 1 } else { 2 },
+            "{rule}"
+        );
+        h.state
+            .lock()
+            .unwrap()
+            .assert_successor(&attempt, &retried, retryable, rule);
+    }
 }
 
 /// External acknowledgement gaps are derived from this cause graph:
