@@ -114,6 +114,23 @@ def _count(projected: dict[str, str], pattern: re.Pattern[str]) -> int:
     return sum(len(pattern.findall(code)) for code in projected.values())
 
 
+def _grown_sites(reference: dict[str, str], projected: dict[str, str], pattern: re.Pattern[str]) -> str:
+    """Where a counted rule grew: every match in each file whose own count rose.
+
+    The decision is the total above; this only tells the author where to look.
+    """
+
+    sites = [
+        f"{path}:{code.count(chr(10), 0, match.start()) + 1}"
+        for path, code in sorted(projected.items())
+        if len(pattern.findall(code)) > len(pattern.findall(reference.get(path, "")))
+        for match in pattern.finditer(code)
+    ]
+    if not sites:
+        return ""
+    return f" (at {', '.join(sites[:10])}" + (f" and {len(sites) - 10} more" if len(sites) > 10 else "") + ")"
+
+
 def identity_defaults(sources: dict[str, str]) -> list[str]:
     """`#[serde(default)]` on a non-optional identity field (F5)."""
 
@@ -170,6 +187,7 @@ def ownership_fence_violations(
             errors.append(
                 f"{rule} {what} rose from {ceiling} to {now} outside the kernel; "
                 "use awaken_lease_contract::fence::Epoch (and Epoch::next) instead"
+                + _grown_sites(reference, projected, pattern)
             )
     for location in identity_defaults(current):
         errors.append(
@@ -251,7 +269,8 @@ def check_all(repo_root: Path) -> list[str]:
     except (ReferenceUnavailable, OSError) as error:
         return [
             "ownership-fence ratchet cannot read its reference commit, so it "
-            f"refuses to pass: {error}"
+            f"refuses to pass: {error}; fix: fetch the target branch (`git fetch origin main`) "
+            "or name a readable reference with AWAKEN_FENCE_FITNESS_BASE=<commit>"
         ]
     return ownership_fence_violations(reference, current)
 
@@ -334,6 +353,16 @@ def selftest() -> None:
     assert any(
         "F3" in e for e in violations({"crates/b.rs": "fn f(e: Epoch) { let n = lease_epoch + 1; }"})
     ), "F3"
+    # F2s/F3s: a refusal names the lines of each file whose own count rose,
+    # and not a file whose count held.
+    grown = ownership_fence_violations(
+        {"crates/a.rs": "struct A { epoch: u64 }", "crates/b.rs": "fn f() {}"},
+        {"crates/a.rs": "struct A { epoch: u64 }",
+         "crates/b.rs": "fn f() {}\nfn g() { let n = lease_epoch + 1; }\nstruct B { next_epoch: u64 }"},
+    )
+    assert any(e.startswith("F2 ") and e.endswith("(at crates/b.rs:3)") for e in grown), f"F2s {grown}"
+    assert any(e.startswith("F3 ") and e.endswith("(at crates/b.rs:2)") for e in grown), f"F3s {grown}"
+    assert not any("crates/a.rs" in e for e in grown), f"F2s held {grown}"
     assert any(
         "F5" in e
         for e in violations({"crates/b.rs": "struct S {\n    #[serde(default)]\n    pub epoch: Epoch,\n}"})

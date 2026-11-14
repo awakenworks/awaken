@@ -60,6 +60,7 @@ import _session_state_ownership_fitness
 import _service_data_ownership_fitness
 import _single_owner_fitness
 import _wire_closure_fitness
+import _crate_boundary_fix
 import _crate_boundary_workspace
 from _crate_boundary_workspace import architecture_fitness_specs, dependency_fitness_specs, text_files
 
@@ -1434,9 +1435,36 @@ def _enclosing_fn(text: str, offset: int) -> str:
     return names[-1] if names else ""
 
 
+def _model_binding_counts_at(repo_root: Path, revision: str = "HEAD") -> dict[str, int] | None:
+    """Raw `ModelBinding::new(` occurrences per file at `revision`, or None if unreadable.
+
+    Only the refusal message reads this: it says where the count grew, never whether it did.
+    """
+    import subprocess
+
+    import formal_sources
+
+    if formal_sources.repository_environment(repo_root) is None:
+        return None
+    try:
+        output = formal_sources.git_output(
+            repo_root, "grep", "-c", "-E", r"\bModelBinding::new[[:space:]]*\(", revision, "--", "crates", "e2e",
+        ).decode("utf-8", "replace")
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return None
+    counts = {}
+    for row in output.splitlines():
+        _revision, _, rest = row.partition(":")
+        path, _, count = rest.rpartition(":")
+        if path and count.isdigit():
+            counts[path] = int(count)
+    return counts
+
+
 def check_model_binding_producers_are_ratcheted(repo_root: Path = REPO_ROOT) -> list[str]:
     """Panic-based `ModelBinding::new` producers may only shrink; parse is fallible."""
     sites: list[str] = []
+    raw: dict[str, int] = {}
     for root in (repo_root / "crates", repo_root / "e2e"):
         if not root.is_dir():
             continue
@@ -1444,18 +1472,25 @@ def check_model_binding_producers_are_ratcheted(repo_root: Path = REPO_ROOT) -> 
             text = path.read_text(encoding="utf-8", errors="ignore")
             relative = path.relative_to(repo_root).as_posix()
             for match in UNVALIDATED_MODEL_BINDING_PRODUCER.finditer(text):
+                raw[relative] = raw.get(relative, 0) + 1
                 key = f"{relative}::{_enclosing_fn(text, match.start())}"
                 if key in UNVALIDATED_MODEL_BINDING_EXEMPTIONS:
                     continue
                 line = text[: match.start()].count("\n") + 1
                 sites.append(f"{relative}:{line}")
     if len(sites) > UNVALIDATED_MODEL_BINDING_BASELINE:
+        before = _model_binding_counts_at(repo_root)
+        grown = {path for path, count in raw.items() if before is not None and count > before.get(path, 0)}
+        where = [site for site in sites if site.rsplit(":", 1)[0] in grown]
+        located = (" Sites in the files whose count grew since HEAD: " + ", ".join(where[:10])
+                   + (f" (+{len(where) - 10} more)" if len(where) > 10 else "") + "." if where else "")
         return [
             f"{len(sites)} ModelBinding::new call sites, baseline "
             f"{UNVALIDATED_MODEL_BINDING_BASELINE}: "
             f"{len(sites) - UNVALIDATED_MODEL_BINDING_BASELINE} new producer(s) use "
             "panic-based admission. Use ModelBinding::parse, which returns "
-            "Result<_, InvalidModelBinding>."
+            "Result<_, InvalidModelBinding>." + located
+            + " fix: write `ModelBinding::parse(..)` at each new site (`.expect(..)` where a fixture should panic)"
         ]
     if len(sites) < UNVALIDATED_MODEL_BINDING_BASELINE:
         return [
@@ -1556,7 +1591,7 @@ def selftest_measured_rule():
         ci_performance.record_stage = original
 
 
-def main() -> int:
+def main(fix: bool = False) -> int:
     selftest_measured_rule()
     selftest_cloud_placement_boundary()
     selftest_generation_witnesses()
@@ -1596,6 +1631,7 @@ def main() -> int:
     selftest_backend_configuration_is_opaque()
     selftest_composite_identity_is_stated()
     selftest_model_binding_producers_are_ratcheted()
+    _crate_boundary_fix.selftest()
     # One immutable metadata snapshot for these read-only consumers. Discovery
     # stays fresh on the next invocation; no path/mtime or manifest cache.
     dependency_specs = tuple(dependency_fitness_specs())
@@ -1643,9 +1679,23 @@ def main() -> int:
         + measured_rule(_managed_protocol_boundary.check_session_admission_ownership, REPO_ROOT)
         + measured_rule(_managed_protocol_boundary.check_projection_input_boundary, REPO_ROOT)
     )
+    if errors and fix:
+        # Only the repairs the tree determines; every other refusal is printed
+        # again by the fresh run below with its next step.
+        done, refused = _crate_boundary_fix.apply(errors, REPO_ROOT)
+        for line in done:
+            print(f"crate-boundaries --fix: {line}")
+        for line in refused:
+            print(f"crate-boundaries --fix: not repaired: {line}", file=sys.stderr)
+        if done:
+            import subprocess
+            print("crate-boundaries --fix: checking the repaired tree", flush=True)
+            return subprocess.run([sys.executable, str(Path(__file__).resolve())], cwd=REPO_ROOT,
+                                  check=False).returncode
     if errors:
-        for error in errors:
+        for error in _crate_boundary_fix.annotate(errors, REPO_ROOT):
             print(f"ERROR: {error}", file=sys.stderr)
+        print(_crate_boundary_fix.summary(errors), file=sys.stderr)
         return 1
     print("OK - metadata-derived crate boundaries hold.")
     return 0
@@ -1663,9 +1713,10 @@ def parse(argv: list[str]) -> argparse.Namespace:
         prog="check_crate_boundaries.py", description=__doc__, allow_abbrev=False
     )
     parser.add_argument("paths", nargs="*", help="ignored; boundaries are derived from Cargo metadata")
+    parser.add_argument("--fix", action="store_true",
+                        help="apply the mechanical repairs (_crate_boundary_fix.py) and check again")
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
-    parse(sys.argv[1:])
-    raise SystemExit(main())
+    raise SystemExit(main(fix=parse(sys.argv[1:]).fix))
