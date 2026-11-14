@@ -325,6 +325,7 @@ async fn local_postgres_child_permission_recovers_with_its_own_prefix() {
         nats_url: None,
         database_url: Some(url),
         postgres_max_connections: std::num::NonZeroU32::new(1).unwrap(),
+        postgres_min_connections: 0,
     };
     let persistence = awaken_coordinator::open_coordinator_persistence(&storage, clock.clone())
         .await
