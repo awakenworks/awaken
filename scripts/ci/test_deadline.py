@@ -771,6 +771,13 @@ NEW_CAPABILITIES = {"schema_version": 1, "kind": "host-admission-capabilities",
                     "full_gate_exclusive": True,
                     "transient_pressure_wait": {"environment": "AWAKEN_ADMISSION_WAIT_SECONDS",
                                                 "default_seconds": 1800}}
+# Shape of the host tool ea71149 (2026-11-14): nothing runs alone; formal and
+# qualification join others only with their memory reservation free.
+SHARED_CAPABILITIES = {**NEW_CAPABILITIES, "scheduler": "fair-share-slots-v3", "scheduler_version": 3,
+                       "execution_slots": 3, "exclusive_kinds": [], "full_gate_exclusive": False,
+                       "memory_reservations": {"kinds": {"formal": 16 * 1024**3, "qualification": 24 * 1024**3},
+                                               "running_build_bytes": 16 * 1024**3,
+                                               "profile=qualification": "qualification"}}
 
 
 class CooperativeCapabilityTests(unittest.TestCase):
@@ -778,7 +785,9 @@ class CooperativeCapabilityTests(unittest.TestCase):
         # K1 the old single-lane tool is accepted exactly as before; K2 the
         # multi-slot tool is accepted while formal stays exclusive; K3 a
         # multi-slot tool that would share a slot with formal is refused; K4 a
-        # single-lane name with two slots or no cooperative root is refused.
+        # single-lane name with two slots or no cooperative root is refused;
+        # K5 the shared-slot tool is accepted only with a positive formal
+        # memory reservation under its own scheduler name.
         rows = (
             ("old single lane", OLD_CAPABILITIES, True),
             ("new slots, formal exclusive", NEW_CAPABILITIES, True),
@@ -788,6 +797,17 @@ class CooperativeCapabilityTests(unittest.TestCase):
             ("single lane name, two slots", {**OLD_CAPABILITIES, "execution_slots": 2}, False),
             ("no cooperative root", {**NEW_CAPABILITIES, "cooperative_formal": False}, False),
             ("unknown scheduler", {**NEW_CAPABILITIES, "scheduler": "fair-slots-v3"}, False),
+            ("shared slots, formal reserved", SHARED_CAPABILITIES, True),
+            ("shared slots, no reservations", {k: v for k, v in SHARED_CAPABILITIES.items()
+                                               if k != "memory_reservations"}, False),
+            ("shared slots, formal not reserved", {**SHARED_CAPABILITIES, "memory_reservations": {
+                "kinds": {"qualification": 1}}}, False),
+            ("shared slots, zero reservation", {**SHARED_CAPABILITIES, "memory_reservations": {
+                "kinds": {"formal": 0}}}, False),
+            ("shared slots, boolean reservation", {**SHARED_CAPABILITIES, "memory_reservations": {
+                "kinds": {"formal": True}}}, False),
+            ("reservation under the v2 name", {**SHARED_CAPABILITIES, "scheduler": "fair-slots-v2"}, False),
+            ("malformed reservations", {**SHARED_CAPABILITIES, "memory_reservations": []}, False),
         )
         for label, value, accepted in rows:
             with self.subTest(label):
@@ -798,7 +818,8 @@ class CooperativeCapabilityTests(unittest.TestCase):
         # refused => 75 with the existing "install the committed host policy" text.
         with tempfile.TemporaryDirectory() as tmp:
             observer = Path(tmp) / "awaken-build-admission"
-            for value, status in ((NEW_CAPABILITIES, 0), ({**NEW_CAPABILITIES, "exclusive_kinds": []}, 75)):
+            for value, status in ((NEW_CAPABILITIES, 0), (SHARED_CAPABILITIES, 0),
+                                  ({**NEW_CAPABILITIES, "exclusive_kinds": []}, 75)):
                 with self.subTest(status=status):
                     observer.write_text("#!/bin/sh\nprintf '%s\\n' '" + json.dumps(value) + "'\n")
                     observer.chmod(0o755)

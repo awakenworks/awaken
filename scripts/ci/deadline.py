@@ -165,8 +165,12 @@ def host_grant_policy(environment, directory: Path | None) -> dict | None:
 def cooperative_admission_problem(value) -> str | None:
     """None when the host can run the cooperative Formal root.
 
-    Accepted: fair-single-lane-v1 with one execution slot (unchanged), or
-    fair-slots-v2 that still runs formal work alone. Anything else is refused.
+    Accepted: fair-single-lane-v1 with one execution slot (unchanged),
+    fair-slots-v2 that still runs formal work alone, or fair-share-slots-v3
+    that admits each formal phase beside others only with a positive memory
+    reservation for it (the host owns the value). Anything else is refused:
+    a formal phase sharing the host with no reservation can be killed by, or
+    kill, the builds beside it.
     """
     if (not isinstance(value, dict) or value.get("kind") != "host-admission-capabilities"
             or value.get("schema_version") != 1 or value.get("cooperative_formal") is not True):
@@ -175,6 +179,10 @@ def cooperative_admission_problem(value) -> str | None:
         return None
     if (value.get("scheduler") == "fair-slots-v2" and isinstance(value.get("exclusive_kinds"), list)
             and "formal" in value["exclusive_kinds"]):
+        return None
+    reserved = ((value.get("memory_reservations") or {}).get("kinds") or {}).get("formal") \
+        if isinstance(value.get("memory_reservations"), dict) else None
+    if (value.get("scheduler") == "fair-share-slots-v3" and type(reserved) is int and reserved > 0):
         return None
     return "unsupported cooperative admission"
 
