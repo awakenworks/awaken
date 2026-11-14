@@ -258,6 +258,15 @@ if [ "$mode" = "--self-test" ]; then
       exit 1
     fi
   done
+  # L3 the two passes never share Cargo directories: their CLIPPY_ARGS differ,
+  # so a shared unit is re-linted, with every consumer, on each run.
+  production_dir=$(sed -n '/^--target-dir$/{n;p;}' "$lint_fixture/quick/lint-production.arguments.txt")
+  if [ -z "$production_dir" ] || [ "$production_dir" = "${CARGO_TARGET_DIR%/}" ] \
+      || ! grep -Fxq "build.build-dir='$production_dir'" "$lint_fixture/quick/lint-production.arguments.txt" \
+      || grep -Fxq -- --target-dir "$lint_fixture/quick/lint-all-features.arguments.txt"; then
+    echo "check-rust self-test: L3 the production lint must keep its own target and build directory" >&2
+    exit 1
+  fi
   for unaffected_plan in $'scope=none\nreason=self-test: no Rust input' \
                          $'scope=packages\nreason=self-test: only gate scripts changed'; do
     if ! lint_fixture_gate --quick "$unaffected_plan" unaffected \
@@ -529,6 +538,14 @@ production_only_lints=(-A clippy::disallowed_methods -A clippy::disallowed_types
 # which switched test-support on and so was not a production graph.
 production_selection_text=$(python3 scripts/ci/rust_test_plan.py --production-selection) || exit 1
 mapfile -t production_selection <<< "$production_selection_text"
+# The production pass keeps its own Cargo directories (target and build).
+# Both passes lint the same feature-less crates (awaken-sync, ...) as the same
+# unit, but with different CLIPPY_ARGS (the -A list above), so in one directory
+# each pass marked the other's units dirty and every run re-linted ~140 of the
+# workspace members in both passes: 60-90 s and 30-70 s per hook run even
+# after a one-line change. Apart from where artifacts are cached, the argv,
+# graph and lints are the same. Cost: one cold build (~210 s, ~1.4 GB) per checkout.
+lint_production_target="${CARGO_TARGET_DIR%/}/lint-production"
 lint_production_fix="route the call through its owner (clippy.toml names it), state a reviewed #[expect(clippy::disallowed_methods, reason = ..)] on the composition-root item, or move a fixture-only call behind cfg(test)/test-support"
 
 # CR6 optional Pod transport and its production startup are not enabled by
@@ -608,7 +625,8 @@ case "$mode" in
       step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
         cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}"
       step "lint-production" "$lint_production_fix" \
-        cargo clippy --workspace "${production_selection[@]}" --lib --bins "${locked[@]}" -- -D warnings
+        cargo clippy --workspace "${production_selection[@]}" --lib --bins "${locked[@]}" \
+          --target-dir "$lint_production_target" --config "build.build-dir='$lint_production_target'" -- -D warnings
     fi
     if [ "$mode" = "--push" ]; then
       # P2 a Kani harness cannot be planned (no @obligation anchor, a bad
@@ -644,7 +662,8 @@ case "$mode" in
     if step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
       cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings "${production_only_lints[@]}" \
       && step "lint-production" "$lint_production_fix" \
-      cargo clippy --workspace "${production_selection[@]}" --lib --bins "${locked[@]}" -- -D warnings; then
+      cargo clippy --workspace "${production_selection[@]}" --lib --bins "${locked[@]}" \
+        --target-dir "$lint_production_target" --config "build.build-dir='$lint_production_target'" -- -D warnings; then
       # Scenario/Coordinator integration uses the real release Hand companion.
       # C1 full workspace tests => E1 build its authored feature in the same
       # Cargo graph; a thin default binary must not replace the tested companion.
