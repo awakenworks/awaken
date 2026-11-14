@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _native_shell import bash_executable, shell_environment
+from _native_shell import bash_executable, self_test, shell_environment
 
 
 class NativeShellTests(unittest.TestCase):
@@ -165,5 +165,10 @@ class NativeShellTests(unittest.TestCase):
 
 
 def run_tests():
+    self_test()
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(NativeShellTests)
     return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_tests())

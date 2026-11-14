@@ -95,7 +95,7 @@ test -s results || exit 55
                 self.assertEqual(self.run_queue(Path(temporary), "", jobs=jobs).returncode, 2)
 
     def test_worker_timeout_and_signal_are_failures_with_child_cleanup(self) -> None:
-        from test_deadline import cleanup_fixture_group
+        from _process_group_fixture import cleanup_fixture_group
 
         for signal_worker in (False, True):
             with self.subTest(signal_worker=signal_worker), tempfile.TemporaryDirectory() as temporary:
@@ -143,6 +143,7 @@ test -s results || exit 55
                              'parallel_check.py', 'deadline.py', '_deadline.sh',
                              'check-rust.sh', '_cargo_target.sh', '_rust_test_execution.sh',
                              '_build_observation.sh', 'ci_performance.py',
+                             '_stage_record.py', '_atomic_record.py',
                              'formal_run_evidence.py', 'formal_sources.py', 'formal_plan.py',
                              'formal_anchors.py', 'formal_kani_options.py',
                              '_crate_boundary_workspace.py', '_crate_dependency_fitness.py'):
@@ -175,7 +176,11 @@ test -s results || exit 55
                     self.assertTrue((root/'unexpected').exists())
                     (root/'unexpected').unlink()
                 args = ['--full-gate', '--record'] if mode == 'full' else ['--group', mode]
-                result = subprocess.run(['bash', str(scripts/'check-all.sh'), *args],
+                # The copy runs, not the repository's check-all.sh: it executes
+                # the files copied above (this test's named subjects) and the
+                # stubs written here, never check-all.sh's own callees.
+                gate = scripts / 'check-all.sh'
+                result = subprocess.run(['bash', str(gate), *args],
                                         env=env, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 75, result.stdout+result.stderr)
                 self.assertFalse((root/'unexpected').exists())

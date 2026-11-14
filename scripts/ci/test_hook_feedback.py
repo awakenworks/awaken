@@ -125,9 +125,12 @@ class HookFeedbackTests(unittest.TestCase):
     def private_ci(self, root):
         scripts = root / 'scripts/ci'
         scripts.mkdir(parents=True)
+        # observe.sh runs ci_performance.py as well as the transport: copy
+        # each entry's own import closure, not one entry's by accident.
         for module in {'parallel_check.py', '_native_shell.py', 'ci_performance.py',
                        *generate_hooks.local_imports('parallel_check.py'),
-                       *generate_hooks.local_imports('_native_shell.py')}:
+                       *generate_hooks.local_imports('_native_shell.py'),
+                       *generate_hooks.local_imports('ci_performance.py')}:
             shutil.copyfile(ROOT / 'scripts/ci' / module, scripts / module)
         shutil.copyfile(ROOT / 'scripts/ci/_build_observation.sh', scripts / '_build_observation.sh')
         shutil.copyfile(ROOT / 'scripts/ci/_cargo_target.sh', scripts / '_cargo_target.sh')

@@ -109,7 +109,7 @@ def publish(remote: str, *, check_only: bool) -> None:
     if check_only:
         return
     # The ordinary pre-push hook qualifies this exact checked-out commit once.
-    from ci_performance import record_stage
+    from _stage_record import record_stage
 
     started = time.monotonic()
     uploaded = subprocess.run(["git", "push", remote, f"{head}:{candidate}"], check=False)

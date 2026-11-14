@@ -137,9 +137,11 @@ def main(argv):
         return subprocess.call(windows_shell_command([shell, "--", *argv[3:]]),
                                env=shell_environment(shell))
     if argv == ["--self-test"]:
+        # The launch/argv process tests are _native_shell_tests.py, run as
+        # their own entry (it runs this table too). Every importer of this
+        # launcher would otherwise inherit those tests' imports.
         self_test()
-        from _native_shell_tests import run_tests
-        return run_tests()
+        return 0
     if not argv or argv[0].startswith("-"):
         print("usage: _native_shell.py SCRIPT [ARG ...] | --self-test", file=sys.stderr)
         return 2

@@ -105,10 +105,12 @@ self_test() {
   # empty. Entry points that select a Cargo target place their temp through
   # awaken_configure_cargo_target; the two that select none call it directly.
   # _cargo_target.sh --self-test owns the placement table itself.
-  for name in scripts/ci/check-all.sh scripts/ci/pre-commit/observe.sh; do
-    grep -Fq 'scripts/ci/_cargo_target.sh && awaken_configure_gate_temp "$PWD" || exit $?' "$name" ||
-      { echo "T8 $name no longer places gate temp files on the build disk" >&2; return 1; }
-  done
+  # One grep per entry point names each file where it is read, so the hook's
+  # closure counts these two as read (their own bytes), not as run.
+  grep -Fq 'scripts/ci/_cargo_target.sh && awaken_configure_gate_temp "$PWD" || exit $?' scripts/ci/check-all.sh ||
+    { echo "T8 check-all.sh no longer places gate temp files on the build disk" >&2; return 1; }
+  grep -Fq 'scripts/ci/_cargo_target.sh && awaken_configure_gate_temp "$PWD" || exit $?' scripts/ci/pre-commit/observe.sh ||
+    { echo "T8 pre-commit/observe.sh no longer places gate temp files on the build disk" >&2; return 1; }
   grep -Fq 'awaken_configure_gate_temp "$repository_root" || exit $?' scripts/ci/_cargo_target.sh ||
     { echo "T8 selecting a Cargo target no longer places gate temp files" >&2; return 1; }
   echo "doctor self-test: every tool row names a group and a way to get it"

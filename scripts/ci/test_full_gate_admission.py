@@ -11,6 +11,7 @@ from unittest.mock import patch
 import ci_performance
 from generate_hooks import local_imports
 from _strict_unittest import main
+from _host_admission_fixture import host_admission_fixture
 
 # Actual execution subjects own the hook scope; the directory walk below
 # inspects only this test's temporary fixture, never repository contents.
@@ -29,34 +30,7 @@ HELPER = ROOT / INPUT_GLOBS[0]
 @unittest.skipIf(os.name == "nt", "the full-gate admission contract requires its Linux host")
 class FullGateAdmissionTests(unittest.TestCase):
     def fixture(self, root):
-        native = root / "rustup first"
-        native.mkdir()
-        (native / "cargo").write_text('#!/bin/sh\ntouch "$BAD_CARGO_MARKER"\nexit 99\n')
-        (native / "cargo").chmod(0o755)
-        host = root / "qualified host"
-        host.mkdir()
-        policy = """#!/usr/bin/env bash
-case "${0##*/}" in
-  awaken-build-admission) exit 98 ;;
-esac
-sleep "$FIXTURE_WAIT"
-[ "$FIXTURE_STATUS" = 0 ] || exit "$FIXTURE_STATUS"
-export AWAKEN_CARGO_ADMITTED=1
-entry=$(command -v "cargo-$1") || exit 97
-exec "$entry" "$@"
-"""
-        for name in ("cargo", "awaken-build-admission"):
-            (host / name).write_text(policy)
-            (host / name).chmod(0o755)
-        # Git hooks and an outer gate carry live index/receipt coordinates.
-        # The fixture owns neither; never let its nested gate consume them.
-        env = dict({key: value for key, value in os.environ.items()
-                    if not key.startswith(("GIT_", "CARGO_", "AWAKEN_"))},
-                   PATH=f"{native}:{host}:{os.environ['PATH']}",
-                   TMPDIR=str(root), BAD_CARGO_MARKER=str(root / "wrong-cargo-ran"),
-                   FIXTURE_WAIT="0", FIXTURE_STATUS="0", INJECTION_MARKER=str(root / "unexpected"),
-                   GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0")
-        return host, env
+        return host_admission_fixture(root)
 
     def invoke(self, root, env, *args):
         # The caller uses the same selection + scoped PATH as check-all. A native
@@ -196,7 +170,10 @@ exec "$entry" "$@"
                          "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
                          "commit", "--allow-empty", "-m", "fixture"]):
             subprocess.run(command, env=env, capture_output=True, check=True)
-        return checkout, scripts
+        # The fixture's copy of check-all.sh runs, not the repository's: what it
+        # executes is the files copied above (named as this test's subjects)
+        # and the fakes written here, never check-all.sh's own callees.
+        return checkout, scripts, scripts / "check-all.sh"
 
     def test_real_full_gate_entry_admits_once_when_native_cargo_is_first(self):
         # Stop with a deliberate 23 at the first static queue, after the real
@@ -213,8 +190,8 @@ exec "$entry" "$@"
                                        "AWAKEN_FULL_GATE_LOG": str(root / "outer.log"),
                                        "AWAKEN_TEST_TIMINGS_FILE": str(outer_timing)}):
                 host, env = self.fixture(root)
-            checkout, scripts = self.gate_checkout(root, env)
-            result = subprocess.run(["bash", str(scripts / "check-all.sh"), "--full-gate", "--record"],
+            checkout, scripts, gate = self.gate_checkout(root, env)
+            result = subprocess.run(["bash", str(gate), "--full-gate", "--record"],
                                     cwd=checkout, env=env, capture_output=True, text=True, timeout=12)
             self.assertEqual(result.returncode, 23, result.stderr + result.stdout)
             self.assertEqual(result.stdout.count("full-gate-admitted-once"), 1)
@@ -243,11 +220,11 @@ exec "$entry" "$@"
             with self.subTest(inherited=inherited, switch=switch), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 _, env = self.fixture(root)
-                checkout, scripts = self.gate_checkout(root, env)
+                checkout, scripts, gate = self.gate_checkout(root, env)
                 if inherited:
                     env['AWAKEN_CARGO_ADMITTED'] = '1'
                 env['AWAKEN_FORMAL_SCHEDULING'] = switch
-                result = subprocess.run(['bash', str(scripts / 'check-all.sh'), '--group', 'formal'],
+                result = subprocess.run(['bash', str(gate), '--group', 'formal'],
                                         cwd=checkout, env=env, capture_output=True, text=True, timeout=12)
                 self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
                 self.assertEqual(result.stdout.count('full-gate-admitted-once'), int(inherited))

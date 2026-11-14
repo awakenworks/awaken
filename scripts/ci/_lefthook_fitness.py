@@ -36,7 +36,7 @@ HOOK_ENTRY = "scripts/ci/pre-push/qualify.sh"
 
 
 def self_test(root: Path) -> None:
-    subprocess.run([sys.executable, str(root / "scripts/ci/_native_shell.py"), "--self-test"], check=True)
+    subprocess.run([sys.executable, str(root / "scripts/ci/_native_shell_tests.py")], check=True)
     hooks = (root / "lefthook.yml").read_text(encoding="utf-8")
     assert not hook_entry_errors(hooks), "E1 mandatory script entry"
     for old, new in (("source_dir: scripts/ci", "source_dir: elsewhere"),

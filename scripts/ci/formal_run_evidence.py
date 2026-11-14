@@ -24,6 +24,7 @@ import time
 import tomllib
 import uuid
 
+from _atomic_record import canonical_bytes, write_record
 import formal_plan
 import formal_sources
 
@@ -33,10 +34,6 @@ RUN_SCHEMA_VERSION = 2
 FAILURE_KINDS = ("execution-failed", "resource-bound", "memory-bound")
 # The only selection a release accepts: every harness, nothing narrowed.
 FULL_SELECTION = {"tier": "full", "affected_base": None}
-
-
-def canonical_bytes(value: object) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
 
 
 def digest_bytes(value: bytes) -> str:
@@ -223,21 +220,6 @@ def validate_record(record: dict, repository: Path, now: int | None = None) -> N
         raise ValueError("formal evidence runner mismatch")
     if record.get("plan_digest") != selected_plan_digest(repository, FULL_SELECTION):
         raise ValueError("formal evidence ran another Kani plan than the release source derives")
-
-
-def write_record(path: Path, record: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Readers see the previous complete record or the new one, never torn JSON.
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as temporary:
-        temporary.write(canonical_bytes(record))
-        temporary.flush()
-        os.fsync(temporary.fileno())
-        name = temporary.name
-    try:
-        os.replace(name, path)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
 
 
 def begin_artifacts(repository: Path, parent: Path, kind: str, directory: Path | None = None,

@@ -38,7 +38,7 @@ class ObservedResult(unittest.TextTestResult):
 
     def stopTest(self, test):
         super().stopTest(test)
-        from ci_performance import record_stage
+        from _stage_record import record_stage
         record_stage('unittest:' + test.id(), time.monotonic() - self._case_started,
                      int(self._case_outcome == 'failed'), semantic_result=self._case_outcome)
 

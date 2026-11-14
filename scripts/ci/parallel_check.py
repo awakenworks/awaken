@@ -49,7 +49,7 @@ def parser():
 
 def observe_hook(args, arguments):
     started, started_unix = time.monotonic(), time.time()
-    from ci_performance import task_directory, require_active_task
+    from _stage_record import task_directory, require_active_task
     from formal_run_evidence import source_snapshot, write_record
     directory = task_directory()
     if directory is None:

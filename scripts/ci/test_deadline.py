@@ -16,6 +16,7 @@ import unittest
 import _strict_unittest as strict_unittest
 import deadline
 from _native_shell import bash_executable
+from _process_group_fixture import cleanup_fixture_group
 
 
 # Actual execution subjects are the input authority; temporary-directory walks
@@ -56,26 +57,6 @@ else:
 while True:
     time.sleep(1)
 """
-
-
-def cleanup_fixture_group(coordinate: Path, process=None, *, pipe_timeout=5) -> None:
-    """Retire only this fixture's group, including a nested inherited group."""
-    if coordinate.exists():
-        leader = int(coordinate.read_text())
-        try:
-            group = os.getpgid(leader)
-        except ProcessLookupError:
-            group = leader
-        if group == os.getpgrp():
-            raise RuntimeError("fixture cleanup refuses its observer's process group")
-        try:
-            os.killpg(group, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    if process is not None:
-        if process.poll() is None:
-            process.kill()
-        process.communicate(timeout=pipe_timeout)
 
 
 @unittest.skipIf(os.name == "nt", "POSIX process groups and Cargo admission are owned by Linux/macOS")

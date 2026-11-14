@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import formal_sources
+from _guard_input_cases import selftest_guard_inputs
 
 # Input set: `--staged` scans every staged file whose suffix is in TEXT_SUFFIXES.
 # A glob built from that suffix list would silently stop scanning the next file
@@ -136,7 +137,7 @@ def scan_text(text: str, suffix: str) -> list[str]:
 
 
 def self_test() -> int:
-    formal_sources._selftest_guard_inputs()
+    selftest_guard_inputs()
     private_key = "-----BEGIN " + "PRIVATE KEY-----"
     aws_key = "AKIA" + ("0" * 16)
     cases = [

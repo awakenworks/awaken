@@ -43,8 +43,8 @@ fn main() {
 
 
 def run_pre_commit():
-    from ci_performance import task_directory, require_active_task
-    from formal_run_evidence import write_record
+    from _stage_record import task_directory, require_active_task
+    from _atomic_record import write_record
     directory = task_directory()
     if directory is None:
         raise ValueError('native Lefthook requires its active observation context')

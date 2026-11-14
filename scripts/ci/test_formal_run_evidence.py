@@ -779,9 +779,9 @@ class EvidenceTests(unittest.TestCase):
         # E4 an inherited admission executes directly, without reacquiring it.
         # Rules: phase+0=>E1/E2; phase+75=>E1/E3; inherited+75=>E1/E4.
         # The Java body is an explicit recording port, not a model or proof.
-        # FullGateAdmissionTests owns the fake Cargo/admission protocol; execute
+        # _host_admission_fixture owns the fake Cargo/admission protocol; execute
         # the real gate prefix, original adapter bytes and shared deadline here.
-        from test_full_gate_admission import FullGateAdmissionTests
+        from _host_admission_fixture import host_admission_fixture
 
         source = (self.root / "scripts/ci/check_formal.sh").read_text()
         marker = 'if [ "${AWAKEN_ADMISSION_PHASE_MODE:-}" = 1 ]; then\n'
@@ -795,7 +795,7 @@ class EvidenceTests(unittest.TestCase):
         for inherited, status in ((False, 0), (False, 75), (True, 75)):
             with self.subTest(inherited=inherited, admission=status), tempfile.TemporaryDirectory() as tmp:
                 fixture = Path(tmp)
-                host, env = FullGateAdmissionTests().fixture(fixture)
+                host, env = host_admission_fixture(fixture)
                 bindir = fixture / "recording-java"
                 bindir.mkdir()
                 java = bindir / "java"
