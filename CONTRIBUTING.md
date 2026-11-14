@@ -267,6 +267,30 @@ Rust may set `LEFTHOOK_EXCLUDE=rust-quick`. The file-limit hook measures staged
 Rust as rustfmt will leave it and reports the resulting line measurements as
 diagnostics. Source selection, parsing and evidence-anchor errors still fail.
 
+## Landing lanes
+
+`main` moves only by fast-forward from the worktree named by
+`git config awaken.mainWriter`, on branch `integration`. Land finished lanes
+there as one batch:
+
+    scripts/ci/land.py --dry-run lane-a lane-b lane-c   # the batch and the groups it selects
+    scripts/ci/land.py lane-a lane-b lane-c             # verify once, then fast-forward main
+
+[`land.py`](scripts/ci/land.py) fast-forwards `integration` to `main`,
+cherry-picks each lane's `main..branch` in order (a clean pick runs no hook;
+the lane's own commits already ran them), and ejects a lane that conflicts. It
+runs each selected group of `scripts/ci/check-all.sh` once on the combined tip,
+with the service and formal groups narrowed to the `main` commit the batch was
+built on. A failing group is bisected over batch prefixes to the first lane
+that breaks it; that lane is ejected and the rest are verified again. If `main`
+moved meanwhile the batch is rebuilt on it and verified again; it lands with
+`git fetch . integration:main` only as a fast-forward. An exit 75 (host
+refusal) lands nothing and ejects nothing: rerun later. Groups come from the
+changed paths (the table is in the script's docstring); `--group <name>`
+(repeatable) runs exactly the named groups instead, and `--max-rounds` (default
+3) bounds the verifications. Logs and `summary.json` go to `target/land/<time>/`.
+An ejected lane is rebased and fixed in its own worktree, then landed again.
+
 ## Known false reds
 
 - **Missing features**: ten `awaken-cli` test binaries fail with "the `hand` role

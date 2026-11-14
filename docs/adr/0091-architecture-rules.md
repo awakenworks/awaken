@@ -472,7 +472,9 @@ features and platform, passed and skipped counts, log location).
 
 One lane, one worktree, one branch. Lanes run the checks their change affects;
 completed lanes are rebased onto one integration branch and qualified once, then
-fast-forwarded by the main writer. A worktree is removed, by its exact recorded
+fast-forwarded by the main writer; `scripts/ci/land.py` does this for a batch of
+lanes, verifying the combined tip once and ejecting only a lane that conflicts or
+breaks a group (see CONTRIBUTING, Landing lanes). A worktree is removed, by its exact recorded
 path, once `git cherry main <branch>` lists no remaining commit and the tree is
 clean. Long-running host jobs start under `systemd-run --user`, not detached
 inside an ssh session. Host capacity (memory, pressure, logind sessions, user

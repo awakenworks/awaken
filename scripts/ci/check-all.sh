@@ -263,6 +263,7 @@ run static "test inventory" python3 scripts/ci/check_test_inventory.py
 run static "hook input closure self-test" python3 scripts/ci/_input_closure.py --self-test
 run static "hook input closure" python3 scripts/ci/_input_closure.py
 run static "lefthook serial pre-commit self-test" python3 scripts/ci/lefthook_serial.py --self-test
+run static "merge queue (land.py) self-test" python3 scripts/ci/land.py --self-test
 run static "dependency-gates self-test" python3 scripts/ci/check_dependency_gates.py --self-test
 run static "dependency-gates" python3 scripts/ci/check_dependency_gates.py
 run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_defaults.py --self-test
