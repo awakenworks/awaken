@@ -1,0 +1,29 @@
+[package]
+name = "awaken-mcp-catalog-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+product = "platform"
+bounded_context = "session"
+layer = "infrastructure"
+authority = "mcp-tool-catalog"
+separation = "isolation"
+isolates = ["object_store"]
+
+[dependencies]
+async-trait.workspace = true
+awaken-session-configuration-contract.workspace = true
+object_store = { version = "0.14", features = ["aws"] }
+serde_json.workspace = true
+serde.workspace = true
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+awaken-agent-contract.workspace = true
+
+[lints]
+workspace = true

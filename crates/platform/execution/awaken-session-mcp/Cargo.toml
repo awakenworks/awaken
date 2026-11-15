@@ -36,6 +36,7 @@ awaken-session-types.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-time.workspace = true
+awaken-tool-contract.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -58,7 +59,6 @@ test-support = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-awaken-tool-contract.workspace = true
 # Projection tests admit adapters through the production ACP adapter policy.
 awaken-acp-catalog.workspace = true
 

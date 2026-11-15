@@ -1038,6 +1038,8 @@ fn exact_mut<'a>(
 }
 
 mod generation;
+pub mod tool_catalog;
+
 pub use generation::{
     McpAttachmentContentDigest, McpGeneration, McpGenerationRef, McpGenerationRefWire,
     McpRealization,

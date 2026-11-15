@@ -249,6 +249,8 @@
 /v1/config/mcp-servers/{key}/default-credential @ws | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 404 h=content-length | 404
 /v1/config/mcp-servers/{key}/inspect | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
 /v1/config/mcp-servers/{key}/inspect @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-servers/{key}/tools | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-servers/{key}/tools @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
 /v1/config/mcp-servers/{key}/prepare | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
 /v1/config/mcp-servers/{key}/prepare @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
 /v1/config/mcp-servers/{key}/remove | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404

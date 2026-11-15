@@ -22,6 +22,11 @@ export default function McpServerForm({ initial, pending, error, onSave, onClose
   const [changed, setChanged] = useState(false);
   useUnsavedGuard(changed && !pending, app.t("Leave without saving MCP server changes?", "离开并放弃未保存的 MCP 服务器修改？"));
   const [args, setArgs] = useState(initial?.transport.type === "sandbox_stdio" ? (initial.transport.args ?? []).join("\n") : "");
+  const [shareCatalog, setShareCatalog] = useState(initial?.transport.type === "sandbox_stdio" && initial.transport.share_tool_catalog === true);
+  const stdio = (command: string, args: string, share = shareCatalog): McpDefinition["transport"] => ({
+    type: "sandbox_stdio", command, args: args.split("\n").filter(Boolean),
+    ...(share && { share_tool_catalog: true }),
+  });
   const patch = (value: Partial<McpDefinition>) => { setChanged(true); setDraft((d) => ({ ...d, ...value })); };
   const close = async () => {
     if (pending) return;
@@ -35,12 +40,18 @@ export default function McpServerForm({ initial, pending, error, onSave, onClose
       <TextAreaField label={app.t("Description", "说明")} maxLength={4096} value={draft.description} onChange={(e) => patch({ description: e.target.value })} />
       <TextField label={app.t("Icon URL · optional", "图标 URL · 可选")} type="url" pattern="https://.*" value={draft.icon ?? ""} placeholder="https://…" onChange={(e) => patch({ icon: e.target.value || null })} />
       <label className="ui-field"><span>{app.t("Transport", "传输方式")}</span><select className="ui-input" aria-label={app.t("Transport", "传输方式")} value={draft.transport.type}
-        onChange={(e) => patch({ transport: e.target.value === "url" ? { type: "url", url: httpUrl } : { type: "sandbox_stdio", command, args: args.split("\n").filter(Boolean) } })}>
+        onChange={(e) => patch({ transport: e.target.value === "url" ? { type: "url", url: httpUrl } : stdio(command, args) })}>
         <option value="url">HTTP</option><option value="sandbox_stdio">Sandbox stdio</option>
       </select></label>
       {draft.transport.type === "url" ? <TextField label="MCP URL" required type="url" pattern="https?://.*" value={draft.transport.url} onChange={(e) => { setHttpUrl(e.target.value); patch({ transport: { type: "url", url: e.target.value } }); }} />
-        : <><TextField label={app.t("Sandbox command", "Sandbox 命令")} required value={draft.transport.command} onChange={(e) => { setCommand(e.target.value); patch({ transport: { type: "sandbox_stdio", command: e.target.value, args: args.split("\n").filter(Boolean) } }); }} />
-          <TextAreaField label={app.t("Arguments · one per line", "参数 · 每行一个")} value={args} onChange={(e) => { setArgs(e.target.value); if (draft.transport.type === "sandbox_stdio") patch({ transport: { ...draft.transport, args: e.target.value.split("\n").filter(Boolean) } }); }} />
+        : <><TextField label={app.t("Sandbox command", "Sandbox 命令")} required value={draft.transport.command} onChange={(e) => { setCommand(e.target.value); patch({ transport: stdio(e.target.value, args) }); }} />
+          <TextAreaField label={app.t("Arguments · one per line", "参数 · 每行一个")} value={args} onChange={(e) => { setArgs(e.target.value); patch({ transport: stdio(command, e.target.value) }); }} />
+          <label><input type="checkbox" checked={shareCatalog} onChange={(e) => {
+            const share = e.target.checked;
+            setShareCatalog(share);
+            if (draft.transport.type === "sandbox_stdio") patch({ transport: { ...draft.transport, share_tool_catalog: share || undefined } });
+          }} /> {app.t("Share discovered tools in this workspace", "在此工作区共享发现的工具")}</label>
+          {shareCatalog && <p className="hint">{app.t("Enable only when the tool list depends on the pinned image and command, and is suitable for everyone with access to this configuration.", "仅当工具清单由固定镜像和命令决定，且适合所有有权查看此配置的用户时开启。")}</p>}
           <p className="hint">{app.t("The command must exist inside the selected Session environment. Uploaded scripts use their /mnt/session/uploads path.", "命令必须存在于所选 Session 环境中；上传脚本使用 /mnt/session/uploads 下的路径。")}</p></>}
       <label><input type="checkbox" checked={draft.prompts_as_skills ?? false} onChange={(e) => patch({ prompts_as_skills: e.target.checked })} /> {app.t("Expose MCP prompts as Skills", "将 MCP Prompt 暴露为 Skill")}</label>
       {error && <div role="alert" className="err">{error.message}<Button type="button" onClick={onReload}>{app.t("Reload configuration", "重新加载配置")}</Button></div>}

@@ -244,8 +244,17 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         vault_state = vault_state.with_refresh_exchange(exchange);
     }
     let vault_state = Arc::new(vault_state);
-    let mcp_catalog =
+    let mut mcp_catalog =
         crate::mcp_catalog::McpCatalogService::new(mcp_config.clone(), vault_state.clone());
+    match awaken_mcp_catalog_store::ObjectStdioCatalogStore::from_environment() {
+        Ok(Some(store)) => mcp_catalog.install_stdio_tool_catalog(
+            store,
+            environment_application.clone(),
+            clock.clone(),
+        ),
+        Ok(None) => {}
+        Err(_) => tracing::warn!("MCP preview object store configuration is unavailable"),
+    }
     mcp_catalog.supervise(&service_lifecycle);
 
     recover_and_supervise_credentials(

@@ -151,7 +151,7 @@ async fn witness_closed(witness: &mut tokio::net::TcpStream, within: Duration) -
 async fn host_with_process_reaper() -> Arc<ExecutorComponents> {
     (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
-        .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor)))
+        .with_mcp_process_support(Arc::new(awaken_run_executor_acp::Supervisor), None))
     .build()
     .expect("validated Host dependencies")
 }
@@ -182,12 +182,10 @@ fn projection(
         },
         request,
         server: None,
-        native_wiring: Some(McpWiring {
-            notification_transports: Vec::new(),
-            plugins: Vec::new(),
-            tool_ids: Vec::new(),
-            skill_registries: Vec::new(),
-            call_fences,
+        native_wiring: Some({
+            let mut wiring = McpWiring::empty();
+            wiring.call_fences = call_fences;
+            wiring
         }),
         mcp_process: Some(process),
         platform_egress: None,

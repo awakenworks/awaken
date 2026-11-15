@@ -38,6 +38,54 @@ struct Harness {
     probe: Arc<Probe>,
     _temp: tempfile::TempDir,
 }
+
+#[tokio::test]
+async fn stdio_preview_uses_saved_configuration_and_refuses_stale_revisions() {
+    let h = Harness::new().await;
+    let (status, saved) = h
+        .call(
+            "w",
+            "PUT",
+            "/v1/config/mcp-servers",
+            json!({
+                "expected_revision": 0,
+                "definition": {
+                    "id": "stdio", "name": "Local stdio", "description": "",
+                    "transport": {"type": "sandbox_stdio", "command": "/bin/stdio",
+                        "cached_tools": [{"name": "lookup", "input_schema": {"type": "object"}}]}
+                }
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let path = format!(
+        "/v1/config/mcp-servers/local%3Astdio/tools?expected_revision={}&environment_id=",
+        saved["revision"]
+    );
+    let (status, value) = h.call("w", "GET", &path, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(value["source"], "configured");
+    assert_eq!(value["tools"][0]["name"], "lookup");
+    assert_eq!(h.probe.0.load(Ordering::SeqCst), 0);
+    let (status, _) = h
+        .call(
+            "w",
+            "GET",
+            "/v1/config/mcp-servers/local%3Astdio/tools?expected_revision=0&environment_id=",
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = h
+        .call(
+            "other",
+            "GET",
+            "/v1/config/mcp-servers/local%3Astdio/tools?expected_revision=0&environment_id=",
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
 impl Harness {
     async fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();

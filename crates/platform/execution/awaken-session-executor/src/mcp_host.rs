@@ -283,7 +283,7 @@ impl crate::RunAssembly {
     ) -> Result<(), SessionExecutionError> {
         Ok(self
             .mcp
-            .publish_projection(self.installed_sessions.as_ref(), generation)
+            .publish_projection(&self.installed_sessions, generation)
             .await?)
     }
 

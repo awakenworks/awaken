@@ -205,7 +205,15 @@ pub async fn with_session_environment_from_deployment_at(
 ) -> Result<SessionExecutorBuilder, String> {
     // One process owner for both warm and rebuilt Session MCP projections.
     // The Supervisor remains the only TERM/KILL/wait algorithm.
-    let host = host.with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor));
+    let discovery = match awaken_mcp_catalog_store::ObjectStdioCatalogStore::from_environment() {
+        Ok(store) => store,
+        Err(_) => {
+            tracing::warn!("MCP tool catalog configuration is unavailable; using live discovery");
+            None
+        }
+    };
+    let host =
+        host.with_mcp_process_support(Arc::new(awaken_run_executor_acp::Supervisor), discovery);
     let host =
         install_container_environment(host, deployment, hand_factory.clone(), policy).await?;
     let host =

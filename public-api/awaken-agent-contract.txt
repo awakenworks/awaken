@@ -886,11 +886,17 @@ pub fn awaken_agent_contract::mcp_target::McpTarget::identity(&str) -> core::res
 pub fn awaken_agent_contract::mcp_target::McpTarget::parse_http(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_agent_contract::mcp_target::McpTargetError>
 pub fn awaken_agent_contract::mcp_target::McpTarget::sandbox_stdio(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::string::String>) -> core::result::Result<Self, awaken_agent_contract::mcp_target::McpTargetError>
 pub fn awaken_agent_contract::mcp_target::McpTarget::sandbox_stdio_target(&self) -> core::option::Option<&awaken_agent_contract::mcp_target::SandboxStdioMcpTarget>
+pub fn awaken_agent_contract::mcp_target::McpTarget::with_cached_tools(self, alloc::vec::Vec<awaken_agent_contract::mcp_target::CachedMcpTool>) -> core::result::Result<Self, awaken_agent_contract::mcp_target::McpTargetError>
 pub enum awaken_agent_contract::mcp_target::McpTargetError
 pub awaken_agent_contract::mcp_target::McpTargetError::Invalid
+pub awaken_agent_contract::mcp_target::McpTargetError::InvalidCachedTools
 pub awaken_agent_contract::mcp_target::McpTargetError::InvalidSandboxStdio
 pub enum awaken_agent_contract::mcp_target::SandboxStdioMcpTargetKind
 pub awaken_agent_contract::mcp_target::SandboxStdioMcpTargetKind::SandboxStdio
+pub struct awaken_agent_contract::mcp_target::CachedMcpTool
+pub awaken_agent_contract::mcp_target::CachedMcpTool::description: alloc::string::String
+pub awaken_agent_contract::mcp_target::CachedMcpTool::input_schema: serde_json::value::Value
+pub awaken_agent_contract::mcp_target::CachedMcpTool::name: alloc::string::String
 pub struct awaken_agent_contract::mcp_target::HttpMcpTarget
 pub awaken_agent_contract::mcp_target::HttpMcpTarget::fingerprint: alloc::string::String
 pub awaken_agent_contract::mcp_target::HttpMcpTarget::url: alloc::string::String
@@ -904,9 +910,11 @@ impl awaken_agent_contract::mcp_target::McpTargetIdentity
 pub fn awaken_agent_contract::mcp_target::McpTargetIdentity::canonical_url(&self) -> alloc::string::String
 pub struct awaken_agent_contract::mcp_target::SandboxStdioMcpTarget
 pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::args: alloc::vec::Vec<alloc::string::String>
+pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::cached_tools: alloc::vec::Vec<awaken_agent_contract::mcp_target::CachedMcpTool>
 pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::command: alloc::string::String
 pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::fingerprint: alloc::string::String
 pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::kind: awaken_agent_contract::mcp_target::SandboxStdioMcpTargetKind
+pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::share_tool_catalog: bool
 pub mod awaken_agent_contract::mcp_tool_id
 pub enum awaken_agent_contract::mcp_tool_id::McpToolIdComponent
 pub awaken_agent_contract::mcp_tool_id::McpToolIdComponent::Server
@@ -1577,8 +1585,10 @@ pub fn awaken_agent_contract::mcp_target::McpTarget::identity(&str) -> core::res
 pub fn awaken_agent_contract::mcp_target::McpTarget::parse_http(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_agent_contract::mcp_target::McpTargetError>
 pub fn awaken_agent_contract::mcp_target::McpTarget::sandbox_stdio(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::string::String>) -> core::result::Result<Self, awaken_agent_contract::mcp_target::McpTargetError>
 pub fn awaken_agent_contract::mcp_target::McpTarget::sandbox_stdio_target(&self) -> core::option::Option<&awaken_agent_contract::mcp_target::SandboxStdioMcpTarget>
+pub fn awaken_agent_contract::mcp_target::McpTarget::with_cached_tools(self, alloc::vec::Vec<awaken_agent_contract::mcp_target::CachedMcpTool>) -> core::result::Result<Self, awaken_agent_contract::mcp_target::McpTargetError>
 pub enum awaken_agent_contract::McpTargetError
 pub awaken_agent_contract::McpTargetError::Invalid
+pub awaken_agent_contract::McpTargetError::InvalidCachedTools
 pub awaken_agent_contract::McpTargetError::InvalidSandboxStdio
 pub enum awaken_agent_contract::McpToolIdComponent
 pub awaken_agent_contract::McpToolIdComponent::Server
@@ -1788,9 +1798,11 @@ pub awaken_agent_contract::RunRecord::state: awaken_agent_contract::agent::run::
 pub awaken_agent_contract::RunRecord::thread_id: awaken_agent_contract::agent::thread::Id
 pub struct awaken_agent_contract::SandboxStdioMcpTarget
 pub awaken_agent_contract::SandboxStdioMcpTarget::args: alloc::vec::Vec<alloc::string::String>
+pub awaken_agent_contract::SandboxStdioMcpTarget::cached_tools: alloc::vec::Vec<awaken_agent_contract::mcp_target::CachedMcpTool>
 pub awaken_agent_contract::SandboxStdioMcpTarget::command: alloc::string::String
 pub awaken_agent_contract::SandboxStdioMcpTarget::fingerprint: alloc::string::String
 pub awaken_agent_contract::SandboxStdioMcpTarget::kind: awaken_agent_contract::mcp_target::SandboxStdioMcpTargetKind
+pub awaken_agent_contract::SandboxStdioMcpTarget::share_tool_catalog: bool
 pub struct awaken_agent_contract::ScopeId(pub alloc::string::String)
 impl awaken_agent_contract::scope::ScopeId
 pub fn awaken_agent_contract::scope::ScopeId::as_str(&self) -> &str

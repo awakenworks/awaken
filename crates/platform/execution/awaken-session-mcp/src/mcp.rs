@@ -22,12 +22,14 @@ mod attachment;
 #[cfg(test)]
 mod classification_tests;
 mod credential_target;
+mod deferred_stdio;
 mod error;
 mod input;
 mod prompt_skills;
 mod sessions;
+pub(crate) mod stdio_catalog;
 
-pub use attachment::{McpCredentialMaterialization, McpStagingSession};
+pub use attachment::{DeferredStdioEnvironment, McpCredentialMaterialization, McpStagingSession};
 pub use error::{McpError, McpErrorKind};
 pub use input::{McpInputHost, McpInputRecipients};
 pub use sessions::{McpGenerationAuthority, McpQuiescenceProof, McpSessions, SessionMcpStates};
@@ -310,7 +312,7 @@ async fn append_connected(
             Err(error) => return Err(McpError::internal(error)),
         }
     }
-    let plugin = connected.plugin();
+    let plugin = Arc::new(connected.plugin());
     let contributions = plugin.resolve();
     wiring.tool_ids.extend(
         contributions
@@ -318,7 +320,13 @@ async fn append_connected(
             .iter()
             .map(|tool| tool.executable().id().to_string()),
     );
-    wiring.plugins.push(Arc::new(plugin));
+    if matches!(
+        &server.transport,
+        McpTransportMaterialKind::SandboxStdio { .. }
+    ) {
+        wiring.connected_stdio = Some(plugin.clone());
+    }
+    wiring.plugins.push(plugin);
     wiring
         .notification_transports
         .push((server.name.clone(), transport));

@@ -366,6 +366,7 @@ pub const awaken_tool_contract::tool_batch::ActiveToolBatch::MERGE: awaken_agent
 pub const awaken_tool_contract::tool_batch::ActiveToolBatch::SCOPE: awaken_agent_contract::agent::state::Scope
 pub struct awaken_tool_contract::tool_batch::DurableToolCall
 pub awaken_tool_contract::tool_batch::DurableToolCall::call: awaken_tool_contract::tool::ToolCall
+pub awaken_tool_contract::tool_batch::DurableToolCall::descriptor_hash: core::option::Option<alloc::string::String>
 pub awaken_tool_contract::tool_batch::DurableToolCall::execution_domain: core::option::Option<awaken_tool_contract::tool_batch::ToolExecutionDomain>
 pub awaken_tool_contract::tool_batch::DurableToolCall::materialization_domain: core::option::Option<awaken_tool_contract::tool_batch::ToolExecutionDomain>
 pub awaken_tool_contract::tool_batch::DurableToolCall::phase: awaken_tool_contract::tool_batch::ToolCallPhase
@@ -394,6 +395,7 @@ pub fn awaken_tool_contract::tool_batch::ToolBatch::complete_returned(&mut self,
 pub fn awaken_tool_contract::tool_batch::ToolBatch::execution_admission(&self, &str) -> core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionAdmission<'_>, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::finalize(&mut self) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::for_step(awaken_agent_contract::agent::run::Id, usize, impl core::iter::traits::collect::IntoIterator<Item = (awaken_tool_contract::tool::ToolCall, awaken_tool_contract::tool::ToolRecoveryPolicy)>) -> core::result::Result<Self, awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::for_step_with_descriptors(awaken_agent_contract::agent::run::Id, usize, impl core::iter::traits::collect::IntoIterator<Item = (awaken_tool_contract::tool::ToolCall, awaken_tool_contract::tool::ToolRecoveryPolicy, core::option::Option<alloc::string::String>)>) -> core::result::Result<Self, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::id(&self) -> &awaken_tool_contract::tool_batch::ToolBatchId
 pub fn awaken_tool_contract::tool_batch::ToolBatch::is_complete(&self) -> bool
 pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_awaiting(&mut self, &str, awaken_tool_contract::tool_batch::ToolWaitKind, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
@@ -586,6 +588,7 @@ pub fn awaken_tool_contract::tool_batch::ToolBatch::complete_returned(&mut self,
 pub fn awaken_tool_contract::tool_batch::ToolBatch::execution_admission(&self, &str) -> core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionAdmission<'_>, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::finalize(&mut self) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::for_step(awaken_agent_contract::agent::run::Id, usize, impl core::iter::traits::collect::IntoIterator<Item = (awaken_tool_contract::tool::ToolCall, awaken_tool_contract::tool::ToolRecoveryPolicy)>) -> core::result::Result<Self, awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::for_step_with_descriptors(awaken_agent_contract::agent::run::Id, usize, impl core::iter::traits::collect::IntoIterator<Item = (awaken_tool_contract::tool::ToolCall, awaken_tool_contract::tool::ToolRecoveryPolicy, core::option::Option<alloc::string::String>)>) -> core::result::Result<Self, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::id(&self) -> &awaken_tool_contract::tool_batch::ToolBatchId
 pub fn awaken_tool_contract::tool_batch::ToolBatch::is_complete(&self) -> bool
 pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_awaiting(&mut self, &str, awaken_tool_contract::tool_batch::ToolWaitKind, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>

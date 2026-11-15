@@ -132,8 +132,8 @@ fn reject_direct_detached_call(
     })
 }
 
-/// Select the original pinned per-call policy once when creating the Requested
-/// batch. Execution and recovery continue to use that same aggregate policy.
+/// Pin each recovery policy and the MCP definition visible to the model when
+/// creating the Requested batch. Both survive approval and execution recovery.
 fn requested_tool_batch(
     runtime: &Runtime,
     delegation_origin: Option<&DelegationOrigin>,
@@ -143,7 +143,10 @@ fn requested_tool_batch(
     step: usize,
     calls: &[ToolCall],
 ) -> Result<ToolBatch> {
-    let policies = calls.iter().cloned().map(|call| {
+    let entries = calls.iter().cloned().map(|call| {
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == call.tool_id);
         let policy = if is_resolved_delegation_call(runtime, resolved, delegation_origin, &call) {
             // A delegated child is addressed by its stable RunId. Recovery
             // reconnects/re-dispatches that durable request; treating it as a
@@ -155,15 +158,18 @@ fn requested_tool_batch(
         {
             ToolRecoveryPolicy::replay_safe()
         } else {
-            descriptors
-                .iter()
-                .find(|descriptor| descriptor.id == call.tool_id)
+            descriptor
                 .map(|descriptor| descriptor.recovery_policy.clone())
                 .unwrap_or_default()
         };
-        (call, policy)
+        let descriptor_hash = if awaken_agent_contract::McpToolId::claims_namespace(&call.tool_id) {
+            descriptor.map(ToolDescriptor::content_hash)
+        } else {
+            None
+        };
+        (call, policy, descriptor_hash)
     });
-    ToolBatch::for_step(run_id.clone(), step, policies)
+    ToolBatch::for_step_with_descriptors(run_id.clone(), step, entries)
         .map_err(|error| Error::Execution(error.to_string()))
 }
 

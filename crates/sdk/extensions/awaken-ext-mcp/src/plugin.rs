@@ -23,6 +23,7 @@ use awaken_mcp_wire::McpToolDefinition;
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, DynamicTool, IdBound, Plugin, PluginManifest,
 };
+use awaken_tool_contract::tool::ToolError;
 use tokio::sync::broadcast;
 
 use crate::error::McpError;
@@ -70,6 +71,7 @@ fn manifest(server_name: &str, namespace: &str) -> PluginManifest {
 struct McpRegistry {
     version: u64,
     tools: Vec<McpToolDefinition>,
+    refreshing: bool,
 }
 
 /// One catalog observer shared only by explicit server/plugin owners. The
@@ -90,6 +92,7 @@ pub struct McpServer {
     namespace: String,
     transport: Arc<dyn McpToolTransport>,
     registry: Arc<LeafLock<McpRegistry>>,
+    versions: tokio::sync::watch::Receiver<u64>,
     _refresh: Arc<RegistryRefresh>,
 }
 
@@ -118,15 +121,47 @@ impl McpServer {
         let mut tools = transport.list_tools().await?;
         validate_tools_task_negotiation(&server_name, &tools, transport.as_ref())?;
         apply_sensitive(&mut tools, &sensitive);
-        let registry = Arc::new(LeafLock::new(McpRegistry { version: 1, tools }));
+        let registry = Arc::new(LeafLock::new(McpRegistry {
+            version: 1,
+            tools,
+            refreshing: false,
+        }));
+        let (published, versions) = tokio::sync::watch::channel(1);
 
         let refresh_registry = Arc::clone(&registry);
         let refresh_transport = Arc::clone(&transport);
         let refresh_server_name = server_name.clone();
         let refresh_task = tokio::spawn(async move {
-            while let Ok(kind) = list_changed.recv().await {
-                if kind == ListChangedKind::Tools
-                    && let Ok(mut tools) = refresh_transport.list_tools().await
+            let mut retry_at = None;
+            let mut backoff = std::time::Duration::from_secs(5);
+            loop {
+                let notification = tokio::select! {
+                    notice = list_changed.recv() => Some(notice),
+                    () = async {
+                        if let Some(deadline) = retry_at {
+                            tokio::time::sleep_until(deadline).await;
+                        }
+                    }, if retry_at.is_some() => None,
+                };
+                match notification {
+                    Some(
+                        Ok(ListChangedKind::Tools) | Err(broadcast::error::RecvError::Lagged(_)),
+                    )
+                    | None => {}
+                    Some(Ok(_)) => continue,
+                    Some(Err(broadcast::error::RecvError::Closed)) => break,
+                }
+                refresh_registry.lock().refreshing = true;
+                // Consume notifications already covered by the next complete listing.
+                for _ in 0..64 {
+                    if !matches!(
+                        list_changed.try_recv(),
+                        Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_))
+                    ) {
+                        break;
+                    }
+                }
+                if let Ok(mut tools) = refresh_transport.list_tools().await
                     && validate_tools_task_negotiation(
                         &refresh_server_name,
                         &tools,
@@ -139,7 +174,14 @@ impl McpServer {
                     *registry = McpRegistry {
                         version: registry.version + 1,
                         tools,
+                        refreshing: false,
                     };
+                    published.send_replace(registry.version);
+                    retry_at = None;
+                    backoff = std::time::Duration::from_secs(5);
+                } else {
+                    retry_at = Some(awaken_time::mono::now() + backoff);
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(60));
                 }
             }
         });
@@ -149,6 +191,7 @@ impl McpServer {
             namespace,
             transport,
             registry,
+            versions,
             _refresh: Arc::new(RegistryRefresh(refresh_task.abort_handle())),
         })
     }
@@ -181,6 +224,7 @@ impl McpServer {
             namespace: self.namespace.clone(),
             transport: Arc::clone(&self.transport),
             registry: Arc::clone(&self.registry),
+            versions: self.versions.clone(),
             _refresh: Arc::clone(&self._refresh),
         }
     }
@@ -222,10 +266,61 @@ pub struct McpPlugin {
     namespace: String,
     transport: Arc<dyn McpToolTransport>,
     registry: Arc<LeafLock<McpRegistry>>,
+    versions: tokio::sync::watch::Receiver<u64>,
     _refresh: Arc<RegistryRefresh>,
 }
 
 impl McpPlugin {
+    pub fn catalog_versions(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.versions.clone()
+    }
+
+    pub fn is_refreshing_catalog(&self) -> bool {
+        self.registry.lock().refreshing
+    }
+
+    fn fence_tool(&self, tool: McpRawTool, wire_name: &str, advertised: String) -> McpRawTool {
+        let registry = Arc::clone(&self.registry);
+        let transport = Arc::clone(&self.transport);
+        let server = self.server_name.clone();
+        let wire_name = wire_name.to_owned();
+        tool.with_catalog_admission(move || {
+            let registry = registry.lock();
+            if registry.refreshing {
+                return Err(ToolError::UnavailableBeforeDispatch(
+                    "mcp_tool_catalog_refreshing: MCP tool discovery must finish before this call can be sent.".into(),
+                ));
+            }
+            let matches = registry.tools.iter().find(|tool| tool.name == wire_name)
+                .and_then(|tool| mcp_tool_descriptor_for_transport(&server, tool, transport.as_ref()).ok())
+                .is_some_and(|tool| tool.content_hash() == advertised);
+            if matches {
+                Ok(())
+            } else {
+                Err(ToolError::UnavailableBeforeDispatch(
+                    "mcp_tool_schema_changed: MCP tool definitions were refreshed. This call was not sent. Choose a tool and generate arguments using the current definitions.".into(),
+                ))
+            }
+        })
+    }
+
+    /// Snapshot the regular tools already validated against this connection.
+    pub fn regular_tool_definitions(&self) -> Option<Vec<McpToolDefinition>> {
+        let registry = self.registry.lock();
+        (!registry.refreshing
+            && registry.tools.iter().all(|definition| {
+                mcp_tool_descriptor_for_transport(
+                    &self.server_name,
+                    definition,
+                    self.transport.as_ref(),
+                )
+                .is_ok_and(|descriptor| {
+                    descriptor.kind == awaken_runtime_contract::resolved::ToolKind::Regular
+                })
+            }))
+        .then(|| registry.tools.clone())
+    }
+
     /// The same pure metadata as a connected server, with the canonical namespace
     /// derived without connecting, discovering tools or granting execution rights.
     pub fn manifest_for(server_name: &str) -> Result<PluginManifest, McpError> {
@@ -248,9 +343,11 @@ impl Plugin for McpPlugin {
             if let (Ok(descriptor), Ok(tool)) = (
                 mcp_tool_descriptor_for_transport(&self.server_name, def, self.transport.as_ref()),
                 McpRawTool::from_definition(&self.server_name, def, Arc::clone(&self.transport)),
-            ) && let Ok(dynamic) = DynamicTool::try_new(descriptor, Arc::new(tool))
-            {
-                contributions.register_dynamic_tool(dynamic);
+            ) {
+                let tool = self.fence_tool(tool, &def.name, descriptor.content_hash());
+                if let Ok(dynamic) = DynamicTool::try_new(descriptor, Arc::new(tool)) {
+                    contributions.register_dynamic_tool(dynamic);
+                }
             }
         }
         contributions
@@ -410,16 +507,94 @@ mod tests {
         calls: AtomicUsize,
     }
 
+    #[tokio::test]
+    async fn refresh_blocks_old_tool_during_discovery_and_after_removal() {
+        use tokio::sync::Notify;
+
+        #[derive(Default)]
+        struct HeldRefresh {
+            lists: AtomicUsize,
+            calls: AtomicUsize,
+            entered: Notify,
+            release: Notify,
+        }
+
+        #[async_trait]
+        impl McpToolTransport for HeldRefresh {
+            async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+                if self.lists.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Ok(vec![McpToolDefinition::new("lookup")]);
+                }
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(Vec::new())
+            }
+
+            async fn call_tool(
+                &self,
+                _: &str,
+                _: Value,
+            ) -> Result<CallToolResult, McpTransportError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(CallToolResult {
+                    content: Vec::new(),
+                    structured_content: None,
+                    is_error: None,
+                })
+            }
+        }
+
+        let transport = Arc::new(HeldRefresh::default());
+        let (notifications, receiver) = broadcast::channel(1);
+        let server = McpServer::start("srv", transport.clone(), receiver)
+            .await
+            .unwrap();
+        let plugin = server.plugin();
+        let mut versions = plugin.catalog_versions();
+        let dynamic = plugin.resolve().dynamic_tools.pop().unwrap();
+        let tool = dynamic.executable();
+        let call = || awaken_tool_contract::tool::ToolCall {
+            call_id: "lookup-call".into(),
+            tool_id: tool.id().into(),
+            arguments: serde_json::json!({}),
+        };
+        tool.invoke(call()).await.unwrap();
+        // Overflow the receiver before it can poll. Lag still requires one refresh.
+        for _ in 0..3 {
+            notifications.send(ListChangedKind::Tools).unwrap();
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            transport.entered.notified(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(tool.invoke(call()).await, Err(ToolError::UnavailableBeforeDispatch(message)) if message.contains("catalog_refreshing"))
+        );
+        transport.release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), versions.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(plugin.resolve().dynamic_tools.is_empty());
+        assert!(
+            matches!(tool.invoke(call()).await, Err(ToolError::UnavailableBeforeDispatch(message)) if message.contains("schema_changed"))
+        );
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.lists.load(Ordering::SeqCst), 2);
+    }
+
     #[async_trait]
     impl McpToolTransport for RequiredTaskOnRefreshTransport {
         async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
-            let definition = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                serde_json::json!({"name": "stable"})
-            } else {
-                serde_json::json!({
+            let definition = match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => serde_json::json!({"name": "stable"}),
+                1 => serde_json::json!({
                     "name": "requires_tasks",
                     "execution": {"taskSupport": "required"}
-                })
+                }),
+                _ => serde_json::json!({"name": "recovered"}),
             };
             Ok(vec![serde_json::from_value(definition).unwrap()])
         }
@@ -433,7 +608,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn incompatible_required_task_refresh_preserves_the_committed_registry() {
         // Cause/effect graph: C1=current registry is valid; C2=list_changed
         // advertises a tool requiring tasks; C3=the initialized transport did
@@ -458,6 +633,16 @@ mod tests {
             contributions.dynamic_tools[0].descriptor().id,
             "mcp__srv__stable",
             "R1/E2"
+        );
+        let mut versions = server.plugin().catalog_versions();
+        tokio::time::timeout(std::time::Duration::from_secs(6), versions.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(server.version(), 2);
+        assert_eq!(
+            server.plugin().resolve().dynamic_tools[0].descriptor().id,
+            "mcp__srv__recovered"
         );
     }
 

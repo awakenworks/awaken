@@ -20,8 +20,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_mcp_wire::McpTransportError;
 use awaken_mcp_wire::{
-    CallToolParams, CallToolResult, CreateTaskResult, InitializeParams, InitializeResult,
-    ListToolsResult, McpTask, McpToolDefinition, TaskIdParams, TaskMetadata,
+    CallToolParams, CallToolResult, CreateTaskResult, InitializeParams, InitializeResult, McpTask,
+    McpToolDefinition, TaskIdParams, TaskMetadata,
 };
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -257,12 +257,10 @@ impl McpToolTransport for StdioTransport {
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
-        let result = self
-            .peer
-            .request("tools/list", serde_json::json!({}), self.timeout)
-            .await?;
-        let parsed: ListToolsResult = serde_json::from_value(result)?;
-        Ok(parsed.tools)
+        crate::tool_catalog::list_all(self.timeout, |params| {
+            self.peer.request("tools/list", params, self.timeout)
+        })
+        .await
     }
 
     async fn call_tool(
@@ -576,9 +574,16 @@ mod stream_tests {
                         "capabilities": {},
                         "serverInfo": {"name": "attached", "version": "1"}
                     }),
-                    Some("tools/list") => serde_json::json!({
-                        "tools": [{"name": "browser_navigate", "inputSchema": {"type": "object"}}]
-                    }),
+                    Some("tools/list") => match value["params"]["cursor"].as_str() {
+                        None => serde_json::json!({
+                            "tools": [{"name": "browser_navigate", "inputSchema": {"type": "object"}}],
+                            "nextCursor": "next/page"
+                        }),
+                        Some("next/page") => serde_json::json!({
+                            "tools": [{"name": "browser_title", "inputSchema": {"type": "object"}}]
+                        }),
+                        cursor => panic!("unexpected cursor {cursor:?}"),
+                    },
                     method => panic!("unexpected method: {method:?}"),
                 };
                 let reply = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result});
@@ -593,8 +598,9 @@ mod stream_tests {
             .await
             .unwrap();
         let tools = transport.list_tools().await.unwrap();
-        assert_eq!(tools.len(), 1);
+        assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].name, "browser_navigate");
+        assert_eq!(tools[1].name, "browser_title");
         assert!(!transport.supports_task_tools_call());
         assert!(!transport.supports_task_cancel());
         assert!(matches!(

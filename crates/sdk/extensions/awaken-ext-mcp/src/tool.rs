@@ -43,6 +43,7 @@ pub struct McpRawTool {
     /// retained by `transport`; both must agree before augmentation is used.
     task_support: TaskSupport,
     transport: Arc<dyn McpToolTransport>,
+    catalog_admission: Option<Arc<dyn Fn() -> Result<(), ToolError> + Send + Sync>>,
 }
 
 impl McpRawTool {
@@ -59,6 +60,7 @@ impl McpRawTool {
             tool_name: tool_name.to_string(),
             task_support: TaskSupport::Forbidden,
             transport,
+            catalog_admission: None,
         })
     }
 
@@ -78,11 +80,26 @@ impl McpRawTool {
             tool_name: definition.name.clone(),
             task_support,
             transport,
+            catalog_admission: None,
         })
     }
 
     fn task_capable(&self) -> bool {
         self.task_support != TaskSupport::Forbidden && self.transport.supports_task_tools_call()
+    }
+
+    pub(crate) fn with_catalog_admission(
+        mut self,
+        admission: impl Fn() -> Result<(), ToolError> + Send + Sync + 'static,
+    ) -> Self {
+        self.catalog_admission = Some(Arc::new(admission));
+        self
+    }
+
+    fn admit_catalog(&self) -> Result<(), ToolError> {
+        self.catalog_admission
+            .as_ref()
+            .map_or(Ok(()), |admit| admit())
     }
 
     fn task_handle(&self, task: McpTask) -> Result<ToolTaskHandle, ToolError> {
@@ -107,6 +124,7 @@ impl McpRawTool {
     }
 
     async fn invoke_foreground(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.admit_catalog()?;
         let arguments = normalized_arguments(call.arguments);
         let result = self
             .transport
@@ -181,6 +199,7 @@ impl DurableTaskTool for McpRawTool {
                 .await
                 .map(ToolTaskStart::Completed);
         }
+        self.admit_catalog()?;
         let arguments = normalized_arguments(call.arguments);
         let created = self
             .transport

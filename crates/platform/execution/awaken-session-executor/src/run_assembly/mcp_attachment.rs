@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use awaken_runtime_contract::runs::RunError;
+use awaken_session_realization::peers::EnvironmentPeer;
 
 use super::RunAssembly;
 use crate::PinnedCredentialMaterializer;
@@ -47,6 +48,121 @@ impl RunAssembly {
 // The Session facts MCP staging reads, answered from this adapter's Host.
 #[async_trait::async_trait]
 impl awaken_session_mcp::McpStagingSession for RunAssembly {
+    fn stdio_tool_catalog_access(
+        &self,
+        request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Option<awaken_session_mcp::StdioCatalogAccess> {
+        use awaken_session_configuration_contract::mcp::tool_catalog::StdioToolCatalogKey;
+        let target = request.target.sandbox_stdio_target()?;
+        if !target.share_tool_catalog || request.credential.is_some() || request.prompts_as_skills {
+            return None;
+        }
+        let session = request.generation.session_id();
+        let inputs = self
+            .installed_sessions
+            .realizations()
+            .frozen(session.as_str())
+            .ok()?;
+        let baseline = inputs.baseline.as_ref()?;
+        if inputs.workspace.as_deref() != Some(request.workspace_id.as_str())
+            || !baseline.env.is_empty()
+            || !baseline.mounts.is_empty()
+        {
+            return None;
+        }
+        let (key, launch_fingerprint) = StdioToolCatalogKey::for_environment(
+            &request.workspace_id,
+            target,
+            &baseline.environment,
+        )?;
+        let slots = Arc::downgrade(&self.installed_sessions);
+        let session = session.as_str().to_owned();
+        let may_share = Arc::new(move || {
+            slots.upgrade().is_some_and(|slots| {
+                slots
+                    .read(&session, |installed| {
+                        let resources = installed.realization.staging();
+                        let is_initial_empty = |manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest| {
+                            // Managed creation prepares generation one even for an empty manifest.
+                            manifest.revision <= 1
+                                && manifest.resources.inputs().is_empty()
+                                && manifest.resources.skills().is_empty()
+                        };
+                        resources.run_manifest(true).as_ref().is_some_and(is_initial_empty)
+                            && resources.run_manifest(false).as_ref().is_none_or(is_initial_empty)
+                    })
+                    .is_ok_and(|result| result == Some(true))
+            })
+        });
+        may_share().then_some(awaken_session_mcp::StdioCatalogAccess {
+            key,
+            launch_fingerprint,
+            may_share,
+        })
+    }
+
+    fn deferred_stdio_environment(
+        &self,
+        session: &str,
+    ) -> Result<Option<awaken_session_mcp::DeferredStdioEnvironment>, RunError> {
+        let inputs = self.installed_sessions.realizations().frozen(session)?;
+        if !inputs
+            .environment_projection
+            .as_ref()
+            .is_some_and(|environment| {
+                environment.provisioning
+                    == awaken_provisioning_contract::SandboxProvisioning::OnToolUse
+            })
+        {
+            return Ok(None);
+        }
+        let (_, _, _, model) = self
+            .realization_executor
+            .environments()
+            .publication()
+            .resolve_session_publication(session, None, inputs.published_snapshot.clone())
+            .map_err(RunError::from)?;
+        if model.as_ref().is_some_and(|model| {
+            !matches!(
+                awaken_runtime_contract::resolved::Backend::from_ref(model.binding().identity().2),
+                awaken_runtime_contract::resolved::Backend::Native
+            )
+        }) {
+            return Ok(None);
+        }
+        let executor = Arc::downgrade(&self.realization_executor);
+        let session = session.to_owned();
+        Ok(Some(Arc::new(move || {
+            let executor = executor.clone();
+            let session = session.clone();
+            Box::pin(async move {
+                let executor = executor.upgrade().ok_or_else(|| {
+                    RunError::unavailable_classified(
+                        "mcp_sandbox_unavailable",
+                        "Session executor was released",
+                    )
+                })?;
+                executor
+                    .ensure_session_environment_for_tool(&session)
+                    .await
+                    .map_err(RunError::from)
+            })
+        })))
+    }
+
+    fn mcp_plugin_config(
+        &self,
+        session: &str,
+        plugin_id: &str,
+    ) -> Result<Option<serde_json::Value>, RunError> {
+        let inputs = self.installed_sessions.realizations().frozen(session)?;
+        Ok(match inputs.published_snapshot.as_ref() {
+            Some(snapshot) => snapshot.resolved_spec.plugin_config.get(plugin_id),
+            None => self.capabilities.tools.plugin_config.get(plugin_id),
+        }
+        .cloned())
+    }
+
     fn mcp_generation_is_authorized_at(
         &self,
         generation: &crate::session_mcp::McpGenerationRef,
@@ -192,7 +308,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RunAssembly {
         generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.mcp
-            .publish_attachment(self.installed_sessions.as_ref(), self, generation)
+            .publish_attachment(&self.installed_sessions, self, generation)
             .await
     }
 

@@ -19,6 +19,10 @@ pub mod progress;
 pub mod sse;
 mod types;
 
+/// Maximum raw bytes in one inbound MCP message, before UTF-8 or JSON decoding.
+/// The catalog collector separately limits the aggregate across discovery pages.
+pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
 pub use jsonrpc::{
     JsonRpcNotifier, JsonRpcPeer, ServerNotification, ServerRequestError, ServerRequestHandler,
 };

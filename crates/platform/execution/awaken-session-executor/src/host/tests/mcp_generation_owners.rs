@@ -39,7 +39,7 @@ const THREAD: &str = "mcp-owner-isolation";
 async fn host_with_process_reaper() -> Arc<ExecutorComponents> {
     (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
-        .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor)))
+        .with_mcp_process_support(Arc::new(awaken_run_executor_acp::Supervisor), None))
     .build()
     .expect("validated Host dependencies")
 }

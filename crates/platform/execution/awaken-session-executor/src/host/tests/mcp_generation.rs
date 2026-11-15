@@ -5,7 +5,7 @@ use super::*;
 async fn host_with_process_reaper() -> Arc<ExecutorComponents> {
     (crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
-        .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor)))
+        .with_mcp_process_support(Arc::new(awaken_run_executor_acp::Supervisor), None))
     .build()
     .expect("validated Host dependencies")
 }
@@ -58,12 +58,10 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
                     refresh: None,
                 },
             }),
-            native_wiring: Some(McpWiring {
-                notification_transports: Vec::new(),
-                plugins: Vec::new(),
-                tool_ids: vec![format!("docs-generation-{number}")],
-                skill_registries: Vec::new(),
-                call_fences: Vec::new(),
+            native_wiring: Some({
+                let mut wiring = McpWiring::empty();
+                wiring.tool_ids.push(format!("docs-generation-{number}"));
+                wiring
             }),
             mcp_process: None,
             platform_egress: None,
@@ -337,12 +335,10 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
                     refresh: None,
                 },
             }),
-            native_wiring: Some(McpWiring {
-                notification_transports: Vec::new(),
-                plugins: Vec::new(),
-                tool_ids: Vec::new(),
-                skill_registries: Vec::new(),
-                call_fences: vec![fence],
+            native_wiring: Some({
+                let mut wiring = McpWiring::empty();
+                wiring.call_fences.push(fence);
+                wiring
             }),
             mcp_process: None,
             platform_egress: None,
@@ -1759,7 +1755,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
     use awaken_session_configuration_contract::SessionInit;
     let dependencies = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
-        .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor));
+        .with_mcp_process_support(Arc::new(awaken_run_executor_acp::Supervisor), None);
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credential = awaken_credential_vault::repo::enter_credential(

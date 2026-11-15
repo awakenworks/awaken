@@ -676,11 +676,17 @@ impl SessionExecutorBuilder {
 
     /// Select the process reaper that stops Session MCP server processes.
     #[must_use]
-    pub fn with_mcp_process_reaper(
+    pub fn with_mcp_process_support(
         mut self,
         reaper: Arc<dyn awaken_session_environment_contract::ProcessReaper>,
+        discovery: Option<
+            Arc<dyn awaken_session_configuration_contract::mcp::tool_catalog::StdioToolDiscovery>,
+        >,
     ) -> Self {
         self.mcp.set_process_reaper(reaper);
+        if let Some(discovery) = discovery {
+            self.mcp.set_stdio_tool_catalog(discovery);
+        }
         self
     }
 

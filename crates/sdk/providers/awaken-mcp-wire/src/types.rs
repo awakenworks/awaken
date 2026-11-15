@@ -143,7 +143,11 @@ pub struct ListToolsParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListToolsResult {
     pub tools: Vec<McpToolDefinition>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "nextCursor",
+        alias = "next_cursor",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub next_cursor: Option<String>,
 }
 

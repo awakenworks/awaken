@@ -13,8 +13,11 @@ pub struct SseParser {
     /// Bytes received but not yet terminated by a newline.
     line_buf: Vec<u8>,
     /// `data:` lines accumulated for the event currently being built.
-    data: Vec<String>,
+    data: Option<String>,
+    frame_bytes: usize,
+    pending_cr: bool,
     invalid_event: bool,
+    exceeded_limit: bool,
 }
 
 impl SseParser {
@@ -33,64 +36,127 @@ impl SseParser {
     /// Transport frames may divide a UTF-8 codepoint anywhere. Decode only
     /// complete lines; an invalid line rejects its event rather than inventing
     /// replacement characters in customer text or protocol identities.
-    pub fn push_bytes(&mut self, chunk: &[u8]) -> Vec<String> {
-        self.line_buf.extend_from_slice(chunk);
+    /// After an oversized event, the parser yields only events completed
+    /// before the failure and ignores subsequent input on this stream.
+    pub fn push_bytes(&mut self, mut chunk: &[u8]) -> Vec<String> {
         let mut events = Vec::new();
-        while let Some((pos, terminator_len)) = next_line_ending(&self.line_buf) {
-            let end = pos
-                .checked_add(terminator_len)
-                .expect("SSE line terminator offset overflowed");
-            assert!(
-                end > pos && end <= self.line_buf.len(),
-                "SSE line terminator must consume one or two bytes"
-            );
-            let raw: Vec<u8> = self.line_buf.drain(..end).collect();
-            let Ok(line) = std::str::from_utf8(&raw[..pos]) else {
-                self.invalid_event = true;
+        while !chunk.is_empty() && !self.exceeded_limit {
+            if self.pending_cr {
+                self.pending_cr = false;
+                let crlf = chunk[0] == b'\n';
+                self.finish_line(usize::from(crlf), &mut events);
+                chunk = &chunk[usize::from(crlf)..];
                 continue;
-            };
-            if line.is_empty() {
-                // Blank line: dispatch the accumulated event, if any.
-                if !self.data.is_empty() && !self.invalid_event {
-                    events.push(self.data.join("\n"));
-                }
-                self.data.clear();
-                self.invalid_event = false;
-            } else if let Some(value) = line.strip_prefix("data:") {
-                // A single optional leading space after the colon is stripped.
-                self.data
-                    .push(value.strip_prefix(' ').unwrap_or(value).to_string());
             }
-            // Other fields and `:` comments are ignored.
+            let end = chunk
+                .iter()
+                .position(|byte| matches!(byte, b'\r' | b'\n'))
+                .unwrap_or(chunk.len());
+            if !self.charge(end) {
+                break;
+            }
+            self.line_buf.extend_from_slice(&chunk[..end]);
+            let Some(delimiter) = chunk.get(end) else {
+                break;
+            };
+            self.pending_cr = *delimiter == b'\r';
+            if self.pending_cr {
+                if !self.line_buf.is_empty() && !self.charge(1) {
+                    break;
+                }
+            } else {
+                self.finish_line(1, &mut events);
+            }
+            chunk = &chunk[end + 1..];
         }
         events
+    }
+
+    /// Whether this stream exceeded the raw SSE event byte limit.
+    pub fn exceeded_limit(&self) -> bool {
+        self.exceeded_limit
+    }
+
+    fn charge(&mut self, bytes: usize) -> bool {
+        if bytes > crate::MAX_FRAME_BYTES - self.frame_bytes {
+            self.exceeded_limit = true;
+            self.line_buf.clear();
+            self.data = None;
+            return false;
+        }
+        self.frame_bytes += bytes;
+        true
+    }
+
+    fn finish_line(&mut self, delimiter_bytes: usize, events: &mut Vec<String>) {
+        if self.line_buf.is_empty() {
+            if let Some(data) = self.data.take()
+                && !self.invalid_event
+            {
+                events.push(data);
+            }
+            self.invalid_event = false;
+            self.frame_bytes = 0;
+            return;
+        }
+        if !self.charge(delimiter_bytes) {
+            return;
+        }
+        match std::str::from_utf8(&self.line_buf) {
+            Ok(line) => {
+                if let Some(value) = line.strip_prefix("data:") {
+                    let value = value.strip_prefix(' ').unwrap_or(value);
+                    if let Some(data) = &mut self.data {
+                        data.push('\n');
+                        data.push_str(value);
+                    } else {
+                        self.data = Some(value.to_owned());
+                    }
+                }
+            }
+            Err(_) => self.invalid_event = true,
+        }
+        self.line_buf.clear();
     }
 
     /// Finish an ended stream, treating EOF as the delimiter for its final
     /// complete event. This is the single termination rule shared by buffered,
     /// POST-stream, and standalone GET-stream consumers.
     pub fn finish(&mut self) -> Vec<String> {
-        self.push("\n\n")
-    }
-}
-
-/// Locate LF, CRLF, or bare CR without consuming a CR at the end of a chunk:
-/// the next chunk may begin with LF and the pair is one terminator.
-fn next_line_ending(bytes: &[u8]) -> Option<(usize, usize)> {
-    for (index, byte) in bytes.iter().copied().enumerate() {
-        match byte {
-            b'\n' => return Some((index, 1)),
-            b'\r' if index + 1 == bytes.len() => return None,
-            b'\r' => return Some((index, usize::from(bytes[index + 1] == b'\n') + 1)),
-            _ => {}
+        let mut events = Vec::new();
+        if !self.exceeded_limit {
+            self.pending_cr = false;
+            self.finish_line(0, &mut events);
+            self.finish_line(0, &mut events);
         }
+        events
     }
-    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_event_limit_counts_fields_and_rejects_before_a_delimiter() {
+        let limit = crate::MAX_FRAME_BYTES;
+        let mut parser = SseParser::new();
+        // Two complete events can share a chunk even if the chunk is over the cap.
+        let prefix = b": ignored\r\ndata: ok";
+        let mut exact = prefix.to_vec();
+        exact.resize(limit - 2, b' ');
+        exact.extend_from_slice(b"\r\n\r\n");
+        let events = parser.push_bytes(&[exact.as_slice(), exact.as_slice()].concat());
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|data| data.trim_end() == "ok"));
+        assert!(!parser.exceeded_limit());
+
+        assert!(parser.push("data: first\r\n: padding ").is_empty());
+        assert!(parser.push_bytes(&vec![b'x'; limit]).is_empty());
+        assert!(parser.exceeded_limit());
+        assert!(parser.push("\n\ndata: later\n\n").is_empty());
+        assert!(parser.finish().is_empty());
+    }
 
     #[test]
     fn all_utf8_byte_boundaries_preserve_events_and_invalid_input_never_becomes_text() {

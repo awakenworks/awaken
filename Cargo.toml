@@ -50,6 +50,7 @@ awaken-managed-session-events = { path = "crates/platform/protocols/awaken-manag
 awaken-session-realization-driver = { path = "crates/platform/session/awaken-session-realization-driver" }
 awaken-session-realization = { path = "crates/platform/execution/awaken-session-realization" }
 awaken-session-mcp = { path = "crates/platform/execution/awaken-session-mcp" }
+awaken-mcp-catalog-store = { path = "crates/platform/storage/awaken-mcp-catalog-store" }
 awaken-deployment-contract = { path = "crates/platform/deployment/awaken-deployment-contract" }
 awaken-deployment-application = { path = "crates/platform/deployment/awaken-deployment-application" }
 awaken-environment-contract = { path = "crates/platform/environment/awaken-environment-contract" }

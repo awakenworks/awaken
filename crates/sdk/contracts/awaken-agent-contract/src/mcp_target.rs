@@ -1,6 +1,12 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: The normalized stdio target carries the published initial tool view and keeps transport identity separate from its content.
 //! Canonical, protocol-neutral identity for an MCP endpoint.
 
 use serde::{Deserialize, Serialize};
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 /// One normalized MCP endpoint selected by an Agent and realized by a Session.
 ///
@@ -31,6 +37,22 @@ pub struct SandboxStdioMcpTarget {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cached_tools: Vec<CachedMcpTool>,
+    /// The operator declares that tools/list depends only on the immutable launch inputs.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub share_tool_catalog: bool,
+}
+
+/// Initial model-facing definitions for a stdio server before its first connection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct CachedMcpTool {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub input_schema: serde_json::Value,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +99,8 @@ pub enum McpTargetError {
         "sandbox stdio MCP command must be a non-empty executable and arguments cannot contain NUL"
     )]
     InvalidSandboxStdio,
+    #[error("cached MCP tools require a stdio target, unique nonempty names and object schemas")]
+    InvalidCachedTools,
 }
 
 impl McpTarget {
@@ -113,7 +137,29 @@ impl McpTarget {
             kind: SandboxStdioMcpTargetKind::SandboxStdio,
             command,
             args,
+            cached_tools: Vec::new(),
+            share_tool_catalog: false,
         }))
+    }
+
+    /// Pin the initial tool view in the target carried by Agent and Session revisions.
+    pub fn with_cached_tools(
+        mut self,
+        mut tools: Vec<CachedMcpTool>,
+    ) -> Result<Self, McpTargetError> {
+        let Self::SandboxStdio(target) = &mut self else {
+            return Err(McpTargetError::InvalidCachedTools);
+        };
+        tools.sort_by(|left, right| left.name.cmp(&right.name));
+        if tools
+            .iter()
+            .any(|tool| tool.name.trim().is_empty() || !tool.input_schema.is_object())
+            || tools.windows(2).any(|pair| pair[0].name == pair[1].name)
+        {
+            return Err(McpTargetError::InvalidCachedTools);
+        }
+        target.cached_tools = tools;
+        Ok(self)
     }
 
     #[must_use]
@@ -186,6 +232,52 @@ impl McpTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdio_cached_tools_preserve_command_identity_and_freeze_tool_content() {
+        let plain = McpTarget::sandbox_stdio("stdio-server", vec!["--local".into()]).unwrap();
+        let wire = serde_json::to_value(&plain).unwrap();
+        assert!(wire.get("cached_tools").is_none());
+        assert_eq!(serde_json::from_value::<McpTarget>(wire).unwrap(), plain);
+        let tool = |name: &str, input_schema| CachedMcpTool {
+            name: name.into(),
+            description: String::new(),
+            input_schema,
+        };
+        let one = tool("a", serde_json::json!({"type": "object"}));
+        let two = tool("b", serde_json::json!({"type": "object"}));
+        let pinned = plain
+            .clone()
+            .with_cached_tools(vec![two.clone(), one.clone()])
+            .unwrap();
+        assert_eq!(pinned.fingerprint(), plain.fingerprint());
+        assert_eq!(
+            pinned,
+            plain
+                .clone()
+                .with_cached_tools(vec![one.clone(), two])
+                .unwrap()
+        );
+        assert_ne!(
+            crate::stable_fingerprint(&plain),
+            crate::stable_fingerprint(&pinned)
+        );
+        assert_eq!(
+            serde_json::from_value::<McpTarget>(serde_json::to_value(&pinned).unwrap()).unwrap(),
+            pinned,
+        );
+        assert!(
+            plain
+                .clone()
+                .with_cached_tools(vec![one.clone(), one])
+                .is_err()
+        );
+        assert!(
+            plain
+                .with_cached_tools(vec![tool("array", serde_json::json!([]))])
+                .is_err()
+        );
+    }
 
     #[test]
     fn historical_http_shape_remains_compatible() {

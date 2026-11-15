@@ -535,6 +535,25 @@ async fn execute_tool_action(
     state: &Store,
     action: ToolExecutorAction<'_>,
 ) -> Result<std::result::Result<ToolExecutorOutcome, ToolError>> {
+    if matches!(&action, ToolExecutorAction::Invoke)
+        && awaken_agent_contract::McpToolId::claims_namespace(&call.tool_id)
+        && let Some(batch) =
+            ActiveToolBatch::load(state).map_err(|error| Error::Execution(error.to_string()))?
+        && batch.run_id() == origin.run_id
+        && let Some(expected) = batch
+            .calls()
+            .iter()
+            .find(|entry| entry.call.call_id == call.call_id)
+            .and_then(|entry| entry.descriptor_hash.as_deref())
+        && let Some((env, resolved)) = env.zip(resolved)
+        && !executable_tool_descriptors(&resolved.spec, &env.dynamic_descriptors())
+            .iter()
+            .any(|tool| tool.id == call.tool_id && tool.content_hash() == expected)
+    {
+        return Ok(Err(ToolError::UnavailableBeforeDispatch(
+            "mcp_tool_schema_changed: MCP tool definitions were refreshed. This call was not sent. Choose a tool and generate arguments using the current definitions.".into(),
+        )));
+    }
     let local = LocalToolExecutor { runtime, env };
     let executor = local.routed_executor(context, &call.tool_id);
     let _admission = match context.tool_execution_admission.as_ref() {

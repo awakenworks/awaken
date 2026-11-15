@@ -367,7 +367,9 @@ export type McpTransportConfig =
     }
   | {
       args?: string[];
+      cached_tools?: CachedMcpTool[];
       command: string;
+      share_tool_catalog?: boolean;
       type: "sandbox_stdio";
     };
 /**
@@ -402,6 +404,11 @@ export type AgentMcpServerBinding = AgentMcpTransportBinding & {
  * via the `definition` "AgentMcpTransportBinding".
  */
 export type AgentMcpTransportBinding = AgentSandboxStdioMcpTransport | AgentHttpMcpTransport;
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpStdioPreviewSource".
+ */
+export type McpStdioPreviewSource = "configured" | "discovered" | "stale" | "pending";
 /**
  * Authority behind one published model-attribute value.
  *
@@ -572,9 +579,22 @@ export interface AgentHttpMcpTransport {
  */
 export interface AgentSandboxStdioMcpTransport {
   args?: string[];
+  cached_tools?: CachedMcpTool[];
   command: string;
+  share_tool_catalog?: boolean;
   type: AgentSandboxStdioMcpTransportKind;
   [k: string]: unknown;
+}
+/**
+ * Initial model-facing definitions for a stdio server before its first connection.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "CachedMcpTool".
+ */
+export interface CachedMcpTool {
+  description?: string;
+  input_schema: unknown;
+  name: string;
 }
 /**
  * This interface was referenced by the generated JSON Schema
@@ -1456,6 +1476,16 @@ export interface McpSelection {
 export interface McpSource {
   expected_revision: number;
   url?: string | null;
+}
+/**
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "McpStdioToolPreview".
+ */
+export interface McpStdioToolPreview {
+  observed_at_unix_ms?: number | null;
+  source: McpStdioPreviewSource;
+  tools: CachedMcpTool[];
+  [k: string]: unknown;
 }
 /**
  * Which members of a pool are selectable right now — `selection_order` with cooled

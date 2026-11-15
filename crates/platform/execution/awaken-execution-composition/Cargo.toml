@@ -21,6 +21,7 @@ awaken-tool-contract.workspace = true
 awaken-agent-channel.workspace = true
 awaken-protocol-mcp.workspace = true
 awaken-deployment-config.workspace = true
+awaken-mcp-catalog-store.workspace = true
 awaken-credential-contract.workspace = true
 # The Session owner whose container-tier provider this crate selects and installs.
 awaken-session-executor.workspace = true

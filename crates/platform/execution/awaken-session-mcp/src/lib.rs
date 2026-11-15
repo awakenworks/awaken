@@ -10,10 +10,11 @@ mod mcp_relay;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_mcp;
 
+pub use mcp::stdio_catalog::StdioCatalogAccess;
 pub use mcp::{
-    McpCredentialMaterialization, McpError, McpErrorKind, McpGenerationAuthority, McpInputHost,
-    McpInputRecipients, McpQuiescenceProof, McpSessions, McpStagingSession, SessionMcpStates,
-    project_mcp_session_transport,
+    DeferredStdioEnvironment, McpCredentialMaterialization, McpError, McpErrorKind,
+    McpGenerationAuthority, McpInputHost, McpInputRecipients, McpQuiescenceProof, McpSessions,
+    McpStagingSession, SessionMcpStates, project_mcp_session_transport,
 };
 pub use mcp_material::{
     McpGenerationProjection, McpPlatformEgress, McpProjectionState, McpQuiescenceAdmissionFence,

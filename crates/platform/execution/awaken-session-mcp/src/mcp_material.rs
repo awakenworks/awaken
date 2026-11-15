@@ -76,6 +76,9 @@ pub struct McpRefreshMaterial(pub Arc<dyn CredentialRefresher>);
 /// ids are also retained for the Session permission gate.
 #[derive(Clone)]
 pub struct McpWiring {
+    pub(crate) connected_stdio: Option<Arc<awaken_ext_mcp::McpPlugin>>,
+    pub(crate) stdio_observation:
+        Option<Arc<awaken_sync::LeafLock<Option<crate::mcp::stdio_catalog::PendingObservation>>>>,
     pub notification_transports: Vec<(String, Arc<dyn awaken_ext_mcp::McpToolTransport>)>,
     pub plugins: Vec<Arc<dyn Plugin>>,
     pub tool_ids: Vec<String>,
@@ -90,6 +93,8 @@ impl McpWiring {
     #[must_use]
     pub fn empty() -> Self {
         Self {
+            connected_stdio: None,
+            stdio_observation: None,
             notification_transports: Vec::new(),
             plugins: Vec::new(),
             tool_ids: Vec::new(),

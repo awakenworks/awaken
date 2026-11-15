@@ -32,7 +32,7 @@ use std::time::Duration;
 use crate::McpTransportError;
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -237,19 +237,30 @@ impl JsonRpcPeer {
         let closed_r = closed.clone();
         let write_tx_r = write_tx.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(reader).lines();
+            let mut reader = BufReader::new(reader);
+            let mut frame = Vec::new();
             loop {
+                frame.clear();
                 let next = tokio::select! {
                     biased;
                     _ = closed_r.cancelled() => break,
-                    next = lines.next_line() => next,
+                    next = read_frame(&mut reader, &mut frame) => next,
                 };
                 match next {
-                    Ok(Some(line)) => {
-                        if line.trim().is_empty() {
-                            continue;
+                    Ok(true) => {
+                        if frame.len() > crate::MAX_FRAME_BYTES {
+                            for (_, sender) in pending_r.lock().await.drain() {
+                                let _ = sender.send(Err(McpTransportError::ProtocolError(
+                                    "stdio MCP frame exceeds the byte limit".into(),
+                                )));
+                            }
+                            break;
                         }
-                        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                        // Preserve the connection-close behavior of Lines on invalid UTF-8.
+                        let Ok(line) = std::str::from_utf8(&frame) else {
+                            break;
+                        };
+                        let Ok(value) = serde_json::from_str::<Value>(line) else {
                             continue;
                         };
                         tokio::select! {
@@ -258,12 +269,10 @@ impl JsonRpcPeer {
                             _ = dispatch(value, &pending_r, &notif_tx, &request_handler, &write_tx_r) => {},
                         }
                     }
-                    _ => {
-                        closed_r.cancel();
-                        break;
-                    }
+                    _ => break,
                 }
             }
+            closed_r.cancel();
             // On stream close, drop every pending sender so waiters unblock with
             // a connection-closed error rather than hanging until timeout.
             pending_r.lock().await.clear();
@@ -353,6 +362,30 @@ impl JsonRpcPeer {
     }
 }
 
+async fn read_frame(
+    reader: &mut (impl tokio::io::AsyncBufRead + Unpin),
+    frame: &mut Vec<u8>,
+) -> std::io::Result<bool> {
+    let max = crate::MAX_FRAME_BYTES;
+    // Read at most one byte beyond the limit. At the boundary, only a CR
+    // might justify looking at one more byte to distinguish CRLF from overflow.
+    reader
+        .take((max + 1) as u64)
+        .read_until(b'\n', frame)
+        .await?;
+    if frame.len() == max + 1 && frame.last() == Some(&b'\r') {
+        reader.take(1).read_until(b'\n', frame).await?;
+    }
+    let present = !frame.is_empty();
+    if frame.last() == Some(&b'\n') {
+        frame.pop();
+        if frame.last() == Some(&b'\r') {
+            frame.pop();
+        }
+    }
+    Ok(present)
+}
+
 /// Classify one decoded message and route it.
 async fn dispatch(
     value: Value,
@@ -439,6 +472,45 @@ mod tests {
         let mut line = String::new();
         server_r.read_line(&mut line).await.expect("read");
         serde_json::from_str(&line).expect("json")
+    }
+
+    #[tokio::test]
+    async fn stdio_bounds_raw_frames_before_decoding_and_without_eof() {
+        let (peer, _, mut server_r, mut server_w) = wired(None);
+        let server = tokio::spawn(async move {
+            let request = read_line(&mut server_r).await;
+            let mut exact = serde_json::to_vec(
+                &json!({"jsonrpc":"2.0","id":request["id"],"result":{"ok":true}}),
+            )
+            .unwrap();
+            // JSON whitespace still counts toward the raw frame budget.
+            exact.resize(crate::MAX_FRAME_BYTES, b' ');
+            exact.extend_from_slice(b"\r\n");
+            server_w.write_all(&exact).await.unwrap();
+
+            let _ = read_line(&mut server_r).await;
+            server_w
+                .write_all(&vec![b' '; crate::MAX_FRAME_BYTES + 1])
+                .await
+                .unwrap();
+            // Keep the pipe open until the transport itself rejects the frame.
+            let mut line = String::new();
+            assert_eq!(server_r.read_line(&mut line).await.unwrap(), 0);
+        });
+        let timeout = Duration::from_secs(10);
+        let exact = peer
+            .request("tools/list", json!({}), timeout)
+            .await
+            .unwrap();
+        assert_eq!(exact["ok"], true);
+        let error = peer
+            .request("tools/list", json!({}), timeout)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, McpTransportError::ProtocolError(message)
+            if message.contains("frame exceeds")));
+        peer.closed().await;
+        server.await.unwrap();
     }
 
     #[tokio::test]

@@ -370,8 +370,45 @@ test("UX stdio form persists arguments and makes credential limits explicit", as
   await dialog.getByRole("button", { name: "Save server" }).click(); await expect(dialog).not.toBeVisible();
   await expect(page.getByLabel("Credential account")).toBeDisabled(); await expect(page.getByRole("button", { name: "Check connection", exact: true })).toBeDisabled();
   await expect(page.getByText(/This configuration does not inject Vault secrets/)).toBeVisible();
+  await expect(page.getByRole("region", { name: "Tool preview" })).toContainText("Tools have not been discovered");
   const rows = await (await request.get(await workspaceApiPath(request, "/v1/config/mcp-servers"))).json();
   expect(rows.servers.find((s: { key: string }) => s.key === `local:${id}`).definition.transport).toEqual({ type: "sandbox_stdio", command: "/usr/bin/node", args: ["/mnt/session/uploads/server.js", "--readonly"] });
+});
+
+test("UX stdio preview displays discovered schemas and stays scoped to the selected environment", async ({ page, request }) => {
+  const id = `preview-stdio-${randomBytes(4).toString("hex")}`;
+  const endpoint = await workspaceApiPath(request, "/v1/config/mcp-servers");
+  const config = await (await request.get(endpoint)).json();
+  const saved = await request.put(endpoint, { data: {
+    expected_revision: config.revision,
+    definition: { id, name: id, description: "", transport: { type: "sandbox_stdio", command: "/usr/bin/mcp", share_tool_catalog: true } },
+  } });
+  expect(saved.ok()).toBeTruthy();
+  let probes = 0;
+  await page.route("**/mcp-servers/*/inspect", (route) => { probes++; return route.abort(); });
+  await page.route(/\/environments(?:\?.*)?$/, (route) => route.fulfill({ json: { data: [
+    { id: "env-one", name: "First image", archived_at: null },
+    { id: "env-two", name: "Second image", archived_at: null },
+  ] } }));
+  await page.route("**/mcp-servers/*/tools?*", (route) => {
+    const environment = new URL(route.request().url()).searchParams.get("environment_id");
+    return route.fulfill({ json: environment === "env-one"
+      ? { source: "discovered", observed_at_unix_ms: 1800000000000, tools: [
+        { name: "lookup", description: "<script>shown as text</script>", input_schema: { type: "object" } },
+      ] } : { source: environment === "env-two" ? "discovered" : "pending", tools: [] },
+    });
+  });
+  await page.goto("/w/default/mcp");
+  await page.getByRole("button", { name: new RegExp(id) }).click();
+  const preview = page.getByRole("region", { name: "Tool preview" });
+  await preview.getByLabel("Preview environment").selectOption("env-one");
+  await expect(preview).toContainText("Recently discovered");
+  await preview.getByText("lookup", { exact: true }).click();
+  await expect(preview).toContainText("<script>shown as text</script>");
+  await preview.getByLabel("Preview environment").selectOption("env-two");
+  await expect(preview).toContainText("No tools found");
+  await expect(preview.getByText("lookup", { exact: true })).toHaveCount(0);
+  expect(probes).toBe(0);
 });
 
 

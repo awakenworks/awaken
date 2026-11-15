@@ -112,6 +112,9 @@ impl ToolCallPhase {
 pub struct DurableToolCall {
     pub call: ToolCall,
     pub recovery_policy: ToolRecoveryPolicy,
+    /// Identity of the runtime descriptor associated with the original model step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor_hash: Option<String>,
     pub phase: ToolCallPhase,
     /// Pre-effect containment of the latest executor entry. Historical entries
     /// stay in ThreadCommit; absent legacy metadata proves no containment.
@@ -521,15 +524,29 @@ impl ToolBatch {
         step: usize,
         calls: impl IntoIterator<Item = (ToolCall, ToolRecoveryPolicy)>,
     ) -> Result<Self, ToolBatchError> {
+        Self::for_step_with_descriptors(
+            run_id,
+            step,
+            calls.into_iter().map(|(call, policy)| (call, policy, None)),
+        )
+    }
+
+    /// Bind each optional descriptor to the call committed before executor entry.
+    pub fn for_step_with_descriptors(
+        run_id: RunId,
+        step: usize,
+        calls: impl IntoIterator<Item = (ToolCall, ToolRecoveryPolicy, Option<String>)>,
+    ) -> Result<Self, ToolBatchError> {
         if run_id.0.trim().is_empty() {
             return Err(ToolBatchError::EmptyRunId);
         }
         let id = ToolBatchId::for_step(&run_id, step);
         let calls: Vec<_> = calls
             .into_iter()
-            .map(|(call, recovery_policy)| DurableToolCall {
+            .map(|(call, recovery_policy, descriptor_hash)| DurableToolCall {
                 call,
                 recovery_policy,
+                descriptor_hash,
                 execution_domain: None,
                 materialization_domain: None,
                 phase: ToolCallPhase::Requested,
@@ -1096,6 +1113,32 @@ mod tests {
             )],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn descriptor_hash_survives_batch_recovery_and_is_optional_on_the_wire() {
+        let legacy = batch();
+        let legacy_wire = serde_json::to_value(&legacy).unwrap();
+        assert!(legacy_wire["calls"][0].get("descriptor_hash").is_none());
+        let legacy_recovered: ToolBatch = serde_json::from_value(legacy_wire).unwrap();
+        assert!(legacy_recovered.calls()[0].descriptor_hash.is_none());
+
+        let pinned = ToolBatch::for_step_with_descriptors(
+            legacy.run_id().clone(),
+            0,
+            [(
+                legacy.calls()[0].call.clone(),
+                ToolRecoveryPolicy::replay_safe(),
+                Some("original-descriptor".into()),
+            )],
+        )
+        .unwrap();
+        let recovered: ToolBatch =
+            serde_json::from_value(serde_json::to_value(pinned).unwrap()).unwrap();
+        assert_eq!(
+            recovered.calls()[0].descriptor_hash.as_deref(),
+            Some("original-descriptor")
+        );
     }
 
     fn two_call_batch() -> ToolBatch {

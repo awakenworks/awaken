@@ -52,7 +52,7 @@ impl<S: SessionMcpStates + 'static, C: McpStagingSession + 'static> McpAttachmen
     }
     async fn publish_mcp_generation(&self, generation: McpGenerationRef) -> Result<(), RunError> {
         self.mcp
-            .publish_attachment(self.states.as_ref(), self.context.as_ref(), generation)
+            .publish_attachment(&self.states, self.context.as_ref(), generation)
             .await
     }
     async fn drain_mcp_generation(&self, generation: McpGenerationRef) -> Result<(), RunError> {

@@ -13,13 +13,13 @@ use awaken_session_configuration_contract::mcp::{McpRealizationReceipt, StageMcp
 use std::sync::Arc;
 
 #[derive(Clone, Copy)]
-pub(super) enum StagingAdmission {
+pub(in crate::mcp) enum StagingAdmission {
     Direct,
     Assigned,
 }
 
 impl StagingAdmission {
-    pub(super) fn admits(
+    pub(in crate::mcp) fn admits(
         self,
         root: Option<bool>,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,

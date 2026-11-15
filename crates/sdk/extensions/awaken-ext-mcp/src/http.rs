@@ -34,8 +34,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_mcp_wire::McpTransportError;
 use awaken_mcp_wire::{
-    CallToolParams, CallToolResult, CreateTaskResult, InitializeParams, InitializeResult,
-    ListToolsResult, McpTask, McpToolDefinition, TaskIdParams, TaskMetadata,
+    CallToolParams, CallToolResult, CreateTaskResult, InitializeParams, InitializeResult, McpTask,
+    McpToolDefinition, TaskIdParams, TaskMetadata,
 };
 use awaken_sync::{LeafLock, LeafRwLock};
 use futures::StreamExt;
@@ -58,7 +58,7 @@ use crate::types::{
     McpResourceDefinition,
 };
 
-use awaken_mcp_wire::http::MCP_SESSION_ID_HEADER as SESSION_HEADER;
+use awaken_mcp_wire::{MAX_FRAME_BYTES, http::MCP_SESSION_ID_HEADER as SESSION_HEADER};
 
 #[path = "http_execution_context.rs"]
 mod execution_context;
@@ -156,6 +156,32 @@ async fn bounded_failure(response: reqwest::Response) -> McpHttpFailure {
         body: String::from_utf8_lossy(&bytes).into_owned(),
         body_truncated,
     }
+}
+
+async fn read_rpc_body(response: reqwest::Response) -> Result<Vec<u8>, McpTransportError> {
+    fn oversized() -> McpTransportError {
+        McpTransportError::ProtocolError("HTTP MCP response exceeds the frame byte limit".into())
+    }
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_FRAME_BYTES as u64)
+    {
+        return Err(oversized());
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| McpTransportError::TransportError(error.to_string()))?;
+        if chunk.len() > MAX_FRAME_BYTES - bytes.len() {
+            return Err(oversized());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn oversized_sse_event() -> McpTransportError {
+    McpTransportError::ProtocolError("HTTP MCP SSE event exceeds the frame byte limit".into())
 }
 
 /// State shared between the request path and the background SSE listener.
@@ -370,35 +396,22 @@ impl HttpShared {
             .as_deref()
             .is_some_and(|s| s.contains("text/event-stream"));
 
-        if !is_sse {
-            let text = response
-                .text()
-                .await
-                .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
-            if !status.is_success() {
-                if let Some(trace) = &self.trace {
-                    let mut end = text.len().min(HTTP_FAILURE_BODY_LIMIT);
-                    while !text.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    trace.fail(McpHttpFailure {
-                        status: status.as_u16(),
-                        content_type,
-                        body: text[..end].to_owned(),
-                        body_truncated: end < text.len(),
-                    });
-                }
-                return Err(McpTransportError::ServerError(format!(
-                    "HTTP {status}: {text}"
-                )));
-            }
-            return Ok(Some(parse_sse_or_json(&text)?));
-        }
-
         if !status.is_success() {
             self.trace_failure(response).await;
             return Err(McpTransportError::ServerError(format!("HTTP {status}")));
         }
+        if !is_sse {
+            let bytes = read_rpc_body(response).await?;
+            if status == reqwest::StatusCode::ACCEPTED && bytes.is_empty() {
+                return Ok(None);
+            }
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|error| McpTransportError::ProtocolError(error.to_string()))?;
+            return Ok(Some(parse_sse_or_json(
+                text.strip_prefix('\u{feff}').unwrap_or(text),
+            )?));
+        }
+
         // Stream the SSE body: route notifications/requests, return the response.
         let mut stream = response.bytes_stream();
         let mut parser = SseParser::new();
@@ -409,6 +422,9 @@ impl HttpShared {
                     return result.map(Some);
                 }
             }
+            if parser.exceeded_limit() {
+                return Err(oversized_sse_event());
+            }
         }
         // Streamable HTTP peers may end a chunked response immediately after a
         // complete `data:` line. EOF is the delimiter in that legal shape, so
@@ -417,6 +433,9 @@ impl HttpShared {
             if let Some(result) = self.route_sse_data(&data, id).await {
                 return result.map(Some);
             }
+        }
+        if parser.exceeded_limit() {
+            return Err(oversized_sse_event());
         }
         Ok(None)
     }
@@ -450,9 +469,11 @@ impl HttpShared {
                     McpTransportError::TransportError(
                         "SSE stream ended before the response".to_string(),
                     )
-                })?
-                .map_err(|_| {
-                    McpTransportError::TransportError("MCP response route closed".to_string())
+                })
+                .and_then(|result| {
+                    result.map_err(|_| {
+                        McpTransportError::TransportError("MCP response route closed".to_string())
+                    })
                 }),
             (Some(Err(error)), _) => Err(error),
             (None, Some(Ok(value))) => Ok(value),
@@ -743,6 +764,9 @@ async fn listen(shared: Arc<HttpShared>) {
                 let mut parser = SseParser::new();
                 while let Some(Ok(chunk)) = stream.next().await {
                     dispatch_sse_events(&shared, parser.push_bytes(&chunk)).await;
+                    if parser.exceeded_limit() {
+                        break;
+                    }
                 }
                 // The peer may close immediately after a complete data line.
                 // Route that final event through the same request-id demux as
@@ -789,6 +813,9 @@ fn parse_sse_or_json(text: &str) -> Result<Value, McpTransportError> {
     let mut parser = SseParser::new();
     let mut events = parser.push(text);
     events.extend(parser.finish());
+    if parser.exceeded_limit() {
+        return Err(oversized_sse_event());
+    }
     events
         .into_iter()
         .rev()
@@ -822,9 +849,10 @@ impl McpToolTransport for HttpTransport {
     }
 
     async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
-        let result = self.request("tools/list", json!({})).await?;
-        let parsed: ListToolsResult = serde_json::from_value(result)?;
-        Ok(parsed.tools)
+        crate::tool_catalog::list_all(self.shared.control_request_timeout, |params| {
+            self.request("tools/list", params)
+        })
+        .await
     }
 
     async fn call_tool(
@@ -1150,6 +1178,69 @@ mod tests {
         let _client = send.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn http_rejects_oversized_json_and_sse_before_decoding() {
+        let exact = format!(
+            "{EMPTY_TOOLS}{}",
+            " ".repeat(MAX_FRAME_BYTES - EMPTY_TOOLS.len())
+        );
+        let (url, connection) = serve(vec![ok_response(&exact)]).await;
+        let transport = HttpTransportBuilder::new(url).build();
+        assert!(transport.list_tools().await.unwrap().is_empty());
+        connection.await.unwrap();
+
+        // Test both a declared oversized body and an oversized chunked body
+        // with no EOF. SSE can exceed its limit across multiple data lines.
+        for (headers, payload) in [
+            (
+                format!(
+                    "Content-Type: application/json\r\nContent-Length: {}\r\n",
+                    MAX_FRAME_BYTES + 1
+                ),
+                String::new(),
+            ),
+            (
+                "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n".into(),
+                format!("{:x}\r\n{exact}\r\n1\r\nx\r\n", exact.len()),
+            ),
+            (
+                "Content-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n".into(),
+                {
+                    let line = format!("data: {}\n", "x".repeat(MAX_FRAME_BYTES / 2));
+                    format!(
+                        "{:x}\r\n{line}\r\n{:x}\r\n{line}\r\n",
+                        line.len(),
+                        line.len()
+                    )
+                },
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let transport =
+                HttpTransportBuilder::new(format!("http://{}", listener.local_addr().unwrap()))
+                    .build();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = read_fixture_request(&mut socket).await;
+                assert!(request.contains("tools/list"));
+                let head = format!("HTTP/1.1 200 OK\r\n{headers}\r\n");
+                socket.write_all(head.as_bytes()).await.unwrap();
+                let _ = socket.write_all(payload.as_bytes()).await;
+                std::future::pending::<()>().await;
+            });
+            let error = tokio::time::timeout(Duration::from_secs(10), transport.list_tools())
+                .await
+                .expect("reject without waiting for EOF")
+                .unwrap_err();
+            assert!(
+                matches!(&error, McpTransportError::ProtocolError(message)
+                if message.contains("exceeds the frame byte limit")),
+                "{error:?}"
+            );
+            server.abort();
+        }
+    }
+
     /// Serve one response and signal only after the request is on the wire.
     async fn serve_after_request(
         response: String,
@@ -1270,6 +1361,32 @@ mod tests {
             self.seen.lock().unwrap().push(challenge.clone());
             self.fresh.clone()
         }
+    }
+
+    #[tokio::test]
+    async fn tool_list_requests_every_http_cursor() {
+        let (url, server) = serve(vec![
+            ok_response(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"first"}],"nextCursor":"a/+"}}"#),
+            ok_response(r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"second"}]}}"#),
+        ]).await;
+        let tools = HttpTransportBuilder::new(url)
+            .build()
+            .list_tools()
+            .await
+            .unwrap();
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests[1].contains(r#""cursor":"a/+""#),
+            "second request must echo the opaque cursor"
+        );
     }
 
     #[tokio::test]
@@ -1734,6 +1851,41 @@ mod tests {
         let captured = server.await.unwrap();
         assert!(captured[0].to_ascii_lowercase().contains("bearer stale"));
         assert!(captured[1].to_ascii_lowercase().contains("bearer fresh"));
+    }
+
+    #[tokio::test]
+    async fn sse_listener_drops_oversized_event_and_reconnects_without_eof() {
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let transport =
+            HttpTransportBuilder::new(format!("http://{}", socket.local_addr().unwrap())).build();
+        let server = tokio::spawn(async move {
+            let headers =
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+            let (mut first, _) = socket.accept().await.unwrap();
+            assert!(read_fixture_request(&mut first).await.starts_with("GET "));
+            first.write_all(headers).await.unwrap();
+            // The first stream stays open, so reconnect proves the cap was
+            // enforced on incomplete raw input rather than on EOF.
+            let _ = first.write_all(&vec![b'x'; MAX_FRAME_BYTES + 1]).await;
+            let (mut second, _) = socket.accept().await.unwrap();
+            assert!(read_fixture_request(&mut second).await.starts_with("GET "));
+            second.write_all(headers).await.unwrap();
+            second
+                .write_all(b"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n")
+                .await
+                .unwrap();
+        });
+        let mut changes = transport.subscribe_list_changed();
+        let listener = tokio::spawn(listen(Arc::clone(&transport.shared)));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), changes.recv())
+                .await
+                .expect("oversized GET stream reconnects")
+                .unwrap(),
+            ListChangedKind::Tools,
+        );
+        listener.abort();
+        server.await.unwrap();
     }
 
     #[tokio::test]

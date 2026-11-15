@@ -5,6 +5,7 @@ export type McpConfigurationView = Contract.McpConfigurationView;
 export type McpCredentialChoice = Contract.McpCredentialChoice;
 export type McpPreparedBinding = Contract.McpPreparedBinding;
 export type McpInspection = Contract.McpInspectionView;
+export type McpStdioToolPreview = Contract.McpStdioToolPreview;
 export function mcpAddress(definition: McpDefinition): string {
   return definition.transport.type === "url" ? definition.transport.url
     : [definition.transport.command, ...(definition.transport.args ?? [])].join(" ");

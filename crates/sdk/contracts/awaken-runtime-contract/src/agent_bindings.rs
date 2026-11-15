@@ -137,6 +137,10 @@ pub struct AgentSandboxStdioMcpTransport {
     pub command: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cached_tools: Vec<awaken_agent_contract::mcp_target::CachedMcpTool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub share_tool_catalog: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -167,6 +171,8 @@ impl AgentMcpTransportBinding {
             kind: AgentSandboxStdioMcpTransportKind::SandboxStdio,
             command: command.into(),
             args,
+            cached_tools: Vec::new(),
+            share_tool_catalog: false,
         })
     }
 
@@ -176,7 +182,14 @@ impl AgentMcpTransportBinding {
             Self::SandboxStdio(transport) => awaken_agent_contract::McpTarget::sandbox_stdio(
                 &transport.command,
                 transport.args.clone(),
-            ),
+            )
+            .and_then(|target| target.with_cached_tools(transport.cached_tools.clone()))
+            .map(|mut target| {
+                if let awaken_agent_contract::McpTarget::SandboxStdio(target) = &mut target {
+                    target.share_tool_catalog = transport.share_tool_catalog;
+                }
+                target
+            }),
         }
         .map_err(|error| error.to_string())
     }

@@ -37,6 +37,7 @@ pub mod sampling;
 pub mod sensitive;
 pub mod stdio;
 pub mod tool;
+mod tool_catalog;
 pub mod transport;
 pub mod types;
 

@@ -167,8 +167,17 @@
               },
               "type": "array"
             },
+            "cached_tools": {
+              "items": {
+                "$ref": "#/$defs/CachedMcpTool"
+              },
+              "type": "array"
+            },
             "command": {
               "type": "string"
+            },
+            "share_tool_catalog": {
+              "type": "boolean"
             },
             "type": {
               "$ref": "#/$defs/AgentSandboxStdioMcpTransportKind"
@@ -185,6 +194,25 @@
             "sandbox_stdio"
           ],
           "type": "string"
+        },
+        "CachedMcpTool": {
+          "additionalProperties": false,
+          "description": "Initial model-facing definitions for a stdio server before its first connection.",
+          "properties": {
+            "description": {
+              "default": "",
+              "type": "string"
+            },
+            "input_schema": true,
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "input_schema"
+          ],
+          "type": "object"
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3016,6 +3044,25 @@
     },
     "McpConfigurationView": {
       "$defs": {
+        "CachedMcpTool": {
+          "additionalProperties": false,
+          "description": "Initial model-facing definitions for a stdio server before its first connection.",
+          "properties": {
+            "description": {
+              "default": "",
+              "type": "string"
+            },
+            "input_schema": true,
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "input_schema"
+          ],
+          "type": "object"
+        },
         "McpCatalogView": {
           "properties": {
             "active_source_url": {
@@ -3162,8 +3209,17 @@
                   },
                   "type": "array"
                 },
+                "cached_tools": {
+                  "items": {
+                    "$ref": "#/$defs/CachedMcpTool"
+                  },
+                  "type": "array"
+                },
                 "command": {
                   "type": "string"
+                },
+                "share_tool_catalog": {
+                  "type": "boolean"
                 },
                 "type": {
                   "const": "sandbox_stdio",
@@ -3447,8 +3503,17 @@
               },
               "type": "array"
             },
+            "cached_tools": {
+              "items": {
+                "$ref": "#/$defs/CachedMcpTool"
+              },
+              "type": "array"
+            },
             "command": {
               "type": "string"
+            },
+            "share_tool_catalog": {
+              "type": "boolean"
             },
             "type": {
               "$ref": "#/$defs/AgentSandboxStdioMcpTransportKind"
@@ -3465,6 +3530,25 @@
             "sandbox_stdio"
           ],
           "type": "string"
+        },
+        "CachedMcpTool": {
+          "additionalProperties": false,
+          "description": "Initial model-facing definitions for a stdio server before its first connection.",
+          "properties": {
+            "description": {
+              "default": "",
+              "type": "string"
+            },
+            "input_schema": true,
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "input_schema"
+          ],
+          "type": "object"
         },
         "CredentialRef": {
           "description": "A stable reference to one credential source revision.",
@@ -3554,6 +3638,25 @@
     },
     "McpPutServer": {
       "$defs": {
+        "CachedMcpTool": {
+          "additionalProperties": false,
+          "description": "Initial model-facing definitions for a stdio server before its first connection.",
+          "properties": {
+            "description": {
+              "default": "",
+              "type": "string"
+            },
+            "input_schema": true,
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "input_schema"
+          ],
+          "type": "object"
+        },
         "McpServerDefinition": {
           "additionalProperties": false,
           "properties": {
@@ -3617,8 +3720,17 @@
                   },
                   "type": "array"
                 },
+                "cached_tools": {
+                  "items": {
+                    "$ref": "#/$defs/CachedMcpTool"
+                  },
+                  "type": "array"
+                },
                 "command": {
                   "type": "string"
+                },
+                "share_tool_catalog": {
+                  "type": "boolean"
                 },
                 "type": {
                   "const": "sandbox_stdio",
@@ -3693,6 +3805,25 @@
     },
     "McpServerDefinition": {
       "$defs": {
+        "CachedMcpTool": {
+          "additionalProperties": false,
+          "description": "Initial model-facing definitions for a stdio server before its first connection.",
+          "properties": {
+            "description": {
+              "default": "",
+              "type": "string"
+            },
+            "input_schema": true,
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "input_schema"
+          ],
+          "type": "object"
+        },
         "McpTransportConfig": {
           "oneOf": [
             {
@@ -3722,8 +3853,17 @@
                   },
                   "type": "array"
                 },
+                "cached_tools": {
+                  "items": {
+                    "$ref": "#/$defs/CachedMcpTool"
+                  },
+                  "type": "array"
+                },
                 "command": {
                   "type": "string"
+                },
+                "share_tool_catalog": {
+                  "type": "boolean"
                 },
                 "type": {
                   "const": "sandbox_stdio",
@@ -3776,6 +3916,25 @@
     },
     "McpServerView": {
       "$defs": {
+        "CachedMcpTool": {
+          "additionalProperties": false,
+          "description": "Initial model-facing definitions for a stdio server before its first connection.",
+          "properties": {
+            "description": {
+              "default": "",
+              "type": "string"
+            },
+            "input_schema": true,
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "input_schema"
+          ],
+          "type": "object"
+        },
         "McpCredentialPreference": {
           "additionalProperties": false,
           "properties": {
@@ -3856,8 +4015,17 @@
                   },
                   "type": "array"
                 },
+                "cached_tools": {
+                  "items": {
+                    "$ref": "#/$defs/CachedMcpTool"
+                  },
+                  "type": "array"
+                },
                 "command": {
                   "type": "string"
+                },
+                "share_tool_catalog": {
+                  "type": "boolean"
                 },
                 "type": {
                   "const": "sandbox_stdio",
@@ -3931,6 +4099,64 @@
         "expected_revision"
       ],
       "title": "McpSource",
+      "type": "object"
+    },
+    "McpStdioToolPreview": {
+      "$defs": {
+        "CachedMcpTool": {
+          "additionalProperties": false,
+          "description": "Initial model-facing definitions for a stdio server before its first connection.",
+          "properties": {
+            "description": {
+              "default": "",
+              "type": "string"
+            },
+            "input_schema": true,
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "input_schema"
+          ],
+          "type": "object"
+        },
+        "McpStdioPreviewSource": {
+          "enum": [
+            "configured",
+            "discovered",
+            "stale",
+            "pending"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "observed_at_unix_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/McpStdioPreviewSource"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/CachedMcpTool"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "source",
+        "tools"
+      ],
+      "title": "McpStdioToolPreview",
       "type": "object"
     },
     "ModelAttributes": {

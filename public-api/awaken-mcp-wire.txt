@@ -50,6 +50,7 @@ pub fn awaken_mcp_wire::progress::should_emit_progress(&mut awaken_mcp_wire::pro
 pub mod awaken_mcp_wire::sse
 pub struct awaken_mcp_wire::sse::SseParser
 impl awaken_mcp_wire::sse::SseParser
+pub fn awaken_mcp_wire::sse::SseParser::exceeded_limit(&self) -> bool
 pub fn awaken_mcp_wire::sse::SseParser::finish(&mut self) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_mcp_wire::sse::SseParser::new() -> Self
 pub fn awaken_mcp_wire::sse::SseParser::push(&mut self, &str) -> alloc::vec::Vec<alloc::string::String>
@@ -246,6 +247,7 @@ pub struct awaken_mcp_wire::ServerToolCapabilities
 pub awaken_mcp_wire::ServerToolCapabilities::list_changed: core::option::Option<bool>
 pub struct awaken_mcp_wire::SseParser
 impl awaken_mcp_wire::sse::SseParser
+pub fn awaken_mcp_wire::sse::SseParser::exceeded_limit(&self) -> bool
 pub fn awaken_mcp_wire::sse::SseParser::finish(&mut self) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_mcp_wire::sse::SseParser::new() -> Self
 pub fn awaken_mcp_wire::sse::SseParser::push(&mut self, &str) -> alloc::vec::Vec<alloc::string::String>
@@ -262,6 +264,7 @@ pub awaken_mcp_wire::ToolAnnotations::read_only_hint: core::option::Option<bool>
 pub awaken_mcp_wire::ToolAnnotations::title: core::option::Option<alloc::string::String>
 pub struct awaken_mcp_wire::ToolExecution
 pub awaken_mcp_wire::ToolExecution::task_support: core::option::Option<awaken_mcp_wire::TaskSupport>
+pub const awaken_mcp_wire::MAX_FRAME_BYTES: usize
 pub const awaken_mcp_wire::MCP_PROTOCOL_VERSION: &str
 pub trait awaken_mcp_wire::ServerRequestHandler: core::marker::Send + core::marker::Sync
 pub fn awaken_mcp_wire::ServerRequestHandler::handle<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 serde_json::value::Value, &'life2 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait

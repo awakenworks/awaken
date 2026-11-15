@@ -12,6 +12,9 @@ use awaken_agent_config::mcp_config::*;
 use awaken_protocol_managed::VaultState;
 use awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding;
 use awaken_runtime_contract::runs::scope::WorkspaceScope;
+use awaken_session_configuration_contract::mcp::tool_catalog::{
+    StdioToolCatalogKey, StdioToolDiscovery,
+};
 use axum::{
     Json, Router,
     extract::{Extension, Path, Query, State},
@@ -26,6 +29,14 @@ use std::sync::Arc;
 pub struct McpCatalogService {
     store: Arc<dyn McpConfigurationRepository>,
     vault: Arc<VaultState>,
+    stdio: Option<StdioPreview>,
+}
+
+#[derive(Clone)]
+struct StdioPreview {
+    store: Arc<dyn StdioToolDiscovery>,
+    environments: Arc<awaken_environment_application::EnvironmentApplication>,
+    clock: Arc<dyn awaken_time::WallClock>,
 }
 mod contract;
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
@@ -57,7 +68,24 @@ fn missing() -> (StatusCode, Json<Value>) {
 }
 impl McpCatalogService {
     pub fn new(store: Arc<dyn McpConfigurationRepository>, vault: Arc<VaultState>) -> Self {
-        Self { store, vault }
+        Self {
+            store,
+            vault,
+            stdio: None,
+        }
+    }
+
+    pub(crate) fn install_stdio_tool_catalog(
+        &mut self,
+        store: Arc<dyn StdioToolDiscovery>,
+        environments: Arc<awaken_environment_application::EnvironmentApplication>,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) {
+        self.stdio = Some(StdioPreview {
+            store,
+            environments,
+            clock,
+        });
     }
     pub(crate) fn supervise(&self, lifecycle: &awaken_service_lifecycle::ServiceLifecycle) {
         self.supervise_with_interval(lifecycle, std::time::Duration::from_secs(300));
@@ -415,6 +443,94 @@ async fn inspect(
         .map_err(error)?,
     ))
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StdioPreviewQuery {
+    expected_revision: u64,
+    environment_id: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+enum McpStdioPreviewSource {
+    Configured,
+    Discovered,
+    Stale,
+    Pending,
+}
+
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+struct McpStdioToolPreview {
+    source: McpStdioPreviewSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observed_at_unix_ms: Option<u64>,
+    tools: Vec<awaken_agent_contract::mcp_target::CachedMcpTool>,
+}
+
+fn preview_response(view: McpStdioToolPreview) -> ApiResult {
+    Ok(Json(serde_json::to_value(view).map_err(error)?))
+}
+
+async fn stdio_tools(
+    State(s): State<McpCatalogService>,
+    Extension(ws): Extension<WorkspaceScope>,
+    Path(key): Path<String>,
+    Query(query): Query<StdioPreviewQuery>,
+) -> ApiResult {
+    let config = s.load(&ws.0).await.map_err(domain)?;
+    if config.revision != query.expected_revision {
+        return Err(domain(McpConfigError::Conflict));
+    }
+    let server = config.server(&key).ok_or_else(missing)?;
+    let target = server.transport.normalize().map_err(error)?;
+    let target = target
+        .sandbox_stdio_target()
+        .ok_or_else(|| error("Use inspect to discover HTTP MCP tools"))?;
+    if let Some(preview) = s.stdio.as_ref().filter(|_| target.share_tool_catalog)
+        && let Some(environment) = preview
+            .environments
+            .get(&query.environment_id)
+            .await
+            .map_err(error)?
+        && environment.archived_at.is_none()
+    {
+        let key = StdioToolCatalogKey::for_preview(
+            &ws.0,
+            target,
+            &environment.id,
+            environment.revision.0,
+        );
+        if let Ok(Ok(Some(entry))) = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            preview.store.get(&key),
+        )
+        .await
+        {
+            let now = awaken_time::WallClockExt::now_ms(preview.clock.as_ref());
+            return preview_response(McpStdioToolPreview {
+                source: if entry.catalog.is_fresh(now) {
+                    McpStdioPreviewSource::Discovered
+                } else {
+                    McpStdioPreviewSource::Stale
+                },
+                observed_at_unix_ms: Some(entry.catalog.observed_at_unix_ms),
+                tools: entry.catalog.tools,
+            });
+        }
+    }
+    preview_response(McpStdioToolPreview {
+        source: if target.cached_tools.is_empty() {
+            McpStdioPreviewSource::Pending
+        } else {
+            McpStdioPreviewSource::Configured
+        },
+        observed_at_unix_ms: None,
+        tools: target.cached_tools.clone(),
+    })
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -487,6 +603,7 @@ pub(crate) fn router(service: McpCatalogService) -> Router {
         )
         .route("/v1/config/mcp-servers/{key}/prepare", post(prepare))
         .route("/v1/config/mcp-servers/{key}/inspect", post(inspect))
+        .route("/v1/config/mcp-servers/{key}/tools", get(stdio_tools))
         .route("/v1/config/mcp-catalog/source", put(source))
         .route("/v1/config/mcp-catalog/sync", post(sync))
         .with_state(service)
@@ -511,6 +628,7 @@ pub fn contract_schemas() -> serde_json::Map<String, Value> {
     add!("McpServerView", McpServerView);
     add!("McpPreparedBinding", McpPreparedBinding);
     add!("AgentMcpTransportBinding", AgentMcpTransportBinding);
+    add!("McpStdioToolPreview", McpStdioToolPreview);
     add!(
         "McpCredentialChoice",
         awaken_protocol_managed::McpCredentialChoice
@@ -571,6 +689,12 @@ pub fn contract_paths() -> serde_json::Map<String, Value> {
             Some("McpInspectionView"),
         ),
         (
+            "/v1/config/mcp-servers/{key}/tools",
+            "get",
+            None,
+            Some("McpStdioToolPreview"),
+        ),
+        (
             "/v1/config/mcp-servers/{key}/default-credential",
             "put",
             Some("McpSelection"),
@@ -606,6 +730,10 @@ pub fn contract_paths() -> serde_json::Map<String, Value> {
             parameters.push(
                 json!({"name":"url","in":"query","required":true,"schema":{"type":"string"}}),
             );
+        }
+        if path.ends_with("/{key}/tools") {
+            parameters.push(json!({"name":"expected_revision","in":"query","required":true,"schema":{"type":"integer","minimum":0}}));
+            parameters.push(json!({"name":"environment_id","in":"query","required":true,"schema":{"type":"string"}}));
         }
         if !parameters.is_empty() {
             operation["parameters"] = json!(parameters);

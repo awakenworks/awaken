@@ -667,6 +667,7 @@ dependencies = [
  "awaken-iam-preset",
  "awaken-iam-server",
  "awaken-lease-contract",
+ "awaken-mcp-catalog-store",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-outbound-http",
@@ -1575,6 +1576,7 @@ dependencies = [
  "awaken-data-governance-contract",
  "awaken-deployment-config",
  "awaken-ext-mcp",
+ "awaken-mcp-catalog-store",
  "awaken-mcp-wire",
  "awaken-package-image",
  "awaken-protocol-mcp",
@@ -1687,6 +1689,7 @@ dependencies = [
  "awaken-outbound-http",
  "awaken-runtime-contract",
  "awaken-sync",
+ "awaken-time",
  "awaken-tool-contract",
  "futures",
  "reqwest 0.12.28",
@@ -1990,6 +1993,20 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "awaken-mcp-catalog-store"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-session-configuration-contract",
+ "object_store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

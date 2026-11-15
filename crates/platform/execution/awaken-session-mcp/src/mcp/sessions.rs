@@ -196,6 +196,9 @@ pub trait McpGenerationAuthority: Send + Sync {
 /// one relay.
 #[derive(Clone)]
 pub struct McpSessions {
+    pub(super) stdio_catalog: Option<
+        Arc<dyn awaken_session_configuration_contract::mcp::tool_catalog::StdioToolDiscovery>,
+    >,
     /// The host's loopback MCP relay (α-reference resolver), started lazily on
     /// the first sandboxed ACP session that stages an authenticated MCP server.
     /// It holds the real bearers host-side and injects them when forwarding the
@@ -221,6 +224,7 @@ impl McpSessions {
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
+            stdio_catalog: None,
             relay: Arc::new(tokio::sync::OnceCell::new()),
             relay_exposure,
             outbound_proxy: None,
@@ -248,6 +252,15 @@ impl McpSessions {
         reaper: Arc<dyn awaken_session_environment_contract::ProcessReaper>,
     ) {
         self.process_reaper = Some(reaper);
+    }
+
+    pub fn set_stdio_tool_catalog(
+        &mut self,
+        store: Arc<
+            dyn awaken_session_configuration_contract::mcp::tool_catalog::StdioToolDiscovery,
+        >,
+    ) {
+        self.stdio_catalog = Some(store);
     }
 
     #[must_use]
@@ -596,7 +609,7 @@ impl McpSessions {
 
     pub async fn publish_projection<S: SessionMcpStates>(
         &self,
-        slots: &S,
+        slots: &Arc<S>,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), McpError> {
         if !slots
@@ -610,7 +623,7 @@ impl McpSessions {
                 "MCP publication is closed while the Session Environment quiesces",
             ));
         }
-        if let Some(projection) = self.projection(slots, generation)? {
+        if let Some(projection) = self.projection(slots.as_ref(), generation)? {
             if matches!(
                 projection.state,
                 McpProjectionState::Staging
@@ -690,12 +703,71 @@ impl McpSessions {
                 }
             })?;
         match changed {
-            Some(result) => {
-                result?;
-                Ok(())
-            }
-            None => Err(McpError::internal("unknown MCP Session projection")),
+            Some(result) => result?,
+            None => return Err(McpError::internal("unknown MCP Session projection")),
+        };
+        self.publish_stdio_catalog(slots, generation).await;
+        Ok(())
+    }
+
+    async fn publish_stdio_catalog<S: SessionMcpStates>(
+        &self,
+        slots: &Arc<S>,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+    ) {
+        let Some(projection) = self.projection(slots.as_ref(), generation).ok().flatten() else {
+            return;
+        };
+        let Some(wiring) = projection.native_wiring else {
+            return;
+        };
+        let Some((plugin, pending)) = wiring.connected_stdio.zip(wiring.stdio_observation) else {
+            return;
+        };
+        let Some(observation) = pending.lock().take() else {
+            return;
+        };
+        let clock = self.clock.clone();
+        let admission = observation.admission;
+        let slots = Arc::downgrade(slots);
+        let allocation = Arc::downgrade(&projection.drain);
+        let generation = generation.clone();
+        let still_admitted = move || {
+            slots
+                .upgrade()
+                .zip(allocation.upgrade())
+                .is_some_and(|(slots, allocation)| {
+                    super::stdio_catalog::active(
+                        slots.as_ref(),
+                        &generation,
+                        &allocation,
+                        admission,
+                        awaken_time::WallClockExt::now_ms(clock.as_ref()),
+                    )
+                })
+        };
+        if !still_admitted() {
+            return;
         }
+        let versions = plugin.catalog_versions();
+        if let Some(expected) = observation.expected {
+            observation
+                .catalog
+                .publish(
+                    expected.as_deref(),
+                    &plugin,
+                    awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
+                )
+                .await;
+        }
+        let expected = observation.catalog.expected().await;
+        observation.catalog.observe(
+            &plugin,
+            versions,
+            self.clock.clone(),
+            still_admitted,
+            expected,
+        );
     }
 
     pub async fn drain_projection<S: SessionMcpStates>(

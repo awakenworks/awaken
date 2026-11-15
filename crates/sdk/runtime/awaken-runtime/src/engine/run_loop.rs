@@ -276,10 +276,10 @@ struct LiveEnv {
 }
 
 impl LiveEnv {
-    fn new(initial_version: Option<u64>) -> Self {
+    fn new() -> Self {
         Self {
             resolved: None,
-            last_version: initial_version,
+            last_version: None,
         }
     }
 
@@ -293,11 +293,10 @@ impl LiveEnv {
         base: &'a ResolvedExecutionEnv,
     ) -> &'a ResolvedExecutionEnv {
         let version = runtime.active_live_version_with(&resolved.spec.plugin_ids, session_plugins);
-        if version != self.last_version {
-            if let Ok(refreshed) = runtime.resolve_plugin_env_with(&resolved.spec, session_plugins)
-            {
-                self.resolved = Some(refreshed);
-            }
+        if version != self.last_version
+            && let Ok(refreshed) = runtime.resolve_plugin_env_with(&resolved.spec, session_plugins)
+        {
+            self.resolved = Some(refreshed);
             self.last_version = version;
         }
         self.resolved.as_ref().unwrap_or(base)
@@ -712,9 +711,7 @@ async fn drive_steps(
     // dynamic (e.g. an MCP server firing `tools/list_changed`) advances its
     // `live_version`; `live_env` re-resolves the environment at the step boundary
     // when it changes, and is zero-overhead for static runs.
-    let mut live_env = LiveEnv::new(
-        runtime.active_live_version_with(&resolved.spec.plugin_ids, &context.session_plugins),
-    );
+    let mut live_env = LiveEnv::new();
     // Deferred tools (ADR-0053) the model has discovered via `tool_search` this run, by
     // canonical id: once revealed, a tool's full schema is sent on subsequent steps.
     let mut discovery =

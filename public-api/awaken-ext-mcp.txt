@@ -145,7 +145,10 @@ pub fn awaken_ext_mcp::notification::McpNotificationHandler::receive<'life0, 'li
 pub mod awaken_ext_mcp::plugin
 pub struct awaken_ext_mcp::plugin::McpPlugin
 impl awaken_ext_mcp::plugin::McpPlugin
+pub fn awaken_ext_mcp::plugin::McpPlugin::catalog_versions(&self) -> tokio::sync::watch::Receiver<u64>
+pub fn awaken_ext_mcp::plugin::McpPlugin::is_refreshing_catalog(&self) -> bool
 pub fn awaken_ext_mcp::plugin::McpPlugin::manifest_for(&str) -> core::result::Result<awaken_runtime_contract::plugin::capability::PluginManifest, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::plugin::McpPlugin::regular_tool_definitions(&self) -> core::option::Option<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>>
 impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_mcp::plugin::McpPlugin
 pub fn awaken_ext_mcp::plugin::McpPlugin::live_version(&self) -> core::option::Option<u64>
 pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
@@ -414,7 +417,10 @@ pub fn awaken_ext_mcp::manager::McpManager::server_names(&self) -> alloc::vec::V
 pub fn awaken_ext_mcp::manager::McpManager::status(&self) -> alloc::vec::Vec<awaken_ext_mcp::manager::ServerStatus>
 pub struct awaken_ext_mcp::McpPlugin
 impl awaken_ext_mcp::plugin::McpPlugin
+pub fn awaken_ext_mcp::plugin::McpPlugin::catalog_versions(&self) -> tokio::sync::watch::Receiver<u64>
+pub fn awaken_ext_mcp::plugin::McpPlugin::is_refreshing_catalog(&self) -> bool
 pub fn awaken_ext_mcp::plugin::McpPlugin::manifest_for(&str) -> core::result::Result<awaken_runtime_contract::plugin::capability::PluginManifest, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::plugin::McpPlugin::regular_tool_definitions(&self) -> core::option::Option<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>>
 impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_mcp::plugin::McpPlugin
 pub fn awaken_ext_mcp::plugin::McpPlugin::live_version(&self) -> core::option::Option<u64>
 pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest

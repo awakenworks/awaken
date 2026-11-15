@@ -2,6 +2,39 @@
 
 use super::*;
 
+#[cfg(target_os = "linux")]
+struct HeldMcpBinding {
+    inner: BindingOrderSink,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[cfg(target_os = "linux")]
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink for HeldMcpBinding {
+    async fn authorize(
+        &self,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentEffectAuthorization,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        self.inner.authorize(intent).await
+    }
+
+    async fn persist(
+        &self,
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<
+        awaken_session_contract::SessionEnvironmentState,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        self.entered.notify_one();
+        self.release.notified().await;
+        self.inner.persist(receipt).await
+    }
+}
+
 #[tokio::test]
 async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt() {
     // C1 an Adopt was admitted with expiry60k; C2 installed authority is120k;
@@ -1205,44 +1238,13 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
 async fn on_tool_use_first_stdio_mcp_stage_commits_one_environment_before_spawn() {
     use awaken_session_execution_contract::McpAttachmentRealizer as _;
 
-    struct HeldBinding {
-        inner: BindingOrderSink,
-        entered: tokio::sync::Notify,
-        release: tokio::sync::Notify,
-    }
-
-    #[async_trait::async_trait]
-    impl awaken_session_execution_contract::SessionEnvironmentBindingSink for HeldBinding {
-        async fn authorize(
-            &self,
-            intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
-        ) -> Result<
-            awaken_session_contract::SessionEnvironmentEffectAuthorization,
-            awaken_runtime_contract::runs::RunError,
-        > {
-            self.inner.authorize(intent).await
-        }
-
-        async fn persist(
-            &self,
-            receipt: awaken_session_contract::SessionEnvironmentReceipt,
-        ) -> Result<
-            awaken_session_contract::SessionEnvironmentState,
-            awaken_runtime_contract::runs::RunError,
-        > {
-            self.entered.notify_one();
-            self.release.notified().await;
-            self.inner.persist(receipt).await
-        }
-    }
-
     let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
         .await
-        .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor))
+        .with_mcp_process_support(Arc::new(awaken_run_executor_acp::Supervisor), None)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
-    let binding = Arc::new(HeldBinding {
+    let binding = Arc::new(HeldMcpBinding {
         inner: BindingOrderSink {
             host: Arc::downgrade(&host),
             authorize_calls: AtomicUsize::new(0),
@@ -1283,8 +1285,10 @@ for line in sys.stdin:
         result = {"protocolVersion": request["params"]["protocolVersion"],
                   "capabilities": {"tools": {}},
                   "serverInfo": {"name": "fixture", "version": "1"}}
-    else:
+    elif request["method"] == "tools/list":
         result = {"tools": []}
+    else:
+        raise AssertionError(request["method"])
     print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
 "#;
     let target = awaken_agent_contract::McpTarget::sandbox_stdio(
@@ -1350,6 +1354,516 @@ for line in sys.stdin:
     assert!(binding.inner.observed_before_publish.load(Ordering::SeqCst));
     assert_eq!(std::fs::read_to_string(witness).unwrap(), "started\n");
     effects.drain_mcp_generation(generation).await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn on_tool_use_cached_stdio_replans_changed_schema_before_dispatch() {
+    assert_cached_stdio_replans_changed_schema(false, false, false).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn on_tool_use_cached_stdio_waits_for_approval_before_connecting() {
+    assert_cached_stdio_replans_changed_schema(true, false, false).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn on_tool_use_shared_stdio_catalog_spans_three_sessions() {
+    assert_cached_stdio_replans_changed_schema(false, true, false).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn on_tool_use_stdio_catalog_outage_preserves_authored_seed_and_live_discovery() {
+    assert_cached_stdio_replans_changed_schema(false, false, true).await;
+}
+
+#[cfg(target_os = "linux")]
+async fn assert_cached_stdio_replans_changed_schema(
+    require_approval: bool,
+    use_shared_catalog: bool,
+    catalog_unavailable: bool,
+) {
+    // A cached tool must be visible during text-only inference. Two calls
+    // from one model step share startup, and neither may dispatch with the
+    // stale schema. The next model request must see both error results and
+    // the connected schema before its newly authored call can execute.
+    use awaken_session_configuration_contract::mcp::tool_catalog::{
+        StdioToolCatalog, StdioToolCatalogError, StdioToolCatalogKey, StdioToolDiscovery,
+        VersionedStdioToolCatalog,
+    };
+    use awaken_session_execution_contract::McpAttachmentRealizer as _;
+    use awaken_tool_contract::tool::ToolCall;
+
+    #[derive(Default)]
+    struct TestCatalog {
+        entry: Mutex<Option<(StdioToolCatalogKey, u64, StdioToolCatalog)>>,
+        unavailable: bool,
+        reads: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl StdioToolDiscovery for TestCatalog {
+        async fn get(
+            &self,
+            key: &StdioToolCatalogKey,
+        ) -> Result<Option<VersionedStdioToolCatalog>, StdioToolCatalogError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.unavailable {
+                return Err(StdioToolCatalogError::Unavailable);
+            }
+            Ok(self
+                .entry
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|(stored, _, _)| stored == key)
+                .map(|(_, version, catalog)| VersionedStdioToolCatalog {
+                    version: version.to_string(),
+                    catalog: catalog.clone(),
+                }))
+        }
+
+        async fn put_if_version(
+            &self,
+            key: &StdioToolCatalogKey,
+            expected: Option<&str>,
+            catalog: &StdioToolCatalog,
+        ) -> Result<bool, StdioToolCatalogError> {
+            assert!(
+                !self.unavailable,
+                "a failed read must not be treated as an absent version"
+            );
+            let mut slot = self.entry.lock().unwrap();
+            let version = slot.as_ref().map(|(_, version, _)| *version);
+            if version.map(|version| version.to_string()).as_deref() != expected {
+                return Ok(false);
+            }
+            *slot = Some((key.clone(), version.unwrap_or(0) + 1, catalog.clone()));
+            Ok(true)
+        }
+    }
+
+    struct SchemaModel {
+        requests: Mutex<Vec<ChatRequest>>,
+        stale_calls: &'static [&'static str],
+    }
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for SchemaModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            let mut requests = self.requests.lock().unwrap();
+            let tool = request
+                .tools
+                .iter()
+                .find(|tool| tool.id == "mcp__stdio__lookup")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "lookup missing from model request {}: {:?}",
+                        requests.len(),
+                        request
+                            .tools
+                            .iter()
+                            .map(|tool| &tool.id)
+                            .collect::<Vec<_>>()
+                    )
+                });
+            let parameter = if requests.len() < 2 { "query" } else { "id" };
+            assert!(
+                tool.model_parameters()["properties"]
+                    .get(parameter)
+                    .is_some(),
+                "request {} expected {parameter}, got {}; last message {:?}",
+                requests.len(),
+                tool.model_parameters(),
+                request.messages.last()
+            );
+            let output = match requests.len() {
+                0 => AssistantOutput::text("no tool needed"),
+                1 => AssistantOutput::from_tool_calls(
+                    self.stale_calls
+                        .iter()
+                        .map(|call_id| ToolCall {
+                            call_id: (*call_id).into(),
+                            tool_id: tool.id.clone(),
+                            arguments: serde_json::json!({"query": "old"}),
+                        })
+                        .collect(),
+                ),
+                2 => {
+                    for &expected in self.stale_calls {
+                        assert!(request.messages.iter().flat_map(|message| &message.content).any(|block| {
+                            matches!(block, ContentBlock::ToolResult { tool_use_id, is_error: true, content }
+                                if tool_use_id == expected && block_text(content).contains("mcp_tool_schema_changed"))
+                        }));
+                    }
+                    AssistantOutput::from_tool_calls(vec![ToolCall {
+                        call_id: "new-schema".into(),
+                        tool_id: tool.id.clone(),
+                        arguments: serde_json::json!({"id": 42}),
+                    }])
+                }
+                3 | 4 => AssistantOutput::text("done"),
+                _ => panic!("unexpected model retry"),
+            };
+            requests.push(request);
+            Ok(ChatResponse {
+                output,
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let model = Arc::new(SchemaModel {
+        requests: Mutex::new(Vec::new()),
+        stale_calls: if require_approval {
+            &["old-schema"]
+        } else {
+            &["old-schema", "old-schema-parallel"]
+        },
+    });
+    let catalog = Arc::new(TestCatalog {
+        unavailable: catalog_unavailable,
+        ..TestCatalog::default()
+    });
+    let discovery = (use_shared_catalog || catalog_unavailable)
+        .then(|| catalog.clone() as Arc<dyn StdioToolDiscovery>);
+    let host = crate::SessionExecutorBuilder::ephemeral(model.clone(), "stub")
+        .await
+        .with_mcp_process_support(Arc::new(awaken_run_executor_acp::Supervisor), discovery)
+        .build()
+        .unwrap();
+    install_test_session_application(&host);
+    let binding = Arc::new(HeldMcpBinding {
+        inner: BindingOrderSink {
+            host: Arc::downgrade(&host),
+            authorize_calls: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
+            observed_before_publish: AtomicBool::new(false),
+            fail: false,
+            require_realization: false,
+            owned_session_id: None,
+            committed_environment: None,
+        },
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let session = if use_shared_catalog {
+        "cached-stdio-mcp-shared-b"
+    } else if catalog_unavailable {
+        "cached-stdio-mcp-outage"
+    } else if require_approval {
+        "cached-stdio-mcp-approval"
+    } else {
+        "cached-stdio-mcp-concurrent"
+    };
+    let workspace = host.run_assembly.local_workspace();
+    let mut init = bare_session("assistant", workspace);
+    init.environment = on_tool_use_environment();
+    if use_shared_catalog || catalog_unavailable {
+        // The Managed creation path prepares revision one even for empty Resources.
+        init.resource_revision = 1;
+    }
+    init.tools = Some(
+        awaken_session_configuration_contract::SessionToolConfiguration {
+            toolsets: vec![awaken_agent_contract::ToolsetPolicy {
+                source: awaken_agent_contract::ToolsetSource::Mcp {
+                    server_name: "stdio".into(),
+                },
+                default: if require_approval {
+                    awaken_agent_contract::ToolExecutionPolicy {
+                        enabled: true,
+                        permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
+                    }
+                } else {
+                    awaken_agent_contract::ToolExecutionPolicy::default()
+                },
+                overrides: Vec::new(),
+            }],
+            client_tools: Vec::new(),
+        },
+    );
+    for id in if use_shared_catalog {
+        vec![
+            "cached-stdio-mcp-shared-a",
+            session,
+            "cached-stdio-mcp-shared-c",
+        ]
+    } else {
+        vec![session]
+    } {
+        host.install_complete_test_session(id, init.clone())
+            .await
+            .unwrap();
+        if use_shared_catalog || catalog_unavailable {
+            // Emulate the frozen image evidence for the local subprocess fixture.
+            // The independent real provider integration must use that actual image.
+            host.run_assembly
+                .installed_sessions
+                .modify(id, |installed| {
+                    let baseline = Arc::make_mut(&mut installed.inputs)
+                        .baseline
+                        .as_mut()
+                        .unwrap();
+                    baseline.environment.prepared_image =
+                        Some(format!("fixture/mcp@sha256:{}", "a".repeat(64)));
+                    baseline.environment.network =
+                        awaken_session_configuration_contract::SessionNetworkPolicy::None;
+                })
+                .unwrap();
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let witness = temp.path().join("mcp-rpc");
+    let program = r#"
+import json, sys
+def record(value):
+    with open(sys.argv[1], "a") as witness:
+        witness.write(value + "\n")
+record("started")
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    method = request["method"]
+    if method == "initialize":
+        result = {"protocolVersion": request["params"]["protocolVersion"],
+                  "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "fixture", "version": "2"}}
+    elif method == "tools/list":
+        record("listed")
+        import os
+        name, ty = ("query", "string") if os.path.exists(sys.argv[1] + ".old") else ("id", "integer")
+        result = {"tools": [{"name": "lookup", "inputSchema": {
+            "type": "object", "properties": {name: {"type": ty}}, "required": [name]
+        }}]}
+    elif method == "tools/call":
+        record(json.dumps(request["params"]["arguments"]))
+        result = {"content": [{"type": "text", "text": "found"}]}
+    else:
+        raise AssertionError(method)
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+"#;
+    let mut target = awaken_agent_contract::McpTarget::sandbox_stdio(
+        "/usr/bin/python3",
+        vec![
+            "-c".into(),
+            program.into(),
+            witness.to_str().unwrap().into(),
+        ],
+    )
+    .unwrap();
+    if let awaken_agent_contract::McpTarget::SandboxStdio(stdio) = &mut target {
+        stdio.share_tool_catalog = use_shared_catalog || catalog_unavailable;
+    }
+    if !use_shared_catalog {
+        target = target.with_cached_tools(vec![awaken_agent_contract::mcp_target::CachedMcpTool {
+        name: "lookup".into(),
+        description: String::new(),
+        input_schema: serde_json::json!({
+            "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]
+        }),
+    }])
+        .unwrap();
+    }
+    use awaken_session_configuration_contract::mcp::{
+        McpAttachmentId, McpGeneration, McpGenerationRef, StageMcpAttachment,
+    };
+    let effects = crate::session_effects::RunMcpEffects::new(host.run_assembly.clone());
+    let stage = |id: &'static str| {
+        let target = target.clone();
+        let effects = &effects;
+        let catalog = &catalog;
+        async move {
+            let generation = McpGenerationRef::from_persisted(
+                id.into(),
+                McpGeneration::of_bare_target(McpAttachmentId("stdio".into()), 1, &target),
+                "runtime-1".into(),
+                1,
+                u64::MAX,
+            )
+            .unwrap();
+            effects
+                .stage_mcp_attachment(StageMcpAttachment {
+                    workspace_id: workspace.into(),
+                    generation: generation.clone(),
+                    realization_id: id.into(),
+                    stage_idempotency_key: id.into(),
+                    name: "stdio".into(),
+                    target,
+                    prompts_as_skills: false,
+                    credential: None,
+                    selected_plaintext_holder: None,
+                })
+                .await
+                .unwrap();
+            if id == "cached-stdio-mcp-shared-a" {
+                assert!(
+                    catalog.entry.lock().unwrap().is_none(),
+                    "staging alone must not publish shared discovery"
+                );
+            }
+            effects
+                .publish_mcp_generation(generation.clone())
+                .await
+                .unwrap();
+            generation
+        }
+    };
+    if use_shared_catalog {
+        host.run_assembly
+            .install_test_environment_binding_sink(Arc::new(BindingOrderSink {
+                host: Arc::downgrade(&host),
+                authorize_calls: AtomicUsize::new(0),
+                calls: AtomicUsize::new(0),
+                observed_before_publish: AtomicBool::new(false),
+                fail: false,
+                require_realization: false,
+                owned_session_id: None,
+                committed_environment: None,
+            }));
+        let marker = witness.with_extension("old");
+        std::fs::write(&marker, "").unwrap();
+        let generation = stage("cached-stdio-mcp-shared-a").await;
+        assert!(
+            catalog.entry.lock().unwrap().as_ref().unwrap().2.tools[0].input_schema["properties"]
+                .get("query")
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&witness).unwrap(),
+            "started\nlisted\n"
+        );
+        effects.drain_mcp_generation(generation).await.unwrap();
+        std::fs::remove_file(marker).unwrap();
+        std::fs::remove_file(&witness).unwrap();
+    }
+    host.run_assembly
+        .install_test_environment_binding_sink(binding.clone());
+    let generation = stage(session).await;
+    assert!(
+        !witness.exists(),
+        "publishing the cache must leave MCP disconnected"
+    );
+    run_prepared_session_messages(
+        &host,
+        "assistant",
+        session,
+        vec![Message::text(
+            MessageId("first".into()),
+            Role::User,
+            "plain text",
+        )],
+    )
+    .await
+    .unwrap();
+    assert_eq!(binding.inner.calls.load(Ordering::SeqCst), 0);
+    assert!(!witness.exists());
+    assert!(
+        host.realization_executor
+            .environments()
+            .session_environment(session)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let run = async {
+        let outcome = run_prepared_session_messages(
+            &host,
+            "assistant",
+            session,
+            vec![Message::text(
+                MessageId("second".into()),
+                Role::User,
+                "lookup",
+            )],
+        )
+        .await
+        .unwrap();
+        if require_approval {
+            assert!(matches!(outcome.state(), RunState::Awaiting));
+            assert_eq!(outcome.pending().unwrap().tool_use_id, "old-schema");
+            assert_eq!(binding.inner.authorize_calls.load(Ordering::SeqCst), 0);
+            assert!(!witness.exists(), "unapproved tool must not start the MCP");
+            let resumed = host
+                .session_runs
+                .resume(
+                    session,
+                    "old-schema",
+                    HostResume::Permission(PermissionDecision::Allow { note: None }),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(resumed.state, RunState::Awaiting));
+        } else {
+            assert!(matches!(outcome.state(), RunState::Ended(_)));
+        }
+    };
+    tokio::pin!(run);
+    tokio::select! {
+        result = &mut run => panic!("Run ended before the first MCP binding: {result:?}"),
+        result = tokio::time::timeout(std::time::Duration::from_secs(10), binding.entered.notified()) => {
+            result.expect("first authorized invocation requests a binding");
+        }
+    }
+    assert!(
+        !witness.exists(),
+        "MCP spawn must wait for binding acknowledgement"
+    );
+    binding.release.notify_one();
+    run.await;
+    if require_approval {
+        assert_eq!(
+            std::fs::read_to_string(&witness).unwrap(),
+            "started\nlisted\n",
+            "the stale approved call and the unapproved replacement both stay local"
+        );
+        let resumed = host
+            .session_runs
+            .resume(
+                session,
+                "new-schema",
+                HostResume::Permission(PermissionDecision::Allow { note: None }),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(resumed.state, RunState::Ended(_)));
+    }
+    assert_eq!(model.requests.lock().unwrap().len(), 4);
+    if catalog_unavailable {
+        assert!(catalog.reads.load(Ordering::SeqCst) >= 2);
+        assert!(catalog.entry.lock().unwrap().is_none());
+    }
+    assert_eq!(binding.inner.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(binding.inner.authorize_calls.load(Ordering::SeqCst), 1);
+    assert!(binding.inner.observed_before_publish.load(Ordering::SeqCst));
+    assert_eq!(
+        std::fs::read_to_string(&witness).unwrap(),
+        "started\nlisted\n{\"id\": 42}\n"
+    );
+    effects.drain_mcp_generation(generation).await.unwrap();
+    if use_shared_catalog {
+        let session_c = "cached-stdio-mcp-shared-c";
+        let generation = stage(session_c).await;
+        run_prepared_session_messages(
+            &host,
+            "assistant",
+            session_c,
+            user("preview the changed schema"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(model.requests.lock().unwrap().len(), 5);
+        assert_eq!(binding.inner.calls.load(Ordering::SeqCst), 1);
+        effects.drain_mcp_generation(generation).await.unwrap();
+    }
 }
 
 /// L5: persistence failure fails closed; no deferred environment becomes visible.

@@ -83,8 +83,10 @@ pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::prompts_as_s
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding
 pub struct awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport
 pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport::args: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport::cached_tools: alloc::vec::Vec<awaken_agent_contract::mcp_target::CachedMcpTool>
 pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport::command: alloc::string::String
 pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport::kind: awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransportKind
+pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport::share_tool_catalog: bool
 pub struct awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_runtime_contract::agent_bindings::InferenceOptions::effort: core::option::Option<awaken_runtime_contract::agent_bindings::ReasoningEffort>
 pub awaken_runtime_contract::agent_bindings::InferenceOptions::inference_geo: core::option::Option<awaken_runtime_contract::agent_bindings::InferenceGeography>

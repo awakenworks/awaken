@@ -71,6 +71,28 @@ fn validate_stdio_credential_binding(
 /// staging only consumes them.
 #[async_trait::async_trait]
 pub trait McpStagingSession: Send + Sync {
+    fn stdio_tool_catalog_access(
+        &self,
+        _request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Option<super::stdio_catalog::StdioCatalogAccess> {
+        None
+    }
+
+    fn deferred_stdio_environment(
+        &self,
+        _session: &str,
+    ) -> Result<Option<DeferredStdioEnvironment>, RunError> {
+        Ok(None)
+    }
+
+    fn mcp_plugin_config(
+        &self,
+        _session: &str,
+        _plugin_id: &str,
+    ) -> Result<Option<serde_json::Value>, RunError> {
+        Ok(None)
+    }
+
     /// Whether the exact generation is authorized at `now_unix_ms`; an
     /// unreadable root authority is refused as an error.
     fn mcp_generation_is_authorized_at(
@@ -123,6 +145,14 @@ pub trait McpStagingSession: Send + Sync {
     async fn realize_environment(&self, session: &str, agent: &str) -> Result<(), RunError>;
 }
 
+pub type DeferredStdioEnvironment = Arc<
+    dyn Fn() -> futures_util::future::BoxFuture<
+            'static,
+            Result<Arc<awaken_session_environment_contract::SessionEnvironment>, RunError>,
+        > + Send
+        + Sync,
+>;
+
 /// The credential materialization a staging call may use. The Managed
 /// adapter owns these; staging borrows them for one call.
 #[derive(Clone, Copy, Default)]
@@ -132,7 +162,7 @@ pub struct McpCredentialMaterialization<'a> {
     pub platform_egress: Option<&'a dyn PlatformMcpEgressProvisioner>,
 }
 
-mod staging;
+pub(super) mod staging;
 use staging::{McpStagingOwner, StagingAdmission};
 
 /// The refresh material of one resolved MCP bearer, from the realization
@@ -657,7 +687,7 @@ impl McpSessions {
             None => McpStagingOwner::begin(slots, &request, admission, self.clock.as_ref())?,
         };
         let server = crate::mcp_material::McpTransportMaterial {
-            name: request.name,
+            name: request.name.clone(),
             prompts_as_skills: request.prompts_as_skills,
             transport: match sandbox_stdio.as_ref() {
                 Some(target) => crate::mcp_material::McpTransportMaterialKind::SandboxStdio {
@@ -693,6 +723,69 @@ impl McpSessions {
             let process_reaper =
                 process_reaper.expect("stdio preflight selected its process owner");
             let session_id = &request.generation.session_id();
+            let catalog = super::stdio_catalog::Catalog::for_stage(self, host, &request);
+            let observed = match &catalog {
+                Some(catalog) => catalog.read().await,
+                None => None,
+            };
+            let now = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
+            let matching = observed.as_ref().and_then(Option::as_ref).filter(|entry| {
+                catalog
+                    .as_ref()
+                    .is_some_and(|catalog| catalog.matches(&entry.catalog))
+            });
+            let initial = matching.filter(|entry| entry.catalog.is_fresh(now));
+            if catalog.is_some() {
+                tracing::debug!(hit = initial.is_some(), "stdio MCP catalog lookup");
+            }
+            // An expired live observation is a reason to rediscover. Falling back
+            // to the authored seed here would revive tools already removed.
+            let seed = if matching.is_some() {
+                &[]
+            } else {
+                target.cached_tools.as_slice()
+            };
+            let cached_tools = initial.map_or(seed, |entry| entry.catalog.tools.as_slice());
+            let deferred = if cached_tools.is_empty() && initial.is_none() {
+                None
+            } else {
+                let plugin_id = format!("mcp:{}", server.name);
+                let config = host.mcp_plugin_config(session_id.as_str(), &plugin_id)?;
+                let notifications =
+                    awaken_ext_mcp::notification::McpNotificationConfig::parse(config.as_ref())
+                        .map_err(RunError::bad_request)?;
+                if notifications.notifications.is_empty() {
+                    host.deferred_stdio_environment(session_id.as_str())?
+                } else {
+                    None
+                }
+            };
+            if let Some(environment) = deferred {
+                let wiring = super::deferred_stdio::cached_wiring(
+                    super::deferred_stdio::DeferredStdioOwner {
+                        slots: Arc::downgrade(slots),
+                        generation: request.generation.clone(),
+                        allocation: staging.selection().drain.clone(),
+                        clock: self.clock.clone(),
+                        admission,
+                        reaper: process_reaper,
+                        environment,
+                        catalog,
+                    },
+                    &server,
+                    target,
+                    cached_tools,
+                )?;
+                staging.publish(
+                    admission,
+                    self.clock.as_ref(),
+                    None,
+                    server,
+                    Some(wiring),
+                    &receipt,
+                )?;
+                return Ok(receipt);
+            }
             let environment = match host.resident_environment(session_id.as_str()).await? {
                 Some(environment) => environment,
                 None => {
@@ -714,49 +807,10 @@ impl McpSessions {
                     })?
                 }
             };
-            let mut argv = Vec::with_capacity(target.args.len() + 1);
-            argv.push(target.command.clone());
-            argv.extend(target.args.clone());
-            // Match the ACP/Hand isolation contract: opaque sandbox processes
-            // never inherit the image or operator home. Give this MCP target a
-            // writable Session-scoped home inside the workspace so read-only
-            // container root filesystems still support CLI/browser caches.
-            let mcp_home_logical = format!(".mcp-home/{}", request.target.fingerprint());
-            let mcp_home = format!(
-                "{}/{}",
-                environment
-                    .agent_process()
-                    .workspace_cwd()
-                    .trim_end_matches('/'),
-                mcp_home_logical
-            );
-            let home_sentinel = if environment.agent_process().supports_host_identity() {
-                format!("{mcp_home_logical}/.awaken-mcp-home")
-            } else {
-                format!("{mcp_home}/.awaken-mcp-home")
-            };
             staging.authorize(admission, self.clock.as_ref())?;
-            environment
-                .agent_process()
-                .materialize_inline(&home_sentinel, b"")
-                .await
-                .map_err(|error| {
-                    RunError::classified(
-                        "mcp_sandbox_home_failed",
-                        format!("sandbox stdio MCP home could not be materialized: {error}"),
-                    )
-                })?;
+            let command =
+                super::deferred_stdio::sandbox_stdio_command(&environment, target).await?;
             staging.prepare_stdio(admission, self.clock.as_ref(), server.clone(), &receipt)?;
-            let command = awaken_provisioning_contract::Command {
-                argv,
-                cwd: environment.agent_process().workspace_cwd(),
-                env: vec![awaken_provisioning_contract::EnvVar {
-                    name: "HOME".into(),
-                    value: awaken_provisioning_contract::EnvValue::Inline { value: mcp_home },
-                    visibility: awaken_provisioning_contract::EnvVisibility::Process,
-                }],
-                stdio: awaken_provisioning_contract::Stdio::Piped,
-            };
             // Move the already-installed owner into the task before its first poll.
             // Dropping the caller's JoinHandle cannot orphan a spawned process.
             let stage = tokio::spawn(self.clone().stage_sandbox_stdio(
@@ -766,6 +820,11 @@ impl McpSessions {
                 staging,
                 admission,
                 process_reaper,
+                catalog.map(|catalog| super::stdio_catalog::PendingObservation {
+                    catalog,
+                    expected: observed.map(|entry| entry.map(|entry| entry.version)),
+                    admission,
+                }),
             ));
             match stage.await {
                 Ok(result) => result?,
@@ -845,6 +904,10 @@ impl McpSessions {
         Ok(receipt)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the existing physical stage inputs remain explicit beside the optional discovery observation"
+    )]
     async fn stage_sandbox_stdio<S: SessionMcpStates>(
         self,
         task_slots: Arc<S>,
@@ -853,6 +916,7 @@ impl McpSessions {
         mut owner: McpStagingOwner<S>,
         admission: StagingAdmission,
         process_reaper: Arc<dyn awaken_session_environment_contract::ProcessReaper>,
+        observation: Option<super::stdio_catalog::PendingObservation>,
     ) -> Result<(), RunError> {
         let staging_server = owner
             .selection()
@@ -906,7 +970,9 @@ impl McpSessions {
             }
         }
         match crate::mcp::connect_sandbox_stdio(&staging_server, channel).await {
-            Ok(wiring) => {
+            Ok(mut wiring) => {
+                wiring.stdio_observation = observation
+                    .map(|observation| Arc::new(awaken_sync::LeafLock::new(Some(observation))));
                 let completed = owner.publish(
                     admission,
                     self.clock.as_ref(),
@@ -935,7 +1001,7 @@ impl McpSessions {
 
     pub async fn publish_attachment<S: SessionMcpStates>(
         &self,
-        slots: &S,
+        slots: &Arc<S>,
         host: &dyn McpStagingSession,
         generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {

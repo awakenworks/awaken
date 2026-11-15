@@ -281,6 +281,10 @@ mod transport_wire {
             command: String,
             #[serde(default)]
             args: Vec<String>,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            cached_tools: Vec<awaken_agent_contract::mcp_target::CachedMcpTool>,
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            share_tool_catalog: bool,
         },
     }
     pub(super) fn serialize<S: serde::Serializer>(
@@ -292,6 +296,8 @@ mod transport_wire {
             AgentMcpTransportBinding::SandboxStdio(t) => McpTransportConfig::SandboxStdio {
                 command: t.command.clone(),
                 args: t.args.clone(),
+                cached_tools: t.cached_tools.clone(),
+                share_tool_catalog: t.share_tool_catalog,
             },
         }
         .serialize(serializer)
@@ -301,8 +307,16 @@ mod transport_wire {
     ) -> Result<AgentMcpTransportBinding, D::Error> {
         Ok(match McpTransportConfig::deserialize(deserializer)? {
             McpTransportConfig::Url { url } => AgentMcpTransportBinding::http(url),
-            McpTransportConfig::SandboxStdio { command, args } => {
-                AgentMcpTransportBinding::sandbox_stdio(command, args)
+            McpTransportConfig::SandboxStdio { command, args, cached_tools, share_tool_catalog } => {
+                AgentMcpTransportBinding::SandboxStdio(
+                    awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport {
+                        kind: awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransportKind::SandboxStdio,
+                        command,
+                        args,
+                        cached_tools,
+                        share_tool_catalog,
+                    },
+                )
             }
         })
     }
@@ -311,6 +325,28 @@ mod transport_wire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdio_catalog_preserves_cached_tool_definitions() {
+        let wire = serde_json::json!({
+            "id": "stdio", "name": "stdio", "description": "local tool",
+            "transport": {"type": "sandbox_stdio", "command": "server", "cached_tools": [
+                {"name": "lookup", "description": "Lookup", "input_schema": {"type": "object"}}
+            ]}
+        });
+        let entry: McpServerDefinition = serde_json::from_value(wire).unwrap();
+        entry.validate().unwrap();
+        let target = entry.transport.normalize().unwrap();
+        assert_eq!(
+            target.sandbox_stdio_target().unwrap().cached_tools[0].name,
+            "lookup"
+        );
+        let roundtrip =
+            serde_json::from_value::<McpServerDefinition>(serde_json::to_value(&entry).unwrap())
+                .unwrap();
+        assert_eq!(roundtrip, entry);
+    }
+
     fn server(id: &str, url: &str) -> McpServerDefinition {
         McpServerDefinition {
             id: id.into(),
