@@ -4,7 +4,6 @@ import { startFakeAnthropic } from "../../e2e/fixtures/fake_anthropic_fixture.mj
 const SYNTHETIC_API_KEY = "sk-synthetic-e2e"; // awaken-allow(secret): (synthetic e2e fixture)
 
 export class SyntheticModelDirectory {
-  private readonly models: string[] = [];
   private upstream?: Awaited<ReturnType<typeof startFakeAnthropic>>;
   private baseUrl = "";
 
@@ -13,7 +12,9 @@ export class SyntheticModelDirectory {
     // earlier directory-only HTTP fake returned the model list for authoring
     // but answered a real Quickstart /messages request with that list shape,
     // leaving its durable Session active and starving later browser scenarios.
-    this.upstream = await startFakeAnthropic(SYNTHETIC_API_KEY, { models: this.models });
+    // The fixture copies `models` on start; its returned `models` array is the
+    // directory it serves on GET /v1/models, so later bindings grow that array.
+    this.upstream = await startFakeAnthropic(SYNTHETIC_API_KEY);
     this.baseUrl = this.upstream.url;
   }
 
@@ -28,7 +29,8 @@ export class SyntheticModelDirectory {
     model: string,
     configBase = "/v1/config",
   ): Promise<string> {
-    if (!this.models.includes(model)) this.models.push(model);
+    if (!this.upstream) throw new Error("synthetic model directory is not started");
+    if (!this.upstream.models.includes(model)) this.upstream.models.push(model);
     const workspaceResponse = await request.get(`${configBase}/workspace-context`);
     if (!workspaceResponse.ok()) {
       throw new Error(await workspaceResponse.text());

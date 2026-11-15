@@ -659,7 +659,9 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
 
   await page.goto("/w/default/mcp");
   await page.getByText("Existing Agent bindings", { exact: true }).click();
-  const issuesRow = page.getByRole("row", { name: /issues https:\/\/mcp\.example\.test\/issues/ });
+  // Other Agents in this backend may bind the same server; select this Agent's row.
+  const issuesRow = page.getByRole("row", { name: /issues https:\/\/mcp\.example\.test\/issues/ })
+    .filter({ has: page.locator(`a[href*="/agents/${id}"]`) });
   await expect(issuesRow.getByText("https://mcp.example.test/issues", { exact: true })).toBeVisible();
   await expect(issuesRow.getByText("Allow without asking", { exact: true })).toBeVisible();
   await expect(issuesRow.getByText("1 named override", { exact: true })).toBeVisible();
@@ -1573,7 +1575,7 @@ test("Admin Assistant truthfully shows a composer or the missing-model prerequis
   // The assistant is seeded into the reserved scope (ADR-0052), but a composer is
   // only runnable when the current backend has a credentialed model.
   const composer = page.getByPlaceholder("Ask a question or describe what you want to accomplish…");
-  const prerequisite = page.getByText(/The assistant needs a model to run on|助手需要一个模型才能运行/i);
+  const prerequisite = page.getByText(/The Assistant needs a model\.|助手需要模型才能运行/i);
   const unavailable = page.getByText(/The Assistant (?:is not runnable yet|could not be prepared)|助手(?:尚不可运行|准备失败)/i);
   await expect(composer.or(prerequisite).or(unavailable)).toBeVisible();
 });
@@ -1686,8 +1688,11 @@ test("Try draft truthfully requires runnable fields", async ({ page }) => {
   await expect(page.getByText(/Complete the runnable fields to Try|补全运行必填项后即可试运行/)).toBeVisible();
 });
 
-test("author an agent, publish when runnable, and see the truthful outcome", async ({ page }) => {
+test("author an agent, publish when runnable, and see the truthful outcome", async ({ page, request }) => {
   const id = `e2e-agent-${Date.now()}`;
+  // Publish is enabled only while the Workspace offers a ready model; bind one
+  // here instead of inheriting whatever an earlier test left behind.
+  await syntheticModels.configure(request, `${id}-model`);
   await page.goto("/w/default/agents/new");
 
   await page.getByPlaceholder("coding-agent").fill(id);
@@ -1745,6 +1750,8 @@ test("author an agent, publish when runnable, and see the truthful outcome", asy
 
 test("Publish saves the Draft, validates it, and withholds confirmation when invalid", async ({ page, request }) => {
   const id = `publish-flow-${Date.now()}`;
+  // Publish must be enabled for the invalid Draft to reach validation.
+  await syntheticModels.configure(request, `${id}-model`);
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
   await openBuild(page, "Instructions");
