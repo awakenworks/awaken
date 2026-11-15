@@ -898,24 +898,42 @@ impl SessionCoordination {
                 RunError::unavailable(format!("Session budget admission is unavailable: {error}"))
             }
         };
-        let outcome = self
-            .lifecycle
-            .reconcile_managed_budget_usage_with_commit(session_id, &operation_id, usage, commit)
-            .await
-            .map_err(admission_error)?;
-        if !commit
-            .validate(&outcome.session.session_id, outcome.session.revision)
-            .await
-            .map_err(admission_error)?
-        {
-            return Err(admission_error(crate::SessionMutationError::Conflict));
+        for attempt in 0..crate::mutation::ROOT_CAS_ATTEMPTS {
+            let outcome = match self
+                .lifecycle
+                .reconcile_managed_budget_usage_with_commit(
+                    session_id,
+                    &operation_id,
+                    usage.clone(),
+                    commit,
+                )
+                .await
+            {
+                Ok(outcome) => outcome,
+                Err(crate::SessionMutationError::NotApplied(_))
+                    if attempt + 1 < crate::mutation::ROOT_CAS_ATTEMPTS =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(admission_error(error)),
+            };
+            if !commit
+                .validate(&outcome.session.session_id, outcome.session.revision)
+                .await
+                .map_err(admission_error)?
+            {
+                // Reconcile the same observation against the new revision.
+                // Typed claim and Work refusals already leave through `?`.
+                continue;
+            }
+            // A cold observation is not permission to schedule root recovery. The
+            // same final admission must succeed before this synchronous wake.
+            if needs_reconciliation {
+                self.lifecycle.request_reconciliation();
+            }
+            return Ok(outcome.session.budget.can_admit_model_request());
         }
-        // A cold observation is not permission to schedule root recovery. The
-        // same final admission must succeed before this synchronous wake.
-        if needs_reconciliation {
-            self.lifecycle.request_reconciliation();
-        }
-        Ok(outcome.session.budget.can_admit_model_request())
+        Err(admission_error(crate::SessionMutationError::Conflict))
     }
 }
 

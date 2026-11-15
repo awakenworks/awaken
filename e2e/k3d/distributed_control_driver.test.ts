@@ -7,12 +7,29 @@ import {
   arrivalShape,
   runArrivalWindow,
   createParallelSessions,
+  deleteRollingSession,
   disposeFixtureSessions,
   nativeCrashHistoryErrors,
   nativeProviderInvocationErrors,
   nativeInFlightHistoryErrors,
   validateFleetEnvironmentIds,
 } from './distributed_control_driver.ts';
+
+test('rolling lifecycle retries an ambiguous delete only for the same Session', async () => {
+  const seen: string[] = [];
+  const retries: number[] = [];
+  const missing = () => Object.assign(new Error('session absent'), { status: 404 });
+  await deleteRollingSession('existing-session', async (id) => {
+    seen.push(id);
+    if (seen.length === 1) throw Object.assign(new Error('gateway'), { status: 502 });
+    throw missing();
+  }, (status) => retries.push(status));
+  assert.deepEqual(seen, ['existing-session', 'existing-session']);
+  assert.deepEqual(retries, [502]);
+
+  await assert.rejects(deleteRollingSession('unknown-session', async () => { throw missing(); },
+    () => assert.fail('a first not-found is not retried')), /session absent/);
+});
 
 test('open arrivals continue while all execution futures remain blocked', async () => {
   // O1 scheduled arrivals are independent of completion; O2 four held effects

@@ -45,7 +45,7 @@ grep -Fq 'CONTROL_BIN=$(resolve_cargo_executable awaken-control-process awaken-c
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'COORDINATOR_BIN=$(resolve_cargo_executable awaken-coordinator-process awaken-coordinator --features container-k8s)' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -Fq 'if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" && -n "${ADR71_CACHED_SANDBOX_IMAGE:-}" ]]; then' \
+grep -Fq 'if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}$ROLLING_LEGACY_IMAGE" && -n "${ADR71_CACHED_SANDBOX_IMAGE:-}" ]]; then' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'SANDBOX_BUILD_IMAGE="${ADR71_SANDBOX_BUILD_IMAGE:-awaken-sandbox:local}"' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"

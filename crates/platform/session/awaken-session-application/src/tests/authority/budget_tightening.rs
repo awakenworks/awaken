@@ -298,3 +298,91 @@ async fn running_session_budget_tightening_governs_the_next_model_request() {
 }
 
 mod frozen_versus_current;
+
+#[tokio::test]
+async fn model_admission_rechecks_budget_after_a_refused_write_and_revision_move() {
+    use crate::{SessionMutationError, SessionRootCommit};
+    use awaken_session_contract::{SessionMutation, SessionMutationResult};
+    use awaken_session_types::SessionRevision;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RacingCommit<'a> {
+        app: &'a SessionApplication,
+        repo: &'a awaken_session_store::SqliteManagedSessionRepository,
+        writes: AtomicUsize,
+        validations: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionRootCommit for RacingCommit<'_> {
+        async fn validate_claim(&self) -> Result<(), SessionMutationError> {
+            self.app.mutations().validate_claim().await
+        }
+
+        async fn commit(
+            &self,
+            owner_scope: &str,
+            mutation: SessionMutation,
+        ) -> Result<SessionMutationResult, SessionMutationError> {
+            if self.writes.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(SessionMutationError::NotApplied(
+                    "serialization aborted".into(),
+                ));
+            }
+            self.app.mutations().commit(owner_scope, mutation).await
+        }
+
+        async fn validate(
+            &self,
+            session_id: &SessionId,
+            revision: SessionRevision,
+        ) -> Result<bool, SessionMutationError> {
+            if self.validations.fetch_add(1, Ordering::SeqCst) == 0 {
+                let commands = self.app.update_commands();
+                let changed = Box::pin(
+                    commands
+                        .update_session(session_id, tighten("between-settlement-and-admission")),
+                )
+                .await
+                .unwrap();
+                assert!(changed.command_applied);
+            }
+            Ok(self.repo.get(session_id).await.unwrap().revision == revision)
+        }
+    }
+
+    let id = "budget-final-revision-moved";
+    let (repo, runtime, app) = fixture(&[(id, "idle")]).await;
+    runtime.set_root_usage(usage(FIRST_STEP_TOKENS));
+    let commit = RacingCommit {
+        app: &app,
+        repo: repo.as_ref(),
+        writes: AtomicUsize::new(0),
+        validations: AtomicUsize::new(0),
+    };
+    let session_id = SessionId::from(id);
+    let allowed = app
+        .coordination
+        .admit_session_model_request_with_commit(
+            &session_id,
+            &ThreadId(id.into()),
+            &RunId(format!("{id}-run")),
+            &commit,
+        )
+        .await
+        .expect("concurrent revision movement does not terminate the Run");
+
+    assert!(allowed);
+    assert_eq!(commit.writes.load(Ordering::SeqCst), 2);
+    assert!(commit.validations.load(Ordering::SeqCst) > 1);
+    let current = repo.get(&session_id).await.unwrap();
+    assert_eq!(
+        current.budget.max_list_cost_minor(),
+        Some(TIGHTENED_LIMIT_MINOR)
+    );
+    assert_eq!(
+        current.usage_cursor.by_model["model"].input_tokens,
+        FIRST_STEP_TOKENS
+    );
+    assert!(current.budget.reach_transitions().is_empty());
+}

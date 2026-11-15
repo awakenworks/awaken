@@ -29,6 +29,11 @@ pub struct SessionRealizationRevocation {
     selected: Vec<(String, crate::installed_session::ClosedSessionRealization)>,
 }
 
+enum RetirementSignal {
+    Interrupt,
+    Revoke,
+}
+
 #[cfg(test)]
 mod realization_renewal_tests {
     use awaken_session_execution_contract::SessionRealizationControlFailure;
@@ -284,25 +289,35 @@ impl crate::RunAssembly {
         else {
             return Ok(false);
         };
-        self.retire_selected_session_realization(
-            session_id,
-            selected,
-            expected_projection.is_some(),
-        )
-        .await
+        let retired = self
+            .retire_selected_session_realization(
+                session_id,
+                selected,
+                expected_projection.map(|_| RetirementSignal::Revoke),
+            )
+            .await?;
+        if retired && let Some((lease, _)) = expected_projection {
+            tracing::warn!(
+                session_id,
+                realization_epoch = lease.epoch,
+                "session_realization_lease_revoked"
+            );
+        }
+        Ok(retired)
     }
 
-    /// Retire one closed root through its original physical owner. With
-    /// `interrupt`, the Run controls captured at the close are signalled after
-    /// the root still matches and before retirement; a foreground record that
-    /// was unreadable at the close refuses the retirement before any effect.
+    /// Retire one closed root through its original physical owner. Send any
+    /// requested signal to the captured attempt only after the root matches.
     async fn retire_selected_session_realization(
         &self,
         session_id: &str,
         selected: crate::installed_session::ClosedSessionRealization,
-        interrupt: bool,
+        signal: Option<RetirementSignal>,
     ) -> Result<bool, crate::SessionExecutionError> {
-        let run = if interrupt { selected.run? } else { None };
+        let run = match signal {
+            Some(signal) => selected.run?.map(|run| (run, signal)),
+            None => None,
+        };
         self.realization_executor
             .environments()
             .retire_selected_session_environment(
@@ -314,8 +329,13 @@ impl crate::RunAssembly {
                     if let Some(after_check) = selected.after_check {
                         after_check();
                     }
-                    if let Some(run) = &run {
-                        run.interrupt();
+                    if let Some((run, signal)) = &run {
+                        match signal {
+                            RetirementSignal::Interrupt => run.interrupt(),
+                            RetirementSignal::Revoke => run.revoke(
+                                awaken_runtime_contract::cancellation::CancellationCause::WorkerRevoked,
+                            ),
+                        }
                     }
                 },
             )
@@ -332,8 +352,12 @@ impl crate::RunAssembly {
         after_check: impl FnOnce() + Send + 'static,
     ) -> Result<bool, crate::SessionExecutionError> {
         selected.after_check = Some(Box::new(after_check));
-        self.retire_selected_session_realization(session_id, selected, interrupt)
-            .await
+        self.retire_selected_session_realization(
+            session_id,
+            selected,
+            interrupt.then_some(RetirementSignal::Interrupt),
+        )
+        .await
     }
 
     /// Revoke every process-local Session projection after Worker authority is
@@ -365,7 +389,7 @@ impl crate::RunAssembly {
     ) -> Result<usize, crate::SessionExecutionError> {
         let results = futures_util::future::join_all(revocation.selected.into_iter().map(
             |(id, selected)| async move {
-                self.retire_selected_session_realization(&id, selected, false)
+                self.retire_selected_session_realization(&id, selected, None)
                     .await
             },
         ))
@@ -629,10 +653,14 @@ impl awaken_session_realization_driver::TerminalRecoveryProjections for crate::R
         else {
             return Ok(());
         };
-        self.retire_selected_session_realization(session_id.as_str(), selected, true)
-            .await
-            .map(drop)
-            .map_err(crate::session_execution_error::to_run_error)
+        self.retire_selected_session_realization(
+            session_id.as_str(),
+            selected,
+            Some(RetirementSignal::Interrupt),
+        )
+        .await
+        .map(drop)
+        .map_err(crate::session_execution_error::to_run_error)
     }
 
     async fn revoke_settled_projection(

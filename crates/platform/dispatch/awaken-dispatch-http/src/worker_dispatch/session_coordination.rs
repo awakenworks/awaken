@@ -232,7 +232,7 @@ pub(super) async fn session_model_request_admit(
         let admitted = service
             .session_coordination
             .admit_session_model_request(
-                &awaken_session_types::SessionId::from(request.session_id),
+                &awaken_session_types::SessionId::from(&request.session_id),
                 &request.thread_id,
                 &request.run_id,
             )
@@ -242,7 +242,17 @@ pub(super) async fn session_model_request_admit(
         Ok(json!({ "admitted": admitted }))
     }
     .await;
-    respond_realization(result)
+    let response = respond_realization(result);
+    if !response.0.is_success() {
+        tracing::warn!(
+            session_id = %request.session_id,
+            run_id = %request.run_id.0,
+            claim_epoch = request.claim.epoch,
+            status = response.0.as_u16(),
+            "session_model_admission_failed"
+        );
+    }
+    response
 }
 
 pub(super) async fn session_run_activity_admit(

@@ -89,6 +89,7 @@ async fn lifecycle_drain(State(binding): State<LifecycleBinding>) -> impl IntoRe
     let Some(lifecycle) = binding.get() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "not registered\n");
     };
+    eprintln!("awaken-worker admin drain requested");
     match lifecycle.begin_drain(None).await {
         Ok(()) => (StatusCode::OK, "draining\n"),
         Err(_) => (

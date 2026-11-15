@@ -390,10 +390,23 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
 
 #[tokio::test]
 async fn renewal_revocation_rechecks_authority_after_realization_admission() {
+    use awaken_agent_contract::agent::run::EndCause;
+    use awaken_runtime_contract::CancellationToken;
+    use awaken_runtime_contract::cancellation::{CancellationCause, abandoned_attempt_cause};
+
     // R4a conclusive loss while Stage holds admission -> no destructive effects
     // until Stage releases. R4b Stage installs a new lease while revocation waits
     // -> recheck absorbs the obsolete response and preserves the new projection.
     // The 30s cadence makes the 5s receipt unambiguously due, as in R1 above.
+    let local = crate::SessionExecutorBuilder::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .build()
+        .expect("validated Runtime dependencies");
+    let ctx = local
+        .run_assembly
+        .ctx_for("renew-revoke", None)
+        .await
+        .unwrap();
     for replaced in [false, true] {
         let control = Arc::new(RemoteTerminalCleanupControl::default());
         *control.renewal_failure.lock().unwrap() = Some(
@@ -415,6 +428,23 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
             expires_at_unix_ms: now + 5_000,
         };
         install_test_renewal_authority(&host, &control, "renew-revoke", lease.clone());
+        let run_id = RunId("renew-revoke-run".into());
+        let scope = ctx.runtime.begin_active_attempt(
+            &run_id,
+            &ctx.thread_id,
+            RuntimeRunContext::new().with_cancellation(CancellationToken::new()),
+            awaken_runtime_contract::execution::LiveInput::None,
+        );
+        host.run_assembly
+            .installed_sessions
+            .install_run("renew-revoke", |run| {
+                run.context = Some(ctx.clone());
+                run.dispatch_claim = Some(awaken_worker_contract::RunClaim {
+                    run_id,
+                    owner: "worker".into(),
+                    epoch: 1,
+                });
+            });
         let fence = host
             .run_assembly
             .installed_sessions
@@ -481,6 +511,17 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
                 .contains("renew-revoke"),
             replaced
         );
+        assert_eq!(scope.context().is_cancelled(), !replaced);
+        if !replaced {
+            let error = scope
+                .context()
+                .admit_terminal_commit(&RunState::Ended(EndCause::Cancelled))
+                .expect_err("realization loss may stop the physical attempt only");
+            assert_eq!(
+                abandoned_attempt_cause(&error),
+                Some(CancellationCause::WorkerRevoked)
+            );
+        }
     }
 }
 

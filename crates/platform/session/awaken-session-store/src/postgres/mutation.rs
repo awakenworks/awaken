@@ -11,13 +11,26 @@ use super::{
     validate_current_mutation, write_not_committed,
 };
 
+fn root_lock_error(error: sqlx::Error) -> SessionRepositoryError {
+    if error
+        .as_database_error()
+        .is_some_and(|database| database.code().as_deref() == Some("40001"))
+    {
+        // PostgreSQL rejected the snapshot at the lock, before this
+        // mutation staged any writes.
+        return SessionRepositoryError::NotApplied(error.to_string());
+    }
+    storage(error)
+}
+
 impl PostgresManagedSessionRepository {
     /// Stage the original validated Session mutation on a caller's transaction.
     ///
     /// This method neither acquires a pool connection nor commits/rolls back.
     /// Its result is not a durable receipt until the caller commits. In
-    /// particular an error carries no `write_not_committed` certificate: only
-    /// the outer transaction owner knows its final rollback/unknown outcome.
+    /// particular an arbitrary error carries no `write_not_committed`
+    /// certificate. A PostgreSQL serialization failure at the first root
+    /// lock is a definite refusal before this mutation stages any writes.
     pub async fn commit_on(
         connection: &mut sqlx::PgConnection,
         owner_scope: &str,
@@ -84,7 +97,7 @@ impl PostgresManagedSessionRepository {
         .bind(&session_id)
         .fetch_optional(&mut *connection)
         .await
-        .map_err(storage)?;
+        .map_err(root_lock_error)?;
         let Some(current) = current else {
             let tombstone = sqlx::query(
                 "SELECT deleted_revision FROM managed_session_tombstone WHERE session_id = $1",

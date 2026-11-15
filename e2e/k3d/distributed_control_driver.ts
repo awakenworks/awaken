@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 // The shared E2E harness is intentionally JavaScript-owned and has no parallel
 // declaration shim; Node executes this import directly in the K3D lane.
@@ -228,6 +228,8 @@ async function sendAndWaitForAgentMarker(
   sessionId: string,
   marker: string,
   timeoutMs = 180_000,
+  onAccepted?: (receiptId: string) => void,
+  observeTerminalFailure = false,
 ) {
   // Shared positive-send decision table:
   // S1 one official SDK send returns one exact User Event receipt -> observe only
@@ -244,12 +246,14 @@ async function sendAndWaitForAgentMarker(
   assert.equal(receipt.data?.length, 1, `one exact Event receipt for ${marker}`);
   const receiptId = receipt.data?.[0]?.id;
   assert.equal(typeof receiptId, 'string', `SDK receipt id for ${marker}`);
+  onAccepted?.(receiptId as string);
   const observation = await waitForSessionEventReceipt(
     client,
     sessionId,
     receiptId,
     BETAS,
-    ({ delta }: { delta: any[] }) => hasCompletedProviderMarker(delta, marker),
+    ({ delta }: { delta: any[] }) => hasCompletedProviderMarker(delta, marker)
+      || (observeTerminalFailure && Boolean(failedTurn(delta))),
     `Event ${marker} receipt to reach its exact Provider marker and later idle`,
     {
       timeoutMs,
@@ -263,6 +267,11 @@ async function sendAndWaitForAgentMarker(
   );
   const observedAt = performance.now();
   return { ...observation, elapsed: observedAt - started, admissionMs: acceptedAt - started, observationMs: observedAt - acceptedAt };
+}
+
+function failedTurn(events: any[]) {
+  return events.find((event) => event.type === 'session.status_idle'
+    && event.stop_reason?.type && event.stop_reason.type !== 'end_turn');
 }
 
 // Pressure qualification and retained-cluster diagnostics share this exact
@@ -790,16 +799,18 @@ async function createFleetEnvironments(client: Anthropic, concurrency: number) {
   );
 }
 
+async function createNativeTestEnvironment(base: string, client: Anthropic, id: string) {
+  const environment = await client.beta.environments.create({
+    name: id, config: { type: 'self_hosted' }, betas: BETAS,
+  });
+  await bindSandboxExecutionPolicy(base, environment.id, { id, config: {}, provisioning: 'on_tool_use' });
+  return environment.id;
+}
+
 async function createDispatchBenchmarkSessions(base: string, client: Anthropic, concurrency: number) {
   const suffix = Date.now();
-  const environments = await Promise.all(Array.from({ length: concurrency }, async (_, index) => {
-    const id = `adr71-dispatch-${suffix}-${index}`;
-    const environment = await client.beta.environments.create({
-      name: id, config: { type: 'self_hosted' }, betas: BETAS,
-    });
-    await bindSandboxExecutionPolicy(base, environment.id, { id, config: {}, provisioning: 'on_tool_use' });
-    return environment.id;
-  }));
+  const environments = await Promise.all(Array.from({ length: concurrency }, (_, index) =>
+    createNativeTestEnvironment(base, client, `adr71-dispatch-${suffix}-${index}`)));
   return createParallelSessions(client, validateFleetEnvironmentIds(environments, concurrency));
 }
 
@@ -1191,6 +1202,120 @@ async function prepareDispatchLoad(base: string) {
   await expectRawStatus(base, 'POST', `/v1/config/agents/${AGENT}/publish`, 200);
 }
 
+export async function deleteRollingSession(
+  sessionId: string,
+  remove: (sessionId: string) => Promise<unknown>,
+  onRetry: (status: number) => void,
+) {
+  // awaken-allow(wait): back off between bounded retries of the same idempotent Session DELETE.
+  for (let retries = 0; ; retries += 1) {
+    try {
+      await remove(sessionId);
+      return;
+    } catch (error) {
+      const status = (error as { status?: number })?.status;
+      // A retry may find the tombstone if the first response was lost.
+      if (retries > 0 && status === 404) return;
+      if (retries === 5 || (status !== 502 && status !== 503 && status !== 504)) throw error;
+      onRetry(status);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+}
+
+async function rollingLoad(base: string, directory: string) {
+  const client = clientFor(base);
+  const count = Number(process.env.ADR71_ROLLING_LANES ?? 8);
+  assert.ok(Number.isInteger(count) && count >= 2 && count <= 32);
+  const sessions = await createDispatchBenchmarkSessions(base, client, count);
+  const lifecycleEnvironment = await createNativeTestEnvironment(base, client, `rolling-lifecycle-${Date.now()}`);
+  const stopping = () => existsSync(`${directory}/stop`);
+  const stage = () => readFileSync(`${directory}/stage`, 'utf8').trim();
+  const record = (data: object) => appendFileSync(
+    `${directory}/traffic.jsonl`, `${JSON.stringify(data)}\n`,
+  );
+  const delay = () => new Promise((resolve) => setTimeout(resolve, 500));
+  const lanes = sessions.map(async (sessionId, index) => {
+    let turn = 0;
+    const confirmed: { receiptId: string; marker: string; failureId?: string }[] = [];
+    const send = async () => {
+      while (!stopping()) {
+        const marker = `ADR71-ROLLING-${index}-${++turn}`;
+        const phase = stage();
+        const observation = await sendAndWaitForAgentMarker(client, sessionId, marker, 120_000, (receiptId) => {
+          confirmed.push({ receiptId, marker });
+          record({ kind: 'accepted', stage: phase, sessionId, receiptId, marker });
+        }, true).catch((error) => {
+          const admitted = confirmed.at(-1);
+          if (admitted?.marker === marker) {
+            record({ kind: 'observation-failure', stage: phase, sessionId, receiptId: admitted.receiptId, marker });
+          }
+          throw error;
+        });
+        const admitted = confirmed.at(-1)!;
+        const terminal = failedTurn(observation.delta);
+        if (terminal) {
+          admitted.failureId = terminal.id;
+          record({ kind: 'terminal-error', stage: phase, sessionId, receiptId: admitted.receiptId, marker,
+            reason: terminal.stop_reason.type,
+            error: observation.delta.find((event: any) => event.type === 'session.error')?.error });
+        } else {
+          record({ kind: 'completed', stage: phase, sessionId, receiptId: admitted.receiptId });
+        }
+        // awaken-allow(wait): pace writes in this workload lane before the next offered turn.
+        await delay();
+      }
+    };
+    const [sent] = await Promise.allSettled([send()]);
+    const events = await listManagedSessionEvents(client, sessionId, BETAS);
+    for (const { receiptId } of confirmed) {
+      assert.equal(events.filter((event: any) => event.id === receiptId).length, 1,
+        `confirmed receipt ${receiptId} survives rollback exactly once`);
+    }
+    record({ kind: 'audited-receipts', sessionId, count: confirmed.length });
+    if (sent.status === 'rejected') throw sent.reason;
+    for (const { marker, failureId } of confirmed) {
+      if (failureId) {
+        assert.equal(events.filter((event: any) => event.id === failureId).length, 1,
+          `terminal outcome ${failureId} survives rollback exactly once`);
+      } else {
+        assertProviderResponseCount(events, marker);
+      }
+    }
+    record({ kind: 'audited', sessionId, count: confirmed.length });
+  });
+  const lifecycle = async () => {
+    // awaken-allow(wait): generate lifecycle traffic at a fixed pace until the rollout stops the load.
+    while (!stopping()) {
+      const phase = stage();
+      const [sessionId] = await createParallelSessions(client, [lifecycleEnvironment]);
+      assert.ok(sessionId);
+      record({ kind: 'lifecycle', stage: phase, sessionId });
+      await deleteRollingSession(sessionId,
+        (id) => client.beta.sessions.delete(id, { betas: BETAS }),
+        (status) => record({ kind: 'lifecycle-delete-retry', stage: stage(), sessionId, status }));
+      await delay();
+    }
+  };
+  const checks = [...lanes, lifecycle()].map((task) => task.catch((error) => {
+    record({ kind: 'failure', error: String(error) });
+    writeFileSync(`${directory}/stop`, '');
+    throw error;
+  }));
+  const results = await Promise.allSettled(checks);
+  const errors = results.filter((result) => result.status === 'rejected');
+  assert.deepEqual(errors, [], 'workload and durable history audit must complete');
+}
+
+async function rollingClaimProbe(base: string, directory: string, phase: string) {
+  const client = clientFor(base);
+  const [sessionId] = await createDispatchBenchmarkSessions(base, client, 1);
+  const marker = `ADR71-DISPATCH-SATURATION-hold20-rolling-${phase}`;
+  await sendAndWaitForAgentMarker(client, sessionId, marker, 90_000, (receiptId) => {
+    writeFileSync(`${directory}/claim-${phase}.json`, JSON.stringify({ sessionId, receiptId }));
+  });
+}
+
 async function main() {
   const [mode, base, ...args] = process.argv.slice(2);
   switch (mode) {
@@ -1213,6 +1338,8 @@ async function main() {
     case 'create-independent-session': return createIndependentSession(base, args[0]);
     case 'load': return load(base);
     case 'prepare-dispatch-load': return prepareDispatchLoad(base);
+    case 'rolling-load': return rollingLoad(base, args[0]);
+    case 'rolling-claim-probe': return rollingClaimProbe(base, args[0], args[1]);
     default: throw new Error(`unknown mode ${mode}`);
   }
 }

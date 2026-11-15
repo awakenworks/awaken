@@ -589,3 +589,51 @@ async fn postgres_borrowed_commit_preserves_private_binding_noop_and_delete_rece
     );
     fixture.close().await;
 }
+
+#[tokio::test]
+async fn postgres_root_lock_serialization_failure_refuses_before_writing() {
+    let Some(fixture) = Fixture::open().await else {
+        return;
+    };
+    let repository = &fixture.repository;
+    let root = create_session(
+        repository,
+        "ws_a",
+        session("borrowed-serialization", "before"),
+        Vec::new(),
+    )
+    .await;
+    let mutation = replacement(&root, "borrowed-serialization-replace");
+    let mut transaction = repository.pool.begin().await.unwrap();
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    super::super::postgres_session_root_on(&mut transaction, &root.session_id)
+        .await
+        .unwrap();
+    // Force a new PostgreSQL tuple while retaining the same logical revision
+    // so the original mutation can be retried unchanged after rollback.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE {}.managed_session SET revision = revision WHERE session_id = $1",
+        fixture.schema
+    )))
+    .bind(root.session_id.as_str())
+    .execute(&fixture.admin)
+    .await
+    .unwrap();
+    let refused =
+        PostgresManagedSessionRepository::commit_on(&mut transaction, "ws_a", mutation.clone())
+            .await
+            .unwrap_err();
+    assert!(matches!(refused, SessionRepositoryError::NotApplied(_)));
+    transaction.rollback().await.unwrap();
+    assert_eq!(repository.get(&root.session_id).await.unwrap(), root);
+    assert!(repository.pending_lifecycle().await.unwrap().is_empty());
+    assert!(matches!(
+        repository.commit("ws_a", mutation).await.unwrap(),
+        SessionMutationResult::Applied { .. }
+    ));
+    assert_eq!(repository.pending_lifecycle().await.unwrap().len(), 1);
+    fixture.close().await;
+}

@@ -15,6 +15,11 @@ IMAGE="awaken-roles:$CLUSTER"
 SANDBOX_BUILD_IMAGE="${ADR71_SANDBOX_BUILD_IMAGE:-awaken-sandbox:local}"
 NS="awaken-adr71"
 API_PORT="${ADR71_API_PORT:-38801}"
+ROLLING_LEGACY_IMAGE="${ADR71_ROLLING_LEGACY_IMAGE:-}"
+ROLLING_CANDIDATE_IMAGE="${ADR71_ROLLING_CANDIDATE_IMAGE:-}"
+ROLLING_LEGACY_WORKER_IMAGE="${ADR71_ROLLING_LEGACY_WORKER_IMAGE:-$ROLLING_LEGACY_IMAGE}"
+ROLLING_CANDIDATE_WORKER_IMAGE="${ADR71_ROLLING_CANDIDATE_WORKER_IMAGE:-$ROLLING_CANDIDATE_IMAGE}"
+ROLLING_REQUIRE_RELEASE="${ADR71_ROLLING_REQUIRE_RELEASE:-0}"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
 DRIVER="$REPO_ROOT/e2e/k3d/distributed_control_driver.ts"
 API_PF_LOG="${TMPDIR:-/tmp}/${CLUSTER}_api_pf.log"
@@ -72,6 +77,33 @@ if [ "$#" -gt 1 ]; then
 fi
 ok() { echo -e "\033[1;32m$*\033[0m"; }
 err() { echo -e "\033[1;31m$*\033[0m"; }
+
+if [[ -n "$ROLLING_LEGACY_IMAGE$ROLLING_CANDIDATE_IMAGE$ROLLING_LEGACY_WORKER_IMAGE$ROLLING_CANDIDATE_WORKER_IMAGE" ||
+      "$ROLLING_REQUIRE_RELEASE" != 0 ]]; then
+  if [[ -z "$ROLLING_LEGACY_IMAGE" || -z "$ROLLING_CANDIDATE_IMAGE" ||
+        "$ROLLING_LEGACY_IMAGE" = "$ROLLING_CANDIDATE_IMAGE" ||
+        "$ROLLING_LEGACY_WORKER_IMAGE" = "$ROLLING_CANDIDATE_WORKER_IMAGE" ||
+        -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" ||
+        ! "$ROLLING_LEGACY_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:@_-]+$ ||
+        ! "$ROLLING_CANDIDATE_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:@_-]+$ ||
+        ! "$ROLLING_LEGACY_WORKER_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:@_-]+$ ||
+        ! "$ROLLING_CANDIDATE_WORKER_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:@_-]+$ ||
+        ! "$ROLLING_REQUIRE_RELEASE" =~ ^[01]$ ]]; then
+    err "rolling upgrade requires two distinct images per role and runs separately from the benchmark"
+    exit 2
+  fi
+  : "${ADR71_ROLLING_EVIDENCE_DIR:?set an output directory for rolling upgrade evidence}"
+  source "$REPO_ROOT/e2e/k3d/distributed_rolling_upgrade.sh"
+fi
+
+rolling_config_if_enabled() {
+  if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
+    sed -e 's|^\(    control_internal_url = \)"http://control:3001"$|\1"http://rolling-observer:3001"|' \
+      -e '/^    role = "coordinator"$/a\    log_format = "json"'
+  else
+    cat
+  fi
+}
 
 wait_roles() {
   local resource
@@ -376,7 +408,12 @@ cleanup() {
   return "$cleanup_status"
 }
 
-k3d_admit_or_exit "ADR-0071 distributed E2E"
+if [[ "$ROLLING_REQUIRE_RELEASE" = 1 ]]; then
+  AWAKEN_K3D_REQUIRED=1 k3d_admit_or_exit "ADR-0071 distributed release rollout"
+  rolling_pull_release_images
+else
+  k3d_admit_or_exit "ADR-0071 distributed E2E"
+fi
 # The shared default kubectl context can move when another worktree creates a
 # cluster. Keep every unqualified fault-injection command on this run's exact
 # cluster without adding a second Kubernetes observer or changing production.
@@ -605,7 +642,7 @@ log "1/11 build production roles and the protocol-only Provider fixture"
 # Build the Sandbox before staging the four disposable role binaries inside the
 # same Docker context. Those role bytes are not Sandbox inputs; staging them
 # first invalidates BuildKit's otherwise reusable environment layers.
-if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" && -n "${ADR71_CACHED_SANDBOX_IMAGE:-}" ]]; then
+if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}$ROLLING_LEGACY_IMAGE" && -n "${ADR71_CACHED_SANDBOX_IMAGE:-}" ]]; then
   # The dispatch-only fixture uses a Native Agent without Sandbox tools.
   SANDBOX_BUILD_IMAGE=$ADR71_CACHED_SANDBOX_IMAGE
   docker image inspect "$SANDBOX_BUILD_IMAGE" >/dev/null
@@ -655,10 +692,25 @@ ok "all role artifacts execute as UID 10001 with normalized mode and unchanged b
 # Reuse the shared nested-node reserve and actual capacity admission.
 e2e_docker_init distributed-control
 cluster_images=("$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine)
+if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
+  # This scenario runs Native Sessions without Sandbox tools. Keep the launch
+  # configuration valid while importing only images exercised by the test.
+  cluster_images=("$IMAGE" postgres:16 nginx:1.27-alpine "$ROLLING_LEGACY_IMAGE" "$ROLLING_CANDIDATE_IMAGE")
+  if [[ "$ROLLING_LEGACY_WORKER_IMAGE" != "$ROLLING_LEGACY_IMAGE" ]]; then
+    cluster_images+=("$ROLLING_LEGACY_WORKER_IMAGE")
+  fi
+  if [[ "$ROLLING_CANDIDATE_WORKER_IMAGE" != "$ROLLING_CANDIDATE_IMAGE" ]]; then
+    cluster_images+=("$ROLLING_CANDIDATE_WORKER_IMAGE")
+  fi
+fi
 if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" ]]; then
   cluster_images+=(nats:2)
 fi
 k3d_ensure_images "${cluster_images[@]}"
+if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
+  rolling_image_pair coordinator "$ROLLING_LEGACY_IMAGE" "$ROLLING_CANDIDATE_IMAGE"
+  rolling_image_pair worker "$ROLLING_LEGACY_WORKER_IMAGE" "$ROLLING_CANDIDATE_WORKER_IMAGE"
+fi
 e2e_docker_create_volume "awaken.e2e.cluster=$CLUSTER"
 CONTINUATION_VOLUME="$E2E_CREATED_VOLUME"
 k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "${cluster_images[@]}"
@@ -677,7 +729,11 @@ kubectl -n kube-system patch configmap local-path-config --type=merge -p \
 # directory with `hostPath` => a relocatable PV. Select the provisioner's existing
 # type contract explicitly rather than relying on its distribution-specific default.
 kubectl annotate storageclass local-path defaultVolumeType=hostPath --overwrite >/dev/null
-k3d_import_storage_images "$CLUSTER" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
+if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
+  k3d_import_storage_images "$CLUSTER" "${cluster_images[@]}"
+else
+  k3d_import_storage_images "$CLUSTER" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
+fi
 # Cause/effect decision table: D1 one default CoreDNS replica + its node stops ->
 # replacement application Pods cannot resolve authority Services; D2 two replicas
 # + the built-in hostname spread constraint -> one node loss retains DNS; D3 fewer
@@ -761,13 +817,20 @@ images:
     newName: awaken-roles
     newTag: $CLUSTER
 YAML
+if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
+  rolling_overlay
+fi
 # The canonical Create-control Namespace is distinct from the runtime
 # Namespace. Apply its focused overlay without a namespace override before
 # the Worker/Coordinator roles, so kubectl cannot redirect or reject its CAS
 # Role while the first Sandbox Create route is coming up.
 kubectl apply -k "$DEPLOY_DIR/distributed-control/create-control" >/dev/null
 k3d_render_sandbox_image "$ROLE_OVERLAY" "$SANDBOX_IMAGE" \
+  | rolling_config_if_enabled \
   | kubectl -n "$NS" apply -f - >/dev/null
+if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
+  rolling_start_observer
+fi
 # Brokered Create/RBAC decision table: C1 the exact Pod-bound Worker has only
 # read/UID-fenced disposal; C2 the Coordinator alone creates each of six
 # protected Kinds; C3 its separate control Namespace accepts only the exact
@@ -801,6 +864,11 @@ kubectl -n "$NS" wait --for=condition=complete job/control-migrate --timeout=240
 kubectl -n "$NS" wait --for=condition=complete job/coordinator-migrate --timeout=240s
 wait_roles || { diagnostics; exit 1; }
 start_public_endpoint
+
+if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
+  rolling_upgrade
+  exit
+fi
 
 if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" ]]; then
   bash "$REPO_ROOT/e2e/k3d/dispatch_wake_benchmark.sh" "$NS" "$API_URL"
