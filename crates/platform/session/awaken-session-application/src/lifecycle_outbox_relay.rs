@@ -147,6 +147,11 @@ impl LifecycleOutboxReplay {
                         continue;
                     }
                 };
+                // Cancellation stops the drain before the next claim, never
+                // inside one: a started delivery runs to its receipt, keeping
+                // its claim alive, so shutdown joins it (ServiceLifecycle's
+                // deadline bounds that join). Abandoning it would leave the
+                // fact claimed and unacknowledged until the claim expired.
                 let delivery = self.delivery.deliver(fact);
                 tokio::pin!(delivery);
                 let mut heartbeat = tokio::time::interval(CLAIM_TTL / 3);
@@ -154,7 +159,6 @@ impl LifecycleOutboxReplay {
                 heartbeat.tick().await;
                 let result = loop {
                     tokio::select! {
-                        () = cancel.cancelled() => return,
                         result = &mut delivery => break Some(result),
                         _ = heartbeat.tick() => {
                             match self.session_outbox.renew_lifecycle_claim(&fact.id, &claim, CLAIM_TTL).await {
@@ -219,6 +223,88 @@ mod tests {
                 Err("receiver unavailable".into())
             }
         }
+    }
+
+    struct GatedReceiver {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl LifecycleFactDelivery for GatedReceiver {
+        async fn deliver(&self, _fact: &ManagedLifecycleFact) -> Result<(), String> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_a_delivery_completes_and_acknowledges_it() {
+        // Cause/effect: C1 one pending fact; C2 its delivery has started; C3
+        // cancellation arrives while it is in flight; C4 the receiver returns.
+        // E1 the drain does not return before C4; E2 after C4 the fact is
+        // acknowledged; E3 a second pending fact is not claimed after C3.
+        let rows = Arc::new(
+            SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        for id in ["first", "second"] {
+            rows.append_lifecycle(ManagedLifecycleFact {
+                id: id.into(),
+                object_id: "session".into(),
+                workspace_id: None,
+                event_type: "session.created".into(),
+                timestamp: 1,
+                runtime_interval: None,
+            })
+            .await
+            .unwrap();
+        }
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let receiver = Arc::new(GatedReceiver {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let replay = Arc::new(
+            LifecycleOutboxRelay::new(receiver, rows.clone())
+                .replay_loop(Duration::from_secs(30))
+                .unwrap(),
+        );
+        let cancel = CancellationToken::new();
+        let drain = tokio::spawn({
+            let replay = replay.clone();
+            let cancel = cancel.clone();
+            async move { replay.drain_once(&cancel).await }
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("C2 the first delivery started");
+        cancel.cancel();
+        tokio::task::yield_now().await;
+        assert!(
+            !drain.is_finished(),
+            "E1 cancellation does not abandon the delivery"
+        );
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), drain)
+            .await
+            .expect("E1 the drain returns once the receiver does")
+            .unwrap();
+        let pending: Vec<String> = rows
+            .pending_lifecycle()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|fact| fact.id)
+            .collect();
+        assert_eq!(
+            pending,
+            ["second"],
+            "E2 first acknowledged; E3 second not claimed"
+        );
     }
 
     #[tokio::test]
