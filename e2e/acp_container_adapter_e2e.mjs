@@ -293,6 +293,11 @@ async function main() {
   } finally {
     await stop(server).catch(() => {});
     await directory.close();
+    // A failed run can leave containers of this fixture image behind (for
+    // example an interrupted capability probe); remove exactly those.
+    const leftovers = spawnSync('docker', ['ps', '--all', '--quiet', '--filter', `ancestor=${IMAGE}`],
+      { encoding: 'utf8' }).stdout?.trim().split(/\s+/u).filter(Boolean) ?? [];
+    if (leftovers.length > 0) spawnSync('docker', ['rm', '--force', ...leftovers], { stdio: 'ignore' });
     spawnSync('docker', ['image', 'rm', '--force', IMAGE], { stdio: 'ignore' });
     fs.rmSync(TMP, { recursive: true, force: true });
   }
