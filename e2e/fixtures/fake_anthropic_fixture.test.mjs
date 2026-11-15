@@ -181,6 +181,36 @@ test('one fixture serves discovery, token probes and inference with the same aut
   } finally { await upstream.close(); }
 });
 
+test('a credential predicate decides per route and records every presented credential', async () => {
+  // Decision table P1-P5: route {models, messages} x credential {directory key,
+  // minted token, revoked token}. The predicate alone decides; each decision is
+  // recorded in arrival order with the exact presented credential, and a
+  // refusal never reaches inference behavior.
+  const revoked = new Set(['minted-1']);
+  const upstream = await startFakeAnthropic((presented, { pathname }) => (pathname.endsWith('/messages')
+    ? presented.startsWith('minted-') && !revoked.has(presented)
+    : presented === 'directory-key'), { models:['fixture-model'] });
+  try {
+    const cases = [
+      ['models', 'GET', 'directory-key', true], ['models', 'GET', 'minted-2', false],
+      ['messages', 'POST', 'directory-key', false], ['messages', 'POST', 'minted-1', false],
+      ['messages', 'POST', 'minted-2', true],
+    ];
+    for (const [route, method, credential, accepted] of cases) {
+      const response = await fetch(`${upstream.url}/v1/${route}`, {
+        method, headers:{ authorization:`Bearer ${credential}`, 'content-type':'application/json' },
+        ...(method === 'POST' ? { body:JSON.stringify({ model:'fixture-model', messages:[] }) } : {}),
+      });
+      assert.equal(response.status, accepted ? 200 : 401, `${route}/${credential}`);
+      await response.text();
+    }
+    assert.deepEqual(upstream.credentials, cases.map(([route, method, presented, accepted]) =>
+      ({ method, pathname:`/v1/${route}`, presented, accepted })));
+    assert.equal(upstream.unauthorized, 3);
+    assert.equal(upstream.attempts, 1, 'only the accepted inference reached behavior');
+  } finally { await upstream.close(); }
+});
+
 test('official SDK decodes the same callback tool arguments over JSON and SSE', async () => {
   // W7/W8: JSON/SSE x custom behavior -> exact tool id/arguments, including
   // Unicode and split escaped strings. W9: named behavior remains unchanged.

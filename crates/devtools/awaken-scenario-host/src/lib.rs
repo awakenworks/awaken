@@ -649,9 +649,9 @@ pub async fn build_real_router(
 }
 
 /// [`build_real_router`] whose configuration also holds one OAuth-kind
-/// credential source (#5). Its helper (`printf oauth-minted-key`) is a fixture
-/// the admin API deliberately cannot author: the API offers only server-owned
-/// helpers. The operator reuses it by id when connecting the provider, so a
+/// credential source (#5). Its helper (a fresh `oauth-minted-key-<digits>` per
+/// run) is a fixture the admin API deliberately cannot author: the API offers
+/// only server-owned helpers. The operator reuses it by id when connecting the provider, so a
 /// Run authenticates only if materialization actually ran the helper.
 /// `AWAKEN_MODEL_MODE=oauth-resolved`.
 pub async fn build_oauth_resolved_router(

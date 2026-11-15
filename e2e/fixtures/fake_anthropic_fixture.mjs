@@ -764,6 +764,9 @@ function systemLines(parsed) {
   return systemText(parsed);
 }
 
+// `apiKey` is the one credential the provider accepts, or a predicate
+// `(presented, { method, pathname }) => boolean` for a provider whose accepted
+// credentials depend on the route or change over time (a revoked token).
 // `opts`: `{ behavior, models, failuresBeforeSuccess, alwaysFail, failArrivalKind,
 // faultStatus, faultBodyMode, delayMs, firstDelayMs, listenHost }`. `models` enables the same fixture's
 // Anthropic model-directory endpoint for Provider Connection tests; the returned
@@ -804,6 +807,9 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     requests: [],
     receivedRequests: [],
     arrivals: [],
+    // Every authorization decision, in arrival order: the credential each
+    // request presented and whether the provider accepted it.
+    credentials: [],
     unauthorized: 0,
     attempts: 0,
     received: 0,
@@ -818,7 +824,11 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       const pathname = new URL(req.url, 'http://fixture.invalid').pathname;
       const presented = req.headers['x-api-key'] ?? (req.headers.authorization ?? '').replace(/^Bearer /, '');
       const authorize = () => {
-        if (presented === apiKey) return true;
+        const accepted = typeof apiKey === 'function'
+          ? apiKey(presented, { method: req.method, pathname }) === true
+          : presented === apiKey;
+        state.credentials.push({ method: req.method, pathname, presented, accepted });
+        if (accepted) return true;
         state.unauthorized += 1;
         emitError(res, 401, 'authentication_error', 'invalid x-api-key');
         return false;
@@ -947,6 +957,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
           requests: state.requests,
           receivedRequests: state.receivedRequests,
           arrivals: state.arrivals,
+          credentials: state.credentials,
           models: directory,
           get unauthorized() {
             return state.unauthorized;

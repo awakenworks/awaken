@@ -287,12 +287,14 @@ impl LlmExecutor for UnboundModel {
 /// The OAuth-kind credential source the `oauth-resolved` scenario reuses.
 const OAUTH_FIXTURE_CREDENTIAL: &str = "cred:scenario:oauth-fixture";
 
-/// Hold one OAuth-kind credential whose fixture helper mints
-/// `oauth-minted-key`, in the installed configuration's vault. The helper's
-/// output is the only key the `oauth-resolved` fake upstream accepts.
+/// Hold one OAuth-kind credential in the installed configuration's vault. Its
+/// fixture helper mints a fresh token on every invocation
+/// (`oauth-minted-key-<digits>`), so the provider can tell which helper run
+/// produced the credential a request presents, and a token the product reused
+/// is distinguishable from a newly minted one.
 pub(crate) async fn seed_oauth_fixture_credential() -> Result<(), String> {
     use awaken_credential_vault::{CredentialKind, CredentialSource, CredentialStatus};
-    const OAUTH_MINTED_KEY: &str = "oauth-minted-key"; // awaken-allow(secret):
+    const OAUTH_MINTED_KEY_PREFIX: &str = "oauth-minted-key-"; // awaken-allow(secret):
     let configuration = INSTALLED
         .get()
         .ok_or("the scenario model configuration is not installed")?;
@@ -308,19 +310,23 @@ pub(crate) async fn seed_oauth_fixture_credential() -> Result<(), String> {
         material_ref: None,
         auxiliary_material_refs: Default::default(),
         // OAuth helper portability decision table:
-        // | Windows | helper                                      | token bytes |
-        // | true    | cmd.exe /D /C echo|set /p=<token>           | exact       |
-        // | false   | printf <token>                              | exact       |
+        // | Windows | helper                                     | token bytes            |
+        // | true    | cmd.exe /D /C echo|set /p=<prefix>%RANDOM% | prefix + fresh digits  |
+        // | false   | sh -c 'printf <prefix>%s "$$"'             | prefix + helper pid    |
         // Both rules avoid a trailing newline after materialization trims stdout.
         oauth_command: Some(if cfg!(windows) {
             vec![
                 "cmd.exe".into(),
                 "/D".into(),
                 "/C".into(),
-                format!("echo|set /p={OAUTH_MINTED_KEY} & exit /b 0"),
+                format!("echo|set /p={OAUTH_MINTED_KEY_PREFIX}%RANDOM% & exit /b 0"),
             ]
         } else {
-            vec!["printf".into(), OAUTH_MINTED_KEY.into()]
+            vec![
+                "sh".into(),
+                "-c".into(),
+                format!("printf '{OAUTH_MINTED_KEY_PREFIX}%s' \"$$\""),
+            ]
         }),
         worker_local_binding: None,
         status: CredentialStatus::Active,
