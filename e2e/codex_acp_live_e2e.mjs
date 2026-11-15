@@ -29,6 +29,7 @@
 // |    |   |                     |   | restart, then signed standalone Worker |
 // | N1 | - | native-host-fixture | Y | API-selected TrustedHost Native Hand, same resource oracle |
 // | C1 | Y | container  | Y | E1 + newly observed managed container |
+// |    |   |            |   | (fixture peer: acp_container_adapter_e2e.mjs) |
 // | F1 | N | live profile | - | fail before invoking the adapter |
 // | F2 | Y | other      | - | fail before server/session work |
 // W1 cutover subrules: old embedded lease live => wait without admission;

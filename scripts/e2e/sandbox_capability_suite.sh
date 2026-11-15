@@ -132,6 +132,11 @@ if docker info >/dev/null 2>&1; then
     cargo nextest run -j 2 -p awaken-session-environment --features docker-tests \
       --lib --run-ignored only --no-tests=fail \
       -E 'test(docker_anonymous_repository_and_artifact_readback_use_one_sandbox)'
+  # The deterministic container rows of the npm-adapter ACP runtimes (Claude,
+  # Codex): production awaken + the same session image, adapter fixture on PATH.
+  run "docker:acp-container-adapter-rows" \
+    env AWAKEN_TEST_SESSION_IMAGE="$session_image" \
+    bash -c 'cd e2e && node acp_container_adapter_e2e.mjs'
 else
   skip "no reachable Docker daemon"
 fi
