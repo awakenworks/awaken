@@ -381,23 +381,25 @@
       "owner": "scripts/ci/pg_tests.sh"
     },
     {
-      "name": "quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z",
+      "name": "awaken-ci-minio:release-2024-12-18-88182336ab57",
       "locate": "container-image",
       "env_override": "AWAKEN_CI_OBJECT_IMAGE",
       "gates": ["postgres"],
       "requirement": "fetched",
-      "note": "Served from MinIO's own registry: Docker Hub answers `docker pull minio/minio` with 'pull access denied ... repository does not exist', which reads as a permission problem but means the Hub repository is gone, not that credentials are missing. An unpulled image reports the same text.",
-      "install": "docker pull quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z",
-      "owner": "scripts/ci/pg_tests.sh MINIO_IMAGE"
+      "note": "MinIO publishes no images any more (quay.io manifests gone, Docker Hub refuses the pull, dl.min.io answers 410). The gate builds this tag on first use from the pinned, sha256-verified GitHub release binary; a failed build exits 75.",
+      "install": "scripts/ci/pg_tests.sh builds it from scripts/ci/fixtures/object-store/minio.Dockerfile on first use",
+      "version": {"owner": "scripts/ci/pg_tests.sh OBJECT_SERVER_IMAGE"},
+      "owner": "scripts/ci/pg_tests.sh OBJECT_SERVER_IMAGE"
     },
     {
-      "name": "quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z",
+      "name": "awaken-ci-mc:release-2024-11-21-0312010a9d0a",
       "locate": "container-image",
       "env_override": "AWAKEN_CI_OBJECT_CLIENT_IMAGE",
       "gates": ["postgres"],
       "requirement": "fetched",
-      "install": "docker pull quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z",
-      "owner": "scripts/ci/pg_tests.sh MC_IMAGE"
+      "install": "scripts/ci/pg_tests.sh builds it from scripts/ci/fixtures/object-store/mc.Dockerfile on first use",
+      "version": {"owner": "scripts/ci/pg_tests.sh OBJECT_CLIENT_IMAGE"},
+      "owner": "scripts/ci/pg_tests.sh OBJECT_CLIENT_IMAGE"
     },
     {
       "name": "docker.io/library/rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663",

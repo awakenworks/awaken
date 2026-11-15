@@ -24,8 +24,14 @@ services:
       timeout: 3s
       retries: 20
 
+  # MinIO publishes no images any more; these build the same pinned,
+  # sha256-verified release binaries scripts/ci/pg_tests.sh uses, under its tags.
   minio:
-    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
+    image: awaken-ci-minio:release-2024-12-18-88182336ab57
+    build:
+      context: ../../../scripts/ci/fixtures/object-store
+      dockerfile: minio.Dockerfile
+      network: host
     command: server /data --address ":9000"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -33,14 +39,18 @@ services:
     ports:
       - "9000:9000"
     healthcheck:
-      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/minio/health/ready || exit 1"]
       interval: 2s
       timeout: 3s
       retries: 20
 
   # One-shot: create the bucket the s3 tests write into (object_store cannot make one).
   createbucket:
-    image: quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z
+    image: awaken-ci-mc:release-2024-11-21-0312010a9d0a
+    build:
+      context: ../../../scripts/ci/fixtures/object-store
+      dockerfile: mc.Dockerfile
+      network: host
     depends_on:
       minio:
         condition: service_healthy

@@ -44,7 +44,9 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[2]
 TABLE = "scripts/ci/service_suites.toml"
 INPUT_GLOBS = ("crates/**/Cargo.toml", "fuzz/Cargo.toml", "scripts/ci/service_suites.toml", "scripts/ci/*.py", "scripts/ci/*.sh",
-               "scripts/ci/pre-commit/*.sh", "scripts/ci/pre-push/*.sh")
+               "scripts/ci/pre-commit/*.sh", "scripts/ci/pre-push/*.sh",
+               # pg_tests.sh checks its object-store image tags against these recipes.
+               "scripts/ci/fixtures/object-store/*.Dockerfile")
 GROUPS = {"postgres": ("pg_tests.sh", ("pg_required_test", "pg_test")),
           "reliability": ("check-reliability.sh", ("run_required_rust_tests",))}
 CALLERS = ("check-all.sh",)
@@ -267,12 +269,13 @@ VOLATILE = ((re.compile(r"\S*/rust-execution\.\w{6}"), "<evidence>"), (re.compil
 
 
 def _outside_inputs(directory: str, names: list[str]) -> set[str]:
-    """copytree filter: keep the scripts/ci files INPUT_GLOBS covers (and the hook subdirectories)."""
+    """copytree filter: keep the scripts/ci files INPUT_GLOBS covers (and the directories holding them)."""
     here = Path(directory)
-    keep = {"pre-commit", "pre-push"} if here.name == "ci" else set()
+    keep = {"ci": {"pre-commit", "pre-push", "fixtures"}, "fixtures": {"object-store"}}.get(here.name, set())
     return {name for name in names if name not in keep
             and not (here.name in ("ci", "pre-commit", "pre-push") and (name.endswith((".py", ".sh"))
-                     or (here.name == "ci" and name == "service_suites.toml")))}
+                     or (here.name == "ci" and name == "service_suites.toml")))
+            and not (here.name == "object-store" and name.endswith(".Dockerfile"))}
 
 
 def trace(source: Path, group: str, arguments: list[str]) -> tuple[int, list[tuple[str, str, str]]]:

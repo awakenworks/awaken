@@ -853,15 +853,55 @@ export AWAKEN_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/$
 export AWAKEN_TEST_REQUIRE_POSTGRES=1
 echo "-> AWAKEN_TEST_DATABASE_URL configured for ephemeral Postgres :$PORT"
 
-# Exact, reviewed tags, served from MinIO's own registry. Docker Hub answers
-# `docker pull minio/minio` with "pull access denied ... repository does not
-# exist", which reads as a credentials problem but is not one: upstream publishes
-# to quay.io, and the Hub repository is gone. A runner that cannot reach quay.io
-# may point these at a mirror holding the same digests; the tag stays exact
-# either way, because a floating tag would let the object substrate change under
-# the recovery drill.
-MINIO_IMAGE="${AWAKEN_CI_OBJECT_IMAGE:-quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z}"
-MC_IMAGE="${AWAKEN_CI_OBJECT_CLIENT_IMAGE:-quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z}"
+# Exact, reviewed object-store images. MinIO stopped publishing images: the
+# quay.io/minio manifests are gone, Docker Hub refuses the pull ("pull access
+# denied", which reads as a credentials problem but is not one) and dl.min.io
+# answers 410. Each image is therefore built here, once per host, from
+# scripts/ci/fixtures/object-store/<component>.Dockerfile: the pinned upstream
+# release binary from its GitHub release, verified by sha256, on a
+# digest-pinned Alpine. The tag names the release and the first 12 hex digits
+# of the amd64 pin, and object_image refuses (exit 2) a tag the recipe does not
+# pin, so the two cannot drift. A floating tag would let the object substrate
+# change under the recovery drill. AWAKEN_CI_OBJECT_IMAGE and
+# AWAKEN_CI_OBJECT_CLIENT_IMAGE select a mirror of the same release instead.
+readonly OBJECT_SERVER_IMAGE="awaken-ci-minio:release-2024-12-18-88182336ab57"
+readonly OBJECT_CLIENT_IMAGE="awaken-ci-mc:release-2024-11-21-0312010a9d0a"
+PG_IMAGE_BUILD_TIMEOUT_SECONDS="${AWAKEN_PG_IMAGE_BUILD_TIMEOUT_SECONDS:-600}"
+
+# object_image <component> <tag>: make the pinned image present locally.
+# Decision table: T1 the tag disagrees with the recipe's RELEASE or amd64 pin
+# => exit 2 (a repository defect, never a host refusal); T2 the image is present
+# => use it; T3 absent => build it (host network: the build fetches from
+# GitHub, and container DNS is not the host's); T4 the build fails (registry,
+# network, deadline) => substrate unavailable, exit 75.
+object_image() {
+  local component="$1" tag="$2" recipe release pin expected
+  recipe="scripts/ci/fixtures/object-store/$component.Dockerfile"
+  release="$(sed -n 's/^ARG RELEASE=//p' "$recipe")"
+  pin="$(sed -n 's/^ARG SHA256_amd64=//p' "$recipe")"
+  # RELEASE.2024-12-18T13-15-44Z + 88182336ab57... => release-2024-12-18-88182336ab57
+  expected="awaken-ci-$component:release-$(printf '%s' "${release#RELEASE.}" | cut -c1-10)-$(printf '%s' "$pin" | cut -c1-12)"
+  if [ -z "$release" ] || [ -z "$pin" ] || [ "$tag" != "$expected" ]; then
+    echo "✗ $tag does not name the release and amd64 pin of $recipe (expected $expected)" >&2
+    exit 2
+  fi
+  if pg_run_with_deadline "object-image-$component" "$PG_OPERATION_TIMEOUT_SECONDS" \
+    docker image inspect "$tag" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "-> building $tag from $recipe (pinned $release binary, sha256-verified)"
+  pg_run_with_deadline "object-image-build-$component" "$PG_IMAGE_BUILD_TIMEOUT_SECONDS" \
+    docker build --quiet --network host --tag "$tag" --file "$recipe" \
+    scripts/ci/fixtures/object-store >/dev/null \
+    || substrate_unavailable "✗ could not build $tag from $recipe" \
+      "  the build downloads $release from github.com/minio/$component releases; check that" \
+      "  host's reachability, or set AWAKEN_CI_OBJECT_IMAGE / AWAKEN_CI_OBJECT_CLIENT_IMAGE to a mirror"
+}
+
+MINIO_IMAGE="${AWAKEN_CI_OBJECT_IMAGE:-$OBJECT_SERVER_IMAGE}"
+MC_IMAGE="${AWAKEN_CI_OBJECT_CLIENT_IMAGE:-$OBJECT_CLIENT_IMAGE}"
+[ -n "${AWAKEN_CI_OBJECT_IMAGE:-}" ] || object_image minio "$MINIO_IMAGE"
+[ -n "${AWAKEN_CI_OBJECT_CLIENT_IMAGE:-}" ] || object_image mc "$MC_IMAGE"
 export FILE_STORE_ACCESS_KEY="awaken-file-store" # awaken-allow(secret): (throwaway fixture identity)
 FILE_STORE_INITIAL_SECRET_KEY="awaken-file-store-initial" # awaken-allow(secret): (throwaway fixture)
 export FILE_STORE_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow(secret):

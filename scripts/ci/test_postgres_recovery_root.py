@@ -131,8 +131,14 @@ if args[:2] == ["image", "inspect"]:
     # decisively: a probe that neither confirms nor denies the image is
     # undecidable, and an undecidable probe now refuses the gate outright --
     # correctly, but it would refuse before these startup phases could run.
+    # The object-image modes make the pinned object-store images absent.
+    if mode.startswith("object-image") and any(a.startswith("awaken-ci-") for a in args):
+        print("Error: No such image: " + args[-1], file=sys.stderr)
+        sys.exit(1)
     print("[]")
     sys.exit(0)
+if args[0] == "build":
+    sys.exit(0 if mode == "object-image-build" else 9)
 if args[0] == "run":
     name = args[args.index("--name") + 1]
     owner = next(arg.removeprefix("io.awaken.ci.postgres-run=")
@@ -144,7 +150,7 @@ if args[0] == "run":
         state["volumes"]["data-" + identifier] = {"container": identifier, "anonymous": True}
     state_path.write_text(json.dumps(state))
     if mount is None:
-        sys.exit(73 if mode == "object-create" else 0)
+        sys.exit(73 if mode in ("object-create", "object-image-build") else 0)
     base = Path(mount.removesuffix(":/recovery-base"))
     if report := os.environ.get("AWAKEN_TEST_ALLOCATION"):
         Path(report).write_text(json.dumps({
@@ -156,7 +162,7 @@ if args[0] == "port":
     print("invalid" if mode == "port" else "127.0.0.1:49152")
     sys.exit(0)
 if args[0] == "exec":
-    sys.exit(0 if mode == "object-create" else 1)
+    sys.exit(0 if mode == "object-create" or mode.startswith("object-image") else 1)
 if args[0] in ("inspect", "logs"):
     print("fixture " + args[0])
     sys.exit(79 if mode == "create" else 0)
@@ -270,7 +276,9 @@ class RecoveryRootTests(unittest.TestCase):
             for mode, phase, status in (("create", "postgres-create", 73),
                                         ("port", "postgres-port", 0),
                                         ("ready", "postgres-ready", 1),
-                                        ("object-create", "object-create", 73)):
+                                        ("object-create", "object-create", 73),
+                                        ("object-image-build", "object-create", 73),
+                                        ("object-image-fail", "object-image-build-minio", 9)):
                 with self.subTest(mode=mode):
                     calls.unlink(missing_ok=True)
                     state_path.write_text(json.dumps(foreign))
@@ -305,7 +313,25 @@ class RecoveryRootTests(unittest.TestCase):
                     for verb in ("inspect", "logs"):
                         diagnosed = {c[-1] for c in commands if c[0] == verb}
                         self.assertEqual(diagnosed, created, "P13-P16 exact attempted containers")
-                    if mode == "object-create":
+                    builds = [c for c in commands if c[0] == "build"]
+                    if mode.startswith("object-image"):
+                        # P19 an absent pinned image is built from its recipe on the
+                        # host network; a failed build is the host's (75), not a lane's.
+                        expected = [("awaken-ci-minio:release-2024-12-18-88182336ab57",
+                                     "scripts/ci/fixtures/object-store/minio.Dockerfile"),
+                                    ("awaken-ci-mc:release-2024-11-21-0312010a9d0a",
+                                     "scripts/ci/fixtures/object-store/mc.Dockerfile")]
+                        # A failed server build stops before the client is built.
+                        expected = expected[:1] if mode == "object-image-fail" else expected
+                        self.assertEqual([(c[c.index("--tag") + 1], c[c.index("--file") + 1])
+                                          for c in builds], expected, "P19 builds")
+                        self.assertTrue(all(c[c.index("--network") + 1] == "host" for c in builds))
+                        if mode == "object-image-fail":
+                            self.assertIn("could not build awaken-ci-minio", result.stderr)
+                            self.assertEqual(len(creations), 1, "P19 no object store without its image")
+                    else:
+                        self.assertEqual(builds, [], "a present pinned image is not rebuilt")
+                    if mode in ("object-create", "object-image-build"):
                         self.assertEqual(len(creations), 2, "P16 PG then MinIO")
                         self.assertEqual(creations[1][creations[1].index("--tmpfs") + 1],
                                          "/data:rw,nosuid,nodev,noexec,size=4g", "P16/E5")

@@ -247,7 +247,7 @@ commit-checks:
                 #    suite without one fails here, in seconds, not an hour into the group.
                 - name: service-suite-map
                   # >>> generated glob from service_test_plan.py INPUT_GLOBS — do not edit
-                  glob: "{crates/**/Cargo.toml,fuzz/Cargo.toml,scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/pre-commit/*.sh,scripts/ci/pre-push/*.sh,scripts/ci/service_suites.toml}"
+                  glob: "{crates/**/Cargo.toml,fuzz/Cargo.toml,scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/fixtures/object-store/*.Dockerfile,scripts/ci/pre-commit/*.sh,scripts/ci/pre-push/*.sh,scripts/ci/service_suites.toml}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label service-suite-map --timeout 600 --read-only --shell 'python3 scripts/ci/service_test_plan.py --self-test' --
