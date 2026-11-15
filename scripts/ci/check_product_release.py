@@ -71,7 +71,7 @@ def validate(
     failures: list[str] = []
 
     # Cause/effect graph: one protected semver tag + passing quality gate ->
-    # four canonical archives + Sandbox image + Management image -> attestations
+    # four canonical archives + Management, Sandbox, and both runtime images -> attestations
     # -> one GitHub Release. Any missing edge, mutable action, competing workflow,
     # or container launcher drift blocks publication.
     # Decision table: R1 complete single graph -> accept; R2 missing artifact/job
@@ -88,9 +88,10 @@ def validate(
         "binary_packages:",
         "sandbox_image:",
         "management_image:",
+        "runtime_image:",
         "github_release:",
         "needs: quality",
-        "needs: [binary_packages, sandbox_image, management_image]",
+        "needs: [binary_packages, sandbox_image, management_image, runtime_image]",
         "python3 scripts/release/package.py --target",
         "scripts/e2e/management_image_e2e.sh",
         "MANAGEMENT_IMAGE_REPOSITORY: ghcr.io/awakenworks/awaken",
@@ -105,6 +106,27 @@ def validate(
     for marker in required_workflow + TARGETS:
         if marker not in workflow:
             failures.append(f"release workflow missing {marker!r}")
+    try:
+        runtime = job_block(workflow, "runtime_image")
+        for marker in (
+            "    needs: quality",
+            "    if: github.repository == 'awakenworks/awaken' && github.ref_protected == true",
+            "          - role: coordinator\n            package: awaken-coordinator-process",
+            "          - role: worker\n            package: awaken-worker",
+            'cargo build --locked --release --features container-k8s --package "$PACKAGE" --bin "awaken-$ROLE"',
+            'bash scripts/release/publish_runtime_image.sh "$ROLE"',
+            "          subject-digest: ${{ steps.runtime.outputs.digest }}",
+            "          name: runtime-image-${{ matrix.role }}",
+        ):
+            if marker not in runtime:
+                failures.append(f"runtime image release missing {marker!r}")
+        release = job_block(workflow, "github_release")
+        for marker in ("pattern: runtime-image-*", "test -s dist/coordinator-image.json",
+                       "test -s dist/worker-image.json"):
+            if marker not in release:
+                failures.append(f"GitHub Release missing runtime evidence {marker!r}")
+    except ValueError as error:
+        failures.append(str(error))
     for line in workflow.splitlines():
         stripped = line.strip()
         if stripped.startswith("uses:"):
@@ -377,6 +399,117 @@ else:
 
 
 class ProductReleaseCheckerTests(unittest.TestCase):
+    def test_runtime_publisher_verifies_the_exact_digest_before_promotion(self) -> None:
+        script = REPOSITORY / "scripts/release/publish_runtime_image.sh"
+        source = "https://github.com/awakenworks/awaken"
+        revision = "a" * 40
+        digest = "sha256:" + "b" * 64
+        adapter = python_script_header(sys.executable) + r'''
+import hashlib, json, os, pathlib, sys
+sys.stdout.reconfigure(newline="\n")
+tool, args = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
+root, role, fault = pathlib.Path.cwd(), os.environ["ROLE"], os.environ["FAULT"]
+ref = f"ghcr.io/awakenworks/awaken-{role}@" + os.environ["DIGEST"]
+with (root / "calls").open("a") as out:
+    print(json.dumps([tool, *args]), file=out)
+if tool == "git":
+    print(os.environ["GITHUB_SHA"])
+elif tool == "cosign":
+    assert args[-1] == ref
+    if args[0] == "verify":
+        assert args[args.index("--certificate-github-workflow-sha") + 1] == os.environ["GITHUB_SHA"]
+    if fault == "signature":
+        raise SystemExit("signature invalid")
+elif args[:3] == ["buildx", "imagetools", "inspect"]:
+    if fault == "denied":
+        raise SystemExit("403 forbidden: manifest unknown")
+    if fault == "missing-blob":
+        raise SystemExit("image config blob: not found")
+    if not (root / "promoted").exists():
+        raise SystemExit("manifest unknown")
+    print("Digest: " + os.environ["DIGEST"])
+elif args[:3] == ["buildx", "imagetools", "create"]:
+    assert args[-1] == ref
+    (root / "promoted").touch()
+elif args[0] == "push":
+    print("fixture: digest: " + os.environ["DIGEST"] + " size: 1")
+elif args[:2] == ["image", "inspect"]:
+    assert args[-1] == ref
+    field = args[3]
+    if ".Config.User" in field:
+        print("linux/amd64 10001")
+    elif ".Config.Entrypoint" in field:
+        print(f"/usr/local/bin/awaken-{role}")
+    else:
+        key = field.split('"')[1].rsplit(".", 1)[-1]
+        print({"source": os.environ["SOURCE_REPOSITORY"], "revision": os.environ["GITHUB_SHA"],
+               "version": os.environ["GITHUB_REF_NAME"]}[key] if fault != key else "wrong")
+elif args[0] == "run":
+    assert ref in args
+    if "sha256sum" in args:
+        print(hashlib.sha256(b"wrong" if fault == "payload" else b"binary").hexdigest(), args[-1])
+elif args[0] == "pull":
+    assert args[-1] == ref
+else:
+    assert args[0] == "build", args
+'''
+        cases = (("coordinator", "new"), ("worker", "new"), ("worker", "reuse"),
+                 ("worker", "denied"), ("worker", "revision"), ("worker", "payload"),
+                 ("worker", "signature"), ("worker", "unprotected"), ("worker", "missing-blob"))
+        for role, fault in cases:
+            with self.subTest(role=role, fault=fault), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                target = root / "target/release"
+                target.mkdir(parents=True)
+                (target / f"awaken-{role}").write_bytes(b"binary")
+                for tool in ("git", "docker", "cosign"):
+                    path = root / tool
+                    path.write_text(adapter, encoding="utf-8", newline="\n")
+                    path.chmod(0o755)
+                setup = root / "setup"
+                setup.write_text('export PATH="$(cd -- "$RUNNER_TEMP" && pwd -P):$PATH"\n',
+                                 encoding="utf-8", newline="\n")
+                if fault == "reuse":
+                    (root / "promoted").touch()
+                env = dict(os.environ, BASH_ENV=setup.as_posix(), ROLE=role, FAULT=fault, DIGEST=digest,
+                           RUNNER_TEMP=root.as_posix(), SOURCE_REPOSITORY=source,
+                           GITHUB_REPOSITORY="awakenworks/awaken", GITHUB_REPOSITORY_OWNER="awakenworks",
+                           GITHUB_EVENT_NAME="push", GITHUB_REF_TYPE="tag", GITHUB_REF="refs/tags/v1.2.3",
+                           GITHUB_REF_PROTECTED="false" if fault == "unprotected" else "true",
+                           GITHUB_REF_NAME="v1.2.3", GITHUB_SHA=revision, GITHUB_RUN_ID="1",
+                           GITHUB_RUN_ATTEMPT="1", GITHUB_OUTPUT=(root / "outputs").as_posix(),
+                           WORKFLOW_PATH=".github/workflows/release.yml",
+                           SIGSTORE_OIDC_ISSUER="https://token.actions.githubusercontent.com")
+                result = subprocess.run([bash_executable(), script.as_posix(), role], cwd=root, env=env,
+                                        capture_output=True, text=True, timeout=30)
+                calls_path = root / "calls"
+                calls = [json.loads(line) for line in calls_path.read_text().splitlines()] if calls_path.exists() else []
+                promotion = next((i for i, call in enumerate(calls)
+                                  if call[:4] == ["docker", "buildx", "imagetools", "create"]), None)
+                output = root / f"{role}-image.json"
+                if fault not in ("new", "reuse"):
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIsNone(promotion, calls)
+                    self.assertFalse(output.exists())
+                    if fault in ("denied", "unprotected", "missing-blob"):
+                        self.assertFalse(any(call[:2] == ["docker", "build"] for call in calls))
+                    continue
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(json.loads(output.read_text()), {
+                    "role": role, "platform": "linux/amd64",
+                    "image": f"ghcr.io/awakenworks/awaken-{role}@{digest}",
+                    "revision": revision, "version": "v1.2.3",
+                })
+                verified = next(i for i, call in enumerate(calls) if call[:2] == ["cosign", "verify"])
+                if fault == "reuse":
+                    self.assertIsNone(promotion, calls)
+                    self.assertFalse(any(call[:2] == ["docker", "push"] for call in calls))
+                else:
+                    self.assertIsNotNone(promotion, calls)
+                    self.assertLess(verified, promotion)
+                smoke = ["database", "migrate", "--help"] if role == "coordinator" else ["--version"]
+                self.assertTrue(any(call[:2] == ["docker", "run"] and call[-len(smoke):] == smoke for call in calls))
+
     def test_actual_management_workflow_checks_the_promoted_digest(self) -> None:
         # Causes: new/reused image; payload at the eventual digest equal/different;
         # pull, E2E, signature success/failure; valid/malformed digest.

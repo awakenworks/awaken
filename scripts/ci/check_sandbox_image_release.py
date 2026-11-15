@@ -49,11 +49,14 @@ SIGNATURE_CREATE_BLOCK = """            case "$SIGNATURE_STATE" in
 """
 PINNED_ACTION_RE = re.compile(r"uses:\s+\S+@[0-9a-f]{40}(?:\s+#.*)?")
 CANONICAL_WORKFLOW = ".github/workflows/release.yml"
-EXPECTED_REGISTRY_WRITE_OWNERS = {CANONICAL_WORKFLOW}
-EXPECTED_CANONICAL_WRITE_COUNTS = {
-    "registry-write workflow permission": 2,
-    "Docker registry write": 4,
-    "OCI publisher command": 3,
+RUNTIME_PUBLISHER = "scripts/release/publish_runtime_image.sh"
+EXPECTED_REGISTRY_WRITE_COUNTS = {
+    CANONICAL_WORKFLOW: {
+        "registry-write workflow permission": 3,
+        "Docker registry write": 4,
+        "OCI publisher command": 3,
+    },
+    RUNTIME_PUBLISHER: {"Docker registry write": 2, "OCI publisher command": 1},
 }
 REGISTRY_WRITE_PATTERNS = (
     (
@@ -425,23 +428,22 @@ def validate(
             "project the one release-label array"
         )
 
-    registry_write_owners: dict[str, tuple[str, ...]] = {}
+    registry_write_owners: dict[str, dict[str, int]] = {}
     for path, source in repository_sources.items():
-        capabilities = _registry_write_capabilities(source)
+        capabilities = _registry_write_capability_counts(source)
         if capabilities:
             registry_write_owners[path] = capabilities
-    if set(registry_write_owners) != EXPECTED_REGISTRY_WRITE_OWNERS:
+    if set(registry_write_owners) != set(EXPECTED_REGISTRY_WRITE_COUNTS):
         failures.append(
             "Awaken Sandbox registry-write owner inventory drifted: expected "
-            f"{sorted(EXPECTED_REGISTRY_WRITE_OWNERS)}, got "
+            f"{sorted(EXPECTED_REGISTRY_WRITE_COUNTS)}, got "
             f"{sorted(registry_write_owners)}"
         )
-    canonical_write_counts = _registry_write_capability_counts(product_workflow)
-    if canonical_write_counts != EXPECTED_CANONICAL_WRITE_COUNTS:
-        failures.append(
-            f"{CANONICAL_WORKFLOW}: expected exact registry write primitives "
-            f"{EXPECTED_CANONICAL_WRITE_COUNTS}, got {canonical_write_counts}"
-        )
+    registry_write_owners[CANONICAL_WORKFLOW] = _registry_write_capability_counts(product_workflow)
+    for path, expected in EXPECTED_REGISTRY_WRITE_COUNTS.items():
+        actual = registry_write_owners.get(path, {})
+        if actual != expected:
+            failures.append(f"{path}: expected exact registry write primitives {expected}, got {actual}")
 
     resolver = repository_sources.get(RESOLVER)
     resolver_required = (
@@ -465,10 +467,6 @@ def validate(
         if "|not found" in resolver:
             failures.append(f"{RESOLVER}: generic not-found errors must fail closed")
     return failures
-
-
-def _registry_write_capabilities(source: str) -> tuple[str, ...]:
-    return tuple(_registry_write_capability_counts(source))
 
 
 @functools.lru_cache(maxsize=None)
