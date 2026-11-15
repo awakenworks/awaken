@@ -583,7 +583,11 @@ pub struct CredentialRealizationRecordError(pub String);
 pub struct AttemptCredentialRealization {
     bindings: std::sync::Arc<[AttemptCredentialBinding]>,
     deliveries: std::sync::Arc<[AttemptCredentialDelivery]>,
-    refresh: Option<std::sync::Arc<dyn AttemptCredentialDeliverySource>>,
+    grants: Option<std::sync::Arc<dyn crate::ClaimCredentialGrants>>,
+    /// Whether Provider deliveries are re-issued through `grants`. Only a
+    /// claim whose Coordinator delivered every frozen binding has a delivery
+    /// authority to ask; other claims keep their published carrier.
+    redeliver_provider: bool,
     recorder: std::sync::Arc<dyn CredentialRealizationRecorder>,
 }
 
@@ -596,7 +600,8 @@ impl AttemptCredentialRealization {
         Self {
             bindings: bindings.into(),
             deliveries: std::sync::Arc::from([]),
-            refresh: None,
+            grants: None,
+            redeliver_provider: false,
             recorder,
         }
     }
@@ -627,18 +632,31 @@ impl AttemptCredentialRealization {
         Ok(Self {
             bindings: bindings.into(),
             deliveries: deliveries.into(),
-            refresh: None,
+            grants: None,
+            redeliver_provider: false,
             recorder,
         })
     }
 
+    /// Attach the claim-bound grant port of a registered Worker. A brokered
+    /// candidate obtains its grants through it; with `redeliver_provider`,
+    /// every Provider delivery is also re-issued under the current claim.
     #[must_use]
-    pub fn with_delivery_refresh(
+    pub fn with_claim_grants(
         mut self,
-        refresh: std::sync::Arc<dyn AttemptCredentialDeliverySource>,
+        grants: std::sync::Arc<dyn crate::ClaimCredentialGrants>,
+        redeliver_provider: bool,
     ) -> Self {
-        self.refresh = Some(refresh);
+        self.grants = Some(grants);
+        self.redeliver_provider = redeliver_provider;
         self
+    }
+
+    /// The claim-bound grant port, when this attempt runs under a registered
+    /// Worker's claim.
+    #[must_use]
+    pub fn claim_grants(&self) -> Option<&std::sync::Arc<dyn crate::ClaimCredentialGrants>> {
+        self.grants.as_ref()
     }
 
     #[must_use]
@@ -671,9 +689,8 @@ impl AttemptCredentialRealization {
             .iter()
             .find(|binding| binding.candidate_fingerprint == fingerprint)
             .ok_or(AttemptCredentialDeliveryError::BindingMismatch)?;
-        if let Some(refresh) = &self.refresh {
-            let Some((candidate_access, material_binding)) =
-                candidate_credential_material_binding(candidate)
+        if let Some(grants) = self.grants.as_ref().filter(|_| self.redeliver_provider) {
+            let Some((candidate_access, _)) = candidate_credential_material_binding(candidate)
             else {
                 return Err(AttemptCredentialDeliveryError::BindingMismatch);
             };
@@ -682,18 +699,21 @@ impl AttemptCredentialRealization {
             {
                 return Err(AttemptCredentialDeliveryError::BindingMismatch);
             }
-            let delivery = refresh
-                .deliver(AttemptCredentialDeliveryRequest {
+            // The Worker names only the frozen candidate. The Coordinator
+            // compiles the exact delivery request from what it persisted.
+            let material = grants
+                .grant(crate::ClaimCredentialGrant::ProviderCredential {
                     candidate_fingerprint: fingerprint,
-                    published_access: published_access.clone(),
-                    selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
-                    binding: material_binding,
-                    expected_provider: candidate_provider_expectation(candidate)
-                        .map_err(|_| AttemptCredentialDeliveryError::BindingMismatch)?,
-                    claim_epoch: binding.claim_epoch,
                 })
                 .await
                 .map_err(AttemptCredentialDeliveryError::Refresh)?;
+            let Some(crate::ClaimCredentialGrantMaterial::ProviderCredential(delivery)) = material
+            else {
+                return Err(AttemptCredentialDeliveryError::Refresh(match material {
+                    None => "dispatch claim was superseded during credential delivery".into(),
+                    Some(_) => "credential grant answered with another grant kind".into(),
+                }));
+            };
             verify_attempt_credential_delivery(binding, published_access, &delivery)?;
             return Ok(Some(delivery.access));
         }
@@ -880,12 +900,15 @@ mod tests {
     async fn attempt_delivery_is_exact_epoch_bound_and_authority_preserving() {
         // Delivery decision table: C1 candidate/binding/epoch exact; C2 access
         // changes only envelope; C3 duplicate, foreign epoch or changed policy.
-        // C4 a claim-bound refresh returns another exact carrier; C5 it fails or
-        // changes the epoch; C6 the selected Provider has one versioned route.
-        // R1 C1+C2 => select fresh access. R2 C3(any) =>
-        // reject construction or lookup. R3 C1+C4 => use the refreshed carrier;
-        // R4 C5 => fail before materialization; R5 C6 => send exact Provider and
-        // endpoint coordinates alongside the one-way material fingerprint.
+        // C4 a claim-bound grant returns another exact carrier; C5 it fails,
+        // reports the claim superseded, answers another kind or changes the
+        // epoch; C6 a grant is requested. R1 C1+C2 => select fresh access.
+        // R2 C3(any) => reject construction or lookup. R3 C1+C4 => use the
+        // granted carrier; R4 C5 => fail before materialization; R5 C6 => the
+        // Worker names only the candidate fingerprint (the Coordinator compiles
+        // the exact Provider route and holder from what it froze). R6 a grant
+        // port attached only for brokered grants never re-delivers Provider
+        // material: the claim's own carrier is used.
         // This keeps ephemeral transport
         // outside publication identity without allowing it to widen authority.
         struct Recorder;
@@ -898,24 +921,30 @@ mod tests {
                 Ok(())
             }
         }
-        struct Refresh(Result<AttemptCredentialDelivery, String>);
+        struct Refresh(Result<Option<crate::ClaimCredentialGrantMaterial>, String>);
         #[async_trait]
-        impl AttemptCredentialDeliverySource for Refresh {
-            async fn deliver(
+        impl crate::ClaimCredentialGrants for Refresh {
+            async fn grant(
                 &self,
-                request: AttemptCredentialDeliveryRequest,
-            ) -> Result<AttemptCredentialDelivery, String> {
-                assert_eq!(
-                    request.expected_provider.as_ref().map(|value| (
-                        value.provider_id.as_str(),
-                        value.protocol_endpoint_id.as_deref(),
-                    )),
-                    Some(("deepseek", Some("deepseek.open_ai_chat"))),
+                grant: crate::ClaimCredentialGrant,
+            ) -> Result<Option<crate::ClaimCredentialGrantMaterial>, String> {
+                // R5: the Worker names only the frozen candidate; holder,
+                // binding and Provider route are compiled by the Coordinator.
+                assert!(
+                    matches!(
+                        grant,
+                        crate::ClaimCredentialGrant::ProviderCredential { .. }
+                    ),
                     "R5/E5"
                 );
                 self.0.clone()
             }
         }
+        let delivered = |delivery: AttemptCredentialDelivery| {
+            Ok(Some(
+                crate::ClaimCredentialGrantMaterial::ProviderCredential(Box::new(delivery)),
+            ))
+        };
         let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
         let published = CredentialAccess::new(
             CredentialRef {
@@ -1017,7 +1046,7 @@ mod tests {
             std::sync::Arc::new(Recorder),
         )
         .expect("R3")
-        .with_delivery_refresh(std::sync::Arc::new(Refresh(Ok(newer.clone()))));
+        .with_claim_grants(std::sync::Arc::new(Refresh(delivered(newer.clone()))), true);
         assert_eq!(
             refreshed
                 .delivered_access_for(&candidate, &published)
@@ -1032,11 +1061,53 @@ mod tests {
             std::sync::Arc::new(Recorder),
         )
         .expect("R4")
-        .with_delivery_refresh(std::sync::Arc::new(Refresh(Err("unavailable".into()))));
+        .with_claim_grants(
+            std::sync::Arc::new(Refresh(Err("unavailable".into()))),
+            true,
+        );
         assert!(matches!(
             failed.delivered_access_for(&candidate, &published).await,
             Err(AttemptCredentialDeliveryError::Refresh(_))
         ));
+        let brokered_only = AttemptCredentialRealization::new_with_deliveries(
+            bindings.clone(),
+            vec![delivery.clone()],
+            std::sync::Arc::new(Recorder),
+        )
+        .expect("R6")
+        .with_claim_grants(std::sync::Arc::new(Refresh(Err("not asked".into()))), false);
+        assert_eq!(
+            brokered_only
+                .delivered_access_for(&candidate, &published)
+                .await
+                .expect("R6"),
+            Some(fresh.clone()),
+            "R6 a grant port without Provider re-delivery keeps the claim carrier"
+        );
+        for (rule, answer) in [
+            ("R4 superseded", Ok(None)),
+            (
+                "R4 other kind",
+                Ok(Some(
+                    crate::ClaimCredentialGrantMaterial::BrokeredModelClosed,
+                )),
+            ),
+        ] {
+            let lost = AttemptCredentialRealization::new_with_deliveries(
+                bindings.clone(),
+                vec![delivery.clone()],
+                std::sync::Arc::new(Recorder),
+            )
+            .expect("R4")
+            .with_claim_grants(std::sync::Arc::new(Refresh(answer)), true);
+            assert!(
+                matches!(
+                    lost.delivered_access_for(&candidate, &published).await,
+                    Err(AttemptCredentialDeliveryError::Refresh(_))
+                ),
+                "{rule}"
+            );
+        }
         newer.claim_epoch += 1;
         let stale = AttemptCredentialRealization::new_with_deliveries(
             bindings.clone(),
@@ -1044,7 +1115,7 @@ mod tests {
             std::sync::Arc::new(Recorder),
         )
         .expect("R4")
-        .with_delivery_refresh(std::sync::Arc::new(Refresh(Ok(newer))));
+        .with_claim_grants(std::sync::Arc::new(Refresh(delivered(newer))), true);
         assert_eq!(
             stale.delivered_access_for(&candidate, &published).await,
             Err(AttemptCredentialDeliveryError::BindingMismatch),

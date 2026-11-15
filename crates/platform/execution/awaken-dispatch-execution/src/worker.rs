@@ -27,8 +27,8 @@
 
 use crate::control_dispatch::LocalWorkerDispatch;
 use awaken_dispatch_contract::{
-    ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, DispatchClaimOwnership,
-    DispatchCommitAuthority, DispatchExecution,
+    ClaimedCheckpointTransport, DispatchClaimOwnership, DispatchCommitAuthority, DispatchExecution,
+    WorkerCredentialGrantTransport,
 };
 use awaken_dispatch_erasure::{AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology};
 use std::sync::Arc;
@@ -46,9 +46,8 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_credential_contract::{
-    AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialDeliveryRequest,
-    AttemptCredentialDeliverySource, AttemptCredentialRealization, CredentialRealizationReceipt,
-    CredentialRealizationRecordError, CredentialRealizationRecorder,
+    AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialRealization,
+    CredentialRealizationReceipt, CredentialRealizationRecordError, CredentialRealizationRecorder,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput, RunAttemptExecutor};
@@ -149,17 +148,17 @@ struct ClaimBoundCredentialRecorder {
     claim: RunClaim,
 }
 
-struct ClaimBoundCredentialDeliveryRefresh {
-    dispatch: Arc<dyn ClaimedCredentialDeliveryTransport>,
+/// The attempt's grant port: every grant it names is held under `claim`.
+struct ClaimBoundCredentialGrants {
+    dispatch: Arc<dyn WorkerCredentialGrantTransport>,
     claim: RunClaim,
 }
 
-fn claim_credential_refresh_is_available(
-    binding_count: usize,
-    delivery_count: usize,
-    transport_available: bool,
-) -> bool {
-    binding_count > 0 && delivery_count == binding_count && transport_available
+/// Provider material is re-delivered under the claim only when the
+/// Coordinator delivered every frozen binding with the claim: only then does
+/// it hold a delivery authority to ask.
+fn provider_redelivery_is_available(binding_count: usize, delivery_count: usize) -> bool {
+    binding_count > 0 && delivery_count == binding_count
 }
 
 /// Process-local proof that this drive selected its committed read authority
@@ -236,16 +235,33 @@ impl CredentialRealizationRecorder for ClaimBoundCredentialRecorder {
 }
 
 #[async_trait::async_trait]
-impl AttemptCredentialDeliverySource for ClaimBoundCredentialDeliveryRefresh {
-    async fn deliver(
+impl awaken_credential_contract::ClaimCredentialGrants for ClaimBoundCredentialGrants {
+    async fn grant(
         &self,
-        request: AttemptCredentialDeliveryRequest,
-    ) -> Result<AttemptCredentialDelivery, String> {
-        self.dispatch
-            .refresh_credential_delivery(&self.claim, request)
+        grant: awaken_credential_contract::ClaimCredentialGrant,
+    ) -> Result<Option<awaken_credential_contract::ClaimCredentialGrantMaterial>, String> {
+        let material = self
+            .dispatch
+            .credential_grant(awaken_dispatch_contract::WorkerCredentialGrant::Claim {
+                claim: self.claim.clone(),
+                grant,
+            })
             .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "dispatch claim was superseded during credential delivery".to_string())
+            .map_err(|error| error.to_string())?;
+        match material {
+            None => Ok(None),
+            Some(awaken_dispatch_contract::WorkerCredentialGrantMaterial::Claim(material)) => {
+                Ok(Some(material))
+            }
+            // A typed, terminal answer: this Coordinator issues no such grant.
+            Some(awaken_dispatch_contract::WorkerCredentialGrantMaterial::IssuerMissing(kind)) => {
+                Err(format!(
+                    "{}: the Coordinator issues no {kind} grants",
+                    kind.issuer_missing_code()
+                ))
+            }
+            Some(_) => Err("claim credential grant answered with another holding".into()),
+        }
     }
 }
 
@@ -733,7 +749,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         if let Some(scope) = execution_scope {
             ctx = ctx.with_execution_scope(scope.clone());
         }
-        if !credential_bindings.is_empty() {
+        let grants = match &self.ports {
+            ExecutionAuthority::Remote { credentials, .. } => Some(credentials.clone()),
+            ExecutionAuthority::Local(_) => None,
+        };
+        // A registered Worker's attempt always carries its claim-bound grant
+        // port: brokered candidates hold no binding but obtain their grants
+        // under this claim. Provider material is re-delivered through it only
+        // when the Coordinator delivered every frozen binding.
+        if !credential_bindings.is_empty() || grants.is_some() {
             let mut realization = AttemptCredentialRealization::new_with_deliveries(
                 credential_bindings.to_vec(),
                 credential_deliveries.to_vec(),
@@ -747,18 +771,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     format!("claimed credential delivery validation failed: {error}"),
                 ))
             })?;
-            if claim_credential_refresh_is_available(
-                credential_bindings.len(),
-                credential_deliveries.len(),
-                matches!(self.ports, ExecutionAuthority::Remote { .. }),
-            ) && let ExecutionAuthority::Remote { credentials, .. } = &self.ports
-            {
-                realization = realization.with_delivery_refresh(Arc::new(
-                    ClaimBoundCredentialDeliveryRefresh {
-                        dispatch: credentials.clone(),
+            if let Some(dispatch) = grants {
+                realization = realization.with_claim_grants(
+                    Arc::new(ClaimBoundCredentialGrants {
+                        dispatch,
                         claim: claim.clone(),
-                    },
-                ));
+                    }),
+                    provider_redelivery_is_available(
+                        credential_bindings.len(),
+                        credential_deliveries.len(),
+                    ),
+                );
             }
             ctx = ctx.with_credential_realization(realization);
         }
@@ -1670,7 +1693,7 @@ enum ExecutionAuthority {
     Local(Arc<dyn LocalWorkerDispatch>),
     Remote {
         checkpoints: Arc<dyn ClaimedCheckpointTransport>,
-        credentials: Arc<dyn ClaimedCredentialDeliveryTransport>,
+        credentials: Arc<dyn WorkerCredentialGrantTransport>,
     },
 }
 impl DispatchWorker<AnyDispatchStore> {

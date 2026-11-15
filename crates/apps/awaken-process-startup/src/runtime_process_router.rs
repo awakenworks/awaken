@@ -111,7 +111,6 @@ pub(super) async fn prepare_runtime_routers(
         &mut base, &resources, &mut cloud, &control, &execution, session,
     )
     .await?;
-    let cloud_models_enabled = base.process.model_supply.cloud_models_enabled;
     let mut routers = finish_process_routers(
         base,
         &resources,
@@ -121,12 +120,9 @@ pub(super) async fn prepare_runtime_routers(
         event_batch_cutover_validation,
     )
     .await;
-    // The co-located Worker realizes brokered candidates through this
-    // process's own Cloud identity; the handle stays in process.
-    routers.colocated_worker.cloud_models_enabled = cloud_models_enabled;
-    routers.colocated_worker.brokered_inference = cloud.brokered_client.take().map(|client| {
-        client as Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>
-    });
+    // The co-located Worker obtains brokered grants like every registered
+    // Worker: through the one credential grant endpoint under its claim, which
+    // this process answers with its own Cloud identity (the handle stays here).
     // Its Runs use the Web provider catalog this process validated their
     // publications against, Cloud routes included.
     routers.colocated_worker.web_search_providers = Some(cloud.web_search_providers.clone());
@@ -646,7 +642,7 @@ async fn assemble_execution_host(
             }),
             external_credentials: cloud.external_credentials.clone(),
             inference_override: cloud.inference_override.take(),
-            credential_refresh: cloud.credential_refresh_factory.take(),
+            credential_refresh: cloud.credential_refresh_factory.clone(),
             file_content: resources
                 .resource_application
                 .file_content_source_with_visibility(Arc::new(
@@ -997,7 +993,8 @@ async fn assemble_coordinator(
             &base.worker_directory,
             &base.stores.clock,
         ),
-        credential_deliveries: cloud.attempt_credential_deliveries.take(),
+        credential_grants: cloud
+            .worker_credential_grants(base.process.model_supply.cloud_models_enabled),
         repository_transport_authorizer: base.process.repository_transport_authorizer.take(),
         worker_directory: base.worker_directory.clone(),
         deployment_application: resources.deployment_application.clone(),

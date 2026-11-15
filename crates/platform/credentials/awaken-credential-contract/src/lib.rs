@@ -72,7 +72,6 @@ pub struct MaterialEntry {
 }
 
 mod access;
-mod credential_refresh;
 mod http_authentication;
 mod token_acquisition;
 mod token_profile;
@@ -81,7 +80,6 @@ pub use access::{
     CredentialMaterialRetirementCommand, CredentialMaterialRotationCommand, CredentialPlaintext,
     SessionCredentialAccessRequest, SessionCredentialSource,
 };
-pub use credential_refresh::CredentialRefreshFactory;
 pub use http_authentication::{CredentialHttpAuthentication, TokenDestination};
 pub use token_acquisition::{
     AcquiredCredentialToken, CredentialTokenAcquisition, CredentialTokenIssuer,
@@ -94,6 +92,12 @@ pub use token_profile::{
     TokenClientBasicAuth, TokenRequestEncoding, TokenRequestMethod, TokenSourceField,
 };
 
+mod claim_grant;
+pub use claim_grant::{
+    BrokeredGrantIssuer, BrokeredGrantOperation, BrokeredGrantRefusal, BrokeredGrantTarget,
+    BrokeredModelAccess, ClaimCredentialGrant, ClaimCredentialGrantMaterial, ClaimCredentialGrants,
+    GrantedSecret, brokered_grant_target, brokered_target_parts,
+};
 mod attempt;
 pub use attempt::{
     AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,

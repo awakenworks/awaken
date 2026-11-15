@@ -677,13 +677,13 @@ def selftest() -> None:
         "struct CatalogModelPublicationResolver; CredentialRepo",
     )  # O46
     assert credential_refresh_authority_violations(
-        "trait CredentialRefreshFactory;",
+        "trait McpCredentialRefresh;",
         "",
         "struct VaultRefreshFactory; struct VaultRefresher;",
         "pub mod coordinator_component;",
     ) == []  # O47
     assert credential_refresh_authority_violations(
-        "trait CredentialRefreshFactory;",
+        "trait McpCredentialRefresh;",
         "",
         "struct VaultRefreshFactory;",
         "struct VaultRefresher;",
@@ -691,8 +691,8 @@ def selftest() -> None:
     # Cause C4 the realization keeps its own copy of the contract port; effect
     # E4 refuses the duplicate. Rule O48c=C4=>E4.
     assert credential_refresh_authority_violations(
-        "trait CredentialRefreshFactory;",
-        "trait CredentialRefreshFactory;",
+        "trait McpCredentialRefresh;",
+        "trait McpCredentialRefresh;",
         "struct VaultRefreshFactory; struct VaultRefresher;",
         "pub mod coordinator_component;",
     )  # O48c
@@ -700,7 +700,7 @@ def selftest() -> None:
     # refuses that duplicate even when the required owner also exists.
     # Rule O48b=C3=>E3; O47 has one neutral port and one concrete owner.
     assert credential_refresh_authority_violations(
-        "trait CredentialRefreshFactory;",
+        "trait McpCredentialRefresh;",
         "struct VaultRefreshFactory;",
         "struct VaultRefreshFactory; struct VaultRefresher;",
         "pub mod coordinator_component;",

@@ -245,6 +245,29 @@ pub trait SessionRealizationControl: Send + Sync {
     ) -> Result<SessionRealizationRetirement, SessionRealizationControlFailure>;
 }
 
+/// The Session read the Coordinator's Worker credential grant endpoint uses to
+/// admit an MCP bearer grant: without mutation, the bearer pin `credential`
+/// that the MCP realization lease `generation` currently holds. The Session
+/// aggregate decides it
+/// ([`SessionMcpAttachmentSet::credential_grant`]).
+///
+/// [`SessionMcpAttachmentSet::credential_grant`]:
+///     awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet::credential_grant
+#[async_trait]
+pub trait SessionMcpCredentialGrants: Send + Sync {
+    async fn mcp_credential_grant(
+        &self,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+        credential: &awaken_agent_contract::credential::CredentialRef,
+    ) -> Result<
+        Result<
+            awaken_agent_contract::credential::CredentialAccess,
+            awaken_session_configuration_contract::mcp::McpCredentialGrantRefusal,
+        >,
+        SessionRealizationControlFailure,
+    >;
+}
+
 /// Registered-Worker selector over the Session repository's existing
 /// `Preparing` reconciliation index. Assignment uses the same root CAS and
 /// realization lease as a claimed Run, but executes no Run or model request.

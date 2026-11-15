@@ -3,6 +3,7 @@
 
 mod claimed_commit_client;
 mod dispatch_client;
+mod mcp_credential_grant;
 mod session_control;
 mod task_control_client;
 mod worker_control_client;
@@ -11,6 +12,7 @@ pub use claimed_commit_client::{RemoteClaimedRunCommit, remote_claimed_commit};
 pub use dispatch_client::{
     HttpDispatchQueue, dispatch_transport_with_upstream, worker_transports_with_upstream,
 };
+pub use mcp_credential_grant::WorkerMcpCredentialRefresh;
 pub use session_control::WorkerControlSessionClient;
 pub use task_control_client::WorkerTaskControlClient;
 pub use worker_control_client::{WorkerControlClient, WorkerRegistrationError};

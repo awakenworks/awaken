@@ -103,7 +103,7 @@ CONTROL_MODEL_PUBLICATION = "crates/apps/awaken-control/src/model_publication.rs
 CONTROL_CREDENTIAL_REFRESH_SOURCE = "crates/apps/awaken-control/src/credential_refresh.rs"
 # The neutral refresh port: implemented by Control, consumed by credential
 # realization, so neither links the other.
-CREDENTIAL_REFRESH_PORT_SOURCE = "crates/platform/credentials/awaken-credential-contract/src/credential_refresh.rs"
+CREDENTIAL_REFRESH_PORT_SOURCE = "crates/platform/session/awaken-session-configuration-contract/src/mcp/credential_grant.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -1288,15 +1288,15 @@ def coordinator_control_authority_dependency_violations(manifest: dict) -> list[
 def credential_refresh_authority_violations(
     port_source: str, materializer_source: str, control_source: str, coordinator_source: str
 ) -> list[str]:
-    """One neutral factory port in the credential contract, one Control-owned
+    """One neutral MCP refresh port in the MCP generation contract, one Control-owned
     Vault implementation, and no copy in credential realization."""
 
     errors: list[str] = []
-    if port_source.count("trait CredentialRefreshFactory") != 1:
-        errors.append("The credential contract must own one neutral `trait CredentialRefreshFactory`")
-    if "trait CredentialRefreshFactory" in materializer_source:
+    if port_source.count("trait McpCredentialRefresh") != 1:
+        errors.append("The MCP generation contract must own one neutral `trait McpCredentialRefresh`")
+    if "trait McpCredentialRefresh" in materializer_source:
         errors.append("Credential materializer duplicates the neutral credential refresh factory port")
-    if "trait CredentialRefreshFactory" in control_source:
+    if "trait McpCredentialRefresh" in control_source:
         errors.append("Control duplicates the neutral credential refresh factory port")
     for required in ("struct VaultRefreshFactory", "struct VaultRefresher"):
         if control_source.count(required) != 1:
@@ -1304,7 +1304,7 @@ def credential_refresh_authority_violations(
         if required in materializer_source:
             errors.append(f"Credential materializer retains Control implementation `{required}`")
     for forbidden in (
-        "trait CredentialRefreshFactory",
+        "trait McpCredentialRefresh",
         "struct VaultRefreshFactory",
         "struct VaultRefresher",
     ):

@@ -12,7 +12,7 @@
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::thread::commit::operation::CommitOperation;
-use awaken_credential_contract::{AttemptCredentialDeliveryRequest, CredentialRealizationReceipt};
+use awaken_credential_contract::CredentialRealizationReceipt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -81,14 +81,6 @@ pub struct CredentialRealizationRequest {
     #[serde(default)]
     pub identity: Option<WorkerIdentity>,
     pub receipt: CredentialRealizationReceipt,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CredentialDeliveryRefreshRequest {
-    pub claim: RunClaim,
-    #[serde(default)]
-    pub identity: Option<WorkerIdentity>,
-    pub delivery_request: AttemptCredentialDeliveryRequest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -246,11 +246,11 @@ fn configured_worker_upstream(
     )
 }
 
-/// The Native inference of an AllInOne process's execution: the
-/// pinned-credential materializer over its Vault, with the process's Awaken
-/// Cloud brokered access when Cloud models are enabled. The registered Worker
-/// and the local claim pool compose it here, so both realize the same
-/// candidates.
+/// The Native inference of an AllInOne process's in-process execution (the
+/// local claim pool, which holds no Worker claim): the pinned-credential
+/// materializer over its Vault, with the process's Awaken Cloud brokered
+/// access when Cloud models are enabled. Registered Workers use
+/// [`worker_inference`] and obtain brokered grants under their claims.
 pub(crate) fn credential_inference(
     credentials: &awaken_credential_materializer::PinnedCredentialMaterializer,
     cloud_models_enabled: bool,
@@ -270,18 +270,20 @@ pub(crate) fn credential_inference(
 }
 
 /// The co-located Worker's inference port: a product-supplied materializer
-/// wins; otherwise [`credential_inference`] over what the process lends.
+/// wins; otherwise the pinned-credential materializer whose brokered
+/// candidates obtain their grants under each attempt's claim, like every
+/// registered Worker (the process's Cloud identity answers them).
 fn worker_inference(
     credentials: &awaken_credential_materializer::PinnedCredentialMaterializer,
-    process: &awaken_process_startup::ColocatedWorkerInputs,
     inference_override: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
 ) -> Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer> {
     inference_override.unwrap_or_else(|| {
-        Arc::new(credential_inference(
-            credentials,
-            process.cloud_models_enabled,
-            process.brokered_inference.as_ref(),
-        ))
+        Arc::new(
+            awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
+                credentials.clone(),
+            )
+            .with_claim_brokered_grants(),
+        )
     })
 }
 
@@ -401,7 +403,7 @@ impl PreparedLocalAcp {
             )),
             clock.clone(),
         );
-        let inference = worker_inference(&credentials, &Default::default(), None);
+        let inference = worker_inference(&credentials, None);
         configured_worker_builder(upstream, deployment, credentials, clock, inference)?
             .with_worker_local_credential_resolver(resolver.clone())
             .with_acp_capability_observation_source(resolver)
@@ -462,19 +464,9 @@ impl PreparedLocalWorker {
             )),
             clock.clone(),
         );
-        // The same Vault authority recovers an expired MCP OAuth bearer: the
-        // exact-revision refresh exchange and its reseal stay with the stores
-        // this Worker already materializes from.
-        let refresh = Arc::new(awaken_control::VaultRefreshFactory::new(
-            self.stores.credentials.clone(),
-            self.stores.secrets.clone(),
-            clock.clone(),
-        ));
-        let inference =
-            worker_inference(&credentials, &self.process, self.inference_override.clone());
+        let inference = worker_inference(&credentials, self.inference_override.clone());
         let mut builder =
             configured_worker_builder(upstream, deployment, credentials, clock, inference)?
-                .with_credential_refresh_factory(refresh)
                 .with_admin_tools(self.process.admin_tools.clone())
                 .without_admin_surface();
         if let Some(providers) = &self.process.web_search_providers {
@@ -1155,42 +1147,37 @@ mod tests {
         }
     }
 
-    /// The process's Awaken Cloud client as the Worker sees it: it records
-    /// every grant request and refuses it, so no Gateway I/O happens.
+    /// The attempt's claim grant port as the Worker sees it: it records every
+    /// grant it is asked for and answers as a Coordinator without a Cloud
+    /// identity would, so no Gateway I/O happens.
     #[derive(Default)]
-    struct RefusingCloudGrants(Mutex<Vec<String>>);
+    struct RefusingClaimGrants(Mutex<Vec<awaken_credential_contract::ClaimCredentialGrant>>);
 
     #[async_trait]
-    impl awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient
-        for RefusingCloudGrants
-    {
-        async fn create_grant(
+    impl awaken_credential_contract::ClaimCredentialGrants for RefusingClaimGrants {
+        async fn grant(
             &self,
-            request: awaken_inference_endpoint::brokered_inference::BrokeredInferenceRequest,
-        ) -> Result<
-            awaken_inference_endpoint::brokered_inference::BrokeredInferenceLease,
-            awaken_inference_endpoint::brokered_inference::BrokeredInferenceError,
-        > {
-            self.0.lock().unwrap().push(request.original_model_id);
-            Err(awaken_inference_endpoint::brokered_inference::BrokeredInferenceError::AuthenticationRequired)
-        }
-
-        async fn renew_grant(
-            &self,
-            _: &str,
-        ) -> Result<
-            awaken_inference_endpoint::brokered_inference::BrokeredInferenceLease,
-            awaken_inference_endpoint::brokered_inference::BrokeredInferenceError,
-        > {
-            panic!("a refused grant is never renewed")
-        }
-
-        async fn close_grant(
-            &self,
-            _: &str,
-        ) -> Result<(), awaken_inference_endpoint::brokered_inference::BrokeredInferenceError>
+            grant: awaken_credential_contract::ClaimCredentialGrant,
+        ) -> Result<Option<awaken_credential_contract::ClaimCredentialGrantMaterial>, String>
         {
-            panic!("a refused grant is never closed")
+            self.0.lock().unwrap().push(grant);
+            Ok(Some(
+                awaken_credential_contract::ClaimCredentialGrantMaterial::BrokeredModelRefused(
+                    awaken_credential_contract::BrokeredGrantRefusal::SignInRequired,
+                ),
+            ))
+        }
+    }
+
+    struct NoReceipts;
+
+    #[async_trait]
+    impl awaken_credential_contract::CredentialRealizationRecorder for NoReceipts {
+        async fn record(
+            &self,
+            _: awaken_credential_contract::CredentialRealizationReceipt,
+        ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
+            panic!("a brokered candidate records no credential receipt")
         }
     }
 
@@ -1209,7 +1196,8 @@ mod tests {
     /// publication candidate is brokered, as a claimed attempt does.
     async fn infer_brokered_on_worker(
         inference: &dyn awaken_inference_endpoint::InferenceExecutorMaterializer,
-    ) -> awaken_runtime_contract::llm::Error {
+        grants: Option<Arc<RefusingClaimGrants>>,
+    ) -> Result<awaken_runtime_contract::llm::Error, String> {
         use awaken_runtime_contract::model_operation::{
             ModelOperation, ModelOperationContext, with_model_operation_context,
         };
@@ -1238,20 +1226,26 @@ mod tests {
                 .build(),
             Vec::new(),
         );
+        let mut context = awaken_runtime_contract::RuntimeRunContext::new()
+            .with_ownership(Arc::new(CurrentAttempt));
+        if let Some(grants) = grants {
+            context = context.with_credential_realization(
+                awaken_credential_contract::AttemptCredentialRealization::new(
+                    Vec::new(),
+                    Arc::new(NoReceipts),
+                )
+                .with_claim_grants(grants, false),
+            );
+        }
         let executor = inference
-            .materialize(
-                &activation,
-                &awaken_runtime_contract::RuntimeRunContext::new()
-                    .with_ownership(Arc::new(CurrentAttempt)),
-            )
-            .expect("a credential-free brokered candidate is admitted to materialization")
+            .materialize(&activation, &context)?
             .expect("the Native port realizes a Native publication candidate");
         let operation = ModelOperationContext::from_operation(
             &awaken_agent_contract::agent::thread::Id("thread-brokered".into()),
             &awaken_agent_contract::agent::run::Id("run-brokered".into()),
             &ModelOperation::next(None, binding.clone()).unwrap(),
         );
-        with_model_operation_context(
+        match with_model_operation_context(
             Some(operation),
             executor.infer(awaken_runtime_contract::llm::ChatRequest {
                 model_binding: binding,
@@ -1261,33 +1255,30 @@ mod tests {
             }),
         )
         .await
-        .expect_err("the refusing Cloud fixture never grants")
+        {
+            Ok(_) => panic!("the refusing grant port never grants"),
+            Err(error) => Ok(error),
+        }
     }
 
     #[tokio::test]
-    async fn registered_worker_realizes_brokered_candidates_through_the_process_cloud_identity() {
-        // Causes: C1 the process enables Cloud models; C2 it lends its
-        // authenticated brokered client; C3 the composing product supplied its
-        // own inference port. Effects: E1 the Worker advertises the brokered
-        // grant scheme; E2 a brokered candidate reaches the lent client (one
-        // grant request; the refusal surfaces as the Cloud login error, not a
-        // binding rejection); E3 refused before any grant as
-        // cloud_models_disabled; E4 refused before any grant as
-        // cloud_sign_in_required; E5 the product port is the Worker's port.
-        // | Rule | C1 | C2 | C3 | Effect |
-        // | R1   | Y  | Y  | N  | E1+E2  |
-        // | R2   | N  | N  | N  | E3, no E1 |
-        // | R3   | Y  | N  | N  | E4, no E1 |
-        // | R4   | Y  | Y  | Y  | E5, no E1 |
-        use awaken_inference_endpoint::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY;
-        use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, NoDispatchProof};
-        let not_dispatched =
-            ModelExecutionEvidence::NotDispatched(NoDispatchProof::executor_resolution());
-        for (rule, cloud_models_enabled, lends_client, product_port) in [
-            ("R1", true, true, false),
-            ("R2", false, false, false),
-            ("R3", true, false, false),
-            ("R4", true, true, true),
+    async fn registered_worker_obtains_brokered_grants_under_its_claim() {
+        // Causes: C1 the composing product supplied its own inference port;
+        // C2 the attempt carries its claim grant port. Effects: E1 the Worker
+        // advertises the brokered grant scheme; E2 a brokered candidate asks
+        // the claim port for exactly one Acquire of that candidate and
+        // surfaces the Coordinator's refusal as the Cloud login error; E3
+        // refused before any grant (no claim port: not a registered attempt);
+        // E4 the product port is the Worker's port.
+        // | Rule | C1 | C2 | Effect |
+        // | R1   | N  | Y  | E1+E2  |
+        // | R2   | N  | N  | E1+E3  |
+        // | R3   | Y  | -  | E4, no E1 |
+        use awaken_worker_contract::BROKERED_MODEL_GRANT_CAPABILITY;
+        for (rule, product_port, claim_port) in [
+            ("R1", false, true),
+            ("R2", false, false),
+            ("R3", true, false),
         ] {
             let directory = tempfile::tempdir().unwrap();
             let mut deployment = awaken_process_startup::config::local_test_deployment_at(
@@ -1296,18 +1287,6 @@ mod tests {
             );
             deployment.runtime.disable_local_pool = true;
             deployment.run_local_pool = false;
-            let cloud = Arc::new(RefusingCloudGrants::default());
-            let process = awaken_process_startup::ColocatedWorkerInputs {
-                admin_tools: Vec::new(),
-                cloud_models_enabled,
-                brokered_inference: lends_client.then(|| {
-                    cloud.clone()
-                        as Arc<
-                            dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient,
-                        >
-                }),
-                web_search_providers: None,
-            };
             let stores = awaken_control::InferenceMaterializationStores {
                 credentials: Arc::new(InMemoryCredentialRepo::new()),
                 secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
@@ -1323,7 +1302,6 @@ mod tests {
             }
             let worker = prepared
                 .clone()
-                .with_process_inputs(process.clone())
                 .build_worker(
                     "http://127.0.0.1:1",
                     &deployment,
@@ -1333,14 +1311,14 @@ mod tests {
                 .expect("the registered WorkerNode builds");
             let advertised = &worker.manifest().capabilities;
             assert_eq!(
-                advertised.contains(BROKERED_INFERENCE_ACCESS_CAPABILITY),
-                rule == "R1",
+                advertised.contains(BROKERED_MODEL_GRANT_CAPABILITY),
+                !product_port,
                 "{rule}/E1"
             );
             assert_eq!(
                 advertised.contains("composition-probe"),
                 product_port,
-                "{rule}/E5"
+                "{rule}/E4"
             );
             if product_port {
                 continue;
@@ -1354,31 +1332,51 @@ mod tests {
                 )),
                 awaken_time::system_clock(),
             );
-            let inference = worker_inference(&credentials, &process, None);
-            let error = infer_brokered_on_worker(inference.as_ref()).await;
-            let grants = cloud.0.lock().unwrap().clone();
-            match rule {
-                "R1" => {
-                    assert_eq!(grants, vec!["gpt-5-e2e".to_owned()], "R1/E2");
-                    assert!(
-                        matches!(
-                            error.classification(),
-                            awaken_runtime_contract::llm::Error::LoginRequired(_)
-                        ),
-                        "R1/E2: {error}"
-                    );
-                }
-                "R2" | "R3" => {
-                    let expected = if rule == "R2" {
-                        "cloud_models_disabled"
-                    } else {
-                        "cloud_sign_in_required"
-                    };
-                    assert!(grants.is_empty(), "{rule}: no grant request");
-                    assert!(error.to_string().contains(expected), "{rule}: {error}");
-                    assert_eq!(error.execution_evidence(), not_dispatched, "{rule}");
-                }
-                _ => unreachable!(),
+            let inference = worker_inference(&credentials, None);
+            let grants = Arc::new(RefusingClaimGrants::default());
+            let outcome =
+                infer_brokered_on_worker(inference.as_ref(), claim_port.then(|| grants.clone()))
+                    .await;
+            let asked = grants.0.lock().unwrap().clone();
+            if claim_port {
+                let error = outcome.expect("R1 materializes and asks the claim port");
+                assert!(
+                    matches!(
+                        asked.as_slice(),
+                        [
+                            awaken_credential_contract::ClaimCredentialGrant::BrokeredModel {
+                                operation:
+                                    awaken_credential_contract::BrokeredGrantOperation::Acquire { .. },
+                                ..
+                            }
+                        ]
+                    ),
+                    "R1/E2: {asked:?}"
+                );
+                assert!(
+                    matches!(
+                        error.classification(),
+                        awaken_runtime_contract::llm::Error::LoginRequired(_)
+                    ),
+                    "R1/E2: {error}"
+                );
+            } else {
+                // The candidate executor resolves its broker per request:
+                // without a claim port the request fails before any grant
+                // and before any byte reaches a transport.
+                let refusal = outcome.expect("R2/E3 materialization is lazy");
+                assert!(
+                    refusal.to_string().contains("claim grant transport"),
+                    "{rule}: {refusal}"
+                );
+                assert_eq!(
+                    refusal.execution_evidence(),
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
+                        awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution()
+                    ),
+                    "{rule}/E3"
+                );
+                assert!(asked.is_empty(), "{rule}: no grant request");
             }
         }
     }

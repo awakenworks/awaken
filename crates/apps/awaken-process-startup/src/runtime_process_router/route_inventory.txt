@@ -519,8 +519,8 @@
 /v1/worker/dispatch/claim_retry_exhausted @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/worker/dispatch/claim_run | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
 /v1/worker/dispatch/claim_run @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
-/v1/worker/dispatch/credential_delivery/refresh | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
-/v1/worker/dispatch/credential_delivery/refresh @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/credential_grant | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/credential_grant @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/worker/dispatch/credential_realization | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
 /v1/worker/dispatch/credential_realization @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/worker/dispatch/deliver_and_claim | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type

@@ -1132,27 +1132,86 @@ async fn worker_rejects_unmatched_claim_delivery_without_panicking() {
     );
 }
 
+#[tokio::test]
+async fn a_coordinator_without_an_issuer_is_a_typed_terminal_cause_on_the_worker() {
+    /* The Worker's claim grant port maps every answer of the one endpoint.
+     * W1 IssuerMissing(Provider) -> an error naming the classified cause, not
+     * a superseded claim; W2 no material -> superseded (None); W3 claim
+     * material -> passed through unchanged. */
+    use awaken_credential_contract::ClaimCredentialGrants as _;
+    struct Answer(Option<awaken_dispatch_contract::WorkerCredentialGrantMaterial>);
+    #[async_trait::async_trait]
+    impl awaken_dispatch_contract::WorkerCredentialGrantTransport for Answer {
+        async fn credential_grant(
+            &self,
+            grant: awaken_dispatch_contract::WorkerCredentialGrant,
+        ) -> Result<
+            Option<awaken_dispatch_contract::WorkerCredentialGrantMaterial>,
+            crate::DispatchError,
+        > {
+            assert!(matches!(
+                grant,
+                awaken_dispatch_contract::WorkerCredentialGrant::Claim { .. }
+            ));
+            Ok(self.0.clone())
+        }
+    }
+    let grant = || awaken_credential_contract::ClaimCredentialGrant::ProviderCredential {
+        candidate_fingerprint: awaken_agent_contract::credential::CandidateFingerprint("fp".into()),
+    };
+    let port = |answer| super::ClaimBoundCredentialGrants {
+        dispatch: Arc::new(Answer(answer)),
+        claim: awaken_worker_contract::RunClaim {
+            run_id: RunId("run".into()),
+            owner: "worker/boot".into(),
+            epoch: 1,
+        },
+    };
+    let missing = port(Some(
+        awaken_dispatch_contract::WorkerCredentialGrantMaterial::IssuerMissing(
+            awaken_dispatch_contract::CredentialGrantKind::ProviderCredential,
+        ),
+    ))
+    .grant(grant())
+    .await
+    .expect_err("W1");
+    assert!(
+        missing.starts_with("provider_credential_delivery_unavailable:"),
+        "W1: {missing}"
+    );
+    assert_eq!(port(None).grant(grant()).await, Ok(None), "W2");
+    let closed = awaken_credential_contract::ClaimCredentialGrantMaterial::BrokeredModelClosed;
+    assert_eq!(
+        port(Some(
+            awaken_dispatch_contract::WorkerCredentialGrantMaterial::Claim(closed.clone())
+        ))
+        .grant(grant())
+        .await,
+        Ok(Some(closed)),
+        "W3"
+    );
+}
+
 #[test]
-fn claim_refresh_requires_complete_control_delivery_and_transport() {
-    /* Claim-refresh capability table. C1 bindings are absent/present; C2
-     * response-local deliveries are absent, complete, or partial; C3 the
-     * Worker has the authenticated redelivery transport. E1 only the complete
-     * C1+C2+C3 row installs live refresh; E2 every other row keeps the claim's
-     * original published/cached envelope path. This reproduces the distributed
-     * k3d deployment whose Control intentionally has no delivery source. */
-    for (bindings, deliveries, transport, expected) in [
-        (0, 0, false, false),
-        (0, 0, true, false),
-        (1, 0, true, false),
-        (1, 1, false, false),
-        (2, 1, true, false),
-        (1, 1, true, true),
-        (2, 2, true, true),
+fn provider_redelivery_requires_complete_control_delivery() {
+    /* Provider re-delivery table. C1 bindings are absent/present; C2
+     * response-local deliveries are absent, complete, or partial. E1 only the
+     * complete C1+C2 row re-delivers Provider material through the claim's
+     * grant port; E2 every other row keeps the claim's original
+     * published/cached envelope path (the grant port itself stays attached
+     * for brokered grants). This reproduces the distributed k3d deployment
+     * whose Control intentionally has no delivery source. */
+    for (bindings, deliveries, expected) in [
+        (0, 0, false),
+        (1, 0, false),
+        (2, 1, false),
+        (1, 1, true),
+        (2, 2, true),
     ] {
         assert_eq!(
-            super::claim_credential_refresh_is_available(bindings, deliveries, transport),
+            super::provider_redelivery_is_available(bindings, deliveries),
             expected,
-            "bindings={bindings} deliveries={deliveries} transport={transport}",
+            "bindings={bindings} deliveries={deliveries}",
         );
     }
 }

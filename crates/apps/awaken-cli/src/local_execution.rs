@@ -105,7 +105,7 @@ impl ColocatedExecution for LocalExecution {
             .with_resource_validator(inputs.resource_validator)
             .with_repository_binding_verifier(inputs.repository_bindings);
         if let Some(refresh) = inputs.credential_refresh {
-            dependencies = dependencies.with_credential_refresh_factory(refresh);
+            dependencies = dependencies.with_mcp_credential_refresh(refresh);
         }
         let host = builder
             .with_session_execution(dependencies)

@@ -30,7 +30,6 @@ use awaken_dispatch::{
     AttemptExecutionRequest as AttemptExecutionReq, BindSandboxRequest as BindSandboxReq,
     CheckpointRequest as CheckpointReq, ClaimNewRunRequest as ClaimNewRunReq,
     ClaimRunRequest as ClaimRunReq, ClaimWorkerRequest as ClaimWorkerReq, CompletionSink,
-    CredentialDeliveryRefreshRequest as CredentialDeliveryRefreshReq,
     CredentialRealizationRequest as CredentialRealizationReq,
     DeliverAndClaimRequest as DeliverAndClaimReq, DispatchSettlementObserver,
     EnqueueRequest as EnqueueReq, HeartbeatWorkerRequest as HeartbeatWorkerReq, PlacementPolicy,
@@ -48,7 +47,9 @@ use awaken_worker_transport_security::{
 };
 
 mod claimed_preparation;
+mod credential_grant;
 pub use claimed_preparation::require_worker_claimed_preparation;
+pub use credential_grant::WorkerCredentialGrantIssuers;
 mod registry_endpoints;
 use registry_endpoints::{
     deregister_worker, drain_worker, heartbeat_worker, quiesce_worker, register_worker,
@@ -83,7 +84,7 @@ struct RelinquishReq {
 use run_dispatch_endpoints::{
     begin_attempt, claim, claim_new_run, claim_retry_exhausted, claim_run, close_attempt,
     deliver_and_claim, enqueue, finish_attempt, handoff_attempt, record_credential_realization,
-    refresh_credential_delivery, relinquish, renew, resolve_session_run_reservation,
+    relinquish, renew, resolve_session_run_reservation,
 };
 use session_coordination::{
     session_agent_send, session_agent_settle, session_agents_list, session_model_request_admit,
@@ -233,9 +234,9 @@ pub fn worker_source_retention_router(
 /// Explicit application service mounted by the worker HTTP adapter.
 ///
 /// Every collaborator the Coordinator composition always supplies is a required
-/// field; [`WorkerDispatchService::new`] is the only constructor. The three
-/// `Option`s are provider-dependent and their absence fails closed (see
-/// [`RegisteredDispatchDependencies`]).
+/// field; [`WorkerDispatchService::new`] is the only constructor. The
+/// provider-dependent collaborators (`Option`s and the grant issuers) fail
+/// closed when absent (see [`RegisteredDispatchDependencies`]).
 pub struct WorkerDispatchService {
     claim_persistence: crate::WorkerClaimPersistence,
     dispatch: Arc<dyn WorkerDispatchAuthority>,
@@ -260,8 +261,13 @@ pub struct WorkerDispatchService {
     session_coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     session_work: Arc<dyn awaken_session_application_contract::SessionWorkerLeaseAuthority>,
     worker_work_release: Arc<dyn awaken_dispatch::ConditionalSessionWorkRelease>,
-    credential_deliveries:
-        Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
+    credential_grants: WorkerCredentialGrantIssuers,
+    mcp_credential_grants: Arc<dyn awaken_session_execution_contract::SessionMcpCredentialGrants>,
+    /// Brokered grants this Coordinator issued, by grant id, until they expire
+    /// or close: renew and close are admitted only to their issuing claim.
+    brokered_grants: awaken_sync::LeafLock<
+        std::collections::BTreeMap<String, credential_grant::IssuedBrokeredGrant>,
+    >,
     max_attempts: u64,
     execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
@@ -292,7 +298,8 @@ impl WorkerDispatchService {
             completion,
             terminal_observer,
             stream_sink,
-            credential_deliveries,
+            credential_grants,
+            mcp_credential_grants,
             clock,
             lease_policy,
             registry_ttl_ms,
@@ -319,7 +326,9 @@ impl WorkerDispatchService {
             session_coordination: coordination,
             session_work,
             worker_work_release,
-            credential_deliveries,
+            credential_grants,
+            mcp_credential_grants,
+            brokered_grants: awaken_sync::LeafLock::new(std::collections::BTreeMap::new()),
             max_attempts: max_attempts.max(1),
             execution_bindings,
             execution_stops,
@@ -488,11 +497,15 @@ pub struct RegisteredDispatchDependencies {
     pub completion: Arc<dyn CompletionSink>,
     pub terminal_observer: Arc<dyn DispatchSettlementObserver>,
     pub stream_sink: Arc<dyn StreamSink>,
-    /// Present only in the cloud plane, which signs claim-scoped carriers.
-    /// Without it a claim carries only its frozen envelope: an expired envelope
-    /// and every refresh request are refused as unavailable.
-    pub credential_deliveries:
-        Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
+    /// The issuers of the one Worker credential grant endpoint. Without a
+    /// Provider issuer a claim carries only its frozen envelope: an expired
+    /// envelope and every re-delivery are refused as unavailable; without a
+    /// brokered or MCP issuer those grant kinds are refused the same way.
+    pub credential_grants: WorkerCredentialGrantIssuers,
+    /// The Session read that admits an MCP bearer grant: whether a Session
+    /// MCP generation lease currently pins that bearer for a Worker holder.
+    pub mcp_credential_grants:
+        Arc<dyn awaken_session_execution_contract::SessionMcpCredentialGrants>,
     /// The Coordinator's one wall clock: claim leases, registry freshness and
     /// Worker assertions are judged on the timeline every other owner uses.
     pub clock: Arc<dyn WallClock>,
@@ -565,8 +578,8 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             post(record_credential_realization),
         )
         .route(
-            "/v1/worker/dispatch/credential_delivery/refresh",
-            post(refresh_credential_delivery),
+            "/v1/worker/dispatch/credential_grant",
+            post(credential_grant::credential_grant),
         )
         .route("/v1/worker/dispatch/settle", post(settle))
         .route("/v1/worker/dispatch/stream", post(stream_event))

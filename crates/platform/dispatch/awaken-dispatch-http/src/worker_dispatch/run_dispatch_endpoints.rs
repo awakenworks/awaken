@@ -28,7 +28,7 @@ async fn attach_claim_credential_deliveries(
     if claimed.credential_bindings.is_empty() {
         return Ok(Some(claimed));
     }
-    let source = service.credential_deliveries.as_deref();
+    let source = service.credential_grants.provider.as_deref();
     let candidates = claimed
         .request
         .activation
@@ -46,35 +46,27 @@ async fn attach_claim_credential_deliveries(
         else {
             continue;
         };
-        let Some((published_access, material_binding)) =
-            awaken_credential_contract::candidate_credential_material_binding(candidate)
+        let Some(request) = super::credential_grant::provider_delivery_request(
+            candidate,
+            binding,
+            &awaken_dispatch::RunClaim::from(&claimed.lease),
+        )?
         else {
             continue;
         };
         if let Some(source) = source {
             let delivery = source
-                .deliver(
-                    awaken_credential_contract::AttemptCredentialDeliveryRequest {
-                        candidate_fingerprint: fingerprint,
-                        published_access: published_access.clone(),
-                        selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
-                        binding: material_binding,
-                        expected_provider:
-                            awaken_credential_contract::candidate_provider_expectation(candidate)
-                                .map_err(ApplicationError::internal)?,
-                        claim_epoch: claimed.lease.epoch(),
-                    },
-                )
+                .deliver(request.clone())
                 .await
                 .map_err(ApplicationError::unavailable)?;
             awaken_credential_contract::verify_attempt_credential_delivery(
                 binding,
-                published_access,
+                &request.published_access,
                 &delivery,
             )
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
             deliveries.push(delivery);
-        } else if let Some(envelope) = &published_access.envelope {
+        } else if let Some(envelope) = &request.published_access.envelope {
             envelope
                 .validate_for_holder(&binding.selected_plaintext_holder, service.clock.now_ms())
                 .map_err(|_| {
@@ -667,69 +659,6 @@ pub(super) async fn record_credential_realization(
             .await
             .map_err(|error| ApplicationError::invalid(error.to_string()))?;
         Ok(json!({ "applied": outcome.applied() }))
-    }
-    .await;
-    respond(result)
-}
-
-pub(super) async fn refresh_credential_delivery(
-    State(service): State<Arc<WorkerDispatchService>>,
-    Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<CredentialDeliveryRefreshReq>,
-) -> (StatusCode, Json<Value>) {
-    let result = async {
-        let authority =
-            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
-        if authority.owner != request.claim.owner {
-            return Err(ApplicationError::invalid(
-                "authenticated worker does not own the credential delivery claim",
-            ));
-        }
-        let delivery_request = request.delivery_request;
-        let fingerprint = delivery_request.candidate_fingerprint.clone();
-        let Some(binding) = service
-            .dispatch
-            .current_credential_binding(&request.claim, &fingerprint)
-            .await
-            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-        else {
-            return Ok(json!({ "delivery": null }));
-        };
-        if binding.credential != delivery_request.published_access.credential
-            || binding.selected_plaintext_holder != delivery_request.selected_plaintext_holder
-            || binding.claim_epoch != delivery_request.claim_epoch
-        {
-            return Err(ApplicationError::invalid(
-                "credential delivery request differs from the persisted claim binding",
-            ));
-        }
-        let source = service.credential_deliveries.as_deref().ok_or_else(|| {
-            ApplicationError::unavailable("claim credential delivery source is not installed")
-        })?;
-        let delivery = source
-            .deliver(delivery_request.clone())
-            .await
-            .map_err(ApplicationError::unavailable)?;
-        awaken_credential_contract::verify_attempt_credential_delivery(
-            &binding,
-            &delivery_request.published_access,
-            &delivery,
-        )
-        .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        // The signer is external to the Dispatch transaction. Re-read the exact
-        // binding so a lease loss, cancellation or re-claim during issuance can
-        // never return a usable carrier to the stale Worker.
-        if service
-            .dispatch
-            .current_credential_binding(&request.claim, &fingerprint)
-            .await
-            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-            .as_ref()
-            != Some(&binding)
-        {
-            return Ok(json!({ "delivery": null }));
-        }
-        Ok(json!({ "delivery": delivery }))
     }
     .await;
     respond(result)

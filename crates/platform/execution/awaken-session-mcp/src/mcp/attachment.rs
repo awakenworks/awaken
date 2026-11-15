@@ -13,9 +13,9 @@ use awaken_agent_contract::credential::{CredentialUsage, ModelExposurePolicy};
 use awaken_credential_contract::CredentialAccessAdmission;
 use std::sync::{Arc, Weak};
 
-use awaken_credential_contract::CredentialRefreshFactory;
 use awaken_credential_materializer::{PinnedCredentialMaterializer, PlatformMcpEgressProvisioner};
 use awaken_runtime_contract::runs::RunError;
+use awaken_session_configuration_contract::mcp::McpCredentialRefresh;
 
 use crate::mcp::credential_target::exact_credential_realization_target;
 use crate::mcp::error::run_error;
@@ -128,7 +128,7 @@ pub trait McpStagingSession: Send + Sync {
 #[derive(Clone, Copy, Default)]
 pub struct McpCredentialMaterialization<'a> {
     pub credentials: Option<&'a PinnedCredentialMaterializer>,
-    pub refresh_factory: Option<&'a dyn CredentialRefreshFactory>,
+    pub refresh: Option<&'a dyn McpCredentialRefresh>,
     pub platform_egress: Option<&'a dyn PlatformMcpEgressProvisioner>,
 }
 
@@ -136,37 +136,36 @@ mod staging;
 use staging::{McpStagingOwner, StagingAdmission};
 
 /// The refresh material of one resolved MCP bearer, from the realization
-/// mechanism, whether the credential carries a refresh configuration, and the
-/// Worker's credential-refresh capability.
+/// mechanism, the refresh port, and whether the pin carries a refresh
+/// configuration. The port decides refresh-token exchange versus bearer
+/// reload from the exact pin (a registered Worker's port asks the
+/// Coordinator for the generation's grant).
 ///
 /// Decision table (causes → effect):
-/// | Rule | mechanism | refresh configured | refresh factory | effect |
+/// | Rule | mechanism | refresh port | refresh configured | effect |
 /// |---|---|---|---|---|
 /// | M1 | not WorkerRelay | any | any | no refresher: the holder refreshes nothing on this Worker |
-/// | M2 | WorkerRelay | yes | present | the factory's refresh-token exchanger for the credential |
-/// | M3 | WorkerRelay | yes | absent | refused terminally (`mcp_credential_refresh_unavailable`, a classified fault): the capability is absent, so no retry can add it and none spends the retry budget |
-/// | M4 | WorkerRelay | no | present | the factory's bearer reloader at the credential's revision |
-/// | M5 | WorkerRelay | no | absent | no refresher: the bearer is used as resolved |
+/// | M2 | WorkerRelay | present | any | the port's refresher for this generation's pin |
+/// | M3 | WorkerRelay | absent | yes | refused terminally (`mcp_credential_refresh_unavailable`, a classified fault): the capability is absent, so no retry can add it and none spends the retry budget |
+/// | M4 | WorkerRelay | absent | no | no refresher: the bearer is used as resolved |
 fn mcp_refresh_material(
     realization_kind: awaken_credential_contract::CredentialRealizationKind,
-    credential: &awaken_agent_contract::credential::CredentialRef,
-    refresh: Option<&awaken_agent_contract::credential::CredentialRefreshAccess>,
-    factory: Option<&dyn CredentialRefreshFactory>,
+    generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+    access: &awaken_agent_contract::credential::CredentialAccess,
+    port: Option<&dyn McpCredentialRefresh>,
 ) -> Result<Option<Box<crate::mcp_material::McpRefreshMaterial>>, RunError> {
     if realization_kind != awaken_credential_contract::CredentialRealizationKind::WorkerRelay {
         return Ok(None);
     }
-    let source = awaken_credential_contract::CredentialSourceId(credential.id.clone());
-    let refresher = match (refresh, factory) {
-        (Some(refresh), Some(factory)) => factory.refresher(source, refresh.clone()),
-        (Some(_), None) => {
+    let refresher = match (port, access.refresh.is_some()) {
+        (Some(port), _) => port.refresher(generation, access),
+        (None, true) => {
             return Err(RunError::classified(
                 MCP_CREDENTIAL_REFRESH_UNAVAILABLE_CODE,
-                "MCP credential refresh requires a Coordinator refresh adapter, and this Worker has none",
+                "MCP credential refresh requires a refresh authority, and this host has none",
             ));
         }
-        (None, Some(factory)) => factory.bearer_reloader(source, credential.revision),
-        (None, None) => return Ok(None),
+        (None, false) => return Ok(None),
     };
     Ok(Some(Box::new(crate::mcp_material::McpRefreshMaterial(
         refresher,
@@ -639,9 +638,9 @@ impl McpSessions {
                         })?;
                     let refresh = mcp_refresh_material(
                         realization_kind,
-                        &access.credential,
-                        access.refresh.as_ref(),
-                        credentials.refresh_factory,
+                        &request.generation,
+                        access,
+                        credentials.refresh,
                     )?;
                     (Some(bearer), refresh, Some(realization_kind), None)
                 }

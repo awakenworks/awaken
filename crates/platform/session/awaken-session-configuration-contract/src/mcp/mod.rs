@@ -1047,6 +1047,9 @@ pub(crate) use generation::{test_generation, test_generation_at_version};
 
 mod quiescence;
 
+mod credential_grant;
+pub use credential_grant::{McpCredentialGrantRefusal, McpCredentialRefresh};
+
 #[cfg(test)]
 mod tests {
     use super::*;

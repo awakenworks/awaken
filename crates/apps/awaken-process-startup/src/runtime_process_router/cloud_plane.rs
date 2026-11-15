@@ -26,7 +26,7 @@ pub(super) struct CloudPlane {
     pub(super) external_credentials:
         Option<Arc<dyn awaken_credential_contract::CredentialMaterialResolver>>,
     pub(super) credential_refresh_factory:
-        Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
+        Option<Arc<dyn awaken_session_configuration_contract::mcp::McpCredentialRefresh>>,
     pub(super) attempt_credential_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
     pub(super) web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
@@ -37,6 +37,32 @@ pub(super) struct CloudPlane {
     pub(super) inference_override:
         Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
     pub(super) live_runtime_capabilities: Option<Arc<LiveRuntimeCapabilities>>,
+}
+
+impl CloudPlane {
+    /// The issuers of the one registered-Worker credential grant endpoint:
+    /// the same Vault delivery, broker identity and MCP refresh authority
+    /// this process uses in-process, each judged per grant by the endpoint.
+    pub(super) fn worker_credential_grants(
+        &self,
+        cloud_models_enabled: bool,
+    ) -> awaken_dispatch_http::WorkerCredentialGrantIssuers {
+        awaken_dispatch_http::WorkerCredentialGrantIssuers {
+            provider: self.attempt_credential_deliveries.clone(),
+            brokered: Some(Arc::new(
+                awaken_inference_endpoint::brokered_inference::BrokeredInferenceGrantIssuer::new(
+                    cloud_models_enabled,
+                    self.brokered_client.clone().map(|client| {
+                        client
+                            as Arc<
+                                dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient,
+                            >
+                    }),
+                ),
+            )),
+            mcp: self.credential_refresh_factory.clone(),
+        }
+    }
 }
 
 pub(super) async fn assemble_cloud_plane(
@@ -108,7 +134,8 @@ async fn brokered_cloud_client(
 
 struct CredentialPlane {
     authority: Option<Arc<awaken_credential_vault::VaultLocalMaterialAuthority>>,
-    refresh_factory: Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
+    refresh_factory:
+        Option<Arc<dyn awaken_session_configuration_contract::mcp::McpCredentialRefresh>>,
     attempt_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
 }
@@ -134,7 +161,8 @@ fn credential_plane(base: &mut ProcessBase) -> CredentialPlane {
                     control.credentials.clone(),
                     control.secrets.clone(),
                     stores.clock.clone(),
-                )) as Arc<dyn awaken_credential_contract::CredentialRefreshFactory>
+                ))
+                    as Arc<dyn awaken_session_configuration_contract::mcp::McpCredentialRefresh>
             })
         })
         .flatten();

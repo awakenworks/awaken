@@ -27,13 +27,6 @@ use crate::config::ResolvedDeployment;
 pub struct ColocatedWorkerInputs {
     /// The process's administrative tools.
     pub admin_tools: Vec<Arc<dyn RawTool>>,
-    /// Whether this process supplies Awaken Cloud brokered models.
-    pub cloud_models_enabled: bool,
-    /// The process's Awaken Cloud brokered-inference client, authenticated by
-    /// the process's Cloud identity (login session or Developer Key). Absent
-    /// when Cloud models are disabled or no Cloud identity is configured.
-    pub brokered_inference:
-        Option<Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>>,
     /// The process's Web provider catalog: the built-ins plus the Awaken Cloud
     /// routes its brokered client installed. Control validates publications
     /// against this catalog, so the Worker that executes them uses the same

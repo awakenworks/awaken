@@ -29,6 +29,7 @@ use awaken_credential_contract::{
     AttemptCredentialDeliverySource,
 };
 use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
+use awaken_dispatch::WorkerCredentialGrantTransport as _;
 use awaken_dispatch::{
     CredentialRealizationReceipt, DispatchBinding, DispatchOutcome, DispatchState,
     DispatchTopology, FencedStreamCheckpointStore, MemoryDispatchStore, PendingInput, RunClaim,
@@ -43,9 +44,7 @@ use awaken_dispatch_testkit::worker_dispatch::{
 use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::InferenceEndpoint;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ModelBinding, ResolvedModelCandidate, ResolvedSpec,
-};
+use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
@@ -230,20 +229,35 @@ impl AttemptCredentialDeliverySource for BlockingSecondDelivery {
     }
 }
 
-fn refresh_request(
+/// Ask for the current Provider delivery of one frozen candidate under
+/// `claim`: the Worker names only the candidate fingerprint.
+async fn provider_grant(
+    transport: &dyn awaken_dispatch::WorkerCredentialGrantTransport,
+    claim: &RunClaim,
     binding: &AttemptCredentialBinding,
-    candidate: &ResolvedModelCandidate,
-) -> AttemptCredentialDeliveryRequest {
-    let (published_access, material_binding) =
-        awaken_credential_contract::candidate_credential_material_binding(candidate).unwrap();
-    AttemptCredentialDeliveryRequest {
-        candidate_fingerprint: binding.candidate_fingerprint.clone(),
-        published_access: published_access.clone(),
-        selected_plaintext_holder: binding.selected_plaintext_holder.clone(),
-        binding: material_binding,
-        expected_provider: awaken_credential_contract::candidate_provider_expectation(candidate)
-            .unwrap(),
-        claim_epoch: binding.claim_epoch,
+) -> Result<Option<AttemptCredentialDelivery>, awaken_dispatch::DispatchError> {
+    let material = transport
+        .credential_grant(awaken_dispatch::WorkerCredentialGrant::Claim {
+            claim: claim.clone(),
+            grant: awaken_credential_contract::ClaimCredentialGrant::ProviderCredential {
+                candidate_fingerprint: binding.candidate_fingerprint.clone(),
+            },
+        })
+        .await?;
+    Ok(material.map(|material| match material {
+        awaken_dispatch::WorkerCredentialGrantMaterial::Claim(
+            awaken_credential_contract::ClaimCredentialGrantMaterial::ProviderCredential(delivery),
+        ) => *delivery,
+        other => panic!("a Provider grant answers a Provider delivery: {other:?}"),
+    }))
+}
+
+fn provider_issuers(
+    source: Arc<dyn AttemptCredentialDeliverySource>,
+) -> awaken_dispatch_http::WorkerCredentialGrantIssuers {
+    awaken_dispatch_http::WorkerCredentialGrantIssuers {
+        provider: Some(source),
+        ..Default::default()
     }
 }
 
@@ -299,7 +313,7 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
         expired_credential_dispatch("delivery-race", "delivery-race-thread");
     let service = Arc::new(WorkerDispatchService::new(RegisteredDispatchDependencies {
         lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-        credential_deliveries: Some(source.clone()),
+        credential_grants: provider_issuers(source.clone()),
         ..worker_dispatch_dependencies(
             mem,
             ready_workers_with_manifest(&["worker-1"], &credential_manifest(&capabilities)),
@@ -324,20 +338,10 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
         .unwrap()
         .unwrap();
     let claim = RunClaim::from(&claimed.lease);
-    let candidate = claimed
-        .request
-        .activation
-        .snapshot
-        .resolved_spec
-        .model_binding
-        .clone();
-    let delivery_request = refresh_request(&claimed.credential_bindings[0], &candidate);
+    let binding = claimed.credential_bindings[0].clone();
     let refresh_queue = queue.clone();
-    let refresh = tokio::spawn(async move {
-        refresh_queue
-            .refresh_credential_delivery(&claim, delivery_request)
-            .await
-    });
+    let refresh =
+        tokio::spawn(async move { provider_grant(refresh_queue.as_ref(), &claim, &binding).await });
     tokio::time::timeout(std::time::Duration::from_secs(2), source.entered.notified())
         .await
         .expect("R5 signer must reach its deterministic barrier");
@@ -378,7 +382,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
         let (dispatch, capabilities) = expired_credential_dispatch(run_id, "delivery-thread");
         let service = Arc::new(WorkerDispatchService::new(RegisteredDispatchDependencies {
             lease_policy: Arc::new(FixedWorkerLeasePolicy::new(1_000)),
-            credential_deliveries: Some(Arc::new(FreshClaimDelivery { fail })),
+            credential_grants: provider_issuers(Arc::new(FreshClaimDelivery { fail })),
             ..worker_dispatch_dependencies(
                 mem.clone(),
                 ready_workers_with_manifest(&["worker-1"], &credential_manifest(&capabilities)),
@@ -439,13 +443,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
             ),
             "R1 immutable authority"
         );
-        let candidate = &claimed
-            .request
-            .activation
-            .snapshot
-            .resolved_spec
-            .model_binding;
-        let delivery_request = refresh_request(&claimed.credential_bindings[0], candidate);
+        let binding = &claimed.credential_bindings[0];
         let worker_dispatch = DispatchBinding::remote(
             queue.clone(),
             Arc::new(awaken_coordinator_client::RemoteClaimedRunCommit::new(
@@ -456,11 +454,14 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
         let DispatchTopology::Remote { credentials, .. } = worker_dispatch.placement() else {
             panic!("R3 required remote credential authority");
         };
-        let refreshed = credentials
-            .refresh_credential_delivery(&RunClaim::from(&claimed.lease), delivery_request.clone())
-            .await
-            .expect("R3 transport")
-            .expect("R3 current claim receives delivery");
+        let refreshed = provider_grant(
+            credentials.as_ref(),
+            &RunClaim::from(&claimed.lease),
+            binding,
+        )
+        .await
+        .expect("R3 transport")
+        .expect("R3 current claim receives delivery");
         assert_eq!(refreshed.claim_epoch, claimed.lease.epoch(), "R3");
         assert!(
             awaken_credential_contract::credential_access_has_same_authority(
@@ -471,11 +472,14 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
         );
         dispatch_clock.set(claimed.lease.expires_ms());
         assert!(
-            credentials
-                .refresh_credential_delivery(&RunClaim::from(&claimed.lease), delivery_request)
-                .await
-                .expect("R4 transport")
-                .is_none(),
+            provider_grant(
+                credentials.as_ref(),
+                &RunClaim::from(&claimed.lease),
+                binding
+            )
+            .await
+            .expect("R4 transport")
+            .is_none(),
             "R4 an expired claim receives no carrier"
         );
     }
@@ -1023,6 +1027,44 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
         .credential_bindings
         .first()
         .expect("claim carries exact attempt binding");
+    // Provider grant rows on this Coordinator, which installs no delivery
+    // signer: G1 the holder of the binding gets the typed IssuerMissing
+    // answer; G2 another registered Worker presenting the claim and G3 a
+    // candidate the claim never froze are refused before any issuer.
+    let provider = |candidate_fingerprint| awaken_dispatch::WorkerCredentialGrant::Claim {
+        claim: first_claim.clone(),
+        grant: awaken_credential_contract::ClaimCredentialGrant::ProviderCredential {
+            candidate_fingerprint,
+        },
+    };
+    assert_eq!(
+        first_worker
+            .credential_grant(provider(binding.candidate_fingerprint.clone()))
+            .await
+            .expect("G1 a typed answer"),
+        Some(
+            awaken_dispatch::WorkerCredentialGrantMaterial::IssuerMissing(
+                awaken_dispatch::CredentialGrantKind::ProviderCredential
+            )
+        ),
+        "G1"
+    );
+    assert!(
+        recovery_worker
+            .credential_grant(provider(binding.candidate_fingerprint.clone()))
+            .await
+            .is_err(),
+        "G2 another Worker cannot use the claim"
+    );
+    assert!(
+        first_worker
+            .credential_grant(provider(
+                awaken_agent_contract::credential::CandidateFingerprint("unfrozen".into())
+            ))
+            .await
+            .is_err(),
+        "G3 an unfrozen candidate is not held"
+    );
     let receipt = CredentialRealizationReceipt::new(
         binding,
         CredentialRealizationKind::WorkerProviderAdapter,
@@ -1078,5 +1120,3 @@ use awaken_dispatch_contract::{
 };
 
 use awaken_dispatch_http::WorkerDispatchAuthority;
-
-use awaken_dispatch_contract::ClaimedCredentialDeliveryTransport as _;

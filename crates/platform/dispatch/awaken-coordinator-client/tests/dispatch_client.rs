@@ -1326,7 +1326,7 @@ fn any_dispatch_store_preserves_the_claimed_recovery_transport() {
         WorkerIdentity::new("worker-local", "boot-local", 1),
     ));
     let checkpoints: Arc<dyn awaken_dispatch_contract::ClaimedCheckpointTransport> = owner.clone();
-    let credentials: Arc<dyn awaken_dispatch_contract::ClaimedCredentialDeliveryTransport> =
+    let credentials: Arc<dyn awaken_dispatch_contract::WorkerCredentialGrantTransport> =
         owner.clone();
     let commit: Arc<dyn awaken_dispatch_contract::ClaimedRunCommit> = Arc::new(SelectionOnlyCommit);
     let binding = awaken_dispatch::DispatchBinding::remote(owner, commit.clone());

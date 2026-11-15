@@ -103,7 +103,7 @@ pub use awaken_dispatch_contract::operational::{
 };
 pub use awaken_dispatch_contract::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
-    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialDeliveryRefreshRequest,
+    ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialGrantRequest,
     CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest, HeartbeatWorkerRequest,
     RecoveryRequest, RegisterWorkerRequest, RelinquishRequest, RenewRequest,
     SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
@@ -114,7 +114,8 @@ pub use awaken_dispatch_contract::{
     retry_exhaustion_eligible, worker_credential_realization_capabilities,
 };
 pub use awaken_dispatch_contract::{
-    ClaimedStreamPublisher, CompletionSink, SessionContinuationOutbox,
+    ClaimedStreamPublisher, CompletionSink, CredentialGrantKind, SessionContinuationOutbox,
+    WorkerCredentialGrant, WorkerCredentialGrantMaterial, WorkerCredentialGrantTransport,
 };
 pub use awaken_dispatch_execution::{AnyDispatchStore, Dispatch};
 pub use awaken_dispatch_execution::{
@@ -141,12 +142,12 @@ pub use awaken_worker_contract::{
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosurePage,
     AttemptClosureRecord, AttemptExecutionBinding, AttemptPhysicalFact, AttemptReturnCause,
-    CasOutcome, Claimed, ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport,
-    CommitEpochGuard, ContinuationAdmission, DispatchCompletion, DispatchDepths, DispatchError,
-    DispatchLease, DispatchOutcome, DispatchSettlementError, DispatchSettlementObserver,
-    DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput,
-    PendingRecord, PhysicalAttempt, SessionChildAdmission, SessionRunReservationActivation,
-    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, ClaimedCheckpointTransport, CommitEpochGuard, ContinuationAdmission,
+    DispatchCompletion, DispatchDepths, DispatchError, DispatchLease, DispatchOutcome,
+    DispatchSettlementError, DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox,
+    LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, PhysicalAttempt,
+    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
+    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 #[cfg(feature = "test-support")]

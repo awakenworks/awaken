@@ -20,8 +20,10 @@ use awaken_runtime_contract::{InferenceEndpoint, UnspecifiedReasoning};
 use crate::executor_from_materialized_endpoint_for_provider;
 
 mod catalog;
-
-pub const BROKERED_INFERENCE_ACCESS_CAPABILITY: &str = "inference.brokered_grant";
+mod claim_grant;
+pub use claim_grant::{
+    BrokeredInferenceGrantIssuer, ClaimBrokeredInferenceClient, brokered_error, brokered_refusal,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrokeredInferenceRequest {
@@ -72,14 +74,23 @@ pub enum BrokeredInferenceError {
     TemporarilyUnavailable,
     #[error("the brokered inference request is invalid")]
     InvalidRequest,
+    /// The granting Coordinator has brokered model supply disabled.
+    #[error("cloud_models_disabled: brokered model supply is disabled")]
+    CloudModelsDisabled,
+    /// The granting Coordinator holds no authenticated Cloud identity.
+    #[error(
+        "cloud_sign_in_required: brokered inference needs an authenticated Awaken Cloud identity"
+    )]
+    SignInRequired,
 }
 
 impl BrokeredInferenceError {
     fn into_llm(self) -> LlmError {
         match self {
-            Self::AuthenticationRequired | Self::AccountSelectionRequired => {
-                LlmError::LoginRequired(self.to_string())
-            }
+            Self::AuthenticationRequired
+            | Self::AccountSelectionRequired
+            | Self::SignInRequired => LlmError::LoginRequired(self.to_string()),
+            Self::CloudModelsDisabled => LlmError::Unauthorized(self.to_string()),
             Self::SubscriptionRequired | Self::ModelNotEntitled => {
                 LlmError::Unauthorized(self.to_string())
             }
@@ -550,7 +561,9 @@ fn map_managed_web_error(
         | BrokeredInferenceError::AccountSelectionRequired
         | BrokeredInferenceError::SubscriptionRequired
         | BrokeredInferenceError::ModelNotEntitled
-        | BrokeredInferenceError::InsufficientBalance => {
+        | BrokeredInferenceError::InsufficientBalance
+        | BrokeredInferenceError::CloudModelsDisabled
+        | BrokeredInferenceError::SignInRequired => {
             awaken_ext_builtin_tools::ManagedWebRouteError::Forbidden
         }
         BrokeredInferenceError::ModelUnavailable | BrokeredInferenceError::InvalidRequest => {
@@ -678,37 +691,22 @@ impl BrokeredCandidateExecutor {
         local_run_correlation: Option<String>,
         ownership: Option<Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>>,
     ) -> Result<Self, String> {
-        // Brokered supply asks its Cloud client for a provider routing label,
-        // not a Vault source authorization coordinate. The catalog may give
-        // either a versioned or bare label; direct credential materialization
-        // instead uses candidate_provider_expectation and requires both exact
-        // versioned Provider and endpoint pins before any Vault material read.
-        let provider = provider_ref
-            .split_once('@')
-            .map_or(provider_ref, |(provider, _)| provider)
-            .trim();
-        let native_protocol = match endpoint.api_dialect.as_str() {
-            "anthropic_messages" => "anthropic_messages",
-            "open_ai_chat" => "openai_chat_completions",
-            "open_ai_responses" => "openai_responses",
-            _ => {
-                return Err(format!(
-                    "unsupported brokered API dialect `{}`",
-                    endpoint.api_dialect
-                ));
-            }
-        };
-        if provider.is_empty() || model.trim().is_empty() {
-            return Err("brokered publication has an incomplete public target".into());
-        }
+        // Direct credential materialization instead uses
+        // candidate_provider_expectation and requires both exact versioned
+        // Provider and endpoint pins before any Vault material read.
+        let (provider, model, native_protocol) = awaken_credential_contract::brokered_target_parts(
+            provider_ref,
+            model,
+            &endpoint.api_dialect,
+        )?;
         Ok(Self {
             client,
-            provider: provider.into(),
-            model: model.into(),
+            provider,
+            model,
             api_dialect: endpoint.api_dialect.clone(),
             adapter_kind: endpoint.adapter_kind.clone(),
             unspecified_reasoning,
-            native_protocol: native_protocol.into(),
+            native_protocol,
             local_run_correlation,
             ownership,
         })

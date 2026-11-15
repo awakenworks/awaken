@@ -106,18 +106,31 @@ async fn management_scenario_process(
 
 /// The env-selected AllInOne with the production model supply: publications
 /// resolve from the authored catalog. It stays on this process's own claim
-/// pool: Awaken Cloud brokered inference does not reach the co-located
-/// registered Worker yet (`PreparedLocalWorker` installs only the credential
-/// materializer), so the brokered provider e2e qualify the Local placement
-/// (w5-slices.md §13).
+/// pool unless the scenario selects the shipped co-located registered Worker
+/// (`SESSION_DEPLOYMENT_PLACEMENT=worker`), whose brokered and Provider
+/// credentials are then granted under its claims by this process.
 async fn provider_scenario_process(
     observability: &awaken_observability::ObservabilityConfig,
 ) -> awaken_process_startup::PreparedProcess {
-    awaken_process_startup::prepare_all_in_one_process_with_execution(
-        Box::new(awaken_cli::LocalExecution::default()),
-        observability,
-    )
-    .await
+    let execution = if scenario_requests_worker_placement() {
+        awaken_process_startup::ScenarioExecution::Worker(Box::new(
+            awaken_cli::scenario_worker_preparation,
+        ))
+    } else {
+        awaken_process_startup::ScenarioExecution::Local(Box::new(
+            awaken_cli::LocalExecution::default(),
+        ))
+    };
+    awaken_process_startup::prepare_all_in_one_provider_process(execution, observability).await
+}
+
+/// The provider scenario's explicit opt-in to the registered Worker.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the scenario harness is its own process root and reads its scenario configuration from the environment"
+)]
+fn scenario_requests_worker_placement() -> bool {
+    std::env::var("SESSION_DEPLOYMENT_PLACEMENT").as_deref() == Ok("worker")
 }
 
 /// The scenario's explicit placement selection (topology input, not model

@@ -155,3 +155,32 @@ impl SessionCredentials {
         Ok(drafts)
     }
 }
+
+/// The MCP bearer grant read of the Coordinator's Worker credential grant
+/// endpoint: the Session aggregate decides whether a generation lease holds
+/// the pin, read without mutation.
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionMcpCredentialGrants for SessionCredentials {
+    async fn mcp_credential_grant(
+        &self,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+        credential: &awaken_agent_contract::credential::CredentialRef,
+    ) -> Result<
+        Result<
+            awaken_agent_contract::credential::CredentialAccess,
+            awaken_session_configuration_contract::mcp::McpCredentialGrantRefusal,
+        >,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        use awaken_time::WallClockExt as _;
+        let session = self
+            .mutations()
+            .session_aggregate(generation.session_id())
+            .await
+            .map_err(crate::realization::repository_control)?;
+        Ok(session
+            .mcp
+            .credential_grant(generation, credential, self.clock().now_ms())
+            .cloned())
+    }
+}

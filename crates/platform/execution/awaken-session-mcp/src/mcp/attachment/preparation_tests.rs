@@ -165,7 +165,7 @@ fn credentials(context: &Context) -> McpCredentialMaterialization<'_> {
         Some(inputs) => McpCredentialMaterialization {
             credentials: Some(&inputs.materializer),
             platform_egress: Some(inputs.provisioner.as_ref()),
-            refresh_factory: None,
+            refresh: None,
         },
         None => McpCredentialMaterialization::default(),
     }

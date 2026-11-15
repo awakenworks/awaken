@@ -151,8 +151,6 @@ pub struct WorkerNodeBuilder {
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
-    credential_refresh_factory:
-        Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>>,
     remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
     hand_executor_factory:
@@ -265,7 +263,6 @@ impl WorkerNodeBuilder {
             application: WorkerApplicationSource::default(),
             tool_gate: None,
             credential_materializer: None,
-            credential_refresh_factory: None,
             mcp_relay_outbound_proxy: None,
             remote_attempt: None,
             hand_executor_factory: None,
@@ -540,20 +537,6 @@ impl WorkerNodeBuilder {
         credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
     ) -> Self {
         self.credential_materializer = Some(credentials);
-        self
-    }
-
-    /// Install the challenge-recovery factory of the same credential authority
-    /// that backs [`Self::with_credential_materializer`]. A Worker whose
-    /// materializer reads the deployment's Vault recovers an expired MCP OAuth
-    /// bearer through it (exact-revision refresh exchange and reseal); a Worker
-    /// without one refuses an MCP credential that needs refresh as unavailable.
-    #[must_use]
-    pub fn with_credential_refresh_factory(
-        mut self,
-        factory: Arc<dyn awaken_credential_contract::CredentialRefreshFactory>,
-    ) -> Self {
-        self.credential_refresh_factory = Some(factory);
         self
     }
 
@@ -979,7 +962,6 @@ impl WorkerNodeBuilder {
             application: self.application,
             tool_gate: self.tool_gate,
             credential_materializer: self.credential_materializer,
-            credential_refresh_factory: self.credential_refresh_factory,
             mcp_relay_outbound_proxy: self.mcp_relay_outbound_proxy,
             remote_attempt: self.remote_attempt,
             hand_executor_factory: self.hand_executor_factory,
@@ -1077,8 +1059,6 @@ pub struct WorkerNode {
     application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
-    credential_refresh_factory:
-        Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
     mcp_relay_outbound_proxy: Option<Arc<dyn awaken_session_mcp::McpRelayOutboundProxy>>,
     remote_attempt: Option<awaken_session_executor::RemoteAttemptInstallation>,
     hand_executor_factory:
@@ -1510,6 +1490,7 @@ impl WorkerNode {
             registration.snapshot.identity.clone(),
             self.manifest.clone(),
         );
+        let grant_transport = dispatch.clone();
         // The capacity this incarnation just registered. It is read once, it has
         // no `Clone`, and the only thing that can be done with it is to move it
         // into the pool installer below — so the registry's number and the
@@ -1661,9 +1642,12 @@ impl WorkerNode {
         if let Some(realizer) = self.mcp_attachment_realizer {
             execution = execution.with_mcp_attachment_realizer(realizer);
         }
-        if let Some(factory) = self.credential_refresh_factory {
-            execution = execution.with_credential_refresh_factory(factory);
-        }
+        // Every registered Worker recovers a challenged MCP bearer through the
+        // one credential grant endpoint, under the generation lease that
+        // staged it; the Coordinator decides the grant and refreshes it.
+        execution = execution.with_mcp_credential_refresh(Arc::new(
+            awaken_coordinator_client::WorkerMcpCredentialRefresh::new(grant_transport),
+        ));
         deps = deps.with_session_execution(execution);
         let authority = Arc::new(lifecycle::WorkerAuthorityProof::default());
         let host = (deps.with_execution_authority(authority.clone())).build().map_err(std::io::Error::other)?;

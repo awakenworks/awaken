@@ -3,7 +3,7 @@
 //! Immutable local/remote dispatch composition.
 use super::{AnyCoordinatorDispatch, AnyDispatchStore, RemoteDispatch};
 use awaken_dispatch_contract::{
-    ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, ClaimedRunCommit,
+    ClaimedCheckpointTransport, ClaimedRunCommit, WorkerCredentialGrantTransport,
 };
 use awaken_runtime_contract::runs::RunError;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ pub enum DispatchTopology {
     },
     Remote {
         checkpoints: Arc<dyn ClaimedCheckpointTransport>,
-        credentials: Arc<dyn ClaimedCredentialDeliveryTransport>,
+        credentials: Arc<dyn WorkerCredentialGrantTransport>,
         commit: Arc<dyn ClaimedRunCommit>,
     },
 }

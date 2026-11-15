@@ -433,10 +433,13 @@ impl WorkerDaemonConfig {
         if let Some(limit) = self.worker.max_concurrent {
             manifest = manifest.with_max_concurrent(limit);
         }
+        // Brokered candidates obtain their grants under each attempt's claim
+        // through the one credential grant endpoint.
         let inference =
             awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
                 credentials.clone(),
-            );
+            )
+            .with_claim_brokered_grants();
         let mut runtime = self.runtime.clone();
         let mut builder = crate::WorkerNodeBuilder::new(upstream, clock.clone());
         if matches!(

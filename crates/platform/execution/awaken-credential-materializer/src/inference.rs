@@ -36,6 +36,9 @@ pub struct CredentialInferenceMaterializer {
     brokered:
         Option<Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>>,
     brokered_mode_enabled: bool,
+    /// A registered Worker obtains every brokered grant under the attempt's
+    /// dispatch claim instead of from an in-process broker identity.
+    claim_brokered: bool,
 }
 
 impl CredentialInferenceMaterializer {
@@ -55,7 +58,16 @@ impl CredentialInferenceMaterializer {
             credentials,
             brokered: None,
             brokered_mode_enabled: false,
+            claim_brokered: false,
         }
+    }
+
+    /// Obtain brokered grants through the claim grant port the registered
+    /// Worker attaches to every attempt; the Coordinator decides each grant.
+    #[must_use]
+    pub fn with_claim_brokered_grants(mut self) -> Self {
+        self.claim_brokered = true;
+        self
     }
 
     #[must_use]
@@ -72,6 +84,41 @@ impl CredentialInferenceMaterializer {
         self.brokered = Some(client);
         self.brokered_mode_enabled = true;
         self
+    }
+
+    /// The broker one brokered candidate uses: the attempt's claim grants on
+    /// a registered Worker, the in-process identity elsewhere.
+    fn brokered_client(
+        &self,
+        candidate: &ResolvedModelCandidate,
+        context: &RuntimeRunContext,
+    ) -> Result<
+        Arc<dyn awaken_inference_endpoint::brokered_inference::BrokeredInferenceClient>,
+        String,
+    > {
+        if self.claim_brokered {
+            let grants = AttemptCredentialRealization::from_context(context)
+                .and_then(AttemptCredentialRealization::claim_grants)
+                .cloned()
+                .ok_or_else(|| {
+                    "brokered model access requires the attempt's claim grant transport".to_string()
+                })?;
+            let fingerprint = awaken_credential_contract::candidate_fingerprint(candidate)
+                .map_err(|error| error.to_string())?;
+            return Ok(Arc::new(
+                awaken_inference_endpoint::brokered_inference::ClaimBrokeredInferenceClient::new(
+                    grants,
+                    fingerprint,
+                ),
+            ));
+        }
+        if !self.brokered_mode_enabled {
+            return Err("cloud_models_disabled: brokered model supply is disabled".into());
+        }
+        self.brokered.clone().ok_or_else(|| {
+            "cloud_sign_in_required: brokered inference needs an authenticated Awaken Cloud identity"
+                .to_string()
+        })
     }
 
     async fn materialize_exact(
@@ -100,13 +147,7 @@ impl CredentialInferenceMaterializer {
         };
 
         if *access_kind == ProviderAccessKind::Brokered {
-            if !self.brokered_mode_enabled {
-                return Err("cloud_models_disabled: brokered model supply is disabled".into());
-            }
-            let client = self.brokered.clone().ok_or_else(|| {
-                "cloud_sign_in_required: brokered inference needs an authenticated Awaken Cloud identity"
-                    .to_string()
-            })?;
+            let client = self.brokered_client(candidate, context)?;
             return awaken_inference_endpoint::brokered_inference::BrokeredCandidateExecutor::new(
                 client,
                 provider_ref,
@@ -329,10 +370,10 @@ impl LlmExecutor for PinnedCandidateExecutor {
 
 impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
     fn supported_access_schemes(&self) -> &'static [&'static str] {
-        if self.brokered.is_some() {
+        if self.brokered.is_some() || self.claim_brokered {
             return &[
                 awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-                awaken_inference_endpoint::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY,
+                awaken_worker_contract::BROKERED_MODEL_GRANT_CAPABILITY,
             ];
         }
         &[awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY]
@@ -1035,9 +1076,11 @@ mod tests {
         );
 
         let materializer = materializer.with_brokered_client(Arc::new(NeverGrantClient));
-        assert!(materializer.supported_access_schemes().contains(
-            &awaken_inference_endpoint::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY
-        ));
+        assert!(
+            materializer
+                .supported_access_schemes()
+                .contains(&awaken_worker_contract::BROKERED_MODEL_GRANT_CAPABILITY)
+        );
         let router = PinnedCandidateExecutor {
             materializer,
             candidates: vec![primary.clone(), fallback.clone()],

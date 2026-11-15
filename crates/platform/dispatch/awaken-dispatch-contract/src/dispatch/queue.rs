@@ -66,15 +66,6 @@ where
     }
 }
 
-#[async_trait]
-pub trait ClaimedCredentialDeliveryTransport: Send + Sync {
-    async fn refresh_credential_delivery(
-        &self,
-        claim: &RunClaim,
-        request: awaken_credential_contract::AttemptCredentialDeliveryRequest,
-    ) -> Result<Option<awaken_credential_contract::AttemptCredentialDelivery>, DispatchError>;
-}
-
 /// One operational observation from the canonical Dispatch store.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DispatchDepths {

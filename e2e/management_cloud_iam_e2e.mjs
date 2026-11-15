@@ -25,6 +25,10 @@
 // blocks; incomplete and unknown output variants remain valid terminal responses.
 // T9 malformed/unsupported Cloud projections fail atomically; duplicate public
 // model observations merge only the conservative known attribute minimum.
+// With AWAKEN_E2E_BROKERED_PLACEMENT=worker, T3-T8 run on the co-located
+// registered Worker, which holds no Cloud identity: every grant create/close
+// crosses the one Worker credential grant endpoint under the attempt's claim and
+// the Coordinator relays the Cloud's answer (refusal taxonomy included).
 // T10 configured Cloud identity + Cloud models off -> identity remains
 // authenticated, interactive login remains disabled, and Catalog refresh fails
 // locally with zero Cloud inference requests.
@@ -45,6 +49,7 @@ import {
   waitForPort,
   waitForRetainedUnknownExecution,
   waitForSessionEventReceipt,
+  waitForValue,
   pass,
 } from './harness.mjs';
 
@@ -292,6 +297,9 @@ function recordUnscopedAuthenticationFailure(seenRequestIDs, response, label) {
   );
 }
 
+// Placement of this run's Sessions (see P1/P2 at the cloud-enabled boot).
+const ON_REGISTERED_WORKER = process.env.AWAKEN_E2E_BROKERED_PLACEMENT === 'worker';
+
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-cloud-iam-e2e-'));
   const iam = await startIamFixture();
@@ -345,18 +353,28 @@ async function main() {
     server = null;
     pass('configured Cloud identity and Cloud model supply are independent; disabled supply has zero Cloud traffic');
 
-    const env = deploymentEnv(directory, {
-      identityMode: 'awaken-cloud',
-      controlSealKey: SEAL_KEY,
-      fields: { cloud_api_url: iam.url, cloud_models: 'enabled' },
-      cloudIam: {
-        url: iam.url,
-        issuer: ISSUER,
-        audience: AUDIENCE,
-        accessToken: cachedToken,
-        serviceToken: SERVICE_TOKEN,
-      },
-    });
+    const env = {
+      ...deploymentEnv(directory, {
+        identityMode: 'awaken-cloud',
+        controlSealKey: SEAL_KEY,
+        // No ACP host discovery: the co-located Worker (P1) would otherwise
+        // discover and install ACP adapters from the network at every start.
+        fields: { cloud_api_url: iam.url, cloud_models: 'enabled', acp_clis: [] },
+        cloudIam: {
+          url: iam.url,
+          issuer: ISSUER,
+          audience: AUDIENCE,
+          accessToken: cachedToken,
+          serviceToken: SERVICE_TOKEN,
+        },
+      }),
+      // P1 (AWAKEN_E2E_BROKERED_PLACEMENT=worker): the shipped topology.
+      // Sessions run on the co-located registered Worker, which holds no Cloud
+      // identity and obtains every brokered grant under its claim through the
+      // one Worker credential grant endpoint. P2 (default): the process's own
+      // claim pool, which keeps its in-process Cloud client.
+      ...(ON_REGISTERED_WORKER ? { SESSION_DEPLOYMENT_PLACEMENT: 'worker' } : {}),
+    };
     ({ server } = spawnServer('management-providers', PORT, env));
     await waitForPort(PORT, 180_000, server);
     const base = `http://127.0.0.1:${PORT}`;
@@ -696,6 +714,37 @@ async function main() {
         betas,
       });
       const { retainedUnknown = false, ...waitOptions } = observationOptions;
+      if (retainedUnknown && ON_REGISTERED_WORKER) {
+        // The shared retained-unknown oracle also requires the occupied, bound
+        // physical slot. The co-located registered Worker uses the unbound
+        // (header-authenticated) transport, which freezes no physical binding,
+        // so on P1 the row keeps every other clause: the input stays accepted
+        // and unprocessed, the terminal unknown is public, the Thread is idle
+        // and the aggregate is not.
+        const inputId = receipt.data[0]?.id;
+        return (await waitForValue(
+          async () => {
+            const listed = [];
+            for await (const event of client.beta.sessions.events.list(isolated.id, { betas })) {
+              listed.push(event);
+            }
+            const current = await client.beta.sessions.retrieve(isolated.id, { betas });
+            return { session: current, events: listed };
+          },
+          ({ session: current, events }) => {
+            const inputIndex = events.findIndex((event) => event.id === inputId);
+            if (inputIndex < 0 || events[inputIndex].processed_at !== null) return false;
+            const suffix = events.slice(inputIndex + 1);
+            return current.status === 'running'
+              && suffix.some((event) => event.type === 'session.error'
+                && event.error?.retry_status?.type === 'terminal'
+                && /execution result is unknown/iu.test(event.error?.message ?? ''))
+              && suffix.some((event) => event.type === 'session.thread_status_idle')
+              && !suffix.some((event) => event.type === 'session.status_idle');
+          },
+          'brokered Cloud invalid response retains unknown execution on the registered Worker',
+        )).events;
+      }
       if (retainedUnknown) {
         // G2: complete HTTP response with invalid JSON has no proved model
         // result. The existing unknown-execution oracle owns the pending input,
@@ -919,6 +968,14 @@ async function main() {
         failedEvents.some((event) => event.type === 'session.error'),
         `${label}: ${JSON.stringify(failedEvents)}`,
       );
+      if (retainedUnknown && ON_REGISTERED_WORKER) {
+        assert.ok(
+          failedEvents.some((event) => event.type === 'session.error'
+            && event.error?.retry_status?.type === 'terminal'
+            && /execution result is unknown/iu.test(event.error?.message ?? '')),
+          `${label}: the unproved model result stays a public terminal unknown`,
+        );
+      }
       const createsAfter = iam.grantCalls.filter((entry) => entry.kind === 'create').length;
       const closesAfter = iam.grantCalls.filter((entry) => entry.kind === 'close').length;
       assert.equal(closesAfter - closeCount, createsAfter - createCount);

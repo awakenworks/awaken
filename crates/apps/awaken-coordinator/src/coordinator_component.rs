@@ -75,8 +75,8 @@ pub struct CoordinatorDependencies {
     /// The signed provider Create executor is mounted only on the private
     /// Worker router; Session and Dispatch retain their existing owners.
     pub worker_create_broker_router: Option<Router>,
-    pub credential_deliveries:
-        Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
+    /// The issuers of the one Worker credential grant endpoint.
+    pub credential_grants: awaken_dispatch_http::WorkerCredentialGrantIssuers,
     pub repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     /// Coordinator-owned Worker identity/incarnation authority. The process
@@ -322,7 +322,7 @@ pub async fn build_coordinator_component(
         worker_execution_stops,
         worker_relay_targets,
         worker_create_broker_router,
-        credential_deliveries,
+        credential_grants,
         repository_transport_authorizer,
         worker_directory,
         deployment_application,
@@ -389,7 +389,7 @@ pub async fn build_coordinator_component(
                 worker_execution_bindings,
                 worker_execution_stops,
                 worker_create_broker_router,
-                credential_deliveries,
+                credential_grants,
                 repository_transport_authorizer,
                 worker_directory,
                 ai_sdk_browser_cors,

@@ -28,19 +28,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
     struct ExactRefreshFactory;
 
-    impl awaken_credential_contract::CredentialRefreshFactory for ExactRefreshFactory {
+    impl awaken_session_configuration_contract::mcp::McpCredentialRefresh for ExactRefreshFactory {
         fn refresher(
             &self,
-            _credential_id: awaken_credential_contract::CredentialSourceId,
-            _access: awaken_agent_contract::credential::CredentialRefreshAccess,
-        ) -> Arc<dyn awaken_ext_mcp::CredentialRefresher> {
-            Arc::new(PinnedBearerRefresher)
-        }
-
-        fn bearer_reloader(
-            &self,
-            _credential_id: awaken_credential_contract::CredentialSourceId,
-            _credential_revision: u64,
+            _generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+            _credential: &CredentialAccess,
         ) -> Arc<dyn awaken_ext_mcp::CredentialRefresher> {
             Arc::new(PinnedBearerRefresher)
         }
@@ -52,7 +44,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .with_credentials(credentials.clone(), secrets.clone()))
     .with_session_execution(
         crate::SessionExecutionDependencies::default()
-            .with_credential_refresh_factory(Arc::new(ExactRefreshFactory)),
+            .with_mcp_credential_refresh(Arc::new(ExactRefreshFactory)),
     ))
     .build()
     .expect("validated Host dependencies");

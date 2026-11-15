@@ -2,11 +2,11 @@
 // @formal reason: Required roles are statically bound from one owner; composition adds no second queue or lifecycle law.
 //! Owned dispatch role bundles. Leaf ports remain in the contract.
 use awaken_dispatch_contract::{
-    ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, DispatchAdministration,
-    DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims, DispatchCommitAuthority,
-    DispatchControlClaims, DispatchControlReads, DispatchEnqueue, DispatchExecution,
-    DispatchMaintenance, DispatchOperationalFeed, DispatchReads, DispatchSettlement, Inbox,
-    InboxRead, Outbox, SessionContinuationOutbox, SessionRunReservations,
+    ClaimedCheckpointTransport, DispatchAdministration, DispatchAttemptControl,
+    DispatchClaimOwnership, DispatchClaims, DispatchCommitAuthority, DispatchControlClaims,
+    DispatchControlReads, DispatchEnqueue, DispatchExecution, DispatchMaintenance,
+    DispatchOperationalFeed, DispatchReads, DispatchSettlement, Inbox, InboxRead, Outbox,
+    SessionContinuationOutbox, SessionRunReservations, WorkerCredentialGrantTransport,
 };
 pub trait Dispatch:
     DispatchEnqueue
@@ -61,10 +61,10 @@ impl<
 {
 }
 pub trait RemoteDispatch:
-    Dispatch + ClaimedCheckpointTransport + ClaimedCredentialDeliveryTransport
+    Dispatch + ClaimedCheckpointTransport + WorkerCredentialGrantTransport
 {
 }
-impl<T: Dispatch + ClaimedCheckpointTransport + ClaimedCredentialDeliveryTransport> RemoteDispatch
+impl<T: Dispatch + ClaimedCheckpointTransport + WorkerCredentialGrantTransport> RemoteDispatch
     for T
 {
 }

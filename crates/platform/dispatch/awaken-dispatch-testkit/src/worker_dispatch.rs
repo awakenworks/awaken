@@ -84,8 +84,9 @@ pub fn worker_dispatch_dependencies(
         recovery: unconfigured.clone(),
         completion: unconfigured.clone(),
         terminal_observer: unconfigured.clone(),
+        mcp_credential_grants: unconfigured.clone(),
         stream_sink: unconfigured,
-        credential_deliveries: None,
+        credential_grants: Default::default(),
         clock,
         lease_policy: Arc::new(FixedWorkerLeasePolicy::default()),
         registry_ttl_ms: WORKER_REGISTRY_TTL_MS,
@@ -272,6 +273,23 @@ impl session::SessionRealizationControl for UnconfiguredCollaborators {
         &self,
         _command: session::FailSessionRealization,
     ) -> Result<(), SessionRealizationControlFailure> {
+        Err(refused())
+    }
+}
+
+#[async_trait]
+impl session::SessionMcpCredentialGrants for UnconfiguredCollaborators {
+    async fn mcp_credential_grant(
+        &self,
+        _generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+        _credential: &awaken_agent_contract::credential::CredentialRef,
+    ) -> Result<
+        Result<
+            awaken_agent_contract::credential::CredentialAccess,
+            awaken_session_configuration_contract::mcp::McpCredentialGrantRefusal,
+        >,
+        SessionRealizationControlFailure,
+    > {
         Err(refused())
     }
 }

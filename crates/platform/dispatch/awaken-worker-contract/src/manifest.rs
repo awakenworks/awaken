@@ -39,6 +39,12 @@ pub const HOST_EXECUTOR_CAPABILITY: &str = "host-executor/v1";
 /// Provider candidate. This capability grants no credential by itself.
 pub const PROVIDER_CREDENTIAL_SOURCE_CAPABILITY: &str = "credential-source/v1";
 
+/// Worker can obtain short-lived brokered model grants for a published
+/// brokered Provider candidate under the exact claim it holds. It is the
+/// brokered counterpart of [`PROVIDER_CREDENTIAL_SOURCE_CAPABILITY`] and,
+/// like it, grants no access by itself.
+pub const BROKERED_MODEL_GRANT_CAPABILITY: &str = "inference.brokered_grant";
+
 /// Worker can inject a frozen Repository config's opaque credential reference at
 /// realization time. Kept separate so a secretless worker remains eligible for
 /// File/Memory/Skill and public Repository inputs.

@@ -26,7 +26,8 @@ mod tools;
 /// Managed and claimed dispatch adapters both read this exact Host-owned value.
 #[derive(Default)]
 pub struct SessionExecutionDependencies {
-    pub(crate) credential_refresh_factory: Option<Arc<dyn crate::CredentialRefreshFactory>>,
+    pub(crate) mcp_credential_refresh:
+        Option<Arc<dyn awaken_session_configuration_contract::mcp::McpCredentialRefresh>>,
     pub(crate) platform_mcp_egress:
         Option<Arc<dyn awaken_credential_materializer::PlatformMcpEgressProvisioner>>,
     pub(crate) resource_validator:
@@ -760,15 +761,16 @@ impl SessionExecutionDependencies {
         self
     }
 
-    /// Install the credential adapter's exact OAuth refresh port. The Host
-    /// retains only this factory and never receives Credential/Secret Store
-    /// handles.
+    /// Install the exact MCP bearer refresh port: the Vault refresh
+    /// authority in-process, or a registered Worker's grant client that asks
+    /// the Coordinator under the generation's realization lease. The Host
+    /// never receives Credential/Secret Store handles.
     #[must_use]
-    pub fn with_credential_refresh_factory(
+    pub fn with_mcp_credential_refresh(
         mut self,
-        factory: Arc<dyn crate::CredentialRefreshFactory>,
+        refresh: Arc<dyn awaken_session_configuration_contract::mcp::McpCredentialRefresh>,
     ) -> Self {
-        self.credential_refresh_factory = Some(factory);
+        self.mcp_credential_refresh = Some(refresh);
         self
     }
 

@@ -369,7 +369,7 @@ pub async fn mount_with_managed_and_application_access_and_models(
             worker_execution_bindings: None,
             worker_execution_stops: None,
             worker_create_broker_router: None,
-            credential_deliveries: None,
+            credential_grants: Default::default(),
             repository_transport_authorizer: None,
             worker_directory: managed_state.worker_directory.clone(),
             ai_sdk_browser_cors: AiSdkBrowserCors::default(),
@@ -402,8 +402,8 @@ pub struct ManagedRoutingExtensions {
     pub worker_execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub worker_create_broker_router: Option<Router>,
-    pub credential_deliveries:
-        Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
+    /// The issuers of the one Worker credential grant endpoint.
+    pub credential_grants: awaken_dispatch_http::WorkerCredentialGrantIssuers,
     pub repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
@@ -962,7 +962,7 @@ async fn mount_with_managed_over(
                 worker_execution_bindings: None,
                 worker_execution_stops: None,
                 worker_create_broker_router: None,
-                credential_deliveries: None,
+                credential_grants: Default::default(),
                 repository_transport_authorizer: None,
                 worker_directory: managed_state.worker_directory.clone(),
                 ai_sdk_browser_cors: AiSdkBrowserCors::default(),
@@ -1115,7 +1115,7 @@ async fn mount_with_managed_over_and_models(
         worker_execution_bindings,
         worker_execution_stops,
         worker_create_broker_router,
-        credential_deliveries,
+        credential_grants,
         repository_transport_authorizer,
         worker_directory,
         ai_sdk_browser_cors,
@@ -1310,7 +1310,8 @@ async fn mount_with_managed_over_and_models(
             completion: execution.worker_completion.clone(),
             terminal_observer: execution.worker_settlement.clone(),
             stream_sink: execution.worker_stream.clone(),
-            credential_deliveries,
+            credential_grants,
+            mcp_credential_grants: session_application.credentials(),
             clock: worker_clock.clone(),
             lease_policy: Arc::new(
                 awaken_worker_transport_security::FixedWorkerLeasePolicy::default(),

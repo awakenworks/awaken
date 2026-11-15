@@ -150,7 +150,8 @@ pub struct ColocatedExecutionInputs {
         Option<Arc<dyn awaken_credential_contract::CredentialMaterialResolver>>,
     pub inference_override:
         Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
-    pub credential_refresh: Option<Arc<dyn awaken_credential_contract::CredentialRefreshFactory>>,
+    pub credential_refresh:
+        Option<Arc<dyn awaken_session_configuration_contract::mcp::McpCredentialRefresh>>,
     pub file_content: Arc<
         dyn awaken_resource_contract::FileContentSource<
                 awaken_session_execution_contract::ResourceOperationFence,

@@ -38,7 +38,7 @@ impl RunAssembly {
     ) -> awaken_session_mcp::McpCredentialMaterialization<'_> {
         awaken_session_mcp::McpCredentialMaterialization {
             credentials: self.capabilities.exec.credential_materializer.as_ref(),
-            refresh_factory: self.session_execution.credential_refresh_factory.as_deref(),
+            refresh: self.session_execution.mcp_credential_refresh.as_deref(),
             platform_egress: self.session_execution.platform_mcp_egress.as_deref(),
         }
     }

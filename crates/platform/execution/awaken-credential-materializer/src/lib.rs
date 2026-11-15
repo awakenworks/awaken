@@ -1570,15 +1570,20 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_credential_contract::AttemptCredentialDeliverySource for LoseDuringRefresh {
-        async fn deliver(
+    impl awaken_credential_contract::ClaimCredentialGrants for LoseDuringRefresh {
+        async fn grant(
             &self,
-            _: awaken_credential_contract::AttemptCredentialDeliveryRequest,
-        ) -> Result<awaken_credential_contract::AttemptCredentialDelivery, String> {
+            _: awaken_credential_contract::ClaimCredentialGrant,
+        ) -> Result<Option<awaken_credential_contract::ClaimCredentialGrantMaterial>, String>
+        {
             self.ownership
                 .0
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            Ok(self.delivery.clone())
+            Ok(Some(
+                awaken_credential_contract::ClaimCredentialGrantMaterial::ProviderCredential(
+                    Box::new(self.delivery.clone()),
+                ),
+            ))
         }
     }
 
@@ -1739,10 +1744,13 @@ mod tests {
                 Arc::new(FixedAttempt(Ok(()))),
             )
             .unwrap()
-            .with_delivery_refresh(Arc::new(LoseDuringRefresh {
-                ownership: ownership.clone(),
-                delivery,
-            }));
+            .with_claim_grants(
+                Arc::new(LoseDuringRefresh {
+                    ownership: ownership.clone(),
+                    delivery,
+                }),
+                true,
+            );
         let context = awaken_runtime_contract::RuntimeRunContext::new()
             .with_ownership(ownership)
             .with_credential_realization(realization);

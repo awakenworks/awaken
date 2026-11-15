@@ -369,6 +369,31 @@ pub async fn prepare_all_in_one_process_with_scenario_model(
     }
 }
 
+/// Build the env-selected AllInOne with the production model supply
+/// (publications resolve from the authored catalog), running its Sessions
+/// either on the launcher's co-located registered Worker or on its own claim
+/// pool, exactly as the scenario-model startup selects.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn prepare_all_in_one_provider_process(
+    execution: ScenarioExecution,
+    observability: &awaken_observability::ObservabilityConfig,
+) -> PreparedProcess {
+    match execution {
+        ScenarioExecution::Worker(worker) => {
+            prepare_all_in_one_process_with_model_supply_on_worker(
+                PublicationModelSupply::PublishedProviders,
+                ManagedServiceAdapters::default(),
+                worker,
+                observability,
+            )
+            .await
+        }
+        ScenarioExecution::Local(execution) => {
+            prepare_all_in_one_process_with_execution(execution, observability).await
+        }
+    }
+}
+
 async fn prepare_all_in_one_process_with_model_supply(
     model_supply: PublicationModelSupply,
     managed_services: ManagedServiceAdapters,

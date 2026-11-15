@@ -29,13 +29,13 @@ use awaken_agent_contract::stream::sink::Error as StreamError;
 use awaken_credential_contract::CredentialRealizationReceipt;
 use awaken_dispatch_contract::{
     AttemptAdmission, AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest,
-    ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed,
-    ClaimedCredentialDeliveryTransport, CredentialDeliveryRefreshRequest,
+    ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed, CredentialGrantRequest,
     CredentialRealizationRequest, DeliverAndClaimRequest, DispatchError, DispatchOutcome,
     EnqueueRequest, LeaseRenewalOutcome, PendingInput, PendingRecord, RecoveryRequest,
     RenewRequest, RunDispatch, SessionRunReservationResolution,
     SessionRunReservationResolutionRequest, SettleOutcome, SettleRequest, StreamEventRequest,
-    StreamObservationRequest, SubmitOptions,
+    StreamObservationRequest, SubmitOptions, WorkerCredentialGrant, WorkerCredentialGrantMaterial,
+    WorkerCredentialGrantTransport,
 };
 use awaken_worker_contract::RunClaim;
 
@@ -428,25 +428,23 @@ impl ClaimedStreamPublisher for HttpDispatchQueue {
 }
 
 #[async_trait]
-impl ClaimedCredentialDeliveryTransport for HttpDispatchQueue {
-    async fn refresh_credential_delivery(
+impl WorkerCredentialGrantTransport for HttpDispatchQueue {
+    async fn credential_grant(
         &self,
-        claim: &RunClaim,
-        delivery_request: awaken_credential_contract::AttemptCredentialDeliveryRequest,
-    ) -> Result<Option<awaken_credential_contract::AttemptCredentialDelivery>, DispatchError> {
+        grant: WorkerCredentialGrant,
+    ) -> Result<Option<WorkerCredentialGrantMaterial>, DispatchError> {
         let value = self
             .post(
-                "/v1/worker/dispatch/credential_delivery/refresh",
-                &CredentialDeliveryRefreshRequest {
-                    claim: claim.clone(),
-                    identity: Some(self.worker_identity.clone()),
-                    delivery_request,
+                "/v1/worker/dispatch/credential_grant",
+                &CredentialGrantRequest {
+                    identity: self.worker_identity.clone(),
+                    grant,
                 },
                 self.worker_id(),
             )
             .await?;
-        serde_json::from_value(value.get("delivery").cloned().unwrap_or_default()).map_err(
-            |error| DispatchError::Rejected(format!("decode credential delivery: {error}")),
+        serde_json::from_value(value.get("material").cloned().unwrap_or_default()).map_err(
+            |error| DispatchError::Rejected(format!("decode credential grant material: {error}")),
         )
     }
 }

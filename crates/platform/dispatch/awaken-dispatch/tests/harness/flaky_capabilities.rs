@@ -1,9 +1,9 @@
 //! Explicit role fixtures for local/remote scheduler composition.
 use super::*;
 use awaken_dispatch_contract::{
-    ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, ClaimedRunCommit,
-    ContinuationAdmission, DispatchCursor, DispatchError, DispatchOperationalFeed, DispatchPage,
-    PendingInput, RunDispatch, SessionContinuationOutbox, SettleOutcome,
+    ClaimedCheckpointTransport, ClaimedRunCommit, ContinuationAdmission, DispatchCursor,
+    DispatchError, DispatchOperationalFeed, DispatchPage, PendingInput, RunDispatch,
+    SessionContinuationOutbox, SettleOutcome, WorkerCredentialGrantTransport,
 };
 use awaken_worker_contract::RunClaim;
 
@@ -75,13 +75,13 @@ impl ClaimedCheckpointTransport for FlakyDispatchStore {
     }
 }
 #[async_trait::async_trait]
-impl ClaimedCredentialDeliveryTransport for FlakyDispatchStore {
-    async fn refresh_credential_delivery(
+impl WorkerCredentialGrantTransport for FlakyDispatchStore {
+    async fn credential_grant(
         &self,
-        _: &RunClaim,
-        _: awaken_credential_contract::AttemptCredentialDeliveryRequest,
-    ) -> Result<Option<awaken_credential_contract::AttemptCredentialDelivery>, DispatchError> {
-        unreachable!("empty scheduler fixture must not refresh credentials")
+        _: awaken_dispatch_contract::WorkerCredentialGrant,
+    ) -> Result<Option<awaken_dispatch_contract::WorkerCredentialGrantMaterial>, DispatchError>
+    {
+        unreachable!("empty scheduler fixture must not request credential grants")
     }
 }
 #[async_trait::async_trait]

@@ -885,10 +885,16 @@ fallback. Exact
 current-Vault rediscovery. Target binding, streaming lifecycle, and
 sandbox-facing MCP route projection remain Runtime Host adapter
 responsibilities. Failure never authorizes plaintext in another trust domain.
-`awaken-credential-materializer` contains the sole neutral
-`CredentialRefreshFactory` port. Control owns its one Vault-backed refresher,
-including token exchange and exact revision write-back. Runtime Host consumes
-the factory port; Coordinator does not own or duplicate refresh policy.
+The MCP generation contract owns the sole neutral `McpCredentialRefresh` port.
+Control owns its one Vault-backed implementation (`VaultRefreshFactory`),
+including token exchange and exact revision write-back; in-process hosts install
+it directly. A registered Worker (co-located or remote) installs the grant
+client instead: on a challenge it asks the Coordinator for the MCP bearer grant
+under the generation lease through the one Worker credential grant endpoint
+(`POST /v1/worker/dispatch/credential_grant`, ADR-0067 2026-11-15 amendment),
+and the Coordinator answers with the same Vault authority. The same endpoint
+re-delivers frozen Provider envelopes and issues brokered model grants under the
+attempt's dispatch claim; the Worker names a grant, never its holder or route.
 
 In a split deployment, the implemented self-hosted path is the external
 Secret/CSI projection described below; brokered inference remains secretless to

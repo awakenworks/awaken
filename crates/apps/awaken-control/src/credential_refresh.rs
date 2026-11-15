@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use awaken_agent_contract::credential::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_agent_contract::credential::{CredentialRefreshAccess, TokenEndpointAuth};
-use awaken_credential_contract::CredentialRefreshFactory;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{
@@ -69,8 +68,10 @@ impl awaken_admin_config_api::CredentialGrantRenewal for VaultRefreshFactory {
     }
 }
 
-impl CredentialRefreshFactory for VaultRefreshFactory {
-    fn refresher(
+impl VaultRefreshFactory {
+    /// The exact refresh-token exchanger of one pinned credential revision.
+    #[must_use]
+    pub fn refresher(
         &self,
         credential_id: CredentialSourceId,
         access: CredentialRefreshAccess,
@@ -82,7 +83,9 @@ impl CredentialRefreshFactory for VaultRefreshFactory {
         ))
     }
 
-    fn bearer_reloader(
+    /// Reload the bearer of exactly `credential_revision`, never another.
+    #[must_use]
+    pub fn bearer_reloader(
         &self,
         credential_id: CredentialSourceId,
         credential_revision: u64,
@@ -93,6 +96,24 @@ impl CredentialRefreshFactory for VaultRefreshFactory {
             credentials: self.credentials.clone(),
             secrets: self.secrets.clone(),
         })
+    }
+}
+
+/// The Vault authority of a pinned MCP bearer: a configured refresh exchanges
+/// the exact revision's refresh token, otherwise the exact revision's bearer
+/// is reloaded. In-process hosts install it directly; the Coordinator answers
+/// registered Workers' MCP grants with it.
+impl awaken_session_configuration_contract::mcp::McpCredentialRefresh for VaultRefreshFactory {
+    fn refresher(
+        &self,
+        _generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+        credential: &awaken_agent_contract::credential::CredentialAccess,
+    ) -> Arc<dyn CredentialRefresher> {
+        let source = CredentialSourceId(credential.credential.id.clone());
+        match &credential.refresh {
+            Some(refresh) => Self::refresher(self, source, refresh.clone()),
+            None => self.bearer_reloader(source, credential.credential.revision),
+        }
     }
 }
 
@@ -585,7 +606,8 @@ mod tests {
             www_authenticate: None,
         };
         assert_eq!(
-            CredentialRefreshFactory::bearer_reloader(&factory, source.id.clone(), 1,)
+            factory
+                .bearer_reloader(source.id.clone(), 1)
                 .refresh(&challenge)
                 .await,
             Some(Credential::Bearer("current-bearer".into())),
@@ -624,7 +646,8 @@ mod tests {
                 awaken_time::system_clock(),
             );
             assert_eq!(
-                CredentialRefreshFactory::bearer_reloader(&case_factory, source.id.clone(), 1,)
+                case_factory
+                    .bearer_reloader(source.id.clone(), 1)
                     .refresh(&challenge)
                     .await,
                 None,
@@ -632,13 +655,10 @@ mod tests {
             );
         }
         assert_eq!(
-            CredentialRefreshFactory::bearer_reloader(
-                &factory,
-                CredentialSourceId("cred:missing".into()),
-                1,
-            )
-            .refresh(&challenge)
-            .await,
+            factory
+                .bearer_reloader(CredentialSourceId("cred:missing".into()), 1)
+                .refresh(&challenge)
+                .await,
             None,
             "B5/E2"
         );

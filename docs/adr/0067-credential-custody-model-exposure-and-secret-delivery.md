@@ -1237,3 +1237,53 @@ profile is correlated with the exact ACP backend through the existing manifest
 extension-consumer codec; Native and foreign CLI profiles cannot supply missing
 dimensions. The brokered port supplies the Session secret broker; the closed composition reuses the same canonical materializer
 instance for both last-mile deliveries.
+
+### Amendment: one grant-addressed Worker credential endpoint (2026-11-15)
+
+A registered Worker obtains the material of every credential grant it holds
+through one authenticated route, `POST /v1/worker/dispatch/credential_grant`.
+The request names only a grant and the exact lease it is held under: a Run
+grant under its dispatch claim (`provider_credential` re-delivery of a frozen
+attempt binding, or `brokered_model` acquire/renew/close for a frozen brokered
+candidate), or an MCP bearer under the Session MCP generation lease that staged
+it. The Worker never supplies a holder, material binding, Provider route or
+credential selection; the Coordinator compiles them from what it froze.
+
+One rule admits every kind (`credential_grant_admission`): the authenticated
+current incarnation must hold the named lease; the lease must be its owning
+aggregate's current live lease (Dispatch claim fence; Session MCP realization
+law, `SessionMcpAttachmentSet::credential_grant`); the grant must be frozen
+under it; and this Coordinator must install the kind's issuer. A stale holding
+answers no material; a foreign holder or an unheld grant is invalid. A missing
+issuer (a split Coordinator without Control's Vault or delivery signer) is a
+typed, terminal answer, never a transport failure: `IssuerMissing(kind)`, which
+the Worker reports as `provider_credential_delivery_unavailable` or
+`mcp_credential_refresh_unavailable`; a Coordinator without a broker answers a
+brokered grant `cloud_models_disabled`, exactly as one whose brokered supply is
+disabled. Issuance is external I/O, so the holding is re-read before answering:
+material issued to a lost holding is never returned and a brokered grant issued
+meanwhile is closed.
+
+Renew/close are admitted only for a grant this Coordinator issued to the same
+claim and candidate. That issue record is process memory, not durable state: no
+existing durable store holds per-grant broker coordinates (the Dispatch row
+freezes candidates and credential bindings, not broker grants), and adding one
+would make the Coordinator a second broker ledger. It is sufficient because a
+brokered grant is a short-lived, per-request Gateway capability that ends on the
+broker's own clock: the Coordinator returns no grant whose expiry exceeds
+15 minutes (a longer one is closed at once and refused), so a close refused
+after a Coordinator restart leaves only a grant held by its own attempt that
+expires within that bound, and never closes or extends another claim's grant.
+The Worker's close is already best-effort and never changes a returned model
+response.
+
+This replaces `/v1/worker/dispatch/credential_delivery/refresh` and the two
+in-process authorities the co-located Worker used to hold (the Vault MCP refresh
+factory and the process Cloud client). The co-located and remote Worker now
+take the same path; only the in-process claim pool keeps its direct Vault and
+broker handles. Provider material remains a recipient-sealed envelope. The MCP
+bearer and the brokered capability are returned only to the grant's holder over
+the authenticated Worker transport, are never persisted, and redact on `Debug`.
+A brokered candidate's placement capability is `inference.brokered_grant`
+(`credential-source/v1` is the direct Provider's), so placement and claim
+admission require exactly the path that realizes each candidate.

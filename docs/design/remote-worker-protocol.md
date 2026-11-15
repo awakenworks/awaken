@@ -105,6 +105,14 @@ Worker registers and becomes ready
   -> settles terminal attempt and records completion
 ```
 
+Credential material the attempt needs after claim comes from one route,
+`POST /v1/worker/dispatch/credential_grant`. The Worker names a grant and the
+lease it holds it under (Provider re-delivery or brokered model access under the
+dispatch claim; a challenged MCP bearer under the Session MCP generation lease);
+the Coordinator applies one admission rule and re-reads the lease after
+issuance (ADR-0067, 2026-11-15 amendment). A Worker holds no Vault handle,
+refresh token or Cloud identity.
+
 ### Run-free initial Session preparation
 
 An externally placed, complete `Preparing` Session has an initial-realization
