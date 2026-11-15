@@ -496,7 +496,16 @@ fn activation(run_id: &RunId, thread_id: &ThreadId) -> RunActivation {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_control_processes_retry_recover_and_settle_without_sticky_routing() {
-    let schema = format!("t_worker_active_active_{}", std::process::id());
+    assert_committed_response_loss(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lost_commit_response_survives_claim_takeover() {
+    assert_committed_response_loss(true).await;
+}
+
+async fn assert_committed_response_loss(takeover: bool) {
+    let schema = format!("t_worker_active_active_{}_{takeover}", std::process::id());
     let Some((pool, url)) = schema_pool(&schema).await else {
         return;
     };
@@ -546,7 +555,7 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
         .await
         .expect("claim through Control B")
         .expect("shared dispatch is claimable");
-    let claim = RunClaim::from(&claimed.lease);
+    let mut claim = RunClaim::from(&claimed.lease);
     let LoadedRunRecovery::Full {
         snapshot: initial,
         prefix: Some(initial_prefix),
@@ -592,13 +601,41 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
         .commit_operation(command.clone())
         .await;
     assert!(
-        ambiguous.is_err(),
-        "Control A must disappear before its durable receipt reaches the Worker"
+        matches!(
+            ambiguous,
+            Err(awaken_agent_contract::thread::commit::coordinator::Error::OutcomeUnknown(_))
+        ),
+        "the Worker cannot determine the outcome after losing the response: {ambiguous:?}"
     );
     let exited = control_a.wait_for_exit().await;
     assert_eq!(exited.code(), Some(86), "fault injector exited Control A");
 
-    let duplicate = RemoteClaimedRunCommit::new(&base_b, identity)
+    let remote = RemoteClaimedRunCommit::new(&base_b, identity.clone());
+    let mut command = command;
+    if takeover {
+        // Force the persisted deadline past its own clock. Leave the running
+        // row intact so the production claim path must advance the epoch.
+        let expired = sqlx::query(
+            "UPDATE runtime_dispatch SET lease_until = 1 WHERE run_id = $1 AND lease_epoch = $2",
+        )
+        .bind(&run_id.0)
+        .bind(i64::try_from(claim.epoch).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(expired.rows_affected(), 1);
+        let successor = queue_b
+            .claim(&identity.lease_owner(), 120_000, &Default::default())
+            .await
+            .expect("take over over HTTP")
+            .expect("the expired logical claim is recoverable");
+        assert!(successor.lease.epoch() > claim.epoch);
+        assert!(remote.commit_operation(command.clone()).await.is_err());
+        assert!(queue_b.load_recovery(&claim, None, None).await.is_err());
+        claim = RunClaim::from(&successor.lease);
+        command.claim = claim.clone();
+    }
+    let duplicate = remote
         .commit_operation(command)
         .await
         .expect("retry the same logical operation through Control B");
@@ -646,6 +683,7 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
 fn postgres_configuration_contract() {
     postgres_support::assert_configuration_contract(&[
         "two_control_processes_retry_recover_and_settle_without_sticky_routing",
+        "lost_commit_response_survives_claim_takeover",
     ]);
 }
 

@@ -90,9 +90,10 @@ pub use event::{
     session_outcome_convenience_id, session_terminated_fact_id,
 };
 pub use repository::{
-    LifecycleOutbox, PreparedParticipantIntent, PreparedParticipantIntentClaim,
-    PreparedParticipantIntentPhase, PreparedParticipantIntentRecord, PreparedParticipantIntents,
-    SessionReconciliation, SessionRepository, SessionRepositoryReads,
+    LifecycleOutbox, LifecycleOutboxBatch, LifecycleOutboxCursor, PreparedParticipantIntent,
+    PreparedParticipantIntentClaim, PreparedParticipantIntentPhase,
+    PreparedParticipantIntentRecord, PreparedParticipantIntents, SessionReconciliation,
+    SessionRepository, SessionRepositoryReads,
 };
 pub use state::{
     ActivationState, CheckpointReceipt, IdempotencyRecord, MaterializationKind, PersistedSession,

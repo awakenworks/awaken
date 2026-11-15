@@ -100,7 +100,7 @@ impl LifecycleOutboxReplay {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ticker.tick().await;
         loop {
-            self.drain_once().await;
+            self.drain_once(&cancel).await;
             tokio::select! {
                 () = cancel.cancelled() => break,
                 _ = ticker.tick() => {}
@@ -110,23 +110,83 @@ impl LifecycleOutboxReplay {
         Ok(())
     }
 
-    async fn drain_once(&self) {
+    async fn drain_once(&self, cancel: &CancellationToken) {
+        const CLAIM_TTL: Duration = Duration::from_secs(30);
+        const BATCH_SIZE: std::num::NonZeroU32 = std::num::NonZeroU32::new(128).unwrap();
+
         let _guard = self.draining.lock().await;
-        let rows = match self.session_outbox.pending_lifecycle().await {
-            Ok(rows) => rows,
-            Err(error) => {
-                tracing::warn!(%error, "Session lifecycle outbox remains pending");
+        let mut after = None;
+        while !cancel.is_cancelled() {
+            let batch = match self
+                .session_outbox
+                .list_pending(after.as_ref(), BATCH_SIZE)
+                .await
+            {
+                Ok(batch) => batch,
+                Err(error) => {
+                    tracing::warn!(%error, "Session lifecycle outbox remains pending");
+                    return;
+                }
+            };
+            let (facts, next) = batch.into_parts();
+            for row in facts {
+                if cancel.is_cancelled() {
+                    return;
+                }
+                let pending = PendingLifecycleFact::from_repository(&row);
+                let fact = pending.delivery_fact();
+                let claim = match self
+                    .session_outbox
+                    .claim_lifecycle(&fact.id, CLAIM_TTL)
+                    .await
+                {
+                    Ok(Some(claim)) => claim,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!(fact_id = %fact.id, %error, "Session lifecycle delivery claim failed");
+                        continue;
+                    }
+                };
+                let delivery = self.delivery.deliver(fact);
+                tokio::pin!(delivery);
+                let mut heartbeat = tokio::time::interval(CLAIM_TTL / 3);
+                heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                heartbeat.tick().await;
+                let result = loop {
+                    tokio::select! {
+                        () = cancel.cancelled() => return,
+                        result = &mut delivery => break Some(result),
+                        _ = heartbeat.tick() => {
+                            match self.session_outbox.renew_lifecycle_claim(&fact.id, &claim, CLAIM_TTL).await {
+                                Ok(true) => {}
+                                Ok(false) => break None,
+                                Err(error) => {
+                                    tracing::warn!(fact_id = %fact.id, %error, "Session lifecycle delivery claim renewal failed");
+                                    break None;
+                                }
+                            }
+                        }
+                    }
+                };
+                let Some(result) = result else {
+                    continue;
+                };
+                if let Err(error) = &result {
+                    tracing::warn!(fact_id = %fact.id, %error, "Session lifecycle delivery remains pending");
+                }
+                let delivered = pending.completion_fact(result.is_ok()).is_some();
+                if let Err(error) = self
+                    .session_outbox
+                    .finish_lifecycle_claim(&fact.id, &claim, delivered)
+                    .await
+                {
+                    tracing::warn!(fact_id = %fact.id, %error, "Session lifecycle receipt remains pending");
+                }
+            }
+            if next.is_none() || next == after {
                 return;
             }
-        };
-        for row in rows {
-            let pending = PendingLifecycleFact::from_repository(&row);
-            let delivery_succeeded = self.delivery.deliver(pending.delivery_fact()).await.is_ok();
-            if let Some(delivered) = pending.completion_fact(delivery_succeeded)
-                && let Err(error) = self.session_outbox.complete_lifecycle(&delivered.id).await
-            {
-                tracing::warn!(fact_id = %delivered.id, %error, "Session lifecycle receipt remains pending");
-            }
+            after = next;
         }
     }
 }
@@ -140,6 +200,59 @@ impl LifecycleFactNotifier for LifecycleOutboxRelay {
 #[cfg(test)]
 mod tests {
     use super::PendingLifecycleFact;
+
+    use super::{CancellationToken, LifecycleFactDelivery, LifecycleOutbox, LifecycleOutboxRelay};
+    use awaken_session_contract::ManagedLifecycleFact;
+    use awaken_session_store::SqliteManagedSessionRepository;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct FlakyReceiver(std::sync::atomic::AtomicBool);
+
+    #[async_trait::async_trait]
+    impl LifecycleFactDelivery for FlakyReceiver {
+        async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
+            if fact.id == "128" || self.0.load(std::sync::atomic::Ordering::Relaxed) {
+                Ok(())
+            } else {
+                Err("receiver unavailable".into())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_batch_does_not_block_later_facts_and_is_retried() {
+        let rows = Arc::new(
+            SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        for index in 0..=128 {
+            rows.append_lifecycle(ManagedLifecycleFact {
+                id: format!("{index:03}"),
+                object_id: "session".into(),
+                workspace_id: None,
+                event_type: "session.created".into(),
+                timestamp: 1,
+                runtime_interval: None,
+            })
+            .await
+            .unwrap();
+        }
+        let receiver = Arc::new(FlakyReceiver::default());
+        let replay = LifecycleOutboxRelay::new(receiver.clone(), rows.clone())
+            .replay_loop(Duration::from_secs(30))
+            .unwrap();
+        let cancel = CancellationToken::new();
+        replay.drain_once(&cancel).await;
+        let pending = rows.pending_lifecycle().await.unwrap();
+        assert_eq!(pending.len(), 128);
+        assert!(!pending.iter().any(|fact| fact.id == "128"));
+        receiver.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        replay.drain_once(&cancel).await;
+        assert!(rows.pending_lifecycle().await.unwrap().is_empty());
+    }
 
     #[test]
     fn pending_fact_completion_uses_the_delivered_identity_only_after_success() {

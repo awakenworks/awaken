@@ -34,6 +34,12 @@ pub fn claimed_store_run_error(
                 message,
             )
         }
+        awaken_agent_contract::thread::commit::coordinator::Error::OutcomeUnknown(message) => {
+            RunError::unavailable_classified(
+                awaken_dispatch_contract::COMMIT_OUTCOME_UNKNOWN,
+                message,
+            )
+        }
         error => RunError::internal(error.to_string()),
     }
 }

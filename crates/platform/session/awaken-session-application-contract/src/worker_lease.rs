@@ -177,6 +177,24 @@ impl SessionWorkAuthorityReceipt {
         }
     }
 
+    /// Return the exact coordinates asserted by this receipt. The receipt carries
+    /// no expiry. The store must check liveness on its own clock.
+    #[must_use]
+    pub fn lease_for_renewal(&self) -> Option<awaken_session_types::SessionWorkLease> {
+        let ReceiptAuthority::Leased(tenure) = &self.0 else {
+            return None;
+        };
+        let (work_id, environment_id, session_id) = tenure.subject();
+        awaken_session_types::SessionWorkLease::from_persisted(
+            work_id,
+            environment_id,
+            session_id.clone(),
+            tenure.holder(),
+            tenure.epoch().get(),
+            0,
+        )
+    }
+
     /// Compare every stable coordinate with a new canonical observation. Lease
     /// expiry is deliberately omitted: renewal may extend time, while Work id,
     /// Environment, Session, owner, and epoch — the complete tenure — must

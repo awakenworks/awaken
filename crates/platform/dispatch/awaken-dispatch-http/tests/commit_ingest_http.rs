@@ -417,6 +417,15 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
 /// | T3   | Y  | Y  | N  | fail after the bounded retry budget |
 #[tokio::test(flavor = "multi_thread")]
 async fn t2_retries_ambiguous_server_failure_with_the_same_operation() {
+    assert_ambiguous_commit_retry(false).await;
+}
+
+#[tokio::test]
+async fn exhausted_commit_retries_preserve_the_unknown_outcome() {
+    assert_ambiguous_commit_retry(true).await;
+}
+
+async fn assert_ambiguous_commit_retry(exhaust_retries: bool) {
     let identity = WorkerIdentity::new("retry-worker", "retry-boot", 1);
     let commit = terminal_commit();
     let operation = CommitOperation {
@@ -454,7 +463,7 @@ async fn t2_retries_ambiguous_server_failure_with_the_same_operation() {
                 let receipt = handler_receipt.clone();
                 async move {
                     bodies.lock().await.push(body);
-                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 || exhaust_retries {
                         (
                             axum::http::StatusCode::SERVICE_UNAVAILABLE,
                             axum::Json(serde_json::json!({"error": "receipt lost", "code": awaken_dispatch_contract::COMMIT_OUTCOME_UNKNOWN})),
@@ -471,18 +480,34 @@ async fn t2_retries_ambiguous_server_failure_with_the_same_operation() {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-    let got = RemoteClaimedRunCommit::new(format!("http://{address}"), identity)
+    let result = RemoteClaimedRunCommit::new(format!("http://{address}"), identity)
         .commit_operation(command)
-        .await
-        .expect("T2 retries the ambiguous 5xx");
+        .await;
+    server.abort();
 
-    assert_eq!(got, receipt);
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    let expected_attempts = if exhaust_retries {
+        let error = result.expect_err("no durable receipt was delivered");
+        assert!(
+            matches!(
+                error,
+                awaken_agent_contract::thread::commit::coordinator::Error::OutcomeUnknown(_)
+            ),
+            "{error}"
+        );
+        3
+    } else {
+        assert_eq!(result.expect("T2 retries the ambiguous 5xx"), receipt);
+        2
+    };
+    assert_eq!(attempts.load(Ordering::SeqCst), expected_attempts);
     let bodies = bodies.lock().await;
-    assert_eq!(bodies.len(), 2);
-    assert_eq!(bodies[0], bodies[1], "retry preserves the exact operation");
+    assert_eq!(bodies.len(), expected_attempts);
+    assert!(
+        bodies.windows(2).all(|pair| pair[0] == pair[1]),
+        "retry preserves the exact operation"
+    );
     assert_eq!(
         bodies[0]["operation"],
         serde_json::to_value(operation).unwrap()

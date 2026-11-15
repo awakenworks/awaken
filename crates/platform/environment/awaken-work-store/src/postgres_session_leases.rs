@@ -11,6 +11,11 @@ use super::{
 };
 use awaken_time::WallClockExt as _;
 
+enum Admission<'a> {
+    Claim,
+    Renew(Option<&'a SessionWorkLease>),
+}
+
 /// Preserve the original insertion and lease kernels under the caller's one
 /// transaction. `completed=false` is the original early-return rollback path.
 pub async fn acquire_postgres_session_work_on(
@@ -35,7 +40,7 @@ pub async fn acquire_postgres_session_work_on(
         env_id,
         session_id,
         worker_owner,
-        true,
+        Admission::Claim,
     )
     .await
 }
@@ -47,6 +52,34 @@ pub async fn renew_postgres_session_work_on(
     env_id: &str,
     session_id: &awaken_session_types::SessionId,
     worker_owner: &str,
+) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+    renew_existing_on(connection, clock, env_id, session_id, worker_owner, None).await
+}
+
+/// Renew the asserted generation inside the caller's transaction.
+pub async fn renew_exact_postgres_session_work_on(
+    connection: &mut sqlx::PgConnection,
+    clock: &dyn WallClock,
+    lease: &SessionWorkLease,
+) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+    renew_existing_on(
+        connection,
+        clock,
+        lease.environment_id(),
+        lease.session_id(),
+        lease.owner(),
+        Some(lease),
+    )
+    .await
+}
+
+async fn renew_existing_on(
+    connection: &mut sqlx::PgConnection,
+    clock: &dyn WallClock,
+    env_id: &str,
+    session_id: &awaken_session_types::SessionId,
+    worker_owner: &str,
+    exact: Option<&SessionWorkLease>,
 ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
     super::backends::lock_postgres_environment(connection, env_id).await?;
     let work_id: Option<String> = sqlx::query_scalar(
@@ -68,7 +101,7 @@ pub async fn renew_postgres_session_work_on(
         env_id,
         session_id,
         worker_owner,
-        false,
+        Admission::Renew(exact),
     )
     .await?;
     Ok(lease)
@@ -81,7 +114,7 @@ async fn acquire_existing_on(
     env_id: &str,
     session_id: &awaken_session_types::SessionId,
     worker_owner: &str,
-    may_claim: bool,
+    admission: Admission<'_>,
 ) -> Result<(Option<SessionWorkLease>, bool), WorkQueueError> {
     let _: Vec<String> = sqlx::query_scalar(
         "SELECT work_id FROM work_queue_item WHERE environment_id = $1 FOR UPDATE",
@@ -93,6 +126,7 @@ async fn acquire_existing_on(
     // The one reading this grant is minted and judged on, sampled under the
     // Environment lock so no later writer can commit an earlier deadline.
     let now_ms = clock.now_ms();
+    let may_claim = matches!(admission, Admission::Claim);
     if may_claim {
         let cleared = reclaimed_lease_authority();
         sqlx::query(
@@ -121,6 +155,13 @@ async fn acquire_existing_on(
         .map_err(storage)?;
     if !may_claim
         && (current.0 != "active" || current.3.is_none_or(|expiry| expiry <= db_millis(now_ms)))
+    {
+        return Ok((None, false));
+    }
+    if let Admission::Renew(Some(lease)) = admission
+        && (work_id != lease.work_id()
+            || current.1.as_deref() != Some(lease.owner())
+            || u64::try_from(current.2).ok() != Some(lease.epoch()))
     {
         return Ok((None, false));
     }
@@ -155,8 +196,7 @@ async fn acquire_existing_on(
                 expires_at: current.3,
             },
             worker_owner.to_string(),
-            // The registered-Worker owner is incarnation-qualified and
-            // this acquisition carries no generation to compare.
+            // Exact renewal checked the generation above under the same row lock.
             LeaseFence::OwnerOnly,
             db_millis(now_ms),
             lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),

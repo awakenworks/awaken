@@ -682,6 +682,9 @@ impl OperationCoordinator for PostgresCommitCoordinator {
             .await
             .map_err(|error| match error {
                 PostgresCommitFailure::Rejected(error) => error,
+                PostgresCommitFailure::OutcomeUnknown(error) => {
+                    Error::OutcomeUnknown(error.to_string())
+                }
                 other => Error::Rejected(other.to_string()),
             })?;
         if let Some(events) = events {

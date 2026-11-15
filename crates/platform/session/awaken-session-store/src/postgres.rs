@@ -17,8 +17,13 @@ use super::*;
 use awaken_sql_storage::postgres_pool_options as pool_options;
 
 mod mutation;
+mod outbox;
 mod replay;
-use replay::{insert_session_revision, replay_bundle};
+use replay::insert_session_revision;
+#[cfg(not(test))]
+use replay::replay_bundle;
+#[cfg(test)]
+pub(crate) use replay::replay_bundle;
 pub use replay::{lock_session_for_run_archive, session_revision_at};
 
 /// A Postgres-backed [`SessionRepository`] — the network-DB sibling over
@@ -111,7 +116,9 @@ impl PostgresManagedSessionRepository {
     /// Build from an existing pool: apply the session migrations.
     pub async fn with_pool(pool: PgPool) -> Result<Self, String> {
         let receipts = Self::migration_receipts(&pool).await?;
-        let selected = selected_session_schema(&receipts).map_err(|error| error.to_string())?;
+        let selected =
+            selected_session_schema(&receipts, awaken_scoped_migration::Dialect::Postgres)
+                .map_err(|error| error.to_string())?;
         debug_assert!(selected.pre_convergence.is_none() || selected.stream.is_legacy());
         awaken_scoped_migration::plan(
             &selected.complete,
@@ -146,9 +153,19 @@ impl PostgresManagedSessionRepository {
             .run_bundle(&replay_bundle()?)
             .await
             .map_err(|error| error.to_string())?;
-        Self::normalize_session_aggregates(&pool, true)
-            .await
-            .map_err(|error| error.to_string())?;
+        outbox::migrate(&runner, &pool).await?;
+        // Healthy catalogs can apply additive upgrades under active writers.
+        // Operational repair still takes the existing exclusive writer gate
+        // when verification finds a root or index that actually needs repair.
+        match Self::verify_session_state(&pool).await {
+            Ok(()) => {}
+            Err(SessionRepositoryError::Corrupt(_)) => {
+                Self::normalize_session_aggregates(&pool, true)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            Err(error) => return Err(error.to_string()),
+        }
         Ok(Self { pool })
     }
 
@@ -167,7 +184,9 @@ impl PostgresManagedSessionRepository {
     /// Verify the existing scoped ledger over the composition-owned pool.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, String> {
         let receipts = Self::migration_receipts(&pool).await?;
-        let selected = selected_session_schema(&receipts).map_err(|error| error.to_string())?;
+        let selected =
+            selected_session_schema(&receipts, awaken_scoped_migration::Dialect::Postgres)
+                .map_err(|error| error.to_string())?;
         debug_assert!(selected.pre_convergence.is_none() || selected.stream.is_legacy());
         let converged = converged_session_bundle().map_err(|error| error.to_string())?;
         let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
@@ -187,6 +206,7 @@ impl PostgresManagedSessionRepository {
             .verify_bundle(&replay_bundle()?)
             .await
             .map_err(|error| error.to_string())?;
+        outbox::verify(&runner, &pool).await?;
         Self::verify_session_state(&pool)
             .await
             .map_err(|error| error.to_string())?;
@@ -1204,49 +1224,6 @@ impl PostgresManagedSessionRepository {
 }
 
 mod creation_intents;
-
-#[async_trait]
-impl LifecycleOutbox for PostgresManagedSessionRepository {
-    async fn append_lifecycle(
-        &self,
-        fact: ManagedLifecycleFact,
-    ) -> Result<(), SessionRepositoryError> {
-        sqlx::query(
-            "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2)
-             ON CONFLICT (fact_id) DO NOTHING",
-        )
-        .bind(&fact.id)
-        .bind(lifecycle_str(&fact))
-        .execute(&self.pool)
-        .await
-        .map_err(storage)?;
-        Ok(())
-    }
-
-    async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
-        let rows =
-            sqlx::query("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(storage)?;
-        rows.into_iter()
-            .map(|row| {
-                row.try_get::<String, _>("data")
-                    .map_err(storage)
-                    .and_then(|data| decode_lifecycle(&data).map_err(corrupt))
-            })
-            .collect()
-    }
-
-    async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError> {
-        sqlx::query("DELETE FROM managed_lifecycle_outbox WHERE fact_id = $1")
-            .bind(fact_id)
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        Ok(())
-    }
-}
 
 #[cfg(test)]
 mod pool_policy_tests {

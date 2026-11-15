@@ -1505,8 +1505,8 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
     .unwrap();
     assert_eq!(
         ledgers,
-        (29, 1),
-        "E1 includes additive typed-receipt, retained-abort and privacy tails"
+        (30, 1),
+        "E1 includes the outbox index after the existing additive tails"
     );
     let retired_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('managed_session') WHERE name IN ('agent_id','metadata_json','runtime_json')",
@@ -3882,4 +3882,128 @@ async fn postgres_owner_scope_is_recorded_and_survives_a_reopen() {
         reopened.owner(&SessionId::from("sesn_missing")).await,
         Err(SessionRepositoryError::NotFound)
     );
+}
+
+#[tokio::test]
+async fn postgres_lifecycle_outbox_upgrade_keeps_writes_and_old_schema_verification_live() {
+    use sqlx::Executor as _;
+    const SCOPE: &str = "t_session_outbox_rolling_upgrade";
+    let Some((url, admin)) = postgres_test_admin().await else {
+        return;
+    };
+    admin
+        .execute("DROP SCHEMA IF EXISTS t_session_outbox_rolling_upgrade CASCADE")
+        .await
+        .unwrap();
+    admin
+        .execute("CREATE SCHEMA t_session_outbox_rolling_upgrade")
+        .await
+        .unwrap();
+    let pool = sqlx::PgPool::connect(&scoped_postgres_url(&url, SCOPE))
+        .await
+        .unwrap();
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+            .unwrap();
+    let old = migration_prefix_through(&session_bundle().unwrap(), 8);
+    let converged = crate::schema::converged_session_bundle().unwrap();
+    let replay = crate::postgres::replay_bundle().unwrap();
+    runner
+        .run_bundles(&[old.clone(), converged.clone(), replay.clone()])
+        .await
+        .unwrap();
+    let old_writer = PostgresManagedSessionRepository { pool: pool.clone() };
+    let fact = ManagedLifecycleFact {
+        id: "old-root-write".into(),
+        object_id: "sesn_rolling_upgrade".into(),
+        workspace_id: Some("old-workspace".into()),
+        event_type: "session.created".into(),
+        timestamp: 1,
+        runtime_interval: None,
+    };
+    sqlx::query("INSERT INTO managed_lifecycle_outbox (fact_id, data) SELECT 'old-' || id, '{}' FROM generate_series(1, 10000) id")
+        .execute(&pool).await.unwrap();
+    let mut held = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ('old-in-flight', '{}')",
+    )
+    .execute(&mut *held)
+    .await
+    .unwrap();
+    let mut root_writer = pool.begin().await.unwrap();
+    sqlx::query("LOCK TABLE managed_session IN ROW EXCLUSIVE MODE")
+        .execute(&mut *root_writer)
+        .await
+        .unwrap();
+    let upgrading = tokio::spawn(PostgresManagedSessionRepository::with_pool(pool.clone()));
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE relation = 'managed_lifecycle_outbox'::regclass AND NOT granted)
+                 OR EXISTS(SELECT 1 FROM pg_stat_progress_create_index WHERE relid = 'managed_lifecycle_outbox'::regclass)"
+            ).fetch_one(&pool).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("the index migration is running alongside the old writer");
+    let write_during_migration = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        for index in 0..32 {
+            sqlx::query("INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, '{}')")
+                .bind(format!("during-upgrade-{index}"))
+                .execute(&pool)
+                .await?;
+        }
+        create_fixture(
+            &old_writer,
+            "old-workspace",
+            sample("sesn_rolling_upgrade"),
+            vec![fact.clone()],
+        )
+        .await;
+        Ok::<_, sqlx::Error>(())
+    })
+    .await;
+    held.commit().await.unwrap();
+    let mut upgrading = upgrading;
+    let upgraded_with_root_writer =
+        tokio::time::timeout(std::time::Duration::from_secs(5), &mut upgrading).await;
+    root_writer.rollback().await.unwrap();
+    let new = match upgraded_with_root_writer {
+        Ok(result) => result.unwrap().expect("operational upgrade succeeds"),
+        Err(error) => {
+            upgrading.await.unwrap().unwrap();
+            panic!("an additive upgrade must not lock active Session root writers: {error}");
+        }
+    };
+    PostgresManagedSessionRepository::with_existing_pool(pool.clone())
+        .await
+        .expect("the new server verifies after the migration");
+    let old_can_reopen = runner.verify_bundles(&[old, converged, replay]).await;
+    assert_eq!(
+        new.owner(&"sesn_rolling_upgrade".into()).await.unwrap(),
+        "old-workspace"
+    );
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT data FROM managed_lifecycle_outbox WHERE fact_id = $1")
+            .bind(&fact.id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert_eq!(decode_lifecycle(&stored.unwrap()).unwrap(), fact);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM managed_lifecycle_outbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    drop(new);
+    pool.close().await;
+    admin
+        .execute("DROP SCHEMA t_session_outbox_rolling_upgrade CASCADE")
+        .await
+        .unwrap();
+    write_during_migration
+        .expect("old writers must keep making progress during index creation")
+        .unwrap();
+    old_can_reopen
+        .expect("the old schema verifier still accepts its own bundle after the additive rollout");
+    assert_eq!(count, 10_034);
 }

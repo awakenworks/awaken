@@ -42,7 +42,10 @@ pub(crate) struct SelectedSessionSchema {
 /// immutable and advance through the same ledger-owned migration stream.
 #[cfg(test)]
 pub(crate) fn session_bundle() -> Result<MigrationBundle, MigrationError> {
-    append_current_tail(compact_published_bundle()?)
+    append_current_tail(
+        compact_published_bundle()?,
+        awaken_scoped_migration::Dialect::Sqlite,
+    )
 }
 
 fn compact_published_bundle() -> Result<MigrationBundle, MigrationError> {
@@ -146,6 +149,7 @@ fn compact_published_bundle() -> Result<MigrationBundle, MigrationError> {
 
 pub(crate) fn selected_session_schema(
     receipts: &BTreeMap<i64, String>,
+    dialect: awaken_scoped_migration::Dialect,
 ) -> Result<SelectedSessionSchema, MigrationError> {
     let stream = match receipts.get(&1).map(String::as_str) {
         Some(expanded::V1_CHECKSUM) => match receipts.get(&15).map(String::as_str) {
@@ -184,7 +188,7 @@ pub(crate) fn selected_session_schema(
     Ok(SelectedSessionSchema {
         stream,
         pre_convergence,
-        complete: append_current_tail(complete)?,
+        complete: append_current_tail(complete, dialect)?,
     })
 }
 
@@ -202,7 +206,10 @@ pub(crate) fn converged_session_bundle() -> Result<MigrationBundle, MigrationErr
 /// One shared DDL tail, appended within the table-owning selected lineage.
 /// The historical convergence marker owns no tables and must not ALTER them.
 /// Preserve its receipt and every historical checksum; never fork future DDL.
-fn append_current_tail(bundle: MigrationBundle) -> Result<MigrationBundle, MigrationError> {
+fn append_current_tail(
+    bundle: MigrationBundle,
+    dialect: awaken_scoped_migration::Dialect,
+) -> Result<MigrationBundle, MigrationError> {
     let mut migrations = bundle.migrations().to_vec();
     let next = migrations
         .last()
@@ -285,6 +292,16 @@ fn append_current_tail(bundle: MigrationBundle) -> Result<MigrationBundle, Migra
              ADD COLUMN private_content INTEGER \
              CHECK (private_content IS NULL OR private_content IN (0, 1))",
     )?);
+    // PostgreSQL builds this index online and preserves the old Session
+    // ledger so a previous Coordinator can restart during a rollout.
+    if dialect == awaken_scoped_migration::Dialect::Sqlite {
+        migrations.push(Migration::new(
+            next + 6,
+            "index bounded lifecycle outbox scans",
+            "CREATE INDEX {prefix}_lifecycle_outbox_delivery_idx
+                 ON {prefix}_lifecycle_outbox (created_at, fact_id)",
+        )?);
+    }
     MigrationBundle::new(bundle.bundle_id(), migrations)
 }
 
@@ -318,7 +335,7 @@ mod tests {
                 .iter()
                 .map(awaken_scoped_migration::Migration::version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6, 7, 8]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9]
         );
         let sql = bundle.migrations()[0].sql_for(awaken_scoped_migration::Dialect::Sqlite);
         for retired in [
@@ -347,6 +364,8 @@ mod tests {
         assert!(receipt_sql.contains("receipt_kind TEXT NOT NULL DEFAULT 'root'"));
         assert!(receipt_sql.contains("'event_batch', 'event_no_op'"));
         for dialect in [Dialect::Sqlite, Dialect::Postgres] {
+            let outbox_sql = bundle.migrations()[8].sql_for(dialect);
+            assert!(outbox_sql.contains("ON {prefix}_lifecycle_outbox (created_at, fact_id)"));
             let close_sql = bundle.migrations()[6].sql_for(dialect);
             assert!(close_sql.contains("'preparing', 'aborting', 'aborted'"));
             assert!(close_sql.contains(
@@ -487,12 +506,14 @@ mod tests {
         let compact_receipts =
             BTreeMap::from([(1, compact.migrations()[0].checksum_for(Dialect::Sqlite))]);
         assert_eq!(
-            selected_session_schema(&compact_receipts).unwrap().stream,
+            selected_session_schema(&compact_receipts, Dialect::Sqlite)
+                .unwrap()
+                .stream,
             PublishedSessionStream::Compact,
             "H1"
         );
         let original_receipts = BTreeMap::from([(1, expanded::V1_CHECKSUM.to_owned())]);
-        let original = selected_session_schema(&original_receipts).unwrap();
+        let original = selected_session_schema(&original_receipts, Dialect::Sqlite).unwrap();
         assert_eq!(original.stream, PublishedSessionStream::Original, "H2");
         assert_eq!(
             original
@@ -508,14 +529,14 @@ mod tests {
         );
         assert_eq!(
             original.complete.migrations().last().unwrap().version(),
-            29,
+            30,
             "E2"
         );
         let compacted_receipts = BTreeMap::from([
             (1, expanded::V1_CHECKSUM.to_owned()),
             (15, expanded::COMPACTED_V15_CHECKSUM.to_owned()),
         ]);
-        let compacted = selected_session_schema(&compacted_receipts).unwrap();
+        let compacted = selected_session_schema(&compacted_receipts, Dialect::Sqlite).unwrap();
         assert_eq!(compacted.stream, PublishedSessionStream::Compacted, "H3");
         assert_eq!(
             compacted
@@ -531,7 +552,7 @@ mod tests {
         );
         assert_eq!(
             compacted.complete.migrations().last().unwrap().version(),
-            27,
+            28,
             "E3"
         );
         let converged_original_receipts = original
@@ -541,7 +562,7 @@ mod tests {
             .map(|migration| (migration.version(), migration.checksum_for(Dialect::Sqlite)))
             .collect();
         assert!(
-            selected_session_schema(&converged_original_receipts)
+            selected_session_schema(&converged_original_receipts, Dialect::Sqlite)
                 .unwrap()
                 .pre_convergence
                 .is_none(),
@@ -550,7 +571,9 @@ mod tests {
         let unknown_v1 = BTreeMap::from([(1, "f".repeat(64))]);
         assert!(matches!(
             plan(
-                &selected_session_schema(&unknown_v1).unwrap().complete,
+                &selected_session_schema(&unknown_v1, Dialect::Sqlite)
+                    .unwrap()
+                    .complete,
                 &unknown_v1,
                 Dialect::Sqlite,
             ),
@@ -560,7 +583,9 @@ mod tests {
             BTreeMap::from([(1, expanded::V1_CHECKSUM.to_owned()), (15, "f".repeat(64))]);
         assert!(matches!(
             plan(
-                &selected_session_schema(&unknown_v15).unwrap().complete,
+                &selected_session_schema(&unknown_v15, Dialect::Sqlite)
+                    .unwrap()
+                    .complete,
                 &unknown_v15,
                 Dialect::Sqlite,
             ),

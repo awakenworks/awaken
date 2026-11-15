@@ -255,9 +255,10 @@ pub use resource_manifests::{
 };
 pub use resource_reconciliation::{SessionResourcePurgeGuard, SessionResourceReconciliation};
 pub use roles::{
-    DeploymentSessionEnvironment, ProfiledSessionCommands, ProfiledSessionReplies, SessionCreation,
-    SessionCredentialCommands, SessionEventBatches, SessionObservation, SessionProjectionReads,
-    SessionResourceCommands, SessionRootReads, SessionTermination, SessionUpdates,
+    DeploymentSessionEnvironment, MessageList, MessageListPosition, ProfiledSessionCommands,
+    ProfiledSessionReplies, SessionCreation, SessionCredentialCommands, SessionEventBatches,
+    SessionObservation, SessionProjectionReads, SessionResourceCommands, SessionRootReads,
+    SessionTermination, SessionUpdates,
 };
 pub use run_admission::{
     RecoveredSessionProjection, SessionProjectionRecoveryError, SessionRunAdmissions,

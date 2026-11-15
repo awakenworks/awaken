@@ -706,7 +706,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
 
     // Checkpoint transport cause/effect decision table:
     // R1 authenticated current claim -> put/load applied over HTTP;
-    // R2 stale epoch after replacement -> put/delete fenced and old value retained;
+    // R2 stale epoch after replacement -> put/get/delete fenced and old value retained;
     // R3 replacement's current claim -> overwrite/delete applied. This is the
     // database-less Worker row: no local checkpoint store exists or is consulted.
     let checkpoint = |text: &str| StreamCheckpoint {
@@ -798,6 +798,10 @@ async fn db_less_worker_drives_runs_over_real_http() {
     );
     let replacement_claim = RunClaim::from(&reclaimed.lease);
     assert!(matches!(
+        remote_checkpoint.get("run-A").await,
+        Observed::Unknown(awaken_agent_contract::observation::UnknownCause::Fenced(_))
+    ));
+    assert!(matches!(
         remote_checkpoint.put(checkpoint("stale-via-fence")).await,
         Err(awaken_agent_contract::stream::checkpoint::StreamCheckpointError::Fenced(_))
     ));
@@ -844,6 +848,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         None,
         "R3"
     );
+    assert_eq!(replacement_checkpoint.get("run-A").await, Observed::Absent);
     assert!(
         queue
             .load_recovery_snapshot(&original_claim, None)

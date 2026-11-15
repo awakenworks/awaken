@@ -9,7 +9,7 @@ use super::{
 };
 use sqlx::{PgConnection, Row};
 
-pub(super) fn replay_bundle() -> Result<MigrationBundle, String> {
+pub(crate) fn replay_bundle() -> Result<MigrationBundle, String> {
     let migration = Migration::new(
         1,
         "retain managed Session versions and replay points",

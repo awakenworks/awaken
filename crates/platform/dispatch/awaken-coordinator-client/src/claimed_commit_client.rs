@@ -97,12 +97,12 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
         let mut last_transport_error = None;
         for attempt in 1..=TRANSPORT_ATTEMPTS {
             let request = self.client.post(format!("{}{path}", self.base_url));
-            let response = match self
-                .authorize(path, request)?
-                .json(&request_body)
-                .send()
-                .await
-            {
+            let request = match self.authorize(path, request) {
+                Ok(request) => request,
+                Err(error) if last_transport_error.is_none() => return Err(error),
+                Err(_) => break,
+            };
+            let response = match request.json(&request_body).send().await {
                 Ok(response) => response,
                 Err(error) => {
                     last_transport_error = Some(format!("claimed commit transport: {error}"));
@@ -134,6 +134,10 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
                         None | Some(COMMIT_OUTCOME_UNKNOWN | "unavailable")
                     );
                 if !retry {
+                    // A refusal of this attempt does not settle an earlier attempt whose reply was lost.
+                    if last_transport_error.is_some() {
+                        break;
+                    }
                     return Err(awaken_dispatch_contract::claimed_commit_sdk_error(
                         code.as_deref().unwrap_or_default(),
                         message,
@@ -157,9 +161,11 @@ impl ClaimedRunCommit for RemoteClaimedRunCommit {
                 }
             }
         }
-        Err(CommitError::Rejected(last_transport_error.unwrap_or_else(
-            || "claimed commit transport exhausted without a response".to_string(),
-        )))
+        Err(CommitError::OutcomeUnknown(
+            last_transport_error.unwrap_or_else(|| {
+                "claimed commit transport exhausted without a response".to_string()
+            }),
+        ))
     }
 }
 

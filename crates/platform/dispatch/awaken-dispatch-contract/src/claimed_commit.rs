@@ -17,6 +17,7 @@ pub const COMMIT_CAPACITY_EXHAUSTED: &str = "commit_capacity_exhausted";
 pub fn claimed_commit_sdk_error(code: &str, message: String) -> CommitError {
     match code {
         COMMIT_CAPACITY_EXHAUSTED => CommitError::CapacityExhausted(message),
+        COMMIT_OUTCOME_UNKNOWN => CommitError::OutcomeUnknown(message),
         _ => CommitError::Rejected(message),
     }
 }
@@ -44,21 +45,18 @@ mod tests {
 
     #[test]
     fn sdk_projection_uses_the_capacity_code_and_preserves_other_result_families() {
-        // E1 explicit capacity code -> SDK CapacityExhausted. E2 every existing
-        // code (and a legacy absent code) -> original Rejected diagnostic, even
-        // when that same text says capacity. No category comes from prose.
+        // Capacity and unknown outcomes preserve their types. Other codes,
+        // including legacy responses, preserve the rejection diagnostic.
         let message = "capacity exhausted in original store";
         assert!(
             matches!(claimed_commit_sdk_error(COMMIT_CAPACITY_EXHAUSTED, message.into()),
             CommitError::CapacityExhausted(detail) if detail == message)
         );
-        for code in [
-            COMMIT_FENCED,
-            COMMIT_CONFLICT,
-            COMMIT_IDENTITY_MISMATCH,
-            COMMIT_OUTCOME_UNKNOWN,
-            "",
-        ] {
+        assert!(matches!(
+            claimed_commit_sdk_error(COMMIT_OUTCOME_UNKNOWN, message.into()),
+            CommitError::OutcomeUnknown(detail) if detail == message
+        ));
+        for code in [COMMIT_FENCED, COMMIT_CONFLICT, COMMIT_IDENTITY_MISMATCH, ""] {
             assert!(
                 matches!(claimed_commit_sdk_error(code, message.into()),
                 CommitError::Rejected(detail) if detail == message),

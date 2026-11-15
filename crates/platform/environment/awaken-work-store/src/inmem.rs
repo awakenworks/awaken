@@ -807,6 +807,27 @@ impl SessionWorkStore for InMemoryWorkQueue {
 
 #[async_trait]
 impl SessionWorkerLeaseStore for InMemoryWorkQueue {
+    async fn renew_exact_session(
+        &self,
+        lease: &SessionWorkLease,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        let authority = self.authority.lock();
+        let now_ms = self.clock.now_ms();
+        let Some(current) =
+            authority.current_session_lease(lease.environment_id(), lease.session_id(), now_ms)
+        else {
+            return Ok(None);
+        };
+        if current.work_id() != lease.work_id()
+            || current.owner() != lease.owner()
+            || current.epoch() != lease.epoch()
+        {
+            return Ok(None);
+        }
+        authority.book.lease(current.work_id(), now_ms);
+        Ok(authority.current_session_lease(lease.environment_id(), lease.session_id(), now_ms))
+    }
+
     async fn renew_session(
         &self,
         env_id: &str,

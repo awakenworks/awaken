@@ -58,6 +58,9 @@ impl From<awaken_agent_contract::thread::commit::coordinator::Error> for Error {
         use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;
         let (kind, code) = match &source {
             CommitError::Rejected(_) => (RuntimeErrorKind::Internal, "commit_failed"),
+            CommitError::OutcomeUnknown(_) => {
+                (RuntimeErrorKind::Unavailable, "commit_outcome_unknown")
+            }
             CommitError::CapacityExhausted(_) => {
                 (RuntimeErrorKind::Unavailable, "commit_capacity_exhausted")
             }

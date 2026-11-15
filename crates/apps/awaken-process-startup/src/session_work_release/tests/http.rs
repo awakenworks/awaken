@@ -55,20 +55,21 @@ impl HttpFixture {
         fixture: &Fixture,
         observer: Option<Arc<dyn awaken_dispatch::DispatchSettlementObserver>>,
     ) -> Self {
-        Self::with_controls(fixture, observer, None).await
+        Self::with_controls(fixture, observer, None, false).await
     }
 
     async fn with_cut(
         fixture: &Fixture,
         cut: Arc<crate::worker_claimed_persistence::test_cut::FinalAdmissionTestCut>,
     ) -> Self {
-        Self::with_controls(fixture, None, Some(cut)).await
+        Self::with_controls(fixture, None, Some(cut), false).await
     }
 
     async fn with_controls(
         fixture: &Fixture,
         observer: Option<Arc<dyn awaken_dispatch::DispatchSettlementObserver>>,
         cut: Option<Arc<crate::worker_claimed_persistence::test_cut::FinalAdmissionTestCut>>,
+        legacy_checkpoint_wire: bool,
     ) -> Self {
         let directory = Arc::new(MemoryWorkerDirectory::new());
         let application = fixture.managed.session_application();
@@ -127,12 +128,35 @@ impl HttpFixture {
         let address = listener.local_addr().unwrap();
         let service = WorkerDispatchService::new(dependencies);
         let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                awaken_dispatch_http::dispatch_transport_router_with_service(Arc::new(service)),
-            )
-            .await
-            .unwrap();
+            let mut router =
+                awaken_dispatch_http::dispatch_transport_router_with_service(Arc::new(service));
+            if legacy_checkpoint_wire {
+                router = router.layer(axum::middleware::from_fn(
+                    |request: axum::extract::Request, next: axum::middleware::Next| async move {
+                        use axum::response::IntoResponse as _;
+                        let checkpoint_get = request.uri().path() == "/v1/worker/checkpoint/get";
+                        let response = next.run(request).await;
+                        if !checkpoint_get {
+                            return response;
+                        }
+                        if response.status() == axum::http::StatusCode::CONFLICT {
+                            return axum::Json(serde_json::json!({ "checkpoint": null }))
+                                .into_response();
+                        }
+                        if response.status().is_success() {
+                            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                                .await
+                                .unwrap();
+                            let mut json: serde_json::Value =
+                                serde_json::from_slice(&body).unwrap();
+                            json.as_object_mut().unwrap().remove("claim_verified");
+                            return axum::Json(json).into_response();
+                        }
+                        response
+                    },
+                ));
+            }
+            axum::serve(listener, router).await.unwrap();
         });
         let client = WorkerControlClient::new(
             WorkerUpstream::new(format!("http://{address}")).with_worker_id("http-pool-worker"),
@@ -488,13 +512,10 @@ async fn live_postgres_http_cap_one_checkpoint_and_recovery_keep_exact_fences() 
                 .unwrap(),
             awaken_dispatch::SettleOutcome::Fenced
         );
-        assert!(
-            http.queue
-                .load_stream_checkpoint(&entry.claim)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(matches!(
+            http.queue.load_stream_checkpoint(&entry.claim).await,
+            Err(awaken_dispatch::DispatchError::Conflict(_))
+        ));
         assert!(matches!(
             http.queue
                 .load_recovery_snapshot(&entry.claim, Some(&receipt))
@@ -554,4 +575,104 @@ async fn live_postgres_http_resume_partial_affinity_keeps_original_owners() {
         drop(http);
         fixture.cleanup().await;
     }
+}
+
+#[tokio::test]
+#[ignore = "live PostgreSQL actual-HTTP Work renewal qualification"]
+async fn live_postgres_http_old_work_receipt_cannot_renew_a_same_owner_successor() {
+    use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
+
+    for work_shared in [true, false] {
+        let fixture = Fixture::new(1, true, work_shared).await;
+        let http = HttpFixture::new(&fixture).await;
+        let owner = http.identity.lease_owner();
+        let entry = fixture.entry_for(&owner).await;
+        let stale = http.receipt(&fixture, &entry).await;
+
+        assert!(
+            fixture
+                .assignments
+                .release_session_work(&entry.grant)
+                .await
+                .unwrap()
+        );
+        let successor = http.receipt(&fixture, &entry).await;
+        assert_ne!(stale, successor, "a reacquired Work grant has a new epoch");
+        let before = fixture.work_row(&entry.id).await;
+        fixture.clock.set(101_000);
+        assert!(
+            http.queue
+                .load_recovery_snapshot(&entry.claim, Some(&stale))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fixture.work_row(&entry.id).await,
+            before,
+            "stale recovery must leave the successor lease unchanged (shared={work_shared})"
+        );
+
+        http.queue
+            .load_recovery_snapshot(&entry.claim, Some(&successor))
+            .await
+            .expect("the current Work receipt can recover");
+        let after = fixture.work_row(&entry.id).await;
+        assert_eq!(after.2, before.2);
+        assert!(
+            after.3 > before.3,
+            "the current receipt extends its own lease"
+        );
+        drop(http);
+        fixture.cleanup().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "live PostgreSQL mixed-version Worker checkpoint qualification"]
+async fn live_postgres_http_legacy_checkpoint_null_rechecks_exact_claim() {
+    use awaken_dispatch_contract::{ClaimedCheckpointTransport as _, DispatchError};
+
+    let fixture = Fixture::new(2, true, true).await;
+    let old = HttpFixture::with_controls(&fixture, None, None, true).await;
+    let new = HttpFixture::new(&fixture).await;
+    let entry = fixture.entry_for(&old.identity.lease_owner()).await;
+    assert_eq!(
+        old.queue
+            .load_stream_checkpoint(&entry.claim)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        new.queue
+            .load_stream_checkpoint(&entry.claim)
+            .await
+            .unwrap(),
+        None
+    );
+
+    sqlx::query("UPDATE runtime_dispatch SET lease_until = 1 WHERE run_id = $1")
+        .bind(&entry.claim.run_id.0)
+        .execute(&fixture.d)
+        .await
+        .unwrap();
+    let stale = old.queue.load_stream_checkpoint(&entry.claim).await;
+    assert!(
+        matches!(stale, Err(DispatchError::Conflict(_))),
+        "{stale:?}"
+    );
+    let stale = new.queue.load_stream_checkpoint(&entry.claim).await;
+    assert!(
+        matches!(stale, Err(DispatchError::Conflict(_))),
+        "{stale:?}"
+    );
+    assert_eq!(
+        new.queue
+            .delete_stream_checkpoint(&entry.claim)
+            .await
+            .unwrap(),
+        awaken_dispatch::SettleOutcome::Fenced,
+    );
+    drop((old, new));
+    fixture.cleanup().await;
 }

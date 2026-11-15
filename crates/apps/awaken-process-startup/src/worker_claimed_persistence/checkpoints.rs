@@ -18,13 +18,16 @@ impl ClaimedCheckpointTransport<RunError> for PostgresWorkerClaims {
         claim: &RunClaim,
     ) -> Result<Option<StreamCheckpoint>, RunError> {
         let mut transaction = self.transaction(ClaimPurpose::Recovery).await?;
-        if awaken_dispatch::lock_running_claim_for_commit(&mut transaction, claim)
+        if awaken_dispatch::lock_live_running_claim(&mut transaction, claim)
             .await
             .map_err(internal)?
             .is_none()
         {
             transaction.rollback().await.map_err(internal)?;
-            return Ok(None);
+            return Err(RunError::conflict_classified(
+                awaken_dispatch_contract::COMMIT_FENCED,
+                "checkpoint claim is no longer current",
+            ));
         }
         let observed = awaken_dispatch::PostgresStreamCheckpointStore::get_on(
             &mut transaction,
@@ -50,7 +53,7 @@ impl ClaimedCheckpointTransport<RunError> for PostgresWorkerClaims {
             ));
         }
         let mut transaction = self.transaction(ClaimPurpose::Recovery).await?;
-        if awaken_dispatch::lock_running_claim_for_commit(&mut transaction, claim)
+        if awaken_dispatch::lock_live_running_claim(&mut transaction, claim)
             .await
             .map_err(internal)?
             .is_none()
@@ -67,7 +70,7 @@ impl ClaimedCheckpointTransport<RunError> for PostgresWorkerClaims {
 
     async fn delete_stream_checkpoint(&self, claim: &RunClaim) -> Result<SettleOutcome, RunError> {
         let mut transaction = self.transaction(ClaimPurpose::Recovery).await?;
-        if awaken_dispatch::lock_running_claim_for_commit(&mut transaction, claim)
+        if awaken_dispatch::lock_live_running_claim(&mut transaction, claim)
             .await
             .map_err(internal)?
             .is_none()

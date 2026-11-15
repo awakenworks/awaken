@@ -922,8 +922,26 @@ impl awaken_dispatch_contract::ClaimedCheckpointTransport for HttpDispatchQueue 
                 self.worker_id(),
             )
             .await?;
-        serde_json::from_value(value.get("checkpoint").cloned().unwrap_or_default())
-            .map_err(|error| DispatchError::Rejected(format!("decode checkpoint: {error}")))
+        let checkpoint = value.get("checkpoint").ok_or_else(|| {
+            DispatchError::Rejected("checkpoint response is missing its observation".into())
+        })?;
+        let checkpoint = serde_json::from_value::<Option<StreamCheckpoint>>(checkpoint.clone())
+            .map_err(|error| DispatchError::Rejected(format!("decode checkpoint: {error}")))?;
+        if value
+            .get("claim_verified")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            // Older Coordinators did not attest live authority on either
+            // response shape. Recheck the original epoch before using it.
+            use awaken_dispatch_contract::DispatchClaimOwnership as _;
+            if !self.claim_is_current(claim).await? {
+                return Err(DispatchError::Conflict(
+                    "checkpoint claim is no longer current".into(),
+                ));
+            }
+        }
+        Ok(checkpoint)
     }
 
     async fn put_stream_checkpoint(

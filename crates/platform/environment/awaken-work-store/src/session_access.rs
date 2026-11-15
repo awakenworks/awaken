@@ -423,6 +423,7 @@ impl SqliteWorkQueue {
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
         may_claim: bool,
+        exact: Option<&SessionWorkLease>,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
         let mut conn = self.connection().await?;
         if may_claim {
@@ -460,6 +461,13 @@ impl SqliteWorkQueue {
         if !may_claim
             && (state != "active" || expires_at.is_none_or(|expiry| expiry <= db_millis(now_ms)))
         {
+            return Ok(None);
+        }
+        if exact.is_some_and(|lease| {
+            work_id != lease.work_id()
+                || owner.as_deref() != Some(lease.owner())
+                || u64::try_from(epoch).ok() != Some(lease.epoch())
+        }) {
             return Ok(None);
         }
         let current = (state, owner, epoch, expires_at, refreshed_at);

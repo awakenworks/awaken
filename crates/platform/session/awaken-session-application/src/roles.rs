@@ -482,12 +482,85 @@ pub trait SessionResourceCommands: Send + Sync {
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError>;
 }
 
+/// A message listing starts at a committed boundary or continues the same view.
+pub enum MessageListPosition {
+    Beginning,
+    After {
+        snapshot: awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef,
+        start: u64,
+    },
+    Latest,
+    Before(awaken_agent_contract::thread::read::transcript::TranscriptSeek),
+}
+
+pub struct MessageList {
+    pub messages: Vec<awaken_agent_contract::Message>,
+    pub next: Option<MessageListPosition>,
+}
+
 /// Observe a Session's live and committed execution.
-///
-/// Consumer: a protocol's live event stream, execution evidence read and Dream
-/// usage read.
 #[async_trait]
 pub trait SessionObservation: Send + Sync {
+    async fn list_messages(
+        &self,
+        access: &crate::SessionAccess,
+        thread: &awaken_agent_contract::ThreadId,
+        position: MessageListPosition,
+        limit: std::num::NonZeroUsize,
+    ) -> Result<MessageList, RunError> {
+        use awaken_agent_contract::thread::read::transcript::{
+            TranscriptPageRequest, TranscriptSeekRequest, TranscriptView,
+        };
+
+        match position {
+            MessageListPosition::Beginning | MessageListPosition::After { .. } => {
+                let (snapshot, start) = match position {
+                    MessageListPosition::After { snapshot, start } => (Some(snapshot), start),
+                    _ => (None, 0),
+                };
+                let page = self
+                    .transcript_page(
+                        access,
+                        &TranscriptPageRequest {
+                            thread_id: thread.clone(),
+                            view: TranscriptView::RawCommitted,
+                            snapshot,
+                            start,
+                            limit,
+                        },
+                    )
+                    .await?;
+                let next_start = page.next_start();
+                Ok(MessageList {
+                    messages: page.messages,
+                    next: next_start.map(|start| MessageListPosition::After {
+                        snapshot: page.snapshot,
+                        start,
+                    }),
+                })
+            }
+            MessageListPosition::Latest | MessageListPosition::Before(_) => {
+                let seek = match position {
+                    MessageListPosition::Before(seek) => Some(seek),
+                    _ => None,
+                };
+                let page = self
+                    .transcript_seek_page(
+                        access,
+                        &TranscriptSeekRequest {
+                            thread_id: thread.clone(),
+                            seek,
+                            limit,
+                        },
+                    )
+                    .await?;
+                Ok(MessageList {
+                    messages: page.messages,
+                    next: page.next.map(MessageListPosition::Before),
+                })
+            }
+        }
+    }
     async fn timeline(
         &self,
         access: &crate::SessionAccess,

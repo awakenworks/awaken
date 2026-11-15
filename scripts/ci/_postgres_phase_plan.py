@@ -132,7 +132,7 @@ def self_test(root: Path) -> None:
     selectors = ("backend_parity", "work_store_evidence", "http_transport_evidence",
                  "critical_durability_evidence", "storage_observation_evidence", "resources_evidence", "storage_evidence")
     phases = read_phases(root, selectors)
-    assert len(phases) == 43, "P6 current required selector inventory"
+    assert len(phases) == 44, "P6 current required selector inventory"
     startup = [phase for phase in phases if phase.package == "awaken-process-startup"]
     # P7 old binding/pool phases and the new conditional Work phase are three
     # independently required commands; none may be collapsed into another.

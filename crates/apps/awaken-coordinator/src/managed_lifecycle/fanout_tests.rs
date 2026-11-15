@@ -263,3 +263,231 @@ async fn open_sse_is_woken_only_by_the_managed_fanout_and_never_duplicates_a_fra
         .await
         .expect("bounded shutdown");
 }
+
+#[tokio::test]
+async fn postgres_two_lifecycle_relays_share_delivery_and_recover_an_interruption() {
+    use awaken_reliability_testkit::CrashProcess;
+    use awaken_session_contract::LifecycleOutbox as _;
+    use awaken_session_store::PostgresManagedSessionRepository;
+    use awaken_webhook::{ReqwestSender, WebhookSender as _};
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    const CASE: &str = "managed_lifecycle::fanout_tests::postgres_two_lifecycle_relays_share_delivery_and_recover_an_interruption";
+    const CHILD_URL: &str = "AWAKEN_OUTBOX_RELAY_CHILD_URL";
+    const CHILD_HOOK: &str = "AWAKEN_OUTBOX_RELAY_CHILD_HOOK";
+
+    struct Receiver {
+        url: String,
+        sender: ReqwestSender,
+    }
+
+    #[async_trait::async_trait]
+    impl LifecycleFactDelivery for Receiver {
+        async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
+            let status = self
+                .sender
+                .post(
+                    &self.url,
+                    vec![("webhook-id".into(), fact.id.clone())],
+                    String::new(),
+                )
+                .await?;
+            if (200..300).contains(&status) {
+                Ok(())
+            } else {
+                Err(format!("receiver returned {status}"))
+            }
+        }
+    }
+
+    let connect = |url: &str| {
+        let options = url.parse::<PgConnectOptions>().unwrap();
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+    };
+    if let Ok(url) = std::env::var(CHILD_URL) {
+        let repo = Arc::new(
+            PostgresManagedSessionRepository::with_existing_pool(connect(&url).await.unwrap())
+                .await
+                .unwrap(),
+        );
+        let receiver = Arc::new(Receiver {
+            url: std::env::var(CHILD_HOOK).unwrap(),
+            sender: ReqwestSender::with_timeout(Duration::from_secs(30)),
+        });
+        LifecycleOutboxRelay::new(receiver, repo)
+            .replay_loop(Duration::from_secs(30))
+            .unwrap()
+            .run(awaken_runtime_contract::CancellationToken::new())
+            .await
+            .unwrap();
+        return;
+    }
+
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let admin = connect(&url).await.unwrap();
+    sqlx::query("DROP SCHEMA IF EXISTS t_lifecycle_relay_replica CASCADE")
+        .execute(&admin)
+        .await
+        .unwrap();
+    sqlx::query("CREATE SCHEMA t_lifecycle_relay_replica")
+        .execute(&admin)
+        .await
+        .unwrap();
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let scoped_url =
+        format!("{url}{separator}options=-c%20search_path%3Dt_lifecycle_relay_replica");
+    let pool = connect(&scoped_url).await.unwrap();
+    let repo = Arc::new(
+        PostgresManagedSessionRepository::with_pool(pool.clone())
+            .await
+            .unwrap(),
+    );
+
+    let attempts = Arc::new(Mutex::new(
+        std::collections::BTreeMap::<String, usize>::new(),
+    ));
+    let app = axum::Router::new().route(
+        "/",
+        axum::routing::post({
+            let attempts = attempts.clone();
+            move |headers: axum::http::HeaderMap| {
+                let id = headers["webhook-id"].to_str().unwrap().to_owned();
+                let attempts = attempts.clone();
+                async move {
+                    // The first HTTP receiver accepts the effect, then withholds
+                    // its response. Stable IDs deduplicate the effect on replay.
+                    let first = {
+                        let mut attempts = attempts.lock().unwrap();
+                        let count = attempts.entry(id.clone()).or_default();
+                        *count += 1;
+                        *count == 1
+                    };
+                    if first && id == "blocked" {
+                        std::future::pending::<()>().await;
+                    }
+                    StatusCode::OK
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let receiver_url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let fact = |id: &str| ManagedLifecycleFact {
+        id: id.into(),
+        object_id: "session".into(),
+        workspace_id: Some("workspace".into()),
+        event_type: "session.created".into(),
+        timestamp: 1,
+        runtime_interval: None,
+    };
+
+    repo.append_lifecycle(fact("blocked")).await.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("kill");
+    let process = CrashProcess::new(CASE, &marker)
+        .timeout(Duration::from_secs(20))
+        .env(CHILD_URL, &scoped_url)
+        .env(CHILD_HOOK, &receiver_url);
+    let first = tokio::task::spawn_blocking(move || process.run());
+    let wait_for_delivery = |id: &'static str| {
+        let attempts = attempts.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(8), async {
+                while !attempts.lock().unwrap().contains_key(id) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the receiver observes the expected attempt");
+        }
+    };
+    wait_for_delivery("blocked").await;
+    repo.append_lifecycle(fact("healthy")).await.unwrap();
+    let peer = Arc::new(Receiver {
+        url: receiver_url,
+        sender: ReqwestSender::default(),
+    });
+    let replay = LifecycleOutboxRelay::new(peer, repo.clone())
+        .replay_loop(Duration::from_millis(25))
+        .unwrap();
+    let cancel = awaken_runtime_contract::CancellationToken::new();
+    let second = tokio::spawn(replay.run(cancel.clone()));
+    wait_for_delivery("healthy").await;
+    let before_crash = attempts.lock().unwrap()["blocked"];
+    let pending_at_crash = repo.pending_lifecycle().await.unwrap();
+    std::fs::write(marker, b"accepted-before-ack").unwrap();
+    assert!(!first.await.unwrap().unwrap().success());
+
+    assert_eq!(before_crash, 1, "a live claim prevents overlapping sends");
+    assert!(pending_at_crash.iter().any(|fact| fact.id == "blocked"));
+    // Test-owned clock cut avoids a 30-second sleep and leaves only the
+    // existing claim's deadline changed. The peer must still reclaim it.
+    let expired = sqlx::query("UPDATE managed_lifecycle_outbox_claim SET lease_until = '-infinity' WHERE fact_id = 'blocked'")
+        .execute(&pool).await.unwrap();
+    assert_eq!(expired.rows_affected(), 1);
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while !repo.pending_lifecycle().await.unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(5), second)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    server.abort();
+    assert_eq!(
+        *attempts.lock().unwrap(),
+        std::collections::BTreeMap::from([("blocked".into(), 2), ("healthy".into(), 1)])
+    );
+    let ttl = Duration::from_secs(30);
+    repo.append_lifecycle(fact("verify-fence")).await.unwrap();
+    let original = repo
+        .claim_lifecycle("verify-fence", ttl)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        repo.renew_lifecycle_claim("verify-fence", &original, ttl)
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE managed_lifecycle_outbox_claim SET lease_until = '-infinity' WHERE fact_id = 'verify-fence'")
+        .execute(&pool).await.unwrap();
+    assert!(
+        !repo
+            .renew_lifecycle_claim("verify-fence", &original, ttl)
+            .await
+            .unwrap()
+    );
+    let replacement = repo
+        .claim_lifecycle("verify-fence", ttl)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(original, replacement);
+    repo.finish_lifecycle_claim("verify-fence", &original, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.pending_lifecycle().await.unwrap(),
+        [fact("verify-fence")]
+    );
+    repo.finish_lifecycle_claim("verify-fence", &replacement, true)
+        .await
+        .unwrap();
+    assert!(repo.pending_lifecycle().await.unwrap().is_empty());
+    pool.close().await;
+    sqlx::query("DROP SCHEMA t_lifecycle_relay_replica CASCADE")
+        .execute(&admin)
+        .await
+        .unwrap();
+}

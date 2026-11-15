@@ -87,7 +87,12 @@ impl StreamCheckpointStore for FencedStreamCheckpointStore {
                 match remote.load_stream_checkpoint(&self.claim).await {
                     Ok(Some(checkpoint)) => Observed::Present(checkpoint),
                     Ok(None) => Observed::Absent,
-                    Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
+                    Err(error) => Observed::Unknown(match error {
+                        awaken_dispatch_contract::DispatchError::Conflict(detail) => {
+                            UnknownCause::Fenced(detail)
+                        }
+                        error => UnknownCause::Storage(error.to_string()),
+                    }),
                 }
             }
         }

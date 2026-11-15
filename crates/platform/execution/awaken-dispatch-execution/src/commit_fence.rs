@@ -41,29 +41,34 @@ impl ClaimedRunCommit for CoordinatorRunCommits {
         &self,
         command: ClaimedCommitCommand,
     ) -> Result<CommitReceipt, CommitError> {
-        for _ in 0..2 {
+        let mut unknown = None;
+        for attempt in 0..3 {
             match self.0.commit_operation(command.clone()).await {
+                Ok(receipt) => return Ok(receipt),
                 Err(error)
                     if matches!(
                         error.code.as_str(),
                         awaken_dispatch_contract::COMMIT_OUTCOME_UNKNOWN | "unavailable"
                     ) =>
                 {
-                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    unknown = Some(error.to_string());
+                    if attempt < 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
                 }
-                result => {
-                    return result.map_err(|error| {
-                        awaken_dispatch_contract::claimed_commit_sdk_error(
-                            &error.code,
-                            error.to_string(),
-                        )
-                    });
+                Err(error) if unknown.is_none() => {
+                    return Err(awaken_dispatch_contract::claimed_commit_sdk_error(
+                        &error.code,
+                        error.to_string(),
+                    ));
                 }
+                // A later claim fence cannot establish the first attempt's result.
+                Err(_) => break,
             }
         }
-        self.0.commit_operation(command).await.map_err(|error| {
-            awaken_dispatch_contract::claimed_commit_sdk_error(&error.code, error.to_string())
-        })
+        Err(CommitError::OutcomeUnknown(
+            unknown.expect("an ambiguous attempt exhausted commit retries"),
+        ))
     }
 }
 

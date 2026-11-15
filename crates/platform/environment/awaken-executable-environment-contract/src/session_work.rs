@@ -625,6 +625,13 @@ pub trait SessionWorkerLeaseStore: Send + Sync {
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
 
+    /// Renew the exact live Work generation. The persisted expiry is checked on
+    /// the store clock. An exact mismatch or expiry leaves Work unchanged.
+    async fn renew_exact_session(
+        &self,
+        lease: &SessionWorkLease,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
+
     /// Renew a live lease for this owner, or report a live foreign lease.
     /// Missing, expired, queued and stopped Work grant no authority.
     async fn renew_session(

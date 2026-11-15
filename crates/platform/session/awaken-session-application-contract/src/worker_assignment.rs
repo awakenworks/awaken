@@ -45,6 +45,13 @@ pub trait SessionWorkerLeases: Send + Sync {
         session_id: &SessionId,
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, RunError>;
+    /// Extend only the live assignment matching every coordinate of the lease.
+    async fn renew_exact_session(
+        &self,
+        _lease: &SessionWorkLease,
+    ) -> Result<Option<SessionWorkLease>, RunError> {
+        Ok(None)
+    }
     async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, RunError>;
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, RunError>;
 }

@@ -206,8 +206,15 @@ async fn assert_renewal_does_not_take_queued_session(
         .unwrap()
         .unwrap();
     assert_eq!(foreign, successor);
+    assert!(
+        store
+            .renew_exact_session(&original)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let renewed = store
-        .renew_session(env, &session, "new")
+        .renew_exact_session(&successor)
         .await
         .unwrap()
         .unwrap();
@@ -215,6 +222,7 @@ async fn assert_renewal_does_not_take_queued_session(
     assert!(renewed.expires_at_unix_ms() > successor.expires_at_unix_ms());
 
     clock.set(renewed.expires_at_unix_ms());
+    assert!(store.renew_exact_session(&renewed).await.unwrap().is_none());
     assert!(
         store
             .renew_session(env, &session, "new")

@@ -175,6 +175,7 @@ async fn coordinator_writer_retries_only_ambiguous_commits_with_the_same_identit
         calls: std::sync::Mutex<Vec<ClaimedCommitCommand>>,
         lose_receipt: bool,
         capacity_exhausted: bool,
+        fenced_on_retry: bool,
     }
 
     #[async_trait]
@@ -200,6 +201,12 @@ async fn coordinator_writer_retries_only_ambiguous_commits_with_the_same_identit
                     "stale version",
                 ));
             }
+            if !first && self.fenced_on_retry {
+                return Err(RunError::conflict_classified(
+                    awaken_dispatch_contract::COMMIT_FENCED,
+                    "claim expired",
+                ));
+            }
             let receipt = self
                 .store
                 .commit_operation(command.operation)
@@ -218,12 +225,18 @@ async fn coordinator_writer_retries_only_ambiguous_commits_with_the_same_identit
     // T1 definite conflict and T2 definite capacity each return after one call;
     // only T3 a lost receipt retries the exact same operation. Capacity retains
     // its SDK enum and cannot become another append or a transparent retry.
-    for (lose_receipt, capacity_exhausted) in [(false, false), (true, false), (false, true)] {
+    for (lose_receipt, capacity_exhausted, fenced_on_retry) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (true, false, true),
+    ] {
         let writer = Arc::new(Writer {
             store: MemoryCommitCoordinator::new(awaken_time::system_clock()),
             calls: std::sync::Mutex::new(Vec::new()),
             lose_receipt,
             capacity_exhausted,
+            fenced_on_retry,
         });
         let request = command(0, 0);
         let result = CoordinatorRunCommits(writer.clone())
@@ -236,7 +249,10 @@ async fn coordinator_writer_retries_only_ambiguous_commits_with_the_same_identit
                 .iter()
                 .all(|call| call.claim == request.claim && call.operation == request.operation)
         );
-        if lose_receipt {
+        if fenced_on_retry {
+            assert!(matches!(result, Err(CommitError::OutcomeUnknown(_))));
+            assert_eq!(writer.store.commit_count(), 1);
+        } else if lose_receipt {
             assert!(result.unwrap().duplicate);
             assert_eq!(writer.store.commit_count(), 1);
         } else if capacity_exhausted {

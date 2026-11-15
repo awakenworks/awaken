@@ -42,6 +42,7 @@ args = '''
 --require-case=tests::keyset_query_plans::postgres_cached_recovery_and_startup_cursors_keep_the_index_condition
 --require-case=tests::postgres_normalization_and_index_repair_share_one_crash_boundary
 --require-case=tests::postgres_original_history_converges_with_the_same_domain_effects
+--require-case=tests::postgres_lifecycle_outbox_upgrade_keeps_writes_and_old_schema_verification_live
 --require-case=tests::postgres_owner_scope_is_recorded_and_survives_a_reopen
 --require-case=tests::postgres_published_prefixes_converge_and_server_open_is_read_only
 --require-case=tests::postgres_round_trips_and_upserts
@@ -196,6 +197,7 @@ phase = "http_transport_evidence"
 args = '''
 -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http
 --require-case=two_control_processes_retry_recover_and_settle_without_sticky_routing
+--require-case=lost_commit_response_survives_claim_takeover
 --require-case=active_active_child_diagnostics_are_isolated_and_bounded
 --require-case=immutable_pod_registration_postgres_when_configured
 --require-case=postgres_signed_registration_rejects_historical_incarnation
@@ -263,6 +265,8 @@ args = '''
 --require-case=session_work_release::tests::http::live_postgres_http_cap_two_resumes_distinct_claims
 --require-case=session_work_release::tests::http::live_postgres_http_cap_one_checkpoint_and_recovery_keep_exact_fences
 --require-case=session_work_release::tests::http::live_postgres_http_resume_partial_affinity_keeps_original_owners
+--require-case=session_work_release::tests::http::live_postgres_http_old_work_receipt_cannot_renew_a_same_owner_successor
+--require-case=session_work_release::tests::http::live_postgres_http_legacy_checkpoint_null_rechecks_exact_claim
 --require-case=session_work_release::tests::http::settlement::live_postgres_http_cap_one_settles_real_memory_once_without_held_guard
 --require-case=session_work_release::tests::http::races::live_postgres_http_same_claim_cold_absence_recovers_the_one_accepted_receipt
 --require-case=session_work_release::tests::http::races::live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_root_write
@@ -309,6 +313,15 @@ id = "postgres.critical.coordinator"
 phase = "critical_durability_evidence"
 args = '''
 -p awaken-coordinator --locked --lib application_access_store::tests::provisioned_postgres_application_access_durability_release_gate --require-case=application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact --test-threads=1
+'''
+
+[[postgres]]
+id = "postgres.critical.coordinator-lifecycle-outbox"
+phase = "critical_durability_evidence"
+args = '''
+-p awaken-coordinator --locked --lib managed_lifecycle::fanout_tests::postgres_two_lifecycle_relays_share_delivery_and_recover_an_interruption
+--require-case=managed_lifecycle::fanout_tests::postgres_two_lifecycle_relays_share_delivery_and_recover_an_interruption
+-- --exact --test-threads=1
 '''
 
 # One selection owner for native and Docker fixtures. Every row requires its

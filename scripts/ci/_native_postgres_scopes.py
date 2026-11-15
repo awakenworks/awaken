@@ -13,7 +13,7 @@ POSTGRES_PACKAGES = {
         "awaken-data-subject-store", "awaken-captured-content-store", "awaken-work-store",
         "awaken-session-store", "awaken-memory-store", "awaken-dispatch", "awaken-skill-store", "awaken-work-store",
         "awaken-dispatch-http", "awaken-config-store", "awaken-session-store",
-        "awaken-credential-store", "awaken-process-startup", "awaken-process-startup", "awaken-process-startup", "awaken-coordinator", "awaken-session-executor", "awaken-coordinator", "awaken-coordinator"),
+        "awaken-credential-store", "awaken-process-startup", "awaken-process-startup", "awaken-process-startup", "awaken-coordinator", "awaken-session-executor", "awaken-coordinator", "awaken-coordinator", "awaken-coordinator"),
     "storage": (
         "awaken-sql-storage", "awaken-session-store", "awaken-config-store", "awaken-store-postgres",
         "awaken-env-store", "awaken-file-store", "awaken-store-schema", "awaken-store-sqlite"),
@@ -51,6 +51,8 @@ CORE_SESSION_WORK_RELEASE_CASE_FLOORS = (
     'session_work_release::tests::http::live_postgres_http_cap_two_resumes_distinct_claims',
     'session_work_release::tests::http::live_postgres_http_cap_one_checkpoint_and_recovery_keep_exact_fences',
     'session_work_release::tests::http::live_postgres_http_resume_partial_affinity_keeps_original_owners',
+    'session_work_release::tests::http::live_postgres_http_old_work_receipt_cannot_renew_a_same_owner_successor',
+    'session_work_release::tests::http::live_postgres_http_legacy_checkpoint_null_rechecks_exact_claim',
     'session_work_release::tests::http::settlement::live_postgres_http_cap_one_settles_real_memory_once_without_held_guard',
     'session_work_release::tests::http::races::live_postgres_http_same_claim_cold_absence_recovers_the_one_accepted_receipt',
     'session_work_release::tests::http::races::live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_root_write',
@@ -213,12 +215,12 @@ def _require_session_work_release_phase(phases):
 
 
 def _require_claimed_commit_phases(phases):
-    # Separate exact rows retain pool/child and production-selected writer
-    # outcomes. Three Coordinator rows share a package, not a responsibility:
-    # pool, selected writer and Application Access cannot replace one another.
+    # Exact targets keep pool, writer, Application Access and lifecycle
+    # Outbox evidence independently required within the Coordinator package.
     pool_prefix = 'runtime_authority::claimed_commit_tests::pool_tests::'
     writer_prefix = 'runtime_authority::claimed_commit_tests::selected_postgres_'
     application_access = 'application_access_store::tests::provisioned_postgres_application_access_durability_release_gate'
+    lifecycle_outbox = 'managed_lifecycle::fanout_tests::postgres_two_lifecycle_relays_share_delivery_and_recover_an_interruption'
     expected = (
         ('awaken-coordinator', pool_prefix, (
             '-p', 'awaken-coordinator', '--locked', '--lib', pool_prefix,
@@ -239,6 +241,11 @@ def _require_claimed_commit_phases(phases):
             '-p', 'awaken-coordinator', '--locked', '--lib', application_access,
             '--require-case=' + application_access,
             '--', '--ignored', '--exact', '--test-threads=1',
+        )),
+        ('awaken-coordinator', lifecycle_outbox, (
+            '-p', 'awaken-coordinator', '--locked', '--lib', lifecycle_outbox,
+            '--require-case=' + lifecycle_outbox,
+            '--', '--exact', '--test-threads=1',
         )),
     )
     for package, subject, arguments in expected:

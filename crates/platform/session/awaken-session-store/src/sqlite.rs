@@ -330,7 +330,8 @@ impl SqliteManagedSessionRepository {
         if receipts.is_empty() {
             return Err("Session SQLite migration bundle is not initialized".to_owned());
         }
-        let selected = selected_session_schema(&receipts).map_err(|error| error.to_string())?;
+        let selected = selected_session_schema(&receipts, awaken_scoped_migration::Dialect::Sqlite)
+            .map_err(|error| error.to_string())?;
         debug_assert!(selected.pre_convergence.is_none() || selected.stream.is_legacy());
         awaken_scoped_migration::plan(
             &selected.complete,
@@ -381,7 +382,8 @@ impl SqliteManagedSessionRepository {
 
     async fn migrate(pool: &EmbeddedPool) -> Result<(), String> {
         let receipts = Self::migration_receipts(pool).await?;
-        let selected = selected_session_schema(&receipts).map_err(|error| error.to_string())?;
+        let selected = selected_session_schema(&receipts, awaken_scoped_migration::Dialect::Sqlite)
+            .map_err(|error| error.to_string())?;
         debug_assert!(selected.pre_convergence.is_none() || selected.stream.is_legacy());
         awaken_scoped_migration::plan(
             &selected.complete,
@@ -1418,6 +1420,34 @@ impl LifecycleOutbox for SqliteManagedSessionRepository {
         .await
         .map_err(storage)?;
         Ok(())
+    }
+
+    async fn list_pending(
+        &self,
+        after: Option<&awaken_session_contract::LifecycleOutboxCursor>,
+        limit: std::num::NonZeroU32,
+    ) -> Result<awaken_session_contract::LifecycleOutboxBatch, SessionRepositoryError> {
+        use awaken_session_contract::{LifecycleOutboxBatch, LifecycleOutboxCursor};
+        let bound = i64::from(limit.get());
+        let rows: Vec<(String, String, String)> = match after.map(LifecycleOutboxCursor::position) {
+            Some((created_at, fact_id)) => sqlx::query_as(
+                "SELECT created_at, fact_id, data FROM managed_lifecycle_outbox WHERE (created_at, fact_id) > (?1, ?2) ORDER BY created_at, fact_id LIMIT ?3",
+            ).bind(created_at).bind(fact_id).bind(bound).fetch_all(&self.pool).await,
+            None => sqlx::query_as(
+                "SELECT created_at, fact_id, data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id LIMIT ?1",
+            ).bind(bound).fetch_all(&self.pool).await,
+        }.map_err(storage)?;
+        let next = rows
+            .last()
+            .filter(|_| rows.len() == limit.get() as usize)
+            .map(|(created_at, fact_id, _)| {
+                LifecycleOutboxCursor::new(created_at.clone(), fact_id.clone())
+            });
+        let facts = rows
+            .into_iter()
+            .map(|(_, _, data)| decode_lifecycle(&data).map_err(corrupt))
+            .collect::<Result<_, _>>()?;
+        Ok(LifecycleOutboxBatch::new(facts, next))
     }
 
     async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {

@@ -1576,6 +1576,33 @@ impl awaken_session_execution_contract::ThreadReads for EchoFake {
             .map_err(|error| RunError::bad_request(error.to_string()))
     }
 
+    async fn transcript_seek_page(
+        &self,
+        _session: &SessionId,
+        request: &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest,
+    ) -> Result<awaken_agent_contract::thread::read::transcript::TranscriptSeekPage, RunError> {
+        use awaken_agent_contract::thread::read::transcript::{TranscriptSeek, TranscriptSeekPage};
+
+        let state = self.state.lock().unwrap();
+        let messages = state
+            .messages
+            .get(&request.thread_id.0)
+            .map_or(&[][..], Vec::as_slice);
+        let (through, end) = request
+            .seek
+            .map_or((messages.len(), messages.len()), |seek| {
+                (seek.through as usize, seek.before as usize - 1)
+            });
+        let start = end.saturating_sub(request.limit.get());
+        Ok(TranscriptSeekPage {
+            messages: messages[start..end].to_vec(),
+            next: (start > 0).then_some(TranscriptSeek {
+                through: through as u64,
+                before: (start + 1) as u64,
+            }),
+        })
+    }
+
     async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
         let state = self.state.lock().unwrap();
         assert!(
@@ -7041,6 +7068,30 @@ async fn transcript_history_pages_freeze_and_stay_with_the_authorized_thread() {
         page(&app, &child_uri).await["data"][0]["text"],
         "child message"
     );
+    let latest = page(&app, &format!("{uri}?direction=backward&limit=1")).await;
+    assert_eq!(latest["data"][0]["text"], "late");
+    let backward_cursor = latest["next_page"].as_str().unwrap();
+    runtime
+        .state
+        .lock()
+        .unwrap()
+        .messages
+        .get_mut(&id)
+        .unwrap()
+        .push(make_message("new tail"));
+    let older = page(&app, &format!("{uri}?page={backward_cursor}&limit=1")).await;
+    assert_eq!(older["data"][0]["text"], "second");
+    assert_eq!(
+        call_owned(
+            &app,
+            "GET",
+            &format!("{child_uri}?page={backward_cursor}"),
+            Some("ws_a"),
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+
     let wrong_parent = format!("/v1/awaken/sessions/{other}/threads/child/messages");
     assert_eq!(
         call_owned(&app, "GET", &wrong_parent, Some("ws_a")).await,

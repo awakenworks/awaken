@@ -51,7 +51,7 @@
 mod postgres_session_leases;
 pub use postgres_session_leases::{
     acquire_postgres_session_work_on, release_postgres_session_work_on,
-    renew_postgres_session_work_on,
+    renew_exact_postgres_session_work_on, renew_postgres_session_work_on,
 };
 
 use std::collections::BTreeMap;
@@ -497,6 +497,20 @@ impl SessionWorkStore for SqliteWorkQueue {
 
 #[async_trait]
 impl SessionWorkerLeaseStore for SqliteWorkQueue {
+    async fn renew_exact_session(
+        &self,
+        lease: &SessionWorkLease,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        self.acquire_session_inner(
+            lease.environment_id(),
+            lease.session_id(),
+            lease.owner(),
+            false,
+            Some(lease),
+        )
+        .await
+    }
+
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
         let mut conn = self.connection().await?;
         let cleared = reclaimed_lease_authority();
@@ -590,7 +604,7 @@ impl SessionWorkerLeaseStore for SqliteWorkQueue {
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        self.acquire_session_inner(env_id, session_id, worker_owner, true)
+        self.acquire_session_inner(env_id, session_id, worker_owner, true, None)
             .await
     }
 
@@ -600,7 +614,7 @@ impl SessionWorkerLeaseStore for SqliteWorkQueue {
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        self.acquire_session_inner(env_id, session_id, worker_owner, false)
+        self.acquire_session_inner(env_id, session_id, worker_owner, false, None)
             .await
     }
 }
@@ -958,6 +972,17 @@ impl SessionWorkStore for PostgresWorkQueue {
 
 #[async_trait]
 impl SessionWorkerLeaseStore for PostgresWorkQueue {
+    async fn renew_exact_session(
+        &self,
+        lease: &SessionWorkLease,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let result =
+            renew_exact_postgres_session_work_on(&mut tx, self.clock.as_ref(), lease).await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(result)
+    }
+
     async fn renew_session(
         &self,
         env_id: &str,

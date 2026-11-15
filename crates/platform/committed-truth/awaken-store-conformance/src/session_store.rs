@@ -1331,6 +1331,29 @@ pub async fn lifecycle_outbox_tracks_every_committed_transition<
         assert_eq!(remaining, before, "{rule}: no unrelated outbox change");
     }
 
+    // Complete a returned row while paging, as the relay does. Its cursor
+    // must still find the remaining rows with no duplicates or skips.
+    let first = fact("evt:outbox-page:a", "sesn_lifecycle", "session.created");
+    let second = fact("evt:outbox-page:b", "sesn_lifecycle", "session.created");
+    r.append_lifecycle(first.clone()).await.unwrap();
+    r.append_lifecycle(second.clone()).await.unwrap();
+    let expected = r.pending_lifecycle().await.unwrap();
+    let limit = std::num::NonZeroU32::new(1).unwrap();
+    let mut after = None;
+    for expected_fact in expected {
+        let page = r.list_pending(after.as_ref(), limit).await.unwrap();
+        let (facts, next) = page.into_parts();
+        assert_eq!(facts.as_slice(), std::slice::from_ref(&expected_fact));
+        after = Some(next.expect("a full batch continues the scan"));
+        if expected_fact == first || expected_fact == second {
+            r.complete_lifecycle(&expected_fact.id).await.unwrap();
+        }
+    }
+    let exhausted = r.list_pending(after.as_ref(), limit).await.unwrap();
+    let (facts, next) = exhausted.into_parts();
+    assert!(facts.is_empty());
+    assert!(next.is_none());
+
     let outbox_before = r.pending_lifecycle().await.unwrap();
     let mut created = fact(
         "evt:create",

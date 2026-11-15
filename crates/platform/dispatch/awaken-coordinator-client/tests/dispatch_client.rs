@@ -870,6 +870,47 @@ async fn recovery_snapshot_retries_only_ambiguous_transport_outcomes() {
 /// | S1 | TextDelta | true | exact | 1 | best-effort observation + E3 |
 /// | S2 | RunFinished | false | exact | unchanged | durable path only |
 #[tokio::test]
+async fn legacy_checkpoint_payload_still_requires_a_live_claim() {
+    let app = Router::new()
+        .route(
+            "/v1/worker/checkpoint/get",
+            post(|| async {
+                Json(json!({
+                    "checkpoint": {
+                        "run_id": "rolling-run",
+                        "thread_id": "rolling-thread",
+                        "model": "provider/model",
+                        "partial_text": "stale checkpoint",
+                        "partial_tools": [],
+                        "retry_count": 0
+                    }
+                }))
+            }),
+        )
+        .route(
+            "/v1/worker/dispatch/claim_is_current",
+            post(|| async { Json(json!({"current": false})) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let identity = WorkerIdentity::new("rolling-worker", "rolling-incarnation", 1);
+    let claim = RunClaim {
+        run_id: RunId("rolling-run".into()),
+        owner: identity.lease_owner(),
+        epoch: 1,
+    };
+    let observation = HttpDispatchQueue::new(url, identity)
+        .load_stream_checkpoint(&claim)
+        .await;
+    server.abort();
+    assert!(
+        matches!(observation, Err(DispatchError::Conflict(_))),
+        "{observation:?}"
+    );
+}
+
+#[tokio::test]
 async fn worker_stream_transport_posts_only_canonically_live_events() {
     let (base, _, _, stream_calls) = spawn_transport_server().await;
     let queue = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-A", "boot-A", 1));

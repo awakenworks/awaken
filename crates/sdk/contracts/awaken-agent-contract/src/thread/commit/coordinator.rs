@@ -7,6 +7,9 @@ use thiserror::Error;
 pub enum Error {
     #[error("commit rejected: {0}")]
     Rejected(String),
+    /// Publication may have succeeded. Reuse the logical operation identity when checking or retrying.
+    #[error("commit outcome unknown: {0}")]
+    OutcomeUnknown(String),
     /// The durable store has no room for the commit (disk or quota full).
     /// Nothing was applied; unlike `Rejected`, the same commit may succeed
     /// once capacity is restored.

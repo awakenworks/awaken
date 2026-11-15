@@ -41,7 +41,8 @@ pub async fn list_thread_messages(
     query: Result<Query<ThreadMessagePageQuery>, QueryRejection>,
 ) -> Result<Json<PageCursor<ThreadHistoryMessage>>, WireErr> {
     use awaken_agent_contract::ThreadId;
-    use awaken_agent_contract::thread::read::transcript::{TranscriptPageRequest, TranscriptView};
+    use awaken_agent_contract::thread::read::transcript::TranscriptView;
+    use awaken_session_application::MessageListPosition;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
     let session_id = awaken_session_types::SessionId::from(id.as_str());
@@ -71,92 +72,62 @@ pub async fn list_thread_messages(
     let backward = decoded
         .as_deref()
         .and_then(|bytes| serde_json::from_slice::<BackwardMessageCursor>(bytes).ok());
-    if query.direction.is_some() || backward.is_some() {
-        let seek = match (decoded, backward) {
-            (None, _) => None,
+    let is_backward = query.direction.is_some() || backward.is_some();
+    let position = if is_backward {
+        match (decoded, backward) {
+            (None, _) => MessageListPosition::Latest,
             (Some(_), Some(cursor)) if cursor.session == id && cursor.thread == thread => {
-                Some(cursor.seek)
+                MessageListPosition::Before(cursor.seek)
             }
             _ => return Err(invalid_message_page()),
-        };
-        let page = state
-            .roles
-            .observation
-            .transcript_seek_page(
-                &access,
-                &awaken_agent_contract::thread::read::transcript::TranscriptSeekRequest {
-                    thread_id: thread.clone(),
-                    seek,
-                    limit,
-                },
-            )
-            .await
-            .map_err(transcript_error)?;
-        let next_page = page
-            .next
-            .map(|seek| {
-                serde_json::to_vec(&BackwardMessageCursor {
-                    session: id,
-                    thread,
-                    seek,
-                })
-                .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
-            })
-            .transpose()
-            .map_err(|error| {
-                error_response(StateError::Run(RunError::internal(error.to_string())))
-            })?;
-        return Ok(Json(PageCursor {
-            data: page
-                .messages
-                .into_iter()
-                .filter_map(|message| present_message(message, true))
-                .collect(),
-            next_page,
-        }));
-    }
-    let mut request = TranscriptPageRequest {
-        thread_id: thread,
-        view: TranscriptView::RawCommitted,
-        snapshot: None,
-        start: 0,
-        limit,
-    };
-    if let Some(decoded) = decoded {
+        }
+    } else if let Some(decoded) = decoded {
         let cursor: ThreadMessageCursor =
             serde_json::from_slice(&decoded).map_err(|_| invalid_message_page())?;
         if cursor.session != id
-            || cursor.snapshot.thread_id != request.thread_id
-            || cursor.snapshot.view != request.view
+            || cursor.snapshot.thread_id != thread
+            || cursor.snapshot.view != TranscriptView::RawCommitted
             || cursor.start >= cursor.snapshot.end_seq
         {
             return Err(invalid_message_page());
         }
-        request.snapshot = Some(cursor.snapshot);
-        request.start = cursor.start;
-    }
+        MessageListPosition::After {
+            snapshot: cursor.snapshot,
+            start: cursor.start,
+        }
+    } else {
+        MessageListPosition::Beginning
+    };
+
     let page = state
         .roles
         .observation
-        .transcript_page(&access, &request)
+        .list_messages(&access, &thread, position, limit)
         .await
         .map_err(transcript_error)?;
-    let next_page = page
-        .next_start()
-        .map(|start| {
-            let cursor = ThreadMessageCursor {
+    let next_page = match page.next {
+        Some(MessageListPosition::After { snapshot, start }) => {
+            serde_json::to_vec(&ThreadMessageCursor {
                 session: id,
-                snapshot: page.snapshot,
+                snapshot,
                 start,
-            };
-            serde_json::to_vec(&cursor).map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+            })
+            .map(Some)
+        }
+        Some(MessageListPosition::Before(seek)) => serde_json::to_vec(&BackwardMessageCursor {
+            session: id,
+            thread,
+            seek,
         })
-        .transpose()
-        .map_err(|error| error_response(StateError::Run(RunError::internal(error.to_string()))))?;
+        .map(Some),
+        _ => Ok(None),
+    }
+    .map_err(|error| error_response(StateError::Run(RunError::internal(error.to_string()))))?
+    .map(|bytes| URL_SAFE_NO_PAD.encode(bytes));
     let data = page
         .messages
         .into_iter()
-        .filter_map(|message| present_message(message, false))
+        .filter_map(|message| present_message(message, is_backward))
         .collect();
     Ok(Json(PageCursor { data, next_page }))
 }

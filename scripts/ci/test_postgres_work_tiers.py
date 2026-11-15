@@ -42,7 +42,7 @@ class WorkParitySelectionTests(unittest.TestCase):
 
     def test_all_current_cases_are_required_without_retired_gap_exclusions(self):
         phases = self.verify(self.source)
-        self.assertEqual(len(phases), 22)
+        self.assertEqual(len(phases), 23)
         work = [p for p in phases if p.selector == 'backend_parity' and p.package == 'awaken-work-store']
         self.assertEqual(len(work), 1)
         self.assertEqual(len(WORK_CURRENT_CASES), 24)
@@ -267,7 +267,7 @@ class WorkStoreSelectionTests(unittest.TestCase):
         parity = [p for p in phases if p.selector == 'backend_parity' and p.package == 'awaken-work-store']
         self.assertEqual(len(parity), 1)
         self.assertIn('work_queue_conformance', parity[0].arguments)
-        self.assertEqual(len(phases), 22)
+        self.assertEqual(len(phases), 23)
 
     def test_missing_targets_and_broad_all_package_or_conformance_selection_are_refused(self):
         mutations = [lambda s: s.replace('--lib ', '', 1)]
@@ -327,6 +327,8 @@ class SessionWorkReleaseSelectionTests(unittest.TestCase):
         'session_work_release::tests::http::live_postgres_http_cap_two_resumes_distinct_claims',
         'session_work_release::tests::http::live_postgres_http_cap_one_checkpoint_and_recovery_keep_exact_fences',
         'session_work_release::tests::http::live_postgres_http_resume_partial_affinity_keeps_original_owners',
+        'session_work_release::tests::http::live_postgres_http_old_work_receipt_cannot_renew_a_same_owner_successor',
+        'session_work_release::tests::http::live_postgres_http_legacy_checkpoint_null_rechecks_exact_claim',
         'session_work_release::tests::http::settlement::live_postgres_http_cap_one_settles_real_memory_once_without_held_guard',
         'session_work_release::tests::http::races::live_postgres_http_same_claim_cold_absence_recovers_the_one_accepted_receipt',
         'session_work_release::tests::http::races::live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_root_write',
@@ -355,10 +357,10 @@ class SessionWorkReleaseSelectionTests(unittest.TestCase):
         return edit_row(self.table, 'postgres.critical.process-startup-work-release', transform)
 
     def test_additive_release_and_http_floor_preserves_the_original_eighteen_domains(self):
-        # R1 original 18 + startup Work + three exact claimed rows => admit 22; all
+        # R1 original 18 + startup Work + three exact claimed rows + lifecycle Outbox => admit 23; all
         # fourteen independently named outcomes. The old binding/pool rows remain.
         phases = self.verify()
-        self.assertEqual(len(phases), 22)
+        self.assertEqual(len(phases), 23)
         startup = [p for p in phases if p.package == 'awaken-process-startup']
         self.assertEqual(len(startup), 3)
         for original in (
@@ -431,12 +433,12 @@ class ClaimedCommitSelectionTests(unittest.TestCase):
 
     def test_exact_pool_child_and_selected_writer_outcomes_add_to_every_existing_domain(self):
         # C1 all old domains remain; C2 five pool/child and five selected-Postgres
-        # outcomes are declared on their exact targets => admit 22 domains.
+        # outcomes are declared on their exact targets alongside lifecycle Outbox => admit 23 domains.
         # Constraint: the five ordinary selected-Postgres cases have their own
         # row beside ignored pool/child and original Application Access. All prior
         # Work/Dispatch observations remain independently required.
         phases = self.verify()
-        self.assertEqual(len(phases), 22)
+        self.assertEqual(len(phases), 23)
         for row, cases in self.rows:
             block = self.table.split('id = "' + row + '"', 1)[1].split('[[', 1)[0]
             for case in cases:

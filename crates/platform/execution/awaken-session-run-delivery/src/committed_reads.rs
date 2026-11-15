@@ -307,16 +307,17 @@ impl CommittedReads {
 
     /// The tool an awaiting run on `thread` is awaiting on, if any.
     pub async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
-        self.pending_tool_in_partition(thread, &ThreadId(thread.to_string()))
-            .await
+        self.session_pending_tool(
+            &awaken_session_types::SessionId::from(thread),
+            &ThreadId(thread.to_string()),
+        )
+        .await
     }
 
-    /// Canonical pending-tool projection for one logical Thread in a Session
-    /// partition. Both root and child reads use this implementation so local
-    /// durable stores never infer a physical database from a child id.
-    pub async fn pending_tool_in_partition(
+    /// Pending tool for a logical Thread that belongs to the given Session.
+    pub async fn session_pending_tool(
         &self,
-        partition: &str,
+        session: &awaken_session_types::SessionId,
         logical_thread: &ThreadId,
     ) -> Result<Option<Pending>, RunError> {
         // The committed ticket is the lifecycle authority. In particular, an
@@ -327,7 +328,7 @@ impl CommittedReads {
         // committed truth before rebuilding derived context: a malformed A2A
         // continuation must not hide its still-authoritative input/auth wait and
         // change a legitimate resume into a client-id error.
-        let commit = self.commit_for_read(partition).await?;
+        let commit = self.commit_for_read(session.as_str()).await?;
         let (run_id, ticket) = match commit.open_wait_for_thread(logical_thread).await {
             Ok(Some(waiting)) => waiting,
             Ok(None) => return Ok(None),

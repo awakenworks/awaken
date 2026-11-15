@@ -232,34 +232,28 @@ impl PostgresWorkerClaims {
             Err(SessionRepositoryError::NotFound) => None,
             Err(error) => return Err(unavailable(error)),
         };
-        let observed = if let Some((environment, terminal)) = root
+        let observed = if let Some((environment, _)) = root
             .as_ref()
             .and_then(awaken_session_application::session_work_environment)
         {
+            let lease = asserted
+                .lease_for_renewal()
+                .filter(|lease| lease.environment_id() == environment)
+                .ok_or_else(|| RunError::bad_request("Session Work authority is stale"))?;
             let transfer = match self.work {
-                ClaimConnectionUse::Borrowed => awaken_work_store::renew_postgres_session_work_on(
-                    connection,
-                    self.clock.as_ref(),
-                    &environment,
-                    &session,
-                    owner,
-                )
-                .await
-                .map_err(unavailable)?,
+                ClaimConnectionUse::Borrowed => {
+                    awaken_work_store::renew_exact_postgres_session_work_on(
+                        connection,
+                        self.clock.as_ref(),
+                        &lease,
+                    )
+                    .await
+                    .map_err(unavailable)?
+                }
                 ClaimConnectionUse::Independent => {
-                    self.views
-                        .leases
-                        .renew_session(&environment, &session, owner)
-                        .await?
+                    self.views.leases.renew_exact_session(&lease).await?
                 }
             };
-            if awaken_session_application_contract::session_work_revival_is_authorized(
-                awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
-                terminal,
-                transfer.is_some(),
-            ) {
-                return Err(RunError::bad_request("Session Work authority is stale"));
-            }
             transfer
                 .map(SessionWorkGrant::from_transfer)
                 .map(SessionWorkOwnership::Leased)

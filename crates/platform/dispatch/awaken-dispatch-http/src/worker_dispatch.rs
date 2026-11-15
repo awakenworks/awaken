@@ -1005,22 +1005,29 @@ async fn get_checkpoint(
                 .load_stream_checkpoint(&request.claim)
                 .await
                 .map_err(crate::worker_application_error)?;
-            return Ok(json!({ "checkpoint": checkpoint }));
+            return Ok(json!({ "checkpoint": checkpoint, "claim_verified": true }));
         }
-        let Some(_guard) = service
+        let Some(guard) = service
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?
         else {
-            return Ok(json!({ "checkpoint": null }));
+            return Err(ApplicationError::conflict(
+                "checkpoint claim is no longer current",
+            ));
         };
+        if !guard.is_live_at(service.clock.now_ms()) {
+            return Err(ApplicationError::conflict("checkpoint claim has expired"));
+        }
         // The wire carries only present-or-absent. An observation that
         // established nothing must therefore leave as a transport failure, so a
         // remote worker never decodes ignorance as a `null` checkpoint.
         match service.checkpoint.get(&request.claim.run_id.0).await {
-            Observed::Present(checkpoint) => Ok(json!({ "checkpoint": checkpoint })),
-            Observed::Absent => Ok(json!({ "checkpoint": null })),
+            Observed::Present(checkpoint) => {
+                Ok(json!({ "checkpoint": checkpoint, "claim_verified": true }))
+            }
+            Observed::Absent => Ok(json!({ "checkpoint": null, "claim_verified": true })),
             Observed::Unknown(cause) => Err(ApplicationError::internal(cause.to_string())),
         }
     }
@@ -1052,7 +1059,7 @@ async fn put_checkpoint(
                 .map_err(crate::worker_application_error)?;
             return Ok(json!({ "applied": outcome.applied() }));
         }
-        let Some(_guard) = service
+        let Some(guard) = service
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
@@ -1060,6 +1067,9 @@ async fn put_checkpoint(
         else {
             return Ok(json!({ "applied": false }));
         };
+        if !guard.is_live_at(service.clock.now_ms()) {
+            return Ok(json!({ "applied": false }));
+        }
         service
             .checkpoint
             .put(checkpoint)
@@ -1087,7 +1097,7 @@ async fn delete_checkpoint(
                 .map_err(crate::worker_application_error)?;
             return Ok(json!({ "applied": outcome.applied() }));
         }
-        let Some(_guard) = service
+        let Some(guard) = service
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
@@ -1095,6 +1105,9 @@ async fn delete_checkpoint(
         else {
             return Ok(json!({ "applied": false }));
         };
+        if !guard.is_live_at(service.clock.now_ms()) {
+            return Ok(json!({ "applied": false }));
+        }
         service
             .checkpoint
             .delete(&request.claim.run_id.0)

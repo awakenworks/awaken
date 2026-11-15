@@ -10,7 +10,7 @@ pub use creation_intents::{
     PreparedParticipantIntent, PreparedParticipantIntentClaim, PreparedParticipantIntentPhase,
     PreparedParticipantIntentRecord, PreparedParticipantIntents,
 };
-pub use lifecycle_outbox::LifecycleOutbox;
+pub use lifecycle_outbox::{LifecycleOutbox, LifecycleOutboxBatch, LifecycleOutboxCursor};
 pub use repository_port::{SessionReconciliation, SessionRepository, SessionRepositoryReads};
 
 #[cfg(test)]

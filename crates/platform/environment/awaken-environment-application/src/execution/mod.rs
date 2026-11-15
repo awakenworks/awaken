@@ -383,6 +383,20 @@ impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExe
             .map_err(session_work_error(session_id.as_str()))
     }
 
+    async fn renew_exact_session(
+        &self,
+        lease: &awaken_session_types::SessionWorkLease,
+    ) -> Result<
+        Option<awaken_session_types::SessionWorkLease>,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        self.work
+            .worker_leases
+            .renew_exact_session(lease)
+            .await
+            .map_err(session_work_error(lease.session_id().as_str()))
+    }
+
     async fn release_session(
         &self,
         lease: &awaken_session_types::SessionWorkLease,
@@ -1527,6 +1541,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SessionWorkerLeaseStore for FailingConvergenceQueue {
+        async fn renew_exact_session(
+            &self,
+            lease: &awaken_session_types::SessionWorkLease,
+        ) -> Result<Option<awaken_session_types::SessionWorkLease>, WorkQueueError> {
+            self.require_session_storage("renew")?;
+            self.inner.renew_exact_session(lease).await
+        }
+
         async fn renew_session(
             &self,
             env: &str,

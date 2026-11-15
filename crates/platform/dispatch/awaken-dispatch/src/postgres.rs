@@ -462,6 +462,18 @@ pub async fn lock_running_claim_for_commit(
     lock_claim_row(connection, claim, "running").await
 }
 
+/// Lock current authority for operations that require a live Run lease.
+pub async fn lock_live_running_claim(
+    connection: &mut sqlx::PgConnection,
+    claim: &RunClaim,
+) -> Result<Option<awaken_dispatch_contract::CommitEpochObservation>, DispatchError> {
+    let Some(observation) = lock_running_claim_for_commit(connection, claim).await? else {
+        return Ok(None);
+    };
+    let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *connection).await?;
+    Ok((observation.expires_ms > now_ms).then_some(observation))
+}
+
 /// The same original claim-row kernel for the existing prepared Run lane.
 /// The caller retains this transaction through final Session activity admission.
 pub async fn lock_session_run_reservation_for_admission(
