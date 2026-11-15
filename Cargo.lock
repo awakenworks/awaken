@@ -2545,6 +2545,7 @@ dependencies = [
  "awaken-session-store",
  "awaken-session-types",
  "awaken-sync",
+ "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
  "awaken-work-store",

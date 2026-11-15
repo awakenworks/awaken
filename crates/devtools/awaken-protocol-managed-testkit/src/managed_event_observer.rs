@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use awaken_protocol_managed::COMMITTED_PREFIX_READ_CONFLICT;
+use awaken_tenancy::org_admission::OrgRateLimits;
 
 /// Session lifecycle Events name a boundary some Run reached, never which
 /// command caused it. `session.status_idle` published by a concurrent
@@ -130,6 +131,94 @@ fn content_bearing(event_type: &'static str) -> &'static str {
     event_type
 }
 
+/// The share of the Org Read budget this process's Managed Event waits spend.
+///
+/// The Managed Event list is a plain GET: it offers no long-poll and no change
+/// cursor to block on, and the push surface (`/events/stream`) is a live SSE
+/// projection, not the committed slice a [`DurableFact`] is judged on. So a
+/// wait polls, and every poll spends one token of the Org Read bucket the
+/// product meters reads with (`OrgRateLimits`: 1200 a minute, refilled
+/// continuously). An unpaced poll runs at about 200 reads/s, so any wait
+/// longer than about six seconds drained the bucket and failed as a 429
+/// instead of as the timeout it was.
+///
+/// The observer therefore keeps the same kind of bucket for itself, at half
+/// the product's size and refill rate, and every read reserves one token from
+/// it. While the bucket holds tokens a read waits only [`FUNDED_READ_SPACING`],
+/// so a fact committed by a fast Run is seen as quickly as before; once it is
+/// empty, reads proceed at half the product's refill rate, so a wait of any
+/// length leaves the other half for the test's own requests. The bucket is
+/// per process because the product's is per Org and a test process serves
+/// one Org (nextest runs each test in its own process); processes that run
+/// several tests share it, which only ever throttles them more.
+struct ReadAllowance {
+    tokens: f64,
+    refilled_at: Option<tokio::time::Instant>,
+}
+
+/// The gap between two funded reads of one wait: long enough to hand the
+/// thread to the work being observed, short against any Run.
+const FUNDED_READ_SPACING: Duration = Duration::from_millis(1);
+
+static READ_ALLOWANCE: awaken_sync::LeafLock<ReadAllowance> =
+    awaken_sync::LeafLock::new(ReadAllowance::full());
+
+impl ReadAllowance {
+    const fn full() -> Self {
+        Self {
+            tokens: 0.0,
+            refilled_at: None,
+        }
+    }
+
+    /// Half the Org Read bucket's capacity.
+    fn capacity() -> f64 {
+        f64::from(OrgRateLimits::default().read_per_minute) / 2.0
+    }
+
+    /// Half the Org Read bucket's refill rate, per second.
+    fn refill_per_second() -> f64 {
+        f64::from(OrgRateLimits::default().read_per_minute.max(1)) / 120.0
+    }
+
+    /// Reserve one read at `now` and return how long it must wait for its
+    /// token. A reservation that finds the bucket empty goes into debt, so
+    /// concurrent waits queue behind one another instead of overdrawing it.
+    fn reserve(&mut self, now: tokio::time::Instant) -> Duration {
+        let rate = Self::refill_per_second();
+        self.tokens = match self.refilled_at {
+            None => Self::capacity(),
+            Some(at) => (self.tokens + now.saturating_duration_since(at).as_secs_f64() * rate)
+                .min(Self::capacity()),
+        };
+        self.refilled_at = Some(now);
+        self.tokens -= 1.0;
+        if self.tokens >= 0.0 {
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64(-self.tokens / rate)
+        }
+    }
+}
+
+/// Wait until this wait's next read is funded, never past `deadline`.
+/// Reaching the deadline here leaves exactly one more read, so a timed-out
+/// wait reports the state as of its deadline.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test observer paces its reads on the host monotonic clock"
+)]
+async fn await_funded_read(deadline: tokio::time::Instant, follows_a_read: bool) {
+    let now = tokio::time::Instant::now();
+    let funded_in = READ_ALLOWANCE.lock().reserve(now);
+    let spacing = if follows_a_read {
+        FUNDED_READ_SPACING
+    } else {
+        Duration::ZERO
+    };
+    tokio::time::sleep_until(deadline.min(now + funded_in.max(spacing))).await;
+}
+
 /// Observe one Managed Event projection until `fact` is committed, without
 /// becoming a second lifecycle driver. The caller supplies the HTTP GET
 /// adapter; this protocol-owned loop decides which wire observation is safe to
@@ -153,15 +242,17 @@ where
     let receipt_anchor = fact.anchor_id();
     let deadline = tokio::time::Instant::now() + timeout;
     let settled = fact.describe();
+    let mut follows_a_read = false;
 
     loop {
+        await_funded_read(deadline, follows_a_read).await;
+        follows_a_read = true;
         let (status, latest) = read().await;
         if is_transient_committed_prefix_conflict(status, &latest) {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "timed out waiting for {expectation} to reach {settled} after receipt {receipt_anchor:?}; latest projection read: {latest}"
             );
-            tokio::task::yield_now().await;
             continue;
         }
         assert_eq!(
@@ -191,7 +282,6 @@ where
             tokio::time::Instant::now() < deadline,
             "timed out waiting for {expectation} to reach {settled} after receipt {receipt_anchor:?}; latest projection: {latest}"
         );
-        tokio::task::yield_now().await;
     }
 }
 
@@ -381,6 +471,77 @@ mod tests {
             {"id": "own", "type": "session.status_idle"},
         ]);
         assert!(fact.holds(processed.as_array().expect("slice")), "R2/E2");
+    }
+
+    #[test]
+    fn the_read_allowance_is_half_the_org_read_bucket() {
+        // Cause/effect decision table over one allowance and one instant base
+        // `t`. Causes: C1 the default Org Read bucket holds and refills 1200
+        // reads a minute; C2 reads reserved while tokens remain; C3 reads
+        // reserved once it is empty; C4 idle time refills it. Effects: E1 600
+        // reads (half the capacity) are funded at once; E2 each further read
+        // queues one refill period (100ms, half the refill rate) behind the
+        // last; E3 a second of refill funds ten reads, eight after the two queued; E4 refill never exceeds the
+        // capacity. Rules: R1=C1+C2=>E1; R2=C1+C3=>E2; R3=C4=>E3; R4=C4=>E4.
+        let t = tokio::time::Instant::now();
+        let mut allowance = ReadAllowance::full();
+        for read in 0..600 {
+            assert_eq!(allowance.reserve(t), Duration::ZERO, "R1/E1 read {read}");
+        }
+        assert_eq!(allowance.reserve(t).as_millis(), 100, "R2/E2");
+        assert_eq!(allowance.reserve(t).as_millis(), 200, "R2/E2");
+        let after_a_second = t + Duration::from_secs(1);
+        for read in 0..8 {
+            assert_eq!(
+                allowance.reserve(after_a_second),
+                Duration::ZERO,
+                "R3/E3 read {read}"
+            );
+        }
+        assert_eq!(allowance.reserve(after_a_second).as_millis(), 100, "R3/E3");
+        let after_an_hour = t + Duration::from_secs(3_600);
+        for read in 0..600 {
+            assert_eq!(
+                allowance.reserve(after_an_hour),
+                Duration::ZERO,
+                "R4/E4 read {read}"
+            );
+        }
+        assert_eq!(allowance.reserve(after_an_hour).as_millis(), 100, "R4/E4");
+    }
+
+    #[tokio::test]
+    async fn an_unsettled_wait_reports_its_last_read_at_the_deadline() {
+        // Cause/effect decision table: C1 the fact is never committed; C2 the
+        // wait lasts 300ms. E1 funded reads are spaced, not spun (an unspaced
+        // loop issues tens of thousands of reads in 300ms); E2 the wait fails
+        // at the deadline naming the last projection it read.
+        // Rule R1=C1+C2=>E1+E2.
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task_reads = reads.clone();
+        let task = tokio::spawn(async move {
+            wait_for_session_events(
+                DurableFact::committed_event("agent.message"),
+                Duration::from_millis(300),
+                "a fact that never commits",
+                move || {
+                    let read = task_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    async move { (200, json!({"data": [{"id": format!("read-{read}")}]})) }
+                },
+                |_| true,
+            )
+            .await
+        });
+        let failure = task.await.expect_err("R1/E2").into_panic();
+        let message = failure
+            .downcast_ref::<String>()
+            .expect("the timeout names its last projection");
+        let reads = reads.load(std::sync::atomic::Ordering::SeqCst);
+        assert!((2..=301).contains(&reads), "R1/E1 {reads} reads");
+        assert!(
+            message.contains(&format!("\"read-{}\"", reads - 1)),
+            "R1/E2 {message}"
+        );
     }
 
     #[test]

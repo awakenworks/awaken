@@ -524,6 +524,103 @@ fn always_allow_mcp_tools(server_name: &str) -> Value {
     }])
 }
 
+/// Read the Session's Managed Event projection through the protocol observer,
+/// counting every metered GET it issues.
+async fn observe_counting_reads(
+    app: &Router,
+    session: &str,
+    fact: DurableFact<'_>,
+    timeout: std::time::Duration,
+    reads: &Arc<std::sync::atomic::AtomicUsize>,
+) -> Value {
+    let uri = format!("/v1/sessions/{session}/events?limit=500");
+    awaken_protocol_managed_testkit::wait_for_session_events(
+        fact,
+        timeout,
+        "the Session's committed user.message",
+        || {
+            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let app = app.clone();
+            let uri = uri.clone();
+            async move {
+                let (status, page) = call(&app, "GET", &uri, None).await;
+                (status.as_u16(), page)
+            }
+        },
+        |_| true,
+    )
+    .await
+}
+
+/// A Managed Event wait longer than the Org Read burst. Causes: C1 the fact a
+/// wait settles on is committed only after more than ten seconds; C2 every
+/// observation is one metered Read against the product's default Org bucket
+/// (1200 per minute, refilled continuously); C3 the fact is already committed
+/// when a wait starts. Effects: E1 the long wait settles on the fact instead of
+/// failing with a 429 `rate_limit_error`; E2 it spends at most half the
+/// bucket's capacity and refill, so no wait length can exhaust it; E3 an
+/// already-committed fact settles on the first read. Rules: R1=C1+C2=>E1+E2; R2=C3=>E3.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_managed_event_wait_stays_within_the_org_read_budget() {
+    let (url, _calls) = counting_calc_mcp().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
+    let vault_id = vault_with_calc_credential(&app, &url).await;
+    let id = create_mcp_session(&app, &vault_id, &url).await;
+    let delay = std::time::Duration::from_secs(12);
+    let late_command = {
+        let app = app.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            // awaken-allow(wait): elapsed time is the cause under test; the Org Read bucket only drains over a wait longer than its burst
+            tokio::time::sleep(delay).await;
+            send_user_message(&app, &id, "add 2 3").await
+        })
+    };
+
+    // R1: the wait outlasts the bucket's burst and settles on the fact.
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let started = std::time::Instant::now();
+    observe_counting_reads(
+        &app,
+        &id,
+        DurableFact::committed_event("user.message"),
+        std::time::Duration::from_secs(60),
+        &reads,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let long_reads = reads.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(elapsed >= delay, "R1/E1 settled only on the late fact");
+    // The product's bucket funds `read_per_minute` at once and refills that
+    // many a minute; the observer may spend at most half of both.
+    let read_per_minute =
+        f64::from(awaken_tenancy::org_admission::OrgRateLimits::default().read_per_minute);
+    let half_budget = read_per_minute / 2.0 + read_per_minute / 120.0 * elapsed.as_secs_f64();
+    let read_rate = long_reads as f64 / elapsed.as_secs_f64();
+    assert!(
+        (long_reads as f64) <= half_budget + 1.0,
+        "R1/E2 {long_reads} reads in {elapsed:?} exceed half the Org Read budget ({half_budget:.0})"
+    );
+
+    // R2: an already-committed fact settles on the first read.
+    let (status, receipt) = late_command.await.expect("the late command task");
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    reads.store(0, std::sync::atomic::Ordering::SeqCst);
+    observe_counting_reads(
+        &app,
+        &id,
+        DurableFact::committed_event_after(&receipt, "user.message"),
+        std::time::Duration::from_secs(10),
+        &reads,
+    )
+    .await;
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1, "R2/E3");
+    eprintln!("observer pacing: long wait {long_reads} reads in {elapsed:?} ({read_rate:.1}/s)");
+    wait_for_session_events(&app, &id, &receipt, "the late command's Run").await;
+    shut_down_registered_worker_process(process).await;
+}
+
 /// Cause/effect design: C1 a Session binds one inline MCP server to the exact
 /// matching Vault credential; C2 two user messages run on that same Session;
 /// C3 each accepted receipt may precede its lifecycle projection.

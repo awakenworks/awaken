@@ -45,6 +45,8 @@ awaken-environment-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-session-application = { workspace = true, features = ["test-support"] }
 awaken-session-types.workspace = true
+# The observer paces its reads against the Org Read bucket's documented rate.
+awaken-tenancy.workspace = true
 awaken-tool-contract.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
