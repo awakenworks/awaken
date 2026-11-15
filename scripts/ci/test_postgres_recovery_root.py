@@ -192,7 +192,7 @@ class RecoveryRootTests(unittest.TestCase):
             self.assertEqual(json.loads(result.stdout), arguments)
 
     def test_producer_allocates_and_cleans_only_its_own_directory(self):
-        # P1 absolute/trailing-slash/symlink TMPDIR x failed Docker startup:
+        # P1 absolute/trailing-slash/symlink TMPDIR x failed Docker startup (75):
         # the real pg_tests producer allocates base+wal under that physical
         # parent and removes only this new root. An inherited caller-owned
         # AWAKEN_RECOVERY_ROOT must remain byte-for-byte untouched (P2).
@@ -225,7 +225,7 @@ class RecoveryRootTests(unittest.TestCase):
                                  AWAKEN_TEST_ALLOCATION=str(report)),
                         text=True, capture_output=True,
                     )
-                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(result.returncode, 75, result.stderr)
                     self.assertIn("Docker could not create", result.stderr)
                     allocated = json.loads(report.read_text())
                     self.assertTrue(allocated["base"] and allocated["wal"])
@@ -239,7 +239,9 @@ class RecoveryRootTests(unittest.TestCase):
     def test_startup_failures_report_phases_and_diagnose_before_cleanup(self):
         # Cause/effect table: C1 create fails (possibly accepted remotely), C2
         # port response malformed, C3 final TCP readiness never arrives; C4
-        # diagnostics also fail. Effects: E1 retain original exit 1; E2 trace the
+        # diagnostics also fail. Effects: E1 exit 75 (substrate unavailable, so
+        # check-all and land.py rerun later and eject no lane; C4 never turns it
+        # into another status); E2 trace the
         # exact failed phase/status even when output was suppressed; E3 inspect
         # and logs precede cleanup, only for the attempted container; E4 C4 never
         # masks C1. P13=C1+C4, P14=C2, P15=C3 => E1-E3 (and E4 for P13).
@@ -285,7 +287,9 @@ class RecoveryRootTests(unittest.TestCase):
                                  AWAKEN_PG_OPERATION_TIMEOUT_SECONDS="30"),
                         text=True, capture_output=True,
                     )
-                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(result.returncode, 75, result.stderr)
+                    self.assertIn("PostgreSQL substrate unavailable on this host; exiting 75",
+                                  result.stderr)
                     self.assertIn(f"stage={phase} event=start", result.stderr)
                     self.assertIn(f"stage={phase} event=finish status={status}", result.stderr)
                     commands = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -331,7 +335,7 @@ class RecoveryRootTests(unittest.TestCase):
 
     def test_cleanup_failure_retains_resources_and_original_failure(self):
         # C7 discovery fails or C8 removal fails after a real producer readiness
-        # failure. E6 preserve the original1, expose23/31 in its cleanup phase,
+        # failure. E6 preserve the original 75, expose 23/31 in its cleanup phase,
         # and retain the uncertain container/anonymous volume/recovery root.
         # Every Docker effect is simulated; parent disk capacity is fixed by the
         # same fixture observer, never borrowed from the executing workstation.
@@ -353,7 +357,7 @@ class RecoveryRootTests(unittest.TestCase):
                              AWAKEN_PG_READY_TIMEOUT_SECONDS="1", AWAKEN_PG_OPERATION_TIMEOUT_SECONDS="30"),
                     text=True, capture_output=True,
                 )
-                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
                 self.assertIn("stage=postgres-ready event=finish status=1", result.stderr)
                 self.assertIn(f"stage={phase} event=finish status={status}", result.stderr)
                 self.assertIn("retaining its owned recovery directory", result.stderr)

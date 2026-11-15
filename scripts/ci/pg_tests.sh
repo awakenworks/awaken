@@ -797,6 +797,21 @@ else
   PUBLISH="127.0.0.1::5432"
   echo "-> starting ephemeral Postgres ($NAME) on a Docker-assigned free port"
 fi
+# Substrate acquisition decision table: S1 container creation fails (image
+# absent and its registry refuses or is unreachable, daemon error, deadline),
+# S2 Docker publishes no valid port, S3 the server never becomes ready. Each is
+# the host's substrate, not the change under test: the image tags are pinned
+# and the containers run no repository code. Effect: exit 75 (resource
+# unavailable), so check-all and land.py rerun later instead of blaming a lane.
+# Diagnostics and owned cleanup still run from the EXIT trap, which keeps 75.
+# Repository inputs (the fixture policy below, every suite) still fail with 1.
+substrate_unavailable() {
+  local line
+  for line in "$@"; do echo "$line" >&2; done
+  echo "  PostgreSQL substrate unavailable on this host; exiting 75 (resource refusal, rerun later)" >&2
+  exit 75
+}
+
 POSTGRES_CREATE_ATTEMPTED=1
 if ! pg_run_with_deadline postgres-create "$PG_OPERATION_TIMEOUT_SECONDS" \
   docker run -d --name "$NAME" --label "io.awaken.ci.postgres-run=$PG_OWNER" \
@@ -810,14 +825,12 @@ if ! pg_run_with_deadline postgres-create "$PG_OPERATION_TIMEOUT_SECONDS" \
   -c archive_timeout=1s \
   -c "archive_command=test ! -f /wal-archive/%f && cp %p /wal-archive/%f" \
   >/dev/null; then
-  echo "✗ Docker could not create the ephemeral Postgres container" >&2
-  exit 1
+  substrate_unavailable "✗ Docker could not create the ephemeral Postgres container"
 fi
 
 if [ -z "$REQUESTED_PORT" ]; then
   if ! PORT="$(published_port "$(pg_run_with_deadline postgres-port "$PG_OPERATION_TIMEOUT_SECONDS" docker port "$NAME" 5432/tcp)")"; then
-    echo "✗ Docker did not publish a valid Postgres TCP port" >&2
-    exit 1
+    substrate_unavailable "✗ Docker did not publish a valid Postgres TCP port"
   fi
   echo "-> Docker published ephemeral Postgres on :$PORT"
 fi
@@ -833,8 +846,7 @@ while (( SECONDS < ready_deadline )); do
   sleep 1
 done
 if [ "$ready" -ne 1 ]; then
-  echo "✗ ephemeral Postgres never became ready"
-  exit 1
+  substrate_unavailable "✗ ephemeral Postgres never became ready"
 fi
 
 export AWAKEN_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/$DB" # awaken-allow(secret):
@@ -869,14 +881,13 @@ if ! pg_run_with_deadline object-create "$PG_OPERATION_TIMEOUT_SECONDS" \
   # repository with the same "pull access denied" text, so name the image and
   # the override rather than letting the reader conclude it is a permission
   # problem. The image is only absent here because it was never pulled.
-  echo "✗ Docker could not create the ephemeral object store from $MINIO_IMAGE" >&2
-  echo "  if the pull failed, check registry reachability (docker's \"access denied\" also" >&2
-  echo "  covers network and rate-limit failures), or set AWAKEN_CI_OBJECT_IMAGE to a mirror" >&2
-  exit 1
+  substrate_unavailable "✗ Docker could not create the ephemeral object store from $MINIO_IMAGE" \
+    "  if the pull failed, check registry reachability (docker's \"access denied\" also" \
+    "  covers network and rate-limit failures), or set AWAKEN_CI_OBJECT_IMAGE and" \
+    "  AWAKEN_CI_OBJECT_CLIENT_IMAGE to a local copy or mirror of the same release"
 fi
 if ! OBJECT_PORT="$(published_port "$(pg_run_with_deadline object-port "$PG_OPERATION_TIMEOUT_SECONDS" docker port "$OBJECT_NAME" 9000/tcp)")"; then
-  echo "✗ Docker did not publish a valid object-store TCP port" >&2
-  exit 1
+  substrate_unavailable "✗ Docker did not publish a valid object-store TCP port"
 fi
 
 object_ready=0
@@ -893,8 +904,7 @@ while (( SECONDS < object_ready_deadline )); do
   sleep 1
 done
 if [ "$object_ready" -ne 1 ]; then
-  echo "✗ ephemeral object store never became ready"
-  exit 1
+  substrate_unavailable "✗ ephemeral object store never became ready (client image $MC_IMAGE)"
 fi
 export AWAKEN_TEST_S3_ENDPOINT="http://127.0.0.1:$OBJECT_PORT"
 export AWAKEN_TEST_S3_ACCESS_KEY="$FILE_STORE_ACCESS_KEY" # awaken-allow(secret):
