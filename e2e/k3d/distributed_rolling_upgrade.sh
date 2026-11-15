@@ -12,19 +12,23 @@ rolling_pg() {
 }
 
 rolling_pull_release_images() {
-  local image role i
+  local image role i registry="${ADR71_ROLLING_REGISTRY:-ghcr.io}"
+  if [[ ! "$registry" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9][0-9]*)?$ ]]; then
+    err "rolling release verification requires a registry host with an optional port"
+    return 2
+  fi
   local -a roles=(coordinator coordinator worker worker)
   local -a images=("$ROLLING_LEGACY_IMAGE" "$ROLLING_CANDIDATE_IMAGE"
                    "$ROLLING_LEGACY_WORKER_IMAGE" "$ROLLING_CANDIDATE_WORKER_IMAGE")
   for image in "${images[@]}"; do
-    if [[ "$image" != ghcr.io/* ]] || ! k3d_validate_image_digest "$image"; then
-      err "rolling release verification requires GHCR role image digests"
+    if [[ "$image" != "$registry/"* ]] || ! k3d_validate_image_digest "$image"; then
+      err "rolling release verification requires role image digests from $registry"
       return 2
     fi
   done
   for i in "${!images[@]}"; do
     image="${images[i]}" role="${roles[i]}"
-    # Always contact GHCR so a cached image cannot mask a broken pull grant.
+    # Always contact the selected registry so a cached image cannot mask a failed pull.
     docker pull --platform "$K3D_PLATFORM" "$image" || return "$?"
     docker run --rm --network none --entrypoint "/usr/local/bin/awaken-$role" \
       "$image" --help >/dev/null || return "$?"
