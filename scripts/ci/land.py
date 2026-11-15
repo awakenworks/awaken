@@ -22,6 +22,7 @@ Decision table (``--self-test`` exercises each row in a throwaway repository):
 | V2   | a group exits 75 (host or resource refusal)            | nothing lands, nothing is ejected, exit 75: rerun later |
 | V3   | a group fails otherwise                                | later groups are skipped; bisect batch prefixes with the failed group; eject the first failing prefix's last lane; rebuild and verify again |
 | V5   | the bisection reaches lane 1 and main itself fails     | nothing ejected or landed, exit 1 (main or the host is broken) |
+| V7   | the main-itself run of V5                              | runs the group un-narrowed: narrowed to main it selects no suite and passes vacuously |
 | V4   | main moved since the batch was built                   | re-sync, rebuild on the new main, verify again |
 | V6   | ``--max-rounds`` verifications without a landing       | nothing lands, exit 1 |
 
@@ -51,6 +52,11 @@ by the static run through the same harness, so they select static only.
 reliability and postgres run with ``AWAKEN_SERVICE_AFFECTED_BASE`` and formal
 with ``AWAKEN_FORMAL_TIER=pr AWAKEN_FORMAL_AFFECTED_BASE``, all set to the main
 commit the batch was built on, so each narrows itself to what the batch reaches.
+The one exception is V7: main measured against itself reaches nothing, starts no
+substrate and would pass whatever the host's state, which would eject lane 1 for
+a fault main shares (an unpullable image, a dead daemon). That run leaves both
+bases empty so the group runs whole. A gate that finds its substrate unavailable
+exits 75 (V2) and ejects nothing either way.
 kubernetes, k3d, sandbox and the e2e group are selected only by their own
 runners and directories; request them with ``--group`` (listing every group).
 
@@ -316,12 +322,19 @@ def plan_groups(ctx: Context, batch: Batch) -> list[tuple[str, str]]:
 # --- verification ------------------------------------------------------------------------------------
 
 def run_group(ctx: Context, group: str, tip: str, base: str, label: str) -> dict:
-    """Run one group on ``tip`` (checked out) with the affected bases set to ``base``."""
+    """Run one group on ``tip`` (checked out) with the affected bases set to ``base``.
+
+    ``tip == base`` is main measured against itself (V7): narrowed, it would
+    select nothing and pass vacuously, so both bases are left empty and the
+    group runs whole.
+    """
     ctx.git.reset(tip)
     log = ctx.log_dir / f"{label}-{group}.log"
-    env = environment({"AWAKEN_SERVICE_AFFECTED_BASE": base, "AWAKEN_FORMAL_TIER": "pr",
-                       "AWAKEN_FORMAL_AFFECTED_BASE": base})
-    print(f"→ {label} {group} on {tip[:10]} (log {log})", flush=True)
+    affected = "" if tip == base else base
+    env = environment({"AWAKEN_SERVICE_AFFECTED_BASE": affected, "AWAKEN_FORMAL_TIER": "pr",
+                       "AWAKEN_FORMAL_AFFECTED_BASE": affected})
+    scope = "" if affected else " un-narrowed"
+    print(f"→ {label} {group}{scope} on {tip[:10]} (log {log})", flush=True)
     started = time.monotonic()
     with log.open("w", encoding="utf-8") as out:
         try:
@@ -563,6 +576,10 @@ with open(root / "gate.jsonl", "a") as log:
                           "formal": os.environ.get("AWAKEN_FORMAL_AFFECTED_BASE")}) + "\n")
 if os.environ.get("FAKE_REFUSE") == group:
     sys.exit(75)
+if os.environ.get("FAKE_HOST_FAULT") == group and os.environ.get("AWAKEN_SERVICE_AFFECTED_BASE") != head:
+    # A host fault shows only once a suite runs; narrowed to itself, a tip runs none.
+    print(f"{group}: the host's substrate is broken")
+    sys.exit(1)
 if os.path.exists(f"breaks-{group}"):
     print(f"{group} broken by this tip")
     sys.exit(1)
@@ -750,6 +767,18 @@ def case_main_fails(fx: Fixture) -> None:
     fx.settled()
 
 
+def case_shared_host_fault(fx: Fixture) -> None:
+    fx.lane("lane-a", {"a.txt": "a\n"})
+    fx.ready()
+    result = fx.land("--group", "postgres", "lane-a", FAKE_HOST_FAULT="postgres")
+    assert result.returncode == 1 and fx.summary()["status"] == "main-fails", explain(result)
+    assert not fx.summary()["ejected"], "V7: lane 1 kept when main fails the same group un-narrowed"
+    runs = fx.runs()
+    assert [run["service"] for run in runs] == [fx.base, ""], f"V7: main ran un-narrowed: {runs}"
+    assert runs[-1]["head"] == fx.base and runs[-1]["formal"] == "", runs[-1]
+    fx.settled()
+
+
 def case_absorbed(fx: Fixture) -> None:
     fx.lane("lane-dup", {"u.txt": "u\n"})
     fx.git("checkout", "-q", "trunk")
@@ -817,7 +846,7 @@ def case_selection() -> None:
 
 def self_test() -> None:
     cases = [case_clean_lanes, case_conflict, case_breaking_lane, case_host_refusal, case_main_moves,
-             case_round_limit, case_main_fails, case_absorbed, case_refusals, case_dry_run]
+             case_round_limit, case_main_fails, case_shared_host_fault, case_absorbed, case_refusals, case_dry_run]
     for case in cases:
         with tempfile.TemporaryDirectory(prefix="land-") as scratch:
             case(Fixture(Path(scratch)))
