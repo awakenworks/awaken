@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { MANAGED_HEADERS, MEMORY_HEADERS } from "./betas";
+import { workspaceId } from "./workspace";
 import { typedAgentTools } from "../test-support/agent-tools.mjs";
 
 // Real-model e2e for the Admin Assistant's authoring. The assistant runs on a real model
@@ -24,7 +25,8 @@ test.setTimeout(120_000);
 // Register KIMI through the config plane, as an operator would (no server env). Wiring a
 // model reconciles the Auto-bound assistant onto it.
 async function configureKimi(request: APIRequestContext) {
-  const credentials = await request.get("/v1/config/credentials?workspace_id=wrkspc_default");
+  const workspace = await workspaceId(request);
+  const credentials = await request.get(`/v1/config/credentials?workspace_id=${encodeURIComponent(workspace)}`);
   const existing = (await credentials.json()).find(
     (credential: { provider_id?: string; status: string }) =>
       credential.provider_id === "kimi" && credential.status === "active",
@@ -32,7 +34,7 @@ async function configureKimi(request: APIRequestContext) {
   const response = await request.post("/v1/config/provider-connections", {
     data: {
       idempotency_key: "assistant-real-kimi",
-      workspace_id: "wrkspc_default",
+      workspace_id: workspace,
       provider_id: "kimi",
       display_name: "Kimi",
       dialect: "anthropic_messages",
@@ -40,7 +42,8 @@ async function configureKimi(request: APIRequestContext) {
       ...(KIMI ? { secret: KIMI } : { credential_source_id: existing?.id }),
     },
   });
-  expect(response.status()).toBe(201);
+  // The product's problem body says why (a refused key reads as discovery failure).
+  expect(response.status(), await response.text()).toBe(201);
 }
 
 async function runTurn(request: APIRequestContext, sessionId: string, prompt: string): Promise<string> {

@@ -2,6 +2,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { PRESETS } from "../src/components/agent/state-machine-presets";
 import { typedAgentTools } from "../test-support/agent-tools.mjs";
 import { MANAGED_HEADERS } from "./betas";
+import { workspaceId } from "./workspace";
 
 // End-to-end proof that the visual editor's state-machine PRESET actually enforces at
 // runtime on a real model (KIMI): we build an agent with the exact `read-before-write`
@@ -17,7 +18,8 @@ const USE_EXISTING_KIMI = process.env.KIMI_EXISTING_CREDENTIAL === "1";
 test.skip(!KIMI && !USE_EXISTING_KIMI, "needs KIMI_KEY or KIMI_EXISTING_CREDENTIAL=1");
 
 async function configureKimi(request: APIRequestContext) {
-  const credentials = await request.get("/v1/config/credentials?workspace_id=wrkspc_default");
+  const workspace = await workspaceId(request);
+  const credentials = await request.get(`/v1/config/credentials?workspace_id=${encodeURIComponent(workspace)}`);
   const existing = (await credentials.json()).find(
     (credential: { provider_id?: string; status: string }) =>
       credential.provider_id === "kimi" && credential.status === "active",
@@ -25,7 +27,7 @@ async function configureKimi(request: APIRequestContext) {
   const response = await request.post("/v1/config/provider-connections", {
     data: {
       idempotency_key: "state-machine-real-kimi",
-      workspace_id: "wrkspc_default",
+      workspace_id: workspace,
       provider_id: "kimi",
       display_name: "Kimi",
       dialect: "anthropic_messages",
@@ -33,7 +35,8 @@ async function configureKimi(request: APIRequestContext) {
       ...(KIMI ? { secret: KIMI } : { credential_source_id: existing?.id }),
     },
   });
-  expect(response.status()).toBe(201);
+  // The product's problem body says why (a refused key reads as discovery failure).
+  expect(response.status(), await response.text()).toBe(201);
 }
 
 test("read-before-write state machine blocks an unread write at runtime (real model)", async ({ request }) => {

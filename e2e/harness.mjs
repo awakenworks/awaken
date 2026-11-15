@@ -920,7 +920,11 @@ export async function provisionProviderTestModel(base, workspace, item, profileI
     if (item.secret && JSON.stringify(result).includes(item.secret)) {
       throw new Error(`${item.id}: provider response exposed credential material`);
     }
-    if (!response.ok) throw new Error(`${item.id}: ${route} failed (${response.status})`);
+    // The body was checked above to carry no credential bytes; keep the
+    // product's own diagnosis so a dead key reads differently from a defect.
+    if (!response.ok) {
+      throw new Error(`${item.id}: ${route} failed (${response.status}): ${JSON.stringify(result.error ?? result)}`);
+    }
     return result;
   };
   const authentication = item.auth === 'oauth_helper'

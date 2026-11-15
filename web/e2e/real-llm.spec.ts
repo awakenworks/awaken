@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { MANAGED_HEADERS, MEMORY_HEADERS } from "./betas";
+import { workspaceId } from "./workspace";
 import { typedAgentTools } from "../test-support/agent-tools.mjs";
 
 // Real-LLM e2e via the CONFIG PLANE (no env model config). The backend runs in plain
@@ -20,17 +21,19 @@ test.skip(!KEY, "needs a Gemini/Google key to submit via the credential API");
 
 // Register Gemini through the single ProviderConnection command.
 async function configureGemini(request: APIRequestContext) {
+  const workspace = await workspaceId(request);
   const response = await request.post("/v1/config/provider-connections", {
     data: {
       idempotency_key: "real-llm-gemini",
-      workspace_id: "wrkspc_default",
+      workspace_id: workspace,
       provider_id: "gemini",
       display_name: "Google AI Studio",
       dialect: "gemini",
       secret: KEY,
     },
   });
-  expect(response.status()).toBe(201);
+  // The product's problem body says why (a refused key reads as discovery failure).
+  expect(response.status(), await response.text()).toBe(201);
 }
 
 // Send one user turn and poll the session's event log until the assistant turn settles
