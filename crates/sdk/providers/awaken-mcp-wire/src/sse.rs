@@ -18,6 +18,8 @@ pub struct SseParser {
     pending_cr: bool,
     invalid_event: bool,
     exceeded_limit: bool,
+    #[cfg(test)]
+    frame_limit: Option<usize>,
 }
 
 impl SseParser {
@@ -78,7 +80,10 @@ impl SseParser {
     }
 
     fn charge(&mut self, bytes: usize) -> bool {
-        if bytes > crate::MAX_FRAME_BYTES - self.frame_bytes {
+        let limit = crate::MAX_FRAME_BYTES;
+        #[cfg(test)]
+        let limit = self.frame_limit.unwrap_or(limit);
+        if bytes > limit - self.frame_bytes {
             self.exceeded_limit = true;
             self.line_buf.clear();
             self.data = None;
@@ -139,8 +144,16 @@ mod tests {
 
     #[test]
     fn raw_event_limit_counts_fields_and_rejects_before_a_delimiter() {
-        let limit = crate::MAX_FRAME_BYTES;
         let mut parser = SseParser::new();
+        // Exercise the same accounting under Miri without interpreting
+        // several full-size frames byte by byte.
+        let limit = if cfg!(miri) {
+            let limit = 64;
+            parser.frame_limit = Some(limit);
+            limit
+        } else {
+            crate::MAX_FRAME_BYTES
+        };
         // Two complete events can share a chunk even if the chunk is over the cap.
         let prefix = b": ignored\r\ndata: ok";
         let mut exact = prefix.to_vec();
