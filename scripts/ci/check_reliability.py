@@ -48,7 +48,7 @@ REQUIRED_TOOL_GATES = (
     "--re 'permits_call_transition|next_execution_attempt'",
     "cargo clean -p awaken-runtime-contract",
     "cargo clean -p awaken-tool-contract",
-    "cargo +nightly miri test -p awaken-mcp-wire --lib",
+    'python3 scripts/ci/deadline.py "$miri_seconds" -- \\\n  cargo +nightly miri test -p awaken-mcp-wire --lib',
     "-Zsanitizer=address",
     "-Zsanitizer=thread",
     "cargo +nightly test -p awaken-worker --lib",

@@ -153,7 +153,15 @@ fuzz_seconds="${AWAKEN_FUZZ_SECONDS:-15}"
 (cd fuzz && suite_step reliability.fuzz.sse-chunks cargo +nightly fuzz run sse_chunks -- -max_total_time="$fuzz_seconds")
 (cd fuzz && suite_step reliability.fuzz.thread-commit-wire cargo +nightly fuzz run thread_commit_wire -- -max_total_time="$fuzz_seconds")
 (cd fuzz && suite_step reliability.fuzz.tool-batch-transitions cargo +nightly fuzz run tool_batch_transitions -- -max_total_time="$fuzz_seconds")
-suite_step reliability.miri.mcp-wire cargo +nightly miri test -p awaken-mcp-wire --lib
+# Miri interprets every mcp-wire unit test, so a test that is instant natively
+# can take hours here (a byte-by-byte 8 MiB frame test ran 6 h on 2026-11-16,
+# holding a host build slot the whole time). The suite's 53 tests take ~35 s
+# under miri plus its build; the bound is that with a wide margin, and
+# deadline.py does not count time queued for host build admission. Overrunning
+# it is the change's failure (exit 124), never the host's.
+miri_seconds="${AWAKEN_MIRI_SECONDS:-1800}"
+suite_step reliability.miri.mcp-wire python3 scripts/ci/deadline.py "$miri_seconds" -- \
+  cargo +nightly miri test -p awaken-mcp-wire --lib
 sanitizer_target="$(rustc +nightly -vV | sed -n 's/^host: //p')"
 RUSTFLAGS="-Zsanitizer=address" suite_step reliability.asan.mcp-wire cargo +nightly test -p awaken-mcp-wire --lib \
   --target "$sanitizer_target" -Zbuild-std
