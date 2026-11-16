@@ -429,10 +429,16 @@ impl RealizationExecutor {
                     "No Session environment checkpoint store is installed",
                 )
             })?;
+        // The installed projection retains the exact publication its claim or
+        // Control delivered; a Session whose Agent is published nowhere else
+        // (an inline or Managed-API Agent) restores under that same snapshot.
+        let retained = realizations
+            .published_snapshot(&thread)
+            .map_err(awaken_runtime_contract::runs::RunError::from)?;
         let (workspace, _, publication, _) = self
             .environments
             .publication()
-            .resolve_session_publication(&thread, None, None)
+            .resolve_session_publication(&thread, None, retained)
             .map_err(awaken_runtime_contract::runs::RunError::from)?;
         if workspace != request.workspace_id {
             return Err(RunError::unavailable(

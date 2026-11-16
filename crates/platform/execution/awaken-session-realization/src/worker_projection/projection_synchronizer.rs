@@ -246,6 +246,17 @@ where
         // generation.
         realizations.enter_session_dispatch(session_id.as_str())?;
         drop(lifecycle_guard);
+        if matches!(
+            projection.environment.step(),
+            awaken_session_contract::SessionEnvironmentStep::Suspending(_)
+        ) {
+            // A suspend has closed ordinary Environment effects: the aggregate
+            // admits no Adopt, Create or Resource reprojection until the root
+            // is Resident again. Its own claim-fenced phases act on the
+            // retained source under the lease installed above, so the frozen
+            // projection is installed authority-only, as a Restoring one is.
+            return Ok(());
+        }
         let published_snapshot = realizations.published_snapshot(session_id.as_str())?;
         // A resident Arc is process-local ownership, not evidence that its
         // physical Sandbox survived. Revalidate every durable binding through

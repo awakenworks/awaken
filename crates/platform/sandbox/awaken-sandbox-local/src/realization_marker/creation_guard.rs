@@ -20,9 +20,47 @@ impl<'a> ProviderCreationGuard<'a> {
         source: Option<RebuildSource<'_>>,
         authority: &'a dyn pc::CurrentExecutionAuthority,
     ) -> Result<Self, pc::SandboxError> {
+        Self::admitted(root, fingerprint, fence, source, None, authority)
+    }
+
+    /// The same canonical root, re-realized from one exact checkpoint: the
+    /// marker admits it only over its Removed predecessor (or the retry of
+    /// this same restore), so a restored Sandbox is an ordinary current
+    /// realization that can be adopted, checkpointed and disposed again.
+    pub(crate) fn restoring(
+        root: &Path,
+        fingerprint: &pc::SandboxRealizationFingerprint,
+        fence: &pc::SandboxEffectFence,
+        restore_input_fingerprint: &str,
+        authority: &'a dyn pc::CurrentExecutionAuthority,
+    ) -> Result<Self, pc::SandboxError> {
+        Self::admitted(
+            root,
+            fingerprint,
+            fence,
+            None,
+            Some(restore_input_fingerprint),
+            authority,
+        )
+    }
+
+    fn admitted(
+        root: &Path,
+        fingerprint: &pc::SandboxRealizationFingerprint,
+        fence: &pc::SandboxEffectFence,
+        source: Option<RebuildSource<'_>>,
+        restore_input_fingerprint: Option<&str>,
+        authority: &'a dyn pc::CurrentExecutionAuthority,
+    ) -> Result<Self, pc::SandboxError> {
         pc::with_current_sandbox_effect(fence, authority, |_| {
             Ok(Self::Current {
-                guard: Box::new(begin(root, fingerprint, fence, source, None)?),
+                guard: Box::new(begin(
+                    root,
+                    fingerprint,
+                    fence,
+                    source,
+                    restore_input_fingerprint,
+                )?),
                 authority,
             })
         })

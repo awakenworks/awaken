@@ -172,6 +172,11 @@ impl LocalProvider {
                 request.checkpoint.format
             )));
         }
+        if let pc::SandboxEffect::Fenced { fence, authority } = effect {
+            return self
+                .restore_canonical_sandbox(spec, request, store, fence, authority)
+                .await;
+        }
         let target = self.acquire_restore_sandbox(spec, request, effect).await?;
         request.admit_effect(effect)?;
         let evidence = target.evidence().clone();
@@ -197,6 +202,59 @@ impl LocalProvider {
         })?;
         request.admit_effect(effect)?;
         let handle = pc::Sandbox::handle(&sandbox);
+        pc::SandboxRestoreResult::complete(request, spec, sandbox, &handle)
+    }
+}
+
+impl LocalProvider {
+    /// A fenced restore re-realizes the Session's canonical root through the
+    /// realization marker (Removed predecessor -> Recreating -> Ready), so the
+    /// restored Sandbox is an ordinary current realization: later adoption,
+    /// checkpoint, source release and terminal disposal use the same marker
+    /// as a created one. A retry of the same restore replays its Ready
+    /// receipt without rewriting bytes. The handle carries the restore
+    /// evidence the aggregate's receipt names.
+    async fn restore_canonical_sandbox(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+        fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<pc::SandboxRestoreResult<LocalSandbox>, pc::SandboxError> {
+        let effect = pc::SandboxEffect::Fenced { fence, authority };
+        let bytes = store.get(&request.checkpoint.id).await?;
+        request.admit_effect(effect)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != request.checkpoint.size_bytes
+            || content_id(&bytes) != request.checkpoint.digest
+        {
+            return Err(pc::SandboxError::conflict(
+                "checkpoint size or digest mismatch",
+            ));
+        }
+        // The same claim a fenced creation carries: the realization marker
+        // the creation prologue writes is the durable record that
+        // `observe_adoption` reads back (a dropped restore leaves a Recreating
+        // marker naming this restore, which its retry resumes), and the
+        // retention names the exact root for the window before that write.
+        let claim = pc::EffectClaim::durable(
+            crate::abandoned_realization::REALIZATION_RECONCILER,
+            self.abandoned
+                .retain(crate::sandbox_dir(&self.base, &spec.scope)),
+        );
+        let mut sandbox = pc::ClaimedEffect::new(
+            claim,
+            self.create_sandbox_inner(
+                spec,
+                Some((fence, authority)),
+                None,
+                Some((request, &bytes)),
+            ),
+        )
+        .await?;
+        request.admit_effect(effect)?;
+        let handle = request.bind_handle(spec, pc::Sandbox::handle(&sandbox))?;
+        sandbox.adopted_handle = Some(handle.clone());
         pc::SandboxRestoreResult::complete(request, spec, sandbox, &handle)
     }
 }

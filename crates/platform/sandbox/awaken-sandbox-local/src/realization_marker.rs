@@ -647,6 +647,7 @@ fn require_unmarked_rebuild_source_absent(
 }
 
 mod physical_identity;
+pub(crate) use physical_identity::restore_input_fingerprint;
 use physical_identity::{new_physical_incarnation, validate_removed_restore_source};
 
 mod marker_paths;
@@ -1358,17 +1359,50 @@ pub(crate) fn begin(
                     "Removed filesystem restoration does not accept a stale source handle",
                 ));
             }
-            let restore_input = restore_input_fingerprint.ok_or_else(|| {
-                pc::SandboxError::invalid(
-                    "Removed filesystem can only transition through an exact checkpoint restore",
-                )
-            })?;
             if !is_distinct_authorized_rebuild(&observed.effect_fence, effect_fence) {
                 return Err(pc::SandboxError::fence_rejected(
-                    "checkpoint restore fence does not authorize the Removed predecessor",
+                    "realization fence does not authorize the Removed predecessor",
                 ));
             }
             require_realization_absent(root, &lock, &observed)?;
+            let Some(restore_input) = restore_input_fingerprint else {
+                // The aggregate deleted the expired checkpoint and granted a
+                // fresh generation from the frozen Environment: a distinct
+                // successor of a filesystem that was checkpointed and then
+                // released creates anew, with no claim on the removed bytes.
+                // Any other tombstone (a terminal release) stays absorbing.
+                if observed
+                    .checkpoint
+                    .as_ref()
+                    .is_none_or(|participant| participant.reference().is_none())
+                {
+                    return Err(pc::SandboxError::invalid(
+                        "Removed filesystem can only transition through an exact checkpoint restore",
+                    ));
+                }
+                let mut fresh = marker_for_new_attempt(
+                    root,
+                    fingerprint,
+                    effect_fence,
+                    RealizationPhase::Creating,
+                    None,
+                    None,
+                )?;
+                require_absent_locked(
+                    root,
+                    &lock,
+                    stage_leaf(&fresh.root)?,
+                    "fresh realization private stage",
+                )?;
+                replace_marker_locked(root, &lock, &observed, &fresh)?;
+                ensure_root_published(root, &lock, &mut fresh)?;
+                return Ok(CreationGuard {
+                    root: root.to_owned(),
+                    marker: fresh,
+                    admission: Admission::Creating,
+                    lock: Some(lock),
+                });
+            };
             let rebuild_source = RebuildSourceRecord {
                 phase: RealizationPhase::Removed,
                 effect_fence: observed.effect_fence.clone(),

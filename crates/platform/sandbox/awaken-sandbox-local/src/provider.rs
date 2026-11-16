@@ -352,12 +352,12 @@ impl LocalProvider {
     ) -> Result<LocalSandbox, pc::SandboxError> {
         let runtime = match tokio::runtime::Handle::try_current() {
             Ok(runtime) if spec.mounts.is_empty() => runtime,
-            _ => return self.create_sandbox_inner(spec, None, None).await,
+            _ => return self.create_sandbox_inner(spec, None, None, None).await,
         };
         let provider = self.operation_view();
         let spec = spec.clone();
         match tokio::task::spawn_blocking(move || {
-            runtime.block_on(provider.create_sandbox_inner(&spec, None, None))
+            runtime.block_on(provider.create_sandbox_inner(&spec, None, None, None))
         })
         .await
         {
@@ -429,21 +429,32 @@ impl LocalProvider {
                         spec,
                         Some((effect_fence, authority)),
                         source_handle,
+                        None,
                     ))
                 })
             }
             _ => {
-                self.create_sandbox_inner(spec, Some((effect_fence, authority)), source_handle)
-                    .await
+                self.create_sandbox_inner(
+                    spec,
+                    Some((effect_fence, authority)),
+                    source_handle,
+                    None,
+                )
+                .await
             }
         }
     }
 
+    /// `restore` re-realizes the canonical root from one verified checkpoint
+    /// (its bytes already fetched and digest-checked): the marker admits it
+    /// over the Removed predecessor, and the bytes land after the ordinary
+    /// materialization, before Ready.
     async fn create_sandbox_inner(
         &self,
         spec: &pc::SandboxSpec,
         effect: Option<(&pc::SandboxEffectFence, &dyn pc::CurrentExecutionAuthority)>,
         source_handle: Option<&pc::SandboxHandle>,
+        restore: Option<(&pc::SandboxRestoreRequest, &[u8])>,
     ) -> Result<LocalSandbox, pc::SandboxError> {
         // Fail closed against our capabilities (isolation, ro, egress secrets, …).
         self.prepare(spec)?;
@@ -457,8 +468,35 @@ impl LocalProvider {
 
         let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
         let realization_fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
-        let mut realization_guard = match effect {
-            Some((effect_fence, authority)) => {
+        if let Some((request, _)) = restore {
+            sandbox.continuation_excluded_paths = request
+                .checkpoint
+                .excluded_mounts
+                .iter()
+                .map(|path| sandbox.root.resolve(path).map_err(pc::SandboxError::from))
+                .collect::<Result<_, _>>()?;
+        }
+        let mut realization_guard = match (effect, restore) {
+            (Some((effect_fence, authority)), Some((request, _))) => {
+                if source_handle.is_some() {
+                    return Err(pc::SandboxError::invalid(
+                        "checkpoint restore does not rebuild from a source handle",
+                    ));
+                }
+                crate::realization_marker::ProviderCreationGuard::restoring(
+                    sandbox.root.root(),
+                    &realization_fingerprint,
+                    effect_fence,
+                    &crate::realization_marker::restore_input_fingerprint(&request.checkpoint),
+                    authority,
+                )?
+            }
+            (None, Some(_)) => {
+                return Err(pc::SandboxError::fence_rejected(
+                    "checkpoint restore requires an aggregate effect fence",
+                ));
+            }
+            (Some((effect_fence, authority)), None) => {
                 crate::realization_marker::ProviderCreationGuard::current(
                     sandbox.root.root(),
                     &realization_fingerprint,
@@ -469,12 +507,12 @@ impl LocalProvider {
                     authority,
                 )?
             }
-            None if source_handle.is_none() => {
+            (None, None) if source_handle.is_none() => {
                 crate::realization_marker::ProviderCreationGuard::Legacy(
                     crate::realization_marker::begin_legacy(sandbox.root.root())?,
                 )
             }
-            None => {
+            (None, None) => {
                 return Err(pc::SandboxError::fence_rejected(
                     "sandbox rebuild requires an aggregate effect fence",
                 ));
@@ -601,6 +639,13 @@ impl LocalProvider {
                     sandbox.memory_materializations.push(materialization);
                 }
             }
+            if let Some((_, bytes)) = restore {
+                // The checkpoint's writable tree, after the governed mounts it
+                // excludes; every write re-checks the creation fence.
+                checkpoint::extract_checkpoint(&sandbox, root_identity, bytes, || {
+                    realization_guard.validate_before_mutation()
+                })?;
+            }
             let receipt = crate::realization_marker::RealizationCompletionReceipt::new(
                 &sandbox.realized,
                 sandbox.memory_materializations.clone(),
@@ -672,37 +717,52 @@ impl LocalProvider {
         effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<LocalSandbox, pc::SandboxError> {
-        self.adopt_sandbox_inner(
-            Some(spec),
-            handle,
-            pc::SandboxEffect::Fenced {
-                fence: effect_fence,
-                authority,
-            },
-        )
-        .await
+        let effect = pc::SandboxEffect::Fenced {
+            fence: effect_fence,
+            authority,
+        };
+        if handle.restoration().is_some() && handle.realization_fingerprint().is_none() {
+            // A legacy restored root has no creation marker to fence; its
+            // exact restoration evidence is verified under the admitted effect.
+            effect.admit()?;
+            let sandbox = self.adopt_sandbox_with_spec(spec, handle).await?;
+            effect.admit()?;
+            return Ok(sandbox);
+        }
+        if handle.restoration().is_some() {
+            Self::verify_restored_handle(spec, handle)?;
+        }
+        self.adopt_sandbox_inner(Some(spec), handle, effect).await
     }
 
-    /// Adopt through the frozen security authority. Exact restoration evidence
-    /// selects the provider-owned restore root; ordinary handles continue
-    /// through the existing marker verifier.
-    pub async fn adopt_sandbox_with_spec(
+    /// The provider-owned root of an exact restored handle: its restoration
+    /// evidence must match the frozen security spec, checkpoint exclusions and
+    /// durable payload, and the root's durable binding must name that same
+    /// evidence. A restored root carries no realization marker; this evidence
+    /// is its identity for observation and adoption alike.
+    fn restored_root(
         &self,
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
-    ) -> Result<LocalSandbox, pc::SandboxError> {
-        if handle.restoration().is_none() {
-            return self
-                .adopt_sandbox_inner(Some(spec), handle, pc::SandboxEffect::Unattached)
-                .await;
-        }
-        #[cfg(target_os = "linux")]
-        if self.execution_deployment.is_some() {
-            return Err(pc::SandboxError::unsupported(
-                "scoped restored realization is not qualified",
-            ));
-        }
-        self.prepare(spec)?;
+    ) -> Result<(PathBuf, crate::LocalSandboxHandleV1), pc::SandboxError> {
+        let (evidence, payload) = Self::verify_restored_handle(spec, handle)?;
+        let root = restore_target::restoration_root(&self.base, evidence)?;
+        restore_target::verify_binding(&root, evidence)?;
+        Ok((root, payload))
+    }
+
+    /// The restore evidence of `handle` names this exact security spec,
+    /// checkpoint exclusions and durable payload.
+    fn verify_restored_handle<'h>(
+        spec: &pc::SandboxSpec,
+        handle: &'h pc::SandboxHandle,
+    ) -> Result<
+        (
+            &'h pc::SandboxRestorationEvidence,
+            crate::LocalSandboxHandleV1,
+        ),
+        pc::SandboxError,
+    > {
         if handle.sandbox_id != spec.scope {
             return Err(pc::SandboxError::conflict(
                 "local Sandbox handle does not match SandboxSpec scope",
@@ -728,8 +788,39 @@ impl LocalProvider {
                 "restored local handle differs from the exact SandboxSpec or checkpoint exclusions",
             ));
         }
-        let root = restore_target::restoration_root(&self.base, evidence)?;
-        restore_target::verify_binding(&root, evidence)?;
+        Ok((evidence, payload))
+    }
+
+    /// Adopt through the frozen security authority. Exact restoration evidence
+    /// selects the provider-owned restore root; ordinary handles continue
+    /// through the existing marker verifier.
+    pub async fn adopt_sandbox_with_spec(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+    ) -> Result<LocalSandbox, pc::SandboxError> {
+        if handle.restoration().is_none() {
+            return self
+                .adopt_sandbox_inner(Some(spec), handle, pc::SandboxEffect::Unattached)
+                .await;
+        }
+        #[cfg(target_os = "linux")]
+        if self.execution_deployment.is_some() {
+            return Err(pc::SandboxError::unsupported(
+                "scoped restored realization is not qualified",
+            ));
+        }
+        if handle.realization_fingerprint().is_some() {
+            // A marker-restored root is the canonical root: its restore
+            // evidence must still name this exact spec, then the ordinary
+            // marker verifier adopts it.
+            Self::verify_restored_handle(spec, handle)?;
+            return self
+                .adopt_sandbox_inner(Some(spec), handle, pc::SandboxEffect::Unattached)
+                .await;
+        }
+        self.prepare(spec)?;
+        let (root, payload) = self.restored_root(spec, handle)?;
         let mut sandbox = self.build_at(
             &handle.sandbox_id,
             &payload.outputs_path,
@@ -1202,6 +1293,22 @@ impl pc::SandboxProvider for LocalProvider {
         let handle = adoption.handle;
         handle.local_payload()?;
         let expected_effect_fence = adoption.observation_fence(basis)?;
+        if handle.restoration().is_some() && handle.realization_fingerprint().is_none() {
+            // A legacy restored root is identified by its exact restoration
+            // evidence, not by a creation marker: the check its adoption makes.
+            return Ok(match self.restored_root(adoption.spec, handle) {
+                Ok(_) => pc::SandboxObservation::Ready,
+                Err(pc::SandboxError::NotFound(_)) => {
+                    pc::SandboxObservation::DefinitivelyUnavailable {
+                        physical_incarnation: None,
+                    }
+                }
+                Err(pc::SandboxError::Conflict(reason)) => {
+                    pc::SandboxObservation::Incompatible { reason }
+                }
+                Err(error) => return Err(error),
+            });
+        }
         if expected_effect_fence.is_some()
             && handle.realization_fingerprint()
                 != Some(&pc::SandboxRealizationFingerprint::from_spec(adoption.spec))

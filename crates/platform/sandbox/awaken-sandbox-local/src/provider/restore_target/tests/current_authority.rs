@@ -33,6 +33,7 @@ async fn restore_revalidates_current_grant_after_target_lock_and_checkpoint_read
                     exact_restore_request(&spec, &capture, &checkpoint, "current-restore");
                 let evidence = request.evidence(&spec);
                 let root = restoration_root(tmp.path(), &evidence).unwrap();
+                let canonical = crate::sandbox_dir(tmp.path(), &spec.scope);
                 let fence = pc::SandboxEffectFence::new(
                     &request.effect_id,
                     "worker",
@@ -134,9 +135,15 @@ async fn restore_revalidates_current_grant_after_target_lock_and_checkpoint_read
                         "R3"
                     );
                     assert!(!root.join("checkpoint-file").exists(), "R3 no extraction");
+                    assert!(
+                        !canonical.join("checkpoint-file").exists(),
+                        "R3 no canonical extraction"
+                    );
                 } else if wait == "get" {
+                    // A fenced restore re-realizes the canonical root through
+                    // its marker; the legacy target is never consulted.
                     assert_eq!(
-                        std::fs::read(root.join("checkpoint-file")).unwrap(),
+                        std::fs::read(canonical.join("checkpoint-file")).unwrap(),
                         b"checkpoint-content",
                         "R4"
                     );
