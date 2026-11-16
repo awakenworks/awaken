@@ -1729,7 +1729,6 @@ mod tests {
             Rejection::CheckpointLive,
             Rejection::InconsistentEvidence,
             Rejection::MaterializationPending,
-            Rejection::UnsupportedContinuationTopology,
             Rejection::MemoryEvidenceUnproven,
             Rejection::RebuildSourceUnavailable,
         ] {

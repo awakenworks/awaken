@@ -333,19 +333,39 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Sessio
         worker_owner: &str,
         acquisition: SessionWorkAcquisition,
     ) -> Result<SessionWorkOwnership, RunError> {
-        let Some((environment_id, terminal)) =
-            self.self_hosted_work_environment(session_id).await?
-        else {
+        let session = match self.repository.get(session_id).await {
+            Ok(session) => session,
+            Err(SessionRepositoryError::NotFound) => {
+                return Ok(SessionWorkOwnership::NotRequired);
+            }
+            Err(error) => return Err(RunError::unavailable(error.to_string())),
+        };
+        let Some((environment_id, terminal)) = session_work_environment(&session) else {
             return Ok(SessionWorkOwnership::NotRequired);
         };
         if !acquisition.may_take_dispatched_work() {
-            return Ok(self
-                .leases
-                .renew_session(&environment_id, session_id, worker_owner)
-                .await?
-                .map(SessionWorkGrant::from_transfer)
-                .map(SessionWorkOwnership::Leased)
-                .unwrap_or(SessionWorkOwnership::Unowned));
+            return Ok(
+                match self
+                    .leases
+                    .renew_session(&environment_id, session_id, worker_owner)
+                    .await?
+                {
+                    Some(lease) => {
+                        SessionWorkOwnership::Leased(SessionWorkGrant::from_transfer(lease))
+                    }
+                    // The lease renewal alone is no Environment effect: an
+                    // idle source keeps its exact generation alive for its
+                    // own checkpoint while its stopped Work stays stopped.
+                    None if acquisition.renews_lease_only()
+                        && awaken_session_contract::idle_source_lease_outlives_session_work(
+                            &session,
+                        ) =>
+                    {
+                        SessionWorkOwnership::NotRequired
+                    }
+                    None => SessionWorkOwnership::Unowned,
+                },
+            );
         }
         let acquired = if acquisition == SessionWorkAcquisition::ClaimedPreparation {
             self.leases

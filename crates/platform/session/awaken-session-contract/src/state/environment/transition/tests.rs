@@ -2,7 +2,7 @@
 //!
 //! Table T1 fixes every step × event cell under the ready facts (an active,
 //! fenced, idle Session whose suspend is due, whose evidence, generation and
-//! checkpoint are all valid, whose topology supports continuation, whose
+//! checkpoint are all valid, whose
 //! Memory evidence admits a suspend, and whose Rebuild source is closed and
 //! accessible). Tables T2–T7, T9 and T13 vary one qualifier at a time and
 //! cover every fail-closed row. Table T8 sweeps the complete finite domain
@@ -43,7 +43,6 @@ fn ready(step: S) -> SessionEnvironmentFacts {
         suspend_evidence_consistent: true,
         generation_live: true,
         checkpoint_live: true,
-        continuation_topology_supported: true,
         suspend_memory_admitted: true,
         source_closed: true,
         source_access: true,
@@ -746,7 +745,9 @@ fn t5_inconsistent_suspend_evidence_fails_closed() {
 fn t6_expiry_decides_checkpoint_and_restore() {
     // X1 Uploading with an expired generation refuses its checkpoint; X2 a
     // Hibernated checkpoint or generation past expiry is deleted instead of
-    // restored, and its deletion receipt retires to Unmaterialized; X3 a live
+    // restored, by driving ingress and by the background continuation alike
+    // (its retention ended), and its deletion receipt retires to
+    // Unmaterialized; X3 a live
     // Hibernated Environment with open activities cannot restore.
     let expired_upload = SessionEnvironmentFacts {
         generation_live: false,
@@ -768,7 +769,12 @@ fn t6_expiry_decides_checkpoint_and_restore() {
             DoHere(I::DeleteExpiredCheckpoint),
         );
         check_row("X2 deleted", facts, E::ExpiredCheckpointDeleted, Go(U));
-        check_row("X2 no restore loop", facts, E::AdvanceContinuation, Stay);
+        check_row(
+            "X2 background deletion",
+            facts,
+            E::AdvanceContinuation,
+            DoHere(I::DeleteExpiredCheckpoint),
+        );
     }
     let busy = SessionEnvironmentFacts {
         activities_open: true,
@@ -900,7 +906,7 @@ fn t8_domain_lists_every_step_terminality_lease_and_event() {
     }
 }
 
-/// @exhaustive SessionEnvironmentStep(8) x SessionTerminality(3) x RealizationLeaseStanding(3) x bool^12(4096) x SessionEnvironmentEvent(36) = 10616832
+/// @exhaustive SessionEnvironmentStep(8) x SessionTerminality(3) x RealizationLeaseStanding(3) x bool^11(2048) x SessionEnvironmentEvent(36) = 5308416
 /// @obligation session_environment.terminal_session_never_reenters_a_live_environment
 /// @obligation session_environment.resident_is_entered_only_by_materialization_or_restore
 /// @obligation session_environment.effect_instructions_require_a_current_realization_lease
@@ -913,11 +919,11 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
     for step in STEPS {
         for terminality in terminalities {
             for lease in leases {
-                for bits in 0_u16..4096 {
+                for bits in 0_u16..2048 {
                     let facts = SessionEnvironmentFacts {
-                        root_present: bits & 512 != 0,
-                        source_closed: bits & 1024 != 0,
-                        source_access: bits & 2048 != 0,
+                        root_present: bits & 256 != 0,
+                        source_closed: bits & 512 != 0,
+                        source_access: bits & 1024 != 0,
                         step,
                         terminality,
                         lease,
@@ -928,8 +934,7 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
                         suspend_evidence_consistent: bits & 16 != 0,
                         generation_live: bits & 32 != 0,
                         checkpoint_live: bits & 64 != 0,
-                        continuation_topology_supported: bits & 128 != 0,
-                        suspend_memory_admitted: bits & 256 != 0,
+                        suspend_memory_admitted: bits & 128 != 0,
                     };
                     for index in 0..EVENT_COUNT {
                         let event = event(index);
@@ -956,61 +961,15 @@ fn t8_complete_domain_satisfies_the_safety_laws() {
             }
         }
     }
-    assert_eq!(cases, 8 * 3 * 3 * 4096 * EVENT_COUNT);
+    assert_eq!(cases, 8 * 3 * 3 * 2048 * EVENT_COUNT);
 }
 
 #[test]
-fn t9_frozen_topology_and_memory_evidence_guard_the_continuation() {
-    // P1 a frozen topology without a continuation transport refuses both
-    // continuation commands in every step, after terminality and before the
-    // lease; P2 it leaves realization, receipts and terminal cleanup alone.
+fn t9_memory_evidence_guards_the_continuation() {
     // M1 a due Resident whose Memory evidence does not admit a suspend
     // refuses the suspend intent before activities and generation; M2 the
     // Memory fact is read only by the suspend intent (every other step and
     // a not-due Resident are unaffected).
-    for step in STEPS {
-        let unsupported = SessionEnvironmentFacts {
-            continuation_topology_supported: false,
-            ..ready(step)
-        };
-        let refused = No(X::UnsupportedContinuationTopology);
-        check_row("P1 advance", unsupported, E::AdvanceContinuation, refused);
-        check_row("P1 require", unsupported, E::RequireResident, refused);
-        let stale = SessionEnvironmentFacts {
-            lease: RealizationLeaseStanding::Stale,
-            ..unsupported
-        };
-        check_row("P1 before lease", stale, E::AdvanceContinuation, refused);
-        let terminal = SessionEnvironmentFacts {
-            terminality: SessionTerminality::Terminal,
-            ..unsupported
-        };
-        check_row(
-            "P1 after terminality",
-            terminal,
-            E::RequireResident,
-            No(X::Terminal),
-        );
-        for event in [
-            E::BeginRealization,
-            E::RenewRealization,
-            materialized(K::Adopt, false),
-            E::Quiesced,
-            E::EffectFailed,
-        ] {
-            assert_eq!(
-                transition_environment(unsupported, event),
-                transition_environment(ready(step), event),
-                "P2 {step:?} {event:?}"
-            );
-        }
-        check_row(
-            "P2 retire",
-            terminal,
-            E::RetireForCleanup,
-            DoHere(I::Retire),
-        );
-    }
     let unproven = |suspend_due, activities_open, resident_generated| SessionEnvironmentFacts {
         suspend_memory_admitted: false,
         suspend_due,
@@ -1083,7 +1042,7 @@ fn t11_terminal_cleanup_events_read_only_terminality_and_lease() {
     // T11 justifies `SessionEnvironmentFacts::project_terminal_cleanup`, which
     // projects without a clock. Causes: every step, terminality and lease
     // standing (the facts the two rows read) × every value of the remaining
-    // facts (time, execution, activity, evidence, placement, Memory and the
+    // facts (time, execution, activity, evidence, Memory and the
     // Rebuild source).
     // Effect: `RetireForCleanup`, `CleanedUp` and `LegacyCleanupNormalized`
     // decide the same outcome for every value of the remaining facts, so no
@@ -1114,7 +1073,7 @@ fn t11_terminal_cleanup_events_read_only_terminality_and_lease() {
                     lease,
                     ..ready(step)
                 };
-                for bits in 0_u16..(1 << 11) {
+                for bits in 0_u16..(1 << 10) {
                     let bit = |index: u16| bits & (1 << index) != 0;
                     let varied = SessionEnvironmentFacts {
                         execution_idle: bit(0),
@@ -1124,10 +1083,9 @@ fn t11_terminal_cleanup_events_read_only_terminality_and_lease() {
                         suspend_evidence_consistent: bit(4),
                         generation_live: bit(5),
                         checkpoint_live: bit(6),
-                        continuation_topology_supported: bit(7),
-                        suspend_memory_admitted: bit(8),
-                        source_closed: bit(9),
-                        source_access: bit(10),
+                        suspend_memory_admitted: bit(7),
+                        source_closed: bit(8),
+                        source_access: bit(9),
                         ..base
                     };
                     for event in events {
@@ -1321,8 +1279,10 @@ fn worker_continuation_assignment_retains_source_fence_and_idle_boundary() {
     // C1 continuation phase; C2 Idle; C3 no open activities; C4 original
     // source fence current. B1 Quiescing/Uploading need all C2/C3/C4;
     // B2 later disposal/restore may acquire successor but still need C2/C3;
-    // B3 Hibernated never grants effects. Renew preserves exact generation;
-    // missing/stale fences cannot become source capture authority.
+    // B3 Hibernated never grants effects; B4 a driving Run joins Restoring
+    // (its claimed realization carries the Restore it waits for, ADR-0074
+    // D6). Renew preserves exact generation; missing/stale fences cannot
+    // become source capture authority.
     for step in [SQ, SU, SR, SD, H, RS] {
         for idle in [false, true] {
             for activities in [false, true] {
@@ -1343,10 +1303,12 @@ fn worker_continuation_assignment_retains_source_fence_and_idle_boundary() {
                             ..ready(step)
                         };
                         let requires_original = matches!(step, SQ | SU);
-                        let allowed = (step != H || !(checkpoint_live && generation_live))
-                            && idle
-                            && !activities
-                            && (!requires_original || lease == RealizationLeaseStanding::Fenced);
+                        let allowed = step == RS
+                            || ((step != H || !(checkpoint_live && generation_live))
+                                && idle
+                                && !activities
+                                && (!requires_original
+                                    || lease == RealizationLeaseStanding::Fenced));
                         assert_eq!(
                             transition_environment(facts, E::BeginRealization).is_ok(),
                             allowed,

@@ -159,11 +159,6 @@ pub struct SessionEnvironmentFacts {
     pub(crate) generation_live: bool,
     /// Hibernated only: the checkpoint is unexpired at `now`.
     pub(crate) checkpoint_live: bool,
-    /// The frozen topology has a continuation transport: false only for an
-    /// external Worker placement with checkpoint-and-release retention
-    /// ([`crate::SessionPlacementClass::supports_idle_retention`]); true
-    /// without a frozen baseline.
-    pub(crate) continuation_topology_supported: bool,
     /// Resident only: the binding's Memory evidence admits a suspend (no
     /// pending Memory generation, and the active Memory inputs join the
     /// handle's evidence without a writable legacy copy).
@@ -322,10 +317,6 @@ pub enum SessionEnvironmentRejection {
     InconsistentEvidence,
     #[error("Session materialization remains pending its exact original effect and source closure")]
     MaterializationPending,
-    #[error(
-        "checkpoint-and-release retention has no continuation transport for an external Worker"
-    )]
-    UnsupportedContinuationTopology,
     #[error("the Memory evidence of the resident binding does not admit a suspend")]
     MemoryEvidenceUnproven,
     #[error(
@@ -431,10 +422,13 @@ const fn begin_realization(facts: SessionEnvironmentFacts) -> Outcome {
         {
             return stay(facts);
         }
-        if matches!(
-            facts.step,
-            SessionEnvironmentStep::Suspending(_) | SessionEnvironmentStep::Restoring
-        ) && facts.execution_idle
+        // A driving Run joins the one committed restore (ADR-0074 D6): its
+        // claimed realization carries the Restore it waits for.
+        if matches!(facts.step, SessionEnvironmentStep::Restoring) {
+            return stay(facts);
+        }
+        if matches!(facts.step, SessionEnvironmentStep::Suspending(_))
+            && facts.execution_idle
             && !facts.activities_open
         {
             if matches!(
@@ -579,14 +573,11 @@ const fn legacy_binding_delivered(facts: SessionEnvironmentFacts) -> Outcome {
 }
 
 /// continuation.rs `advance_environment_continuation` arm selection, with the
-/// frozen-topology guard, the suspend Memory preflight and the
-/// `begin_suspend_at` preconditions of the aggregate wrapper.
+/// suspend Memory preflight and the `begin_suspend_at` preconditions of the
+/// aggregate wrapper. Every frozen placement has a continuation transport.
 const fn advance_continuation(facts: SessionEnvironmentFacts) -> Outcome {
     if !is_active(facts) {
         return Err(SessionEnvironmentRejection::Terminal);
-    }
-    if !facts.continuation_topology_supported {
-        return Err(SessionEnvironmentRejection::UnsupportedContinuationTopology);
     }
     if is_stale(facts) {
         return Err(SessionEnvironmentRejection::LeaseNotCurrent);
@@ -607,6 +598,14 @@ const fn advance_continuation(facts: SessionEnvironmentFacts) -> Outcome {
             }
         }
         SessionEnvironmentStep::Suspending(phase) => suspend_work(facts, phase),
+        // Retention ended: the checkpoint is deleted when it expires, not only
+        // when the next driving event or terminal cleanup happens to arrive.
+        SessionEnvironmentStep::Hibernated if !(facts.checkpoint_live && facts.generation_live) => {
+            instruct(
+                facts.step,
+                SessionEnvironmentInstruction::DeleteExpiredCheckpoint,
+            )
+        }
         SessionEnvironmentStep::Unmaterialized
         | SessionEnvironmentStep::Resident
         | SessionEnvironmentStep::Hibernated
@@ -636,14 +635,10 @@ const fn suspend_work(facts: SessionEnvironmentFacts, phase: SuspendPhase) -> Ou
     }
 }
 
-/// continuation.rs `ensure_environment_resident` state dispatch, after the
-/// frozen-topology guard.
+/// continuation.rs `ensure_environment_resident` state dispatch.
 const fn require_resident(facts: SessionEnvironmentFacts) -> Outcome {
     if !is_active(facts) {
         return Err(SessionEnvironmentRejection::Terminal);
-    }
-    if !facts.continuation_topology_supported {
-        return Err(SessionEnvironmentRejection::UnsupportedContinuationTopology);
     }
     // Observing an already Resident root grants no physical effect. Its
     // subsequent realization Begin still has to acquire a current successor;
@@ -858,9 +853,13 @@ impl SessionEnvironmentFacts {
                 let policy = session
                     .frozen_baseline()
                     .map(|baseline| &baseline.environment.idle_retention);
+                // An expired generation is never checkpointed (its retention
+                // ended), so it never starts a suspend that could only stall
+                // at its upload; it stays Resident for the next activity.
                 let due = match (generation, idle_since_unix_ms, policy) {
-                    (Some(_), Some(idle_since), Some(policy)) => {
+                    (Some(generation), Some(idle_since), Some(policy)) => {
                         policy.mode == crate::state::SandboxIdleRetentionMode::CheckpointAndRelease
+                            && !generation.expired_at(now_unix_ms)
                             && now_unix_ms
                                 >= idle_since.saturating_add(
                                     policy.checkpoint_after_secs.saturating_mul(1_000),
@@ -890,13 +889,6 @@ impl SessionEnvironmentFacts {
                 .environment
                 .checkpoint()
                 .is_some_and(|checkpoint| checkpoint.expired_at(now_unix_ms)),
-            continuation_topology_supported: session.frozen_baseline().is_none_or(|baseline| {
-                crate::state::SessionPlacementClass::new(
-                    baseline.runtime_placement,
-                    baseline.environment.self_hosted,
-                )
-                .supports_idle_retention(&baseline.environment.idle_retention)
-            }),
             suspend_memory_admitted: matches!(
                 session.environment,
                 SessionEnvironmentState::Resident { .. }
@@ -997,7 +989,6 @@ impl SessionEnvironmentFacts {
             suspend_evidence_consistent: true,
             generation_live: false,
             checkpoint_live: false,
-            continuation_topology_supported: false,
             suspend_memory_admitted: false,
             source_closed: false,
             source_access: false,
@@ -1033,7 +1024,6 @@ impl SessionEnvironmentFacts {
             suspend_evidence_consistent: environment.suspend_evidence_is_consistent(),
             generation_live: false,
             checkpoint_live: false,
-            continuation_topology_supported: false,
             suspend_memory_admitted: false,
             source_closed: false,
             source_access: false,

@@ -1087,3 +1087,93 @@ well as before delivery, so an old v1 source that closes on an unknown reply
 cannot be handed the operation. Legacy unleased local roots retain their
 existing unfenced rule; self-hosted WorkQueue restrictions remain unchanged.
 This adds no continuation state, Worker registry or alternative transport.
+
+## Amendment 2026-11-15: Worker-placed Sessions checkpoint, release and resume
+
+Checkpoint-and-release idle retention is honoured by every frozen placement.
+The last refusal is removed together with its fact and rejection: the
+create-time layout check, `SessionPlacementClass::supports_idle_retention`, the
+`continuation_topology_supported` transition fact and
+`UnsupportedContinuationTopology`. That refusal covered a Worker-placed Session
+in a self-hosted (WorkQueue-owned) Environment, which is the shipped AllInOne
+shape. A real AllInOne process with its co-located registered Worker
+(`awaken-process-startup/tests/idle_checkpoint_sessions.rs`) now drives the
+whole cycle for both a self-hosted and a cloud Environment. Running it found the
+following gaps; the 2026-11-10 continuation tests had driven a fake projection
+synchronizer, so none of them had been exercised before. Each fix stays with
+its existing owner.
+
+1. **Session Work for a Worker continuation.** A self-hosted Environment
+   fences every Worker effect with the Session's Work lease (ADR-0075 D2/D3).
+   A settled Run stops that Work. The idle deadline, the restore of an idle
+   root and checkpoint expiry all fall after that settlement. When the
+   aggregate decides a continuation effect that its registered owner executes
+   on an Idle root without an open activity, the Coordinator wakes the stopped
+   Work through the one `wake_session` path
+   (`awaken_session_contract::continuation_wakes_session_work`). The wake is
+   idempotent and bounded by that root obligation. The Worker's preparation
+   claim takes the Work (`ClaimedPreparation`), and the finished preparation
+   releases it.
+2. **The idle source lease survives.** A self-hosted Worker's renewal under
+   stopped Work answered `Retired`, so the Worker closed the source generation
+   that source capture is pinned to, and that generation can never be
+   reopened. A realization lease renewal is now its own Work acquisition
+   cause, `RealizationLeaseRenewal`. It performs no Environment effect. The
+   Session application waives the Work for it while
+   `idle_source_lease_outlives_session_work` holds: the root is a
+   checkpoint-and-release root on a self-hosted Worker placement that still
+   retains its source. Every Environment effect still requires the Work.
+3. **Authority-only install while Suspending.** The Worker projection
+   synchronizer revalidated every durable binding through an `Adopt` effect,
+   which the aggregate refuses while a continuation runs (`ContinuationInProgress`).
+   A Suspending projection is now installed authority-only, as a Restoring
+   one already was (it has no binding). Its claim-fenced phases act on the
+   retained source. This affected cloud Workers too.
+4. **Driving ingress waits for the suspend; its Run joins the restore.**
+   Admission returns the classified, retryable `session_environment_resuming`
+   while the root is Suspending (D6: the event waits) instead of opening an
+   activity that would close the root to the suspend's preparation. Once the
+   root is Hibernated, admission commits the restore intent and opens the
+   activity, and `BeginRealization` admits that Run to join `Restoring`. Its
+   claimed realization carries the Restore it waits for, under the
+   publication the claim delivered: Restore now resolves the installed
+   projection's retained publication. Before, Restore resolved no publication
+   for a Managed-API or inline Agent and failed. A duplicate resume joins the
+   same operation.
+5. **A restored Workdir Sandbox is an ordinary realization.** A fenced
+   restore used a separate restoration root that carried no realization
+   marker. It could be neither adopted under a fence nor checkpointed again,
+   so a second idle cycle stalled. The local provider now restores through
+   the realization marker's existing restore transition, the Removed
+   predecessor -> Recreating -> Ready, re-realizing the canonical root.
+   The handle carries the restore evidence plus current marker evidence. The
+   unfenced legacy restoration root is unchanged. After the aggregate deletes
+   an expired checkpoint, a distinct successor fence may create a fresh
+   realization over a tombstone whose filesystem was checkpointed and then
+   released. A terminal tombstone stays absorbing.
+6. **Expiry.** An expired generation never starts a suspend: its upload could
+   only be refused, which would leave the root Suspending. It stays Resident
+   for its next activity. A Hibernated checkpoint past its retention is
+   deleted by the background continuation (`AdvanceContinuation` instructs
+   `DeleteExpiredCheckpoint`), not only by the next driving event or terminal
+   cleanup. The next message then starts fresh from the frozen Environment.
+7. **Checkpoint custody on every executing process.** A registered Worker on
+   the local Workdir tier advertises its provider's checkpoint format whenever
+   it holds custody: the builder's store or the deployment's
+   `sandbox_checkpoint_s3`. Before, only a container provider's formats
+   reached the manifest. `sandbox_checkpoint_s3` is accepted by any process
+   that executes Sessions (AllInOne with its local pool, or `Role::Worker`)
+   and stays refused for Control, Coordinator and a remote-only AllInOne.
+
+A continuation intent that loses its root CAS to a concurrent commit, such as
+a lease renewal or a Work release, is re-decided from the fresh root in the
+same reconciliation pass, because no physical effect ran. Before, the due
+suspend waited for the next scheduled recovery cycle, which is at least 30
+seconds away and grows with the failure backoff.
+
+The continuation arm of `is_run_free_preparation_candidate` now admits
+Suspending, Restoring and Hibernated roots for both cloud and self-hosted
+Environments. A self-hosted root whose Work is stopped is skipped by the
+preparation selection until its own continuation wakes the Work. The
+Environment's single active Work serializes a suspend with every other
+Session's Run in that Environment.

@@ -602,11 +602,14 @@ pub(super) async fn renew_session_realization(
                 "Worker registry authority cannot extend the asserted Session realization lease",
             )));
         }
+        // The lease renewal alone is no Environment effect: the Session
+        // application may waive the Work for an idle source that must survive
+        // until its checkpoint (`idle_source_lease_outlives_session_work`).
         let ownership = session_work_ownership(
             &service,
             &command.session_id,
             &request.identity.lease_owner(),
-            awaken_session_application_contract::SessionWorkAcquisition::RealizationRenewal,
+            awaken_session_application_contract::SessionWorkAcquisition::RealizationLeaseRenewal,
         )
         .instrument(tracing::info_span!("session.realization.work_ownership"))
         .await?;

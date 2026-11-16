@@ -89,6 +89,9 @@
     "claim_refresh_requires_complete_control_delivery_and_transport": "provider_redelivery_requires_complete_control_delivery",
     "registered_worker_realizes_brokered_candidates_through_the_process_cloud_identity": "registered_worker_obtains_brokered_grants_under_its_claim",
     "native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_input": "native_run_reply_rejects_foreign_owner_and_nonprimary_or_unfenced_input",
-    "local_migration_requires_explicit_initialization_and_publishes_identity_last": "local_migration_initializes_only_the_first_start_row_and_publishes_identity_last"
+    "local_migration_requires_explicit_initialization_and_publishes_identity_last": "local_migration_initializes_only_the_first_start_row_and_publishes_identity_last",
+    "continuation_topology_follows_the_frozen_placement_and_retention": "every_frozen_placement_decides_the_due_suspend_intent",
+    "t9_frozen_topology_and_memory_evidence_guard_the_continuation": "t9_memory_evidence_guards_the_continuation",
+    "worker_checkpoint_retention_is_rejected_before_durable_creation": "worker_checkpoint_retention_is_frozen_at_creation"
   }
 }

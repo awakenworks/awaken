@@ -90,7 +90,6 @@ impl SessionEnvironmentRejection {
             | Self::InvalidTransition
             | Self::GenerationExpired
             | Self::InconsistentEvidence
-            | Self::UnsupportedContinuationTopology
             | Self::RebuildSourceUnavailable => SessionEnvironmentReceiptRecoveryAction::Reject,
         }
     }

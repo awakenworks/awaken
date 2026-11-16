@@ -15,37 +15,17 @@ use awaken_session_contract::{
     SessionRepositoryError,
 };
 use awaken_time::WallClockExt;
-/// Invoke the Runtime's pure provider-effective Sandbox-layout gate after the
-/// placement's idle-retention check. It performs no durable mutation or
-/// external realization and is the one seam used before create, live
-/// Resource and final root persistence boundaries.
+/// Invoke the Runtime's pure provider-effective Sandbox-layout gate. It
+/// performs no durable mutation or external realization and is the one seam
+/// used before create, live Resource and final root persistence boundaries.
+/// Every placement honours the frozen idle-retention policy: a Worker-placed
+/// Session suspends through the registered continuation protocol.
 pub(crate) fn validate_session_sandbox_layout(
     placement: &awaken_session_execution_contract::SessionPlacementRoles,
     session_id: &str,
     layout: &awaken_session_configuration_contract::SessionSandboxLayout,
 ) -> Result<(), RunError> {
-    validate_environment_continuation_topology(
-        awaken_session_contract::SessionPlacementClass::new(
-            layout.runtime_placement,
-            layout.environment.self_hosted,
-        ),
-        &layout.environment.idle_retention,
-    )?;
     placement.validate_session_sandbox_layout(session_id, layout)
-}
-
-/// Reject a layout whose idle policy its placement cannot honour
-/// ([`awaken_session_contract::SessionPlacementClass::supports_idle_retention`]).
-fn validate_environment_continuation_topology(
-    placement: awaken_session_contract::SessionPlacementClass,
-    idle_retention: &awaken_provisioning_contract::SandboxIdleRetentionPolicy,
-) -> Result<(), RunError> {
-    if !placement.supports_idle_retention(idle_retention) {
-        return Err(RunError::bad_request(
-            "checkpoint_and_release idle retention is unsupported for external Worker placement",
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

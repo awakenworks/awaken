@@ -840,22 +840,19 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
 }
 
 #[tokio::test]
-async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
+async fn worker_checkpoint_retention_is_frozen_at_creation() {
     // Creation-topology decision table for a self-hosted WorkQueue Environment:
-    // C1 frozen placement is Local/Worker;
-    // C2 retention is Resident/CheckpointAndRelease. Only Worker+checkpoint
-    // requires a WorkQueue continuation transport that does not exist. Effect E1
-    // rejects before root insert or Runtime projection; the other three rules
-    // retain their existing create paths. Constraint K1: self-hosted WorkQueue
-    // dispatch has no run-free continuation claim. Registered cloud Worker
-    // creation is the positive boundary in continuation/worker_protocol.rs;
-    // it uses the root-owned continuation protocol instead of WorkQueue.
+    // C1 frozen placement is Local/Worker; C2 retention is
+    // Resident/CheckpointAndRelease. Every placement now has a continuation
+    // transport (the self-hosted Worker suspends under its woken Session Work,
+    // continuation.rs), so no row is refused. Effect E1: the root is inserted
+    // with the exact frozen placement and retention policy.
     //
     // | Rule | placement | retention | Effect |
-    // | T1 | Worker | CheckpointAndRelease | E1 reject, zero root/effect |
-    // | T2 | Worker | Resident | existing external creation |
-    // | T3 | Local | CheckpointAndRelease | existing local continuation |
-    // | T4 | Local | Resident | existing local creation |
+    // | T1 | Worker | CheckpointAndRelease | E1 (formerly refused) |
+    // | T2 | Worker | Resident | E1 |
+    // | T3 | Local | CheckpointAndRelease | E1 |
+    // | T4 | Local | Resident | E1 |
     let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -867,33 +864,45 @@ async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let mut command = creation_command("worker-checkpoint-retention");
-    command.intent.control.runtime_placement =
-        awaken_session_types::SessionRuntimePlacement::Worker;
-    command.intent.control.environment.idle_retention =
-        super::continuation::checkpoint_release_retention();
-
-    let error = app
-        .creation_commands
-        .create_session(command)
-        .await
-        .expect_err("T1/E1 unsupported external continuation must fail before insert");
-    let SessionCreationError::Rejected(error) = error else {
-        panic!("T1/E1 expected deterministic creation rejection")
-    };
-    assert_eq!(
-        error.kind,
-        awaken_runtime_contract::runs::RunErrorKind::BadRequest,
-        "T1/E1",
-    );
-    assert!(matches!(
-        repository
-            .get(&SessionId::from("worker-checkpoint-retention"))
-            .await,
-        Err(awaken_session_contract::SessionRepositoryError::NotFound)
-    ));
-    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "T1/E1");
-    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0, "T1/E1");
+    for (rule, placement, retention) in [
+        (
+            "T1",
+            awaken_session_types::SessionRuntimePlacement::Worker,
+            super::continuation::checkpoint_release_retention(),
+        ),
+        (
+            "T2",
+            awaken_session_types::SessionRuntimePlacement::Worker,
+            Default::default(),
+        ),
+        (
+            "T3",
+            awaken_session_types::SessionRuntimePlacement::Local,
+            super::continuation::checkpoint_release_retention(),
+        ),
+        (
+            "T4",
+            awaken_session_types::SessionRuntimePlacement::Local,
+            Default::default(),
+        ),
+    ] {
+        let id = format!("checkpoint-retention-{rule}");
+        let mut command = creation_command(&id);
+        command.intent.control.runtime_placement = placement;
+        command.intent.control.environment.idle_retention = retention.clone();
+        app.creation_commands
+            .create_session(command)
+            .await
+            .unwrap_or_else(|error| panic!("{rule}/E1 {error:?}"));
+        let root = repository
+            .get(&SessionId::from(id.as_str()))
+            .await
+            .unwrap_or_else(|error| panic!("{rule}/E1 {error:?}"));
+        let baseline = root.frozen_baseline().expect("frozen at creation");
+        assert_eq!(baseline.runtime_placement, placement, "{rule}/E1");
+        assert!(baseline.environment.self_hosted, "{rule}/E1");
+        assert_eq!(baseline.environment.idle_retention, retention, "{rule}/E1");
+    }
 }
 
 fn owned_repository_input(session_id: &str) -> SessionRepositoryResourceInput {

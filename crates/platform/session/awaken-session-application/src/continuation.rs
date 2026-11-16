@@ -54,9 +54,9 @@ impl SessionContinuationError {
     }
 
     /// The one continuation projection of an Environment decision's refusal:
-    /// a terminal Session is terminal, an expired generation and an
-    /// unsupported topology keep their classified Runtime errors, and every
-    /// other refusal is a transition error.
+    /// a terminal Session is terminal, an expired generation keeps its
+    /// classified Runtime error, and every other refusal is a transition
+    /// error.
     fn rejected(rejection: SessionEnvironmentRejection) -> Self {
         match rejection {
             SessionEnvironmentRejection::Terminal => Self::Terminal,
@@ -65,9 +65,6 @@ impl SessionContinuationError {
                     "session_environment_generation_expired",
                     "Resident environment reached its fixed expiry before checkpoint",
                 ))
-            }
-            SessionEnvironmentRejection::UnsupportedContinuationTopology => {
-                Self::Runtime(RunError::bad_request(rejection.to_string()))
             }
             rejection => Self::Transition(rejection.into()),
         }
@@ -97,12 +94,14 @@ impl From<SessionEnvironmentTransitionError> for SessionContinuationError {
 
 /// The Session Environment suspend/restore saga driven by recovery and by a
 /// driving ingress that needs a Resident Environment. It holds the CAS kernel,
-/// the Environment and realization-effect runtime roles and the realization
-/// component that reprojects a Resident Environment locally.
+/// the Environment and realization-effect runtime roles, the realization
+/// component that reprojects a Resident Environment locally, and the Session
+/// Work projection a Worker-placed suspend runs under.
 pub struct SessionContinuations {
     mutations: Arc<crate::SessionMutations>,
     placement: awaken_session_execution_contract::SessionPlacementRoles,
     realizations: Arc<crate::SessionRealizations>,
+    work_assignments: Arc<crate::SessionWorkAssignments>,
 }
 
 impl SessionContinuations {
@@ -110,12 +109,37 @@ impl SessionContinuations {
         mutations: Arc<crate::SessionMutations>,
         runtime: &crate::SessionExecutionRoles,
         realizations: Arc<crate::SessionRealizations>,
+        work_assignments: Arc<crate::SessionWorkAssignments>,
     ) -> Self {
         Self {
             mutations,
             placement: runtime.placement.clone(),
             realizations,
+            work_assignments,
         }
+    }
+
+    /// Hand a committed suspend that its registered Worker executes to that
+    /// Worker's Environment fence: wake the root's stopped Session Work when
+    /// the aggregate says the suspend needs it
+    /// ([`awaken_session_contract::continuation_wakes_session_work`]). Waking is
+    /// idempotent (a queued or held item is unchanged), so every
+    /// reconciliation pass of the same Suspending root may repeat it.
+    async fn wake_continuation_work(
+        &self,
+        session: &PersistedSession,
+    ) -> Result<(), SessionContinuationError> {
+        let Some(baseline) = session
+            .frozen_baseline()
+            .filter(|_| awaken_session_contract::continuation_wakes_session_work(session))
+        else {
+            return Ok(());
+        };
+        self.work_assignments
+            .wake(&baseline.environment.environment_id, &session.session_id)
+            .await
+            .map(|_| ())
+            .map_err(|error| unavailable("session_work_wake_failed", error))
     }
 
     pub(crate) async fn reconcile_environment_continuations_from(
@@ -176,15 +200,22 @@ impl SessionContinuations {
                 advanced: false,
             });
         };
+        // Whether this step carried out a physical effect before its commit;
+        // an intent alone is re-decided from the fresh root after a conflict.
+        let mut effect_ran = false;
         let reason = match instruction {
             _ if decision.next() == session.environment.step()
                 && session.requires_external_environment_owner() =>
             {
                 // The committed root/index wakes its registered owner. The
-                // Coordinator never invokes local physical effects for it.
+                // Coordinator never invokes local physical effects for it; a
+                // self-hosted Environment also needs the Session Work its
+                // owner claims the continuation under.
+                let root = session.into_snapshot();
+                self.wake_continuation_work(&root).await?;
                 return Ok(ContinuationStep {
                     owner_scope,
-                    root: session.into_snapshot(),
+                    root,
                     advanced: false,
                 });
             }
@@ -243,6 +274,7 @@ impl SessionContinuations {
                     "environment-restore-materialization-intent"
                 } else {
                     let colocated = self.placement.require_colocated()?;
+                    effect_ran = true;
                     carry_out_effect(
                         colocated,
                         self.realizations.as_ref(),
@@ -256,6 +288,7 @@ impl SessionContinuations {
             }
             _ if decision.next() == session.environment.step() => {
                 let colocated = self.placement.require_colocated()?;
+                effect_ran = true;
                 carry_out_effect(
                     colocated,
                     self.realizations.as_ref(),
@@ -302,11 +335,19 @@ impl SessionContinuations {
             }
             instruction => return Err(SessionContinuationError::not_a_continuation(instruction)),
         };
-        let root = mutations
+        let snapshot = (!effect_ran).then(|| session.snapshot().clone());
+        let root = match mutations
             .commit_session_snapshot_with_outcome(&owner_scope, session, reason, Vec::new())
             .await
-            .map(crate::SnapshotCommit::into_session)
-            .map_err(SessionContinuationError::mutation)?;
+        {
+            Ok(commit) => commit.into_session(),
+            // A concurrent root commit (a lease renewal, a Work release)
+            // raced this intent. Nothing physical ran, so the caller's loop
+            // re-decides from the fresh root at once instead of leaving a due
+            // suspend to the next scheduled recovery cycle.
+            Err(SessionMutationError::Conflict) if let Some(snapshot) = snapshot => snapshot,
+            Err(error) => return Err(SessionContinuationError::mutation(error)),
+        };
         Ok(ContinuationStep {
             owner_scope,
             root,
@@ -366,6 +407,26 @@ impl SessionContinuations {
                 self.realizations
                     .synchronize_resident_environment_projection(&owner_scope, &root)
                     .await?;
+            }
+            if matches!(
+                root.environment.step(),
+                SessionEnvironmentStep::Suspending(_) | SessionEnvironmentStep::Hibernated
+            ) {
+                // A registered owner completes this suspend as a Run-free
+                // preparation of the idle root. Driving ingress waits for it
+                // (ADR-0074 D6) instead of opening an activity that would
+                // close the Environment to that preparation; the durable event
+                // retries, commits the restore intent once Hibernated, and its
+                // Run then joins that restore through its own realization.
+                return Err(SessionContinuationError::Runtime(
+                    RunError::unavailable_classified(
+                        "session_environment_resuming",
+                        format!(
+                            "Session Environment is {:?}; its registered Worker resumes it before this event runs",
+                            root.environment.step()
+                        ),
+                    ),
+                ));
             }
             return Ok(root);
         }

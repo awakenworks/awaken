@@ -2677,4 +2677,6 @@ async fn continuation_refuses_inconsistent_evidence_and_superseded_operation_lea
 
 mod backend_takeover;
 
+mod self_hosted_work;
+
 mod worker_protocol;

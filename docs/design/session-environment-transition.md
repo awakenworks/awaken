@@ -43,8 +43,11 @@ continuation commands: the asserted lease is the one whose fence the step's
 next effect presents (a committed quiesce, checkpoint or restore operation
 presents the lease it captured; every other step acts under the root lease, so
 a higher-epoch successor may finish a source release). The facts also carry
-the frozen-topology guard (`SessionPlacementClass::supports_idle_retention`)
-and the suspend Memory preflight.
+the suspend Memory preflight. There is no topology guard: every frozen
+placement has a continuation transport (Coordinator-local effects, or the
+registered Worker's claimed preparation; a self-hosted Worker placement runs
+it under the Session Work its Suspending root wakes,
+`awaken_session_contract::continuation_wakes_session_work`).
 
 ## Errors
 
@@ -118,7 +121,7 @@ D = decision, E = effect, O = observation mapping, P = read projection.
 |---|---|---|
 | session-application `continuation.rs:212` `advance_environment_continuation` arm selection | D+O | **moved**: `AdvanceContinuation`; the application carries out the decided instruction |
 | `continuation.rs:392` `ensure_environment_resident` state dispatch | D+O | **moved**: `RequireResident` |
-| `continuation.rs:64` memory preflight; `application.rs:24` topology guard | D (guards) | **moved**: facts `suspend_memory_admitted`, `continuation_topology_supported`; layout validation reads the same `supports_idle_retention` |
+| `continuation.rs:64` memory preflight; `application.rs:24` topology guard | D (guards) | **moved**: fact `suspend_memory_admitted`; the topology guard was deleted on 2026-11-15 (self-hosted Worker placement suspends under its woken Session Work, ADR-0074 amendment) |
 | `realization.rs:32` `environment_admits_realization_effects` (6 callers) | D | **moved**: `SessionEnvironmentState::admits_realization_effects` |
 | `realization/control.rs:245` renew gate | D | **moved**: `RenewRealization` |
 | `realization/control.rs:335` `begin_session_realization_inner` lease grant and reuse, Resource-generation admission, the new lease, MCP claim selection and claim ids | D (lease axis) | **moved**: `SessionAssignmentOperations::begin` admits through `BeginRealization`, arbitrates through the unchanged `session_realization_assignment` (now beside it in `awaken-session-contract`, re-exported by the execution contract) and claims; its refusals keep their control failures (`From<SessionRealizationBeginRejection>`). The application loads, pins credentials, commits under the root CAS and drives `next_action` |

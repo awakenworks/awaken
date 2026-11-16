@@ -96,12 +96,16 @@ impl SessionWorkOwnership {
 /// own durable obligation handed to exactly one Ready Worker: it may take the
 /// Session's already-dispatched Work, but it cannot revive stopped Work.
 /// Realization renewal carries no driving event and may only renew a live Work
-/// lease held by that Worker.
+/// lease held by that Worker. A realization lease renewal is the one cause
+/// that is not an Environment effect: it extends the lease alone, so the
+/// Session application may waive the Work for a root whose idle source must
+/// outlive it until its checkpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionWorkAcquisition {
     ClaimedRun,
     ClaimedPreparation,
     RealizationRenewal,
+    RealizationLeaseRenewal,
 }
 
 impl SessionWorkAcquisition {
@@ -110,7 +114,17 @@ impl SessionWorkAcquisition {
     /// the next claimed Run or preparation, not to the previous holder.
     #[must_use]
     pub const fn may_take_dispatched_work(self) -> bool {
-        !matches!(self, Self::RealizationRenewal)
+        !matches!(
+            self,
+            Self::RealizationRenewal | Self::RealizationLeaseRenewal
+        )
+    }
+
+    /// Whether this cause is the realization lease renewal alone, which
+    /// performs no Environment effect.
+    #[must_use]
+    pub const fn renews_lease_only(self) -> bool {
+        matches!(self, Self::RealizationLeaseRenewal)
     }
 }
 
@@ -132,10 +146,11 @@ pub const fn session_work_revival_is_authorized(
 mod exhaustive {
     use super::*;
 
-    const EVERY_ACQUISITION: [SessionWorkAcquisition; 3] = [
+    const EVERY_ACQUISITION: [SessionWorkAcquisition; 4] = [
         SessionWorkAcquisition::ClaimedRun,
         SessionWorkAcquisition::ClaimedPreparation,
         SessionWorkAcquisition::RealizationRenewal,
+        SessionWorkAcquisition::RealizationLeaseRenewal,
     ];
 
     const fn listed_acquisition(acquisition: SessionWorkAcquisition) -> usize {
@@ -143,23 +158,43 @@ mod exhaustive {
             SessionWorkAcquisition::ClaimedRun => 0,
             SessionWorkAcquisition::ClaimedPreparation => 1,
             SessionWorkAcquisition::RealizationRenewal => 2,
+            SessionWorkAcquisition::RealizationLeaseRenewal => 3,
         }
     }
 
     #[test]
     fn only_renewal_is_refused_dispatched_work() {
         // Cause/effect decision table: C1 a claimed Run; C2 a claimed Run-free
-        // preparation; C3 a realization renewal. E1 may take the Session's
-        // dispatched (queued) Work; E2 may only renew a lease it already holds.
-        // Rules: R1=C1=>E1; R2=C2=>E1; R3=C3=>E2.
-        for (rule, acquisition, takes) in [
-            ("R1", SessionWorkAcquisition::ClaimedRun, true),
-            ("R2", SessionWorkAcquisition::ClaimedPreparation, true),
-            ("R3", SessionWorkAcquisition::RealizationRenewal, false),
+        // preparation; C3 a realization renewal; C4 a realization lease
+        // renewal. E1 may take the Session's dispatched (queued) Work; E2 may
+        // only renew a lease it already holds; E3 performs no Environment
+        // effect (the lease alone). Rules: R1=C1=>E1; R2=C2=>E1; R3=C3=>E2;
+        // R4=C4=>E2+E3.
+        for (rule, acquisition, takes, lease_only) in [
+            ("R1", SessionWorkAcquisition::ClaimedRun, true, false),
+            (
+                "R2",
+                SessionWorkAcquisition::ClaimedPreparation,
+                true,
+                false,
+            ),
+            (
+                "R3",
+                SessionWorkAcquisition::RealizationRenewal,
+                false,
+                false,
+            ),
+            (
+                "R4",
+                SessionWorkAcquisition::RealizationLeaseRenewal,
+                false,
+                true,
+            ),
         ] {
             assert_eq!(acquisition.may_take_dispatched_work(), takes, "{rule}");
+            assert_eq!(acquisition.renews_lease_only(), lease_only, "{rule}");
         }
-        assert_eq!(EVERY_ACQUISITION.len(), 3);
+        assert_eq!(EVERY_ACQUISITION.len(), 4);
     }
 
     #[test]
@@ -169,7 +204,7 @@ mod exhaustive {
         }
     }
 
-    /// @exhaustive SessionWorkAcquisition(3) x bool(2) x bool(2) = 12
+    /// @exhaustive SessionWorkAcquisition(4) x bool(2) x bool(2) = 16
     /// @obligation session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
     #[test]
     fn stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run() {
@@ -190,7 +225,7 @@ mod exhaustive {
                 }
             }
         }
-        assert_eq!(cases, 12);
+        assert_eq!(cases, 16);
     }
 
     /// @exhaustive bool(2) = 2

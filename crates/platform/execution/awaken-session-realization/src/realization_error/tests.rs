@@ -349,7 +349,6 @@ fn an_environment_refusal_reads_its_own_recovery_classification() {
         Rejection::CheckpointLive,
         Rejection::InconsistentEvidence,
         Rejection::MaterializationPending,
-        Rejection::UnsupportedContinuationTopology,
         Rejection::MemoryEvidenceUnproven,
         Rejection::RebuildSourceUnavailable,
     ];

@@ -640,6 +640,7 @@ impl SessionAssembly {
             kernel.mutations.clone(),
             &self.runtime,
             realizations.clone(),
+            foundation.work_assignments.clone(),
         ));
         let activities = Arc::new(crate::SessionActivities::new(
             kernel.mutations.clone(),

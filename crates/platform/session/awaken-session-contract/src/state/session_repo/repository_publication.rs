@@ -139,9 +139,12 @@ impl PersistedSession {
             && !self.has_active_activities()
             && self.mcp.needs_realization()
             && (!baseline.environment.self_hosted || self.realization.is_some());
+        // A self-hosted Environment fences these Worker effects with Session
+        // Work, which the root's own continuation decision wakes
+        // (`continuation_wakes_session_work`); a stopped item is skipped by the
+        // preparation selection until then.
         let continuation = self.execution == crate::state::SessionExecutionState::Idle
             && !self.has_active_activities()
-            && !baseline.environment.self_hosted
             && matches!(
                 self.environment,
                 crate::state::SessionEnvironmentState::Suspending { .. }

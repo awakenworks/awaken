@@ -163,7 +163,7 @@ fn suspend_due_needs_policy_idle_edge_generation_and_deadline() {
     // D1 checkpoint-and-release + generated + idle edge at deadline => due;
     // D2 one millisecond before the deadline => not due; D3 no idle edge;
     // D4 default retention policy; D5 legacy binding without generation is
-    // neither generated nor due.
+    // neither generated nor due; D6 an expired generation is not due.
     let at = |policy, environment| {
         let mut session = root(policy);
         session.environment = environment;
@@ -193,6 +193,18 @@ fn suspend_due_needs_policy_idle_edge_generation_and_deadline() {
         resident(Some(deadline_start), false),
     );
     assert!(!legacy.suspend_due && !legacy.resident_generated, "D5");
+    // D6 a generation past its fixed expiry is never suspended: its upload
+    // could only be refused, so the Resident root is left for the next Run.
+    let expired = at(
+        Some(checkpoint_and_release()),
+        SessionEnvironmentState::Resident {
+            binding: "binding".into(),
+            effect_id: Some("create".into()),
+            generation: Some(generation(NOW)),
+            idle_since_unix_ms: Some(deadline_start),
+        },
+    );
+    assert!(!expired.suspend_due && expired.resident_generated, "D6");
 }
 
 #[test]
@@ -304,42 +316,51 @@ fn placed(
 }
 
 #[test]
-fn continuation_topology_follows_the_frozen_placement_and_retention() {
-    // P1 Coordinator-local placement + checkpoint-and-release => supported;
-    // P2 registered cloud Worker + checkpoint-and-release => supported by
-    // claim-fenced continuation; P3 external Worker + default retention =>
-    // supported; P4 no frozen baseline => supported; P5 self-hosted Worker
-    // + checkpoint-and-release => refused (WorkQueue has no continuation claim).
-    let local = placed(
-        crate::state::SessionRuntimePlacement::Local,
-        checkpoint_and_release(),
-    );
-    let external = placed(
-        crate::state::SessionRuntimePlacement::Worker,
-        checkpoint_and_release(),
-    );
-    let external_default = placed(
-        crate::state::SessionRuntimePlacement::Worker,
-        crate::state::SandboxIdleRetentionPolicy::default(),
-    );
-    let mut self_hosted = external.clone();
-    let crate::state::SessionBaselineState::Frozen(baseline) = &mut self_hosted.baseline else {
-        unreachable!("fixture baseline is frozen")
-    };
-    baseline.environment.self_hosted = true;
-    let preparing = mutation_tests::session("facts", SessionRevision(1));
-    for (rule, session, expected) in [
-        ("P1", &local, true),
-        ("P2", &external, true),
-        ("P3", &external_default, true),
-        ("P4", &preparing, true),
-        ("P5", &self_hosted, false),
+fn every_frozen_placement_decides_the_due_suspend_intent() {
+    // Causes: C1 runtime placement Local/Worker; C2 self-hosted Environment
+    // (WorkQueue-owned). Every placement has a continuation transport: the
+    // Coordinator's own effects (Local), or the registered Worker's claimed
+    // preparation (cloud Worker; self-hosted Worker under its woken Session
+    // Work). Effect E1: a due, generated, idle Resident root decides
+    // Resident -> Suspending(Quiescing) with Quiesce in every row; E2 an
+    // undue root of the same placement decides nothing.
+    // | Rule | C1 | C2 | E1 | E2 |
+    // | P1 | Local | no | yes | yes |
+    // | P2 | Local | yes | yes | yes |
+    // | P3 | Worker | no | yes | yes |
+    // | P4 | Worker | yes | yes | yes |
+    for (rule, runtime, self_hosted) in [
+        ("P1", crate::state::SessionRuntimePlacement::Local, false),
+        ("P2", crate::state::SessionRuntimePlacement::Local, true),
+        ("P3", crate::state::SessionRuntimePlacement::Worker, false),
+        ("P4", crate::state::SessionRuntimePlacement::Worker, true),
     ] {
+        let mut session = placed(runtime, checkpoint_and_release());
+        let crate::state::SessionBaselineState::Frozen(baseline) = &mut session.baseline else {
+            unreachable!("fixture baseline is frozen")
+        };
+        baseline.environment.self_hosted = self_hosted;
+        session.environment = resident(Some(NOW - 10_000), true);
+        let decision = crate::state::transition_environment(
+            facts(&session, NOW, None),
+            SessionEnvironmentEvent::AdvanceContinuation,
+        )
+        .unwrap_or_else(|rejection| panic!("{rule}/E1 {rejection}"));
         assert_eq!(
-            facts(session, NOW, None).continuation_topology_supported,
-            expected,
-            "{rule}"
+            (decision.next(), decision.instruction()),
+            (
+                SessionEnvironmentStep::Suspending(SuspendPhase::Quiescing),
+                Some(SessionEnvironmentInstruction::Quiesce)
+            ),
+            "{rule}/E1"
         );
+        session.environment = resident(Some(NOW - 9_999), true);
+        let undue = crate::state::transition_environment(
+            facts(&session, NOW, None),
+            SessionEnvironmentEvent::AdvanceContinuation,
+        )
+        .unwrap_or_else(|rejection| panic!("{rule}/E2 {rejection}"));
+        assert_eq!(undue.instruction(), None, "{rule}/E2");
     }
 }
 

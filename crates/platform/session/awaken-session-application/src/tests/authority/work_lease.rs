@@ -81,3 +81,119 @@ async fn session_work_authority_bridges_the_complete_transfer_for_acquisition_an
         );
     }
 }
+
+#[tokio::test]
+async fn an_idle_source_lease_renews_without_its_stopped_session_work() {
+    // Causes: C1 the root: a self-hosted Worker-placed checkpoint-and-release
+    // Session holding its source (generated Resident), the same root under the
+    // Resident policy, or Hibernated; C2 the cause: a realization lease renewal
+    // (no Environment effect) or a realization (effect) renewal; C3 the
+    // Session's Work is stopped (a settled Run released it) or held.
+    // Effects: E1 Work waived (NotRequired: the lease renews); E2 Unowned (the
+    // Worker retires its local authority); E3 Leased (the held grant).
+    // | Rule | C1                         | C2     | C3      | Effect |
+    // | W1   | checkpoint, source held    | lease  | stopped | E1     |
+    // | W2   | checkpoint, source held    | effect | stopped | E2     |
+    // | W3   | Resident policy            | lease  | stopped | E2     |
+    // | W4   | checkpoint, Hibernated     | lease  | stopped | E2     |
+    // | W5   | checkpoint, source held    | lease  | held    | E3     |
+    use awaken_session_application_contract::{
+        SessionWorkAcquisition, SessionWorkOwnership, SessionWorkerLeaseAuthority,
+    };
+    let rooted = |id: &str, checkpoint: bool, hibernated: bool| {
+        let mut session = persisted(id, true, "idle");
+        let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+            &mut session.baseline
+        else {
+            unreachable!("fixture baseline is frozen")
+        };
+        if checkpoint {
+            baseline.environment.idle_retention =
+                super::continuation::checkpoint_release_retention();
+        }
+        let generation = awaken_session_contract::SandboxGeneration::new(
+            &SessionId::from(id),
+            0,
+            u64::MAX,
+            baseline.environment.config_fingerprint.0.clone(),
+            "base",
+        );
+        session.environment = if hibernated {
+            awaken_session_contract::SessionEnvironmentState::Hibernated {
+                checkpoint: awaken_provisioning_contract::SandboxCheckpointRef {
+                    id: "checkpoint".into(),
+                    format: "awaken-fs-tar-v1".into(),
+                    digest: "digest".into(),
+                    size_bytes: 1,
+                    created_at_unix_ms: 1,
+                    expires_at_unix_ms: u64::MAX,
+                    environment_fingerprint: generation.environment_fingerprint().to_owned(),
+                    base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
+                    excluded_mounts: Vec::new(),
+                    suspend_effect_id: "suspend".into(),
+                },
+                generation,
+            }
+        } else {
+            awaken_session_contract::SessionEnvironmentState::Resident {
+                binding: "source".into(),
+                effect_id: Some("create".into()),
+                generation: Some(generation),
+                idle_since_unix_ms: Some(1),
+            }
+        };
+        session
+    };
+    let repo = authority_repository("idle source lease renewal").await;
+    for (id, checkpoint, hibernated) in [
+        ("source", true, false),
+        ("resident-policy", false, false),
+        ("hibernated", true, true),
+    ] {
+        create(repo.as_ref(), rooted(id, checkpoint, hibernated)).await;
+    }
+    let environments = Arc::new(RecordingEnvironmentSource::default());
+    let app = application(repo, environments.clone());
+    let observe = |id: &'static str, cause| {
+        let app = &app;
+        async move {
+            app.work_assignments
+                .acquire_session_work(&SessionId::from(id), "worker:incarnation", cause)
+                .await
+                .unwrap()
+        }
+    };
+    let lease_only = SessionWorkAcquisition::RealizationLeaseRenewal;
+    assert_eq!(
+        observe("source", lease_only).await,
+        SessionWorkOwnership::NotRequired,
+        "W1"
+    );
+    assert_eq!(
+        observe("source", SessionWorkAcquisition::RealizationRenewal).await,
+        SessionWorkOwnership::Unowned,
+        "W2"
+    );
+    assert_eq!(
+        observe("resident-policy", lease_only).await,
+        SessionWorkOwnership::Unowned,
+        "W3"
+    );
+    assert_eq!(
+        observe("hibernated", lease_only).await,
+        SessionWorkOwnership::Unowned,
+        "W4"
+    );
+    environments
+        .awakened
+        .lock()
+        .unwrap()
+        .insert("source".to_owned());
+    assert!(
+        matches!(
+            observe("source", lease_only).await,
+            SessionWorkOwnership::Leased(_)
+        ),
+        "W5"
+    );
+}

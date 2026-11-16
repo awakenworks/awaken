@@ -57,7 +57,8 @@ pub use persisted_session::{
     session_is_unattempted_profiled_preparation, session_is_unstarted_preparation,
 };
 pub use placement::{
-    SessionPlacementClass, SessionPublicStatus, session_budget_pause_absorbs_interrupt,
+    SessionPlacementClass, SessionPublicStatus, continuation_wakes_session_work,
+    idle_source_lease_outlives_session_work, session_budget_pause_absorbs_interrupt,
     session_budget_pause_may_absorb_interrupt, session_is_budget_paused,
 };
 pub use recovery::{

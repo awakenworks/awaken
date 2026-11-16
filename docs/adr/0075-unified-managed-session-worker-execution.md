@@ -114,8 +114,10 @@ application registration, or the presence of a local Worker decorator.
 The stable Work id is the long-lived Session execution ownership coordinate.
 Enqueue replay is idempotent and reconciliation reconstructs a missing
 projection from the durable Session. Reconciliation never resurrects a stopped
-item: only a newly admitted Session event may explicitly wake it. A terminal
-Session retires the item and clears its lease.
+item: only a newly admitted Session event, or an idle root's own committed
+continuation that its registered Worker executes (ADR-0074 amendment
+2026-11-15), may explicitly wake it. A terminal Session retires the item and
+clears its lease.
 
 At the Managed HTTP edge, the authenticated Environment credential is the
 stable lease authority. The official `WorkPoller` sends

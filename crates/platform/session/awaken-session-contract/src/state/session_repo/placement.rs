@@ -54,20 +54,6 @@ impl SessionPlacementClass {
     pub const fn realized_by_coordinator(self) -> bool {
         matches!(self.runtime, SessionRuntimePlacement::Local) && !self.self_hosted_environment
     }
-
-    /// Whether this placement can honour an idle-retention policy. An
-    /// registered cloud Worker uses the root-owned continuation protocol.
-    /// Self-hosted Worker placement remains WorkQueue-owned and has no
-    /// run-free nonterminal continuation claim; its retention stays refused.
-    #[must_use]
-    pub fn supports_idle_retention(
-        self,
-        idle_retention: &crate::state::SandboxIdleRetentionPolicy,
-    ) -> bool {
-        !(self.requires_external_environment_owner()
-            && self.self_hosted_environment
-            && idle_retention.mode == crate::state::SandboxIdleRetentionMode::CheckpointAndRelease)
-    }
 }
 
 /// Neutral public execution status of one Session root. Protocol adapters map
@@ -118,6 +104,62 @@ const fn session_work_projection_required(
 ) -> bool {
     match placement {
         Some(placement) => placement.requires_work_projection() && !terminal,
+        None => false,
+    }
+}
+
+/// The continuation Work law: a Worker-placed root whose Environment fences
+/// Worker effects with Session Work (self-hosted) needs that Work to run a
+/// continuation effect its registered owner executes (suspend, restore, or
+/// expired-checkpoint deletion). Its last Run's settlement stopped the Work,
+/// and only a durable root obligation may wake stopped Work: an admitted
+/// event, or this Idle root's own committed continuation, which no Run will
+/// drive. A Resident or Unmaterialized root, a driving Run (whose admission
+/// already woke the Work), another placement and a terminal root wake
+/// nothing. Callers ask only when the aggregate decided such an effect.
+#[must_use]
+const fn continuation_wakes_work(
+    placement: Option<SessionPlacementClass>,
+    terminal: bool,
+    idle_without_activity: bool,
+    continuation_step: bool,
+) -> bool {
+    match placement {
+        Some(placement) => {
+            placement.requires_external_environment_owner()
+                && placement.requires_work_projection()
+                && !terminal
+                && idle_without_activity
+                && continuation_step
+        }
+        None => false,
+    }
+}
+
+/// The idle-source lease law. A self-hosted Worker placement renews its
+/// realization lease under Session Work, and a settled Run stops that Work, so
+/// the first renewal after it would retire the Worker's local source authority
+/// and the later suspend could never capture that exact source generation.
+/// While a checkpoint-and-release root still holds its source Sandbox
+/// (a generated Resident binding, or any Suspending phase before Hibernated),
+/// renewing the lease is not an Environment effect: it only keeps that one
+/// generation alive for its own checkpoint. Every Environment effect still
+/// requires the Work.
+#[must_use]
+const fn idle_source_lease_outlives_work(
+    placement: Option<SessionPlacementClass>,
+    terminal: bool,
+    checkpoint_and_release: bool,
+    source_retained: bool,
+) -> bool {
+    match placement {
+        Some(placement) => {
+            placement.requires_external_environment_owner()
+                && placement.requires_work_projection()
+                && !terminal
+                && checkpoint_and_release
+                && source_retained
+        }
         None => false,
     }
 }
@@ -209,6 +251,42 @@ impl PersistedSession {
         self.placement_class()
             .is_some_and(SessionPlacementClass::requires_external_environment_owner)
     }
+}
+
+/// Whether a decided continuation effect of this idle root wakes its stopped
+/// Session Work, so its registered Worker may claim the continuation under the
+/// Environment's Work fence ([`continuation_wakes_work`]).
+#[must_use]
+pub fn continuation_wakes_session_work(session: &PersistedSession) -> bool {
+    continuation_wakes_work(
+        session.placement_class(),
+        session.is_terminal(),
+        session.execution == SessionExecutionState::Idle && !session.has_active_activities(),
+        !session.environment.admits_realization_effects(),
+    )
+}
+
+/// Whether `session`'s realization lease may be renewed without its Session
+/// Work ([`idle_source_lease_outlives_work`]): its source Sandbox must survive
+/// the idle window to be checkpointed under that exact lease generation.
+#[must_use]
+pub fn idle_source_lease_outlives_session_work(session: &PersistedSession) -> bool {
+    idle_source_lease_outlives_work(
+        session.placement_class(),
+        session.is_terminal(),
+        session.frozen_baseline().is_some_and(|baseline| {
+            baseline.environment.idle_retention.mode
+                == crate::state::SandboxIdleRetentionMode::CheckpointAndRelease
+        }),
+        matches!(
+            &session.environment,
+            crate::state::SessionEnvironmentState::Resident {
+                effect_id: Some(_),
+                generation: Some(_),
+                ..
+            } | crate::state::SessionEnvironmentState::Suspending { .. }
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -389,6 +467,108 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn continuation_wakes_work_only_for_an_idle_continuing_self_hosted_worker_root() {
+        // Causes: C1 frozen placement (absent, Local/Worker x cloud/self-hosted);
+        // C2 terminal; C3 Idle with no open activity; C4 step is a continuation step
+        // (Suspending, Hibernated, Restoring).
+        // Effect E1: wake the stopped Session Work for the continuation.
+        // | Rule | C1 | C2 | C3 | C4 | E1 |
+        // | K1 | Worker, self-hosted | no | yes | yes | yes |
+        // | K2 | Worker, self-hosted | yes | any | any | no (terminal) |
+        // | K3 | Worker, self-hosted | no | no | any | no (Run's wake) |
+        // | K4 | Worker, self-hosted | no | yes | no | no (no obligation) |
+        // | K5 | Worker cloud / Local / absent | any | any | any | no (no Work) |
+        let mut placements = vec![None];
+        for runtime in [
+            SessionRuntimePlacement::Local,
+            SessionRuntimePlacement::Worker,
+        ] {
+            for self_hosted in [false, true] {
+                placements.push(Some(SessionPlacementClass::new(runtime, self_hosted)));
+            }
+        }
+        let mut cases = 0;
+        for placement in placements {
+            let fenced_worker = placement
+                == Some(SessionPlacementClass::new(
+                    SessionRuntimePlacement::Worker,
+                    true,
+                ));
+            for terminal in [false, true] {
+                for idle in [false, true] {
+                    for continuing in [false, true] {
+                        let rule = match (fenced_worker, terminal, idle, continuing) {
+                            (false, ..) => "K5",
+                            (true, true, ..) => "K2",
+                            (true, false, false, _) => "K3",
+                            (true, false, true, false) => "K4",
+                            (true, false, true, true) => "K1",
+                        };
+                        assert_eq!(
+                            continuation_wakes_work(placement, terminal, idle, continuing),
+                            rule == "K1",
+                            "{rule} {placement:?} terminal={terminal} idle={idle} continuing={continuing}"
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 40);
+    }
+
+    #[test]
+    fn only_a_retained_idle_source_lease_outlives_its_session_work() {
+        // Causes: C1 frozen placement (absent, Local/Worker x cloud/self-hosted);
+        // C2 terminal; C3 frozen checkpoint-and-release retention; C4 the source
+        // Sandbox is retained (generated Resident or Suspending).
+        // Effect E1: the realization lease is renewed without Session Work.
+        // | Rule | C1 | C2 | C3 | C4 | E1 |
+        // | L1 | Worker, self-hosted | no | yes | yes | yes |
+        // | L2 | Worker, self-hosted | yes | any | any | no (terminal) |
+        // | L3 | Worker, self-hosted | no | no (Resident policy) | any | no |
+        // | L4 | Worker, self-hosted | no | yes | no (Hibernated, Unmaterialized) | no |
+        // | L5 | Worker cloud / Local / absent | any | any | any | no (no Work gate) |
+        let mut placements = vec![None];
+        for runtime in [
+            SessionRuntimePlacement::Local,
+            SessionRuntimePlacement::Worker,
+        ] {
+            for self_hosted in [false, true] {
+                placements.push(Some(SessionPlacementClass::new(runtime, self_hosted)));
+            }
+        }
+        let mut cases = 0;
+        for placement in placements {
+            let fenced_worker = placement
+                == Some(SessionPlacementClass::new(
+                    SessionRuntimePlacement::Worker,
+                    true,
+                ));
+            for terminal in [false, true] {
+                for policy in [false, true] {
+                    for retained in [false, true] {
+                        let rule = match (fenced_worker, terminal, policy, retained) {
+                            (false, ..) => "L5",
+                            (true, true, ..) => "L2",
+                            (true, false, false, _) => "L3",
+                            (true, false, true, false) => "L4",
+                            (true, false, true, true) => "L1",
+                        };
+                        assert_eq!(
+                            idle_source_lease_outlives_work(placement, terminal, policy, retained),
+                            rule == "L1",
+                            "{rule} {placement:?}"
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 40);
     }
 
     #[test]
