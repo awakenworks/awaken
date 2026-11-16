@@ -13,6 +13,7 @@
 
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
+use awaken_runtime_contract::execution::verify_model_attempt_ownership;
 use awaken_runtime_contract::llm::{
     Error as LlmError, ModelRequestAdmission, ModelRequestAdmissionRequest,
 };
@@ -451,43 +452,66 @@ async fn infer_with_retry_inner(
             continuation_request(&request, &prefix)
         };
         sink.reset();
-        // The dispatch claim is a live side-effect fence, distinct from the
-        // once-per-logical-request application gate. Recheck it immediately
-        // before every provider attempt so a lease lost during backoff cannot
-        // spend another remote request before the eventual commit CAS notices.
-        awaken_runtime_contract::execution::verify_attempt_ownership(ownership)
-            .await
-            .map_err(|error| {
-                awaken_runtime_contract::llm::Error::Unauthorized(format!(
-                    "model request attempt no longer owns execution: {error}"
-                ))
-            })?;
-        // Validate before committing Entered: an unrepresentable deadline
-        // must not leave an unknown invocation that never entered an executor.
-        // Durable entry writes remain uncancellable; their elapsed cost still
-        // consumes this invocation's one absolute provider response horizon,
-        // which never extends past the request's logical deadline.
-        let timing = awaken_runtime_contract::llm::ModelAttemptTiming::start_at(
-            awaken_time::mono::now(),
-            policy.budget,
-            logical_deadline,
-        )
-        .map_err(awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch)?;
         let effect_scope = llm.effect_scope(&attempt_request);
-        let operation = if let Some(journal) = journal.as_deref_mut() {
-            let identity = journal
-                .enter(&attempt_request.model_binding, effect_scope)
-                .await?;
-            // Persistence may have waited past a lease boundary. The original
-            // ownership port remains the only permission to enter the executor.
-            awaken_runtime_contract::execution::verify_attempt_ownership(ownership)
-                .await
-                .map_err(|error| {
-                    awaken_runtime_contract::llm::Error::Unauthorized(error.to_string())
-                })?;
-            identity
-        } else {
-            None
+        let no_dispatch =
+            ModelExecutionEvidence::NotDispatched(NoDispatchProof::runtime_admission());
+        let prepared = async {
+            // Every provider attempt, including a retry, needs a fresh claim observation.
+            verify_model_attempt_ownership(ownership, LlmError::Unauthorized).await?;
+            // Validate before Entered. The durable write still spends the same
+            // absolute response horizon as inference.
+            let timing = awaken_runtime_contract::llm::ModelAttemptTiming::start_at(
+                awaken_time::mono::now(),
+                policy.budget,
+                logical_deadline,
+            )
+            .map_err(awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch)?;
+            let operation = if let Some(journal) = journal.as_deref_mut() {
+                let identity = journal
+                    .enter(&attempt_request.model_binding, effect_scope)
+                    .await?;
+                // The entry write can cross a lease boundary. Only the fresh
+                // observation permits executor entry.
+                if let Err(error) =
+                    verify_model_attempt_ownership(ownership, LlmError::Unauthorized).await
+                {
+                    if matches!(error, LlmError::Admission { .. }) {
+                        journal.returned(false, no_dispatch).await?;
+                    }
+                    return Err(error);
+                }
+                identity
+            } else {
+                None
+            };
+            Ok((timing, operation))
+        }
+        .await;
+        let (timing, operation) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error @ LlmError::Admission { .. }) => {
+                use awaken_runtime_contract::model_operation::{ModelOperationPhase, ModelReentry};
+                let reentry = ModelReentry::observed(
+                    ModelOperationPhase::Returned,
+                    effect_scope,
+                    no_dispatch,
+                );
+                permit.failure(&error);
+                if let RetryVerdict::Retry { after } = policy.decide(
+                    error.class(),
+                    reentry,
+                    u32::try_from(attempt).unwrap_or(u32::MAX),
+                    logical_deadline.remaining(),
+                    crate::retry::jitter_draw(),
+                ) {
+                    *retry_count = retry_count.saturating_add(1);
+                    model_read(cancellation, tokio::time::sleep(after)).await;
+                    attempt += 1;
+                    continue;
+                }
+                return Err(error.with_execution_evidence(no_dispatch));
+            }
+            Err(error) => return Err(error),
         };
         // Journal persistence and ownership verification both await. A sibling
         // may have vetoed this attempt during either wait; its old model receipt

@@ -721,3 +721,41 @@ async fn ownership_loss_during_receipt_response_never_releases_plaintext_or_repe
         }
     }
 }
+
+#[tokio::test]
+async fn direct_inference_retries_only_unavailable_claim_authority() {
+    use awaken_inference_endpoint::InferenceExecutorMaterializer;
+    use awaken_runtime_contract::llm::ChatRequest;
+    use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, NoDispatchProof};
+
+    let fixture = fixture(CredentialRealizationKind::WorkerProviderAdapter).await;
+    let materializer = crate::inference::CredentialInferenceMaterializer::from_pinned(
+        fixture.materializer.clone(),
+    );
+    for (change, retryable) in [(Change::Unavailable, true), (Change::Revoke, false)] {
+        let authority = Arc::new(OwnerAuthority::new("worker-a"));
+        apply(&authority, change);
+        let context = context(&fixture, authority, Arc::new(CountingRecorder::default()));
+        let executor = materializer
+            .materialize_pinned(&fixture.candidate, &context)
+            .expect("the exact pinned candidate is admitted");
+        let request = ChatRequest {
+            model_binding: fixture.candidate.binding().clone(),
+            inference: Default::default(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let error = executor
+            .infer_streaming(request, &crate::NoopDeltaSink)
+            .await
+            .unwrap_err();
+        assert_eq!(error.is_retryable(), retryable, "{change:?}");
+        if !retryable {
+            assert_eq!(error.code(), "binding_rejected");
+        }
+        assert_eq!(
+            error.execution_evidence(),
+            ModelExecutionEvidence::NotDispatched(NoDispatchProof::executor_resolution()),
+        );
+    }
+}

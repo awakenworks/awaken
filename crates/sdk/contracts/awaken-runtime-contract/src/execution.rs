@@ -8,6 +8,7 @@ use thiserror::Error;
 use awaken_agent_contract::agent::run::RunState;
 
 use crate::resolved::Backend;
+use crate::runtime_context::{AttemptOwnershipError, AttemptOwnershipVerifier};
 
 /// Exact Worker capability for the built-in in-process runtime.
 pub const NATIVE_RUNTIME_CAPABILITY: &str = "native-runtime";
@@ -63,8 +64,39 @@ impl AttemptOwnershipAdmission {
 /// claim and an unavailable authority fail closed through the ordinary attempt
 /// error path.
 pub async fn verify_attempt_ownership(
-    ownership: Option<&dyn crate::runtime_context::AttemptOwnershipVerifier>,
+    ownership: Option<&dyn AttemptOwnershipVerifier>,
 ) -> Result<()> {
+    check_attempt_ownership(ownership).await.map_err(|error| {
+        Error::Execution(format!(
+            "Run attempt no longer owns external execution: {error}"
+        ))
+    })
+}
+
+/// Grade a model ownership check before any Provider request. A transport
+/// failure denies the current send but allows the caller to retry admission
+/// under its normal budget. The caller owns proof that no request was sent.
+pub async fn verify_model_attempt_ownership(
+    ownership: Option<&dyn AttemptOwnershipVerifier>,
+    reject_lost: impl FnOnce(String) -> crate::llm::Error,
+) -> crate::llm::Result<()> {
+    use crate::llm::Error as LlmError;
+
+    check_attempt_ownership(ownership)
+        .await
+        .map_err(|error| match error {
+            AttemptOwnershipError::Lost => reject_lost(error.to_string()),
+            AttemptOwnershipError::Unavailable(_) => LlmError::Admission {
+                source: Box::new(LlmError::Provider(error.to_string())),
+            },
+        })
+}
+
+/// Observe the current claim while preserving the distinction between an
+/// authoritative loss and an unavailable ownership check.
+pub async fn check_attempt_ownership(
+    ownership: Option<&dyn AttemptOwnershipVerifier>,
+) -> std::result::Result<(), AttemptOwnershipError> {
     let (admission, rejection) = match ownership {
         None => (
             AttemptOwnershipAdmission::from_observation(false, false),
@@ -84,10 +116,7 @@ pub async fn verify_attempt_ownership(
     if admission.admits_external_effect() {
         Ok(())
     } else {
-        let error = rejection.expect("rejected ownership admission retains its cause");
-        Err(Error::Execution(format!(
-            "Run attempt no longer owns external execution: {error}"
-        )))
+        Err(rejection.expect("rejected ownership admission retains its cause"))
     }
 }
 

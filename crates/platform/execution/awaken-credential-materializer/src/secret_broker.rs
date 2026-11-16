@@ -185,6 +185,7 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                     CredentialRealizationKind::PrivateSecretFile,
                 )
                 .await
+                .map_err(|error| error.to_string())
                 .and_then(|material| {
                     material.ok_or_else(|| {
                         "credential_revision_unavailable: provider has no credential material"

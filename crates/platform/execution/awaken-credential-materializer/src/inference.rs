@@ -126,7 +126,7 @@ impl CredentialInferenceMaterializer {
         candidate: &ResolvedModelCandidate,
         context: &RuntimeRunContext,
         local_run_correlation: Option<String>,
-    ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
+    ) -> Result<Option<Arc<dyn LlmExecutor>>, LlmError> {
         let ModelProvisioning::Provider {
             provider_ref,
             access_kind,
@@ -147,7 +147,9 @@ impl CredentialInferenceMaterializer {
         };
 
         if *access_kind == ProviderAccessKind::Brokered {
-            let client = self.brokered_client(candidate, context)?;
+            let client = self
+                .brokered_client(candidate, context)
+                .map_err(LlmError::Binding)?;
             return awaken_inference_endpoint::brokered_inference::BrokeredCandidateExecutor::new(
                 client,
                 provider_ref,
@@ -157,17 +159,24 @@ impl CredentialInferenceMaterializer {
                 local_run_correlation,
                 context.ownership.clone(),
             )
-            .map(|executor| Some(shaped(Arc::new(executor))));
+            .map(|executor| Some(shaped(Arc::new(executor))))
+            .map_err(LlmError::Binding);
         }
 
         let secret = self
             .credentials
-            .materialize_claimed_provider(
+            .materialize_claimed_provider_material(
                 candidate,
                 context,
                 awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
             )
-            .await?;
+            .await?
+            .map(|material| {
+                material
+                    .into_secret()
+                    .map_err(|error| LlmError::Binding(error.to_string()))
+            })
+            .transpose()?;
         if endpoint.upstream_model.is_empty() {
             return Ok(None);
         }
@@ -179,7 +188,7 @@ impl CredentialInferenceMaterializer {
             secret.as_ref(),
             *unspecified_reasoning,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| LlmError::Binding(error.to_string()))?;
         Ok(Some(shaped(Arc::new(PinnedModelExecutor {
             inner,
             upstream_model: endpoint.upstream_model.clone(),
@@ -295,8 +304,7 @@ impl PinnedCandidateExecutor {
                 },
                 self.local_run_correlation.clone(),
             )
-            .await
-            .map_err(LlmError::Binding)?
+            .await?
             .ok_or_else(|| {
                 LlmError::Binding(format!(
                     "publication-pinned model candidate is unavailable for {}",
@@ -708,7 +716,7 @@ mod tests {
             .await
             .err()
             .expect("N1 brokered access without an adapter must fail closed");
-        assert!(error.contains("cloud_models_disabled"), "N1/E1");
+        assert!(error.to_string().contains("cloud_models_disabled"), "N1/E1");
     }
 
     fn direct_candidate_with_brokered_looking_route(model: &str) -> ResolvedModelCandidate {
@@ -1050,6 +1058,7 @@ mod tests {
                 .await
                 .err()
                 .expect("anonymous direct route reaches direct materialization")
+                .to_string()
                 .contains("resolved inference carries no credential"),
             "B5/E5"
         );
@@ -1060,6 +1069,7 @@ mod tests {
                 .await
                 .err()
                 .expect("disabled brokered route must fail")
+                .to_string()
                 .contains("cloud_models_disabled"),
             "B1/E2"
         );
@@ -1071,6 +1081,7 @@ mod tests {
                 .await
                 .err()
                 .expect("enabled brokered route without a client must fail")
+                .to_string()
                 .contains("cloud_sign_in_required"),
             "B2/E3"
         );

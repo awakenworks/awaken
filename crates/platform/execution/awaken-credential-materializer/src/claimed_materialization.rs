@@ -9,9 +9,39 @@ use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::credential::CredentialAccess;
 use awaken_credential_contract::CredentialRealizationKind;
 use awaken_credential_contract::{AttemptCredentialBinding, AttemptCredentialRealization};
+use awaken_runtime_contract::AttemptOwnershipError;
+use awaken_runtime_contract::execution::check_attempt_ownership;
+use awaken_runtime_contract::llm::Error as LlmError;
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 
 use super::PinnedCredentialMaterializer;
+
+#[derive(Debug, thiserror::Error)]
+pub(super) enum ClaimedMaterializationError {
+    #[error("{0}")]
+    Rejected(String),
+    #[error("runtime execution failed: Run attempt no longer owns external execution: {0}")]
+    Ownership(#[from] AttemptOwnershipError),
+}
+
+impl From<String> for ClaimedMaterializationError {
+    fn from(detail: String) -> Self {
+        Self::Rejected(detail)
+    }
+}
+
+impl From<ClaimedMaterializationError> for LlmError {
+    fn from(error: ClaimedMaterializationError) -> Self {
+        match error {
+            ClaimedMaterializationError::Ownership(AttemptOwnershipError::Unavailable(_)) => {
+                Self::Admission {
+                    source: Box::new(Self::Provider(error.to_string())),
+                }
+            }
+            _ => Self::Binding(error.to_string()),
+        }
+    }
+}
 
 impl PinnedCredentialMaterializer {
     pub(super) fn claimed_provider_binding<'a>(
@@ -62,12 +92,13 @@ impl PinnedCredentialMaterializer {
         context: &'a awaken_runtime_contract::RuntimeRunContext,
         expected_kind: CredentialRealizationKind,
         kind: &str,
-    ) -> Result<&'a AttemptCredentialRealization, String> {
+    ) -> Result<&'a AttemptCredentialRealization, ClaimedMaterializationError> {
         if binding.selected_realization_kind != expected_kind {
             return Err(format!(
                 "{kind} claim binding selects {:?}, expected {:?}",
                 binding.selected_realization_kind, expected_kind
-            ));
+            )
+            .into());
         }
         let realization = AttemptCredentialRealization::from_context(context)
             .ok_or_else(|| format!("credential-bearing {kind} has no claim binding"))?;
@@ -75,9 +106,7 @@ impl PinnedCredentialMaterializer {
             .ownership
             .as_deref()
             .ok_or_else(|| format!("credential-bearing {kind} has no claim fence"))?;
-        awaken_runtime_contract::execution::verify_attempt_ownership(Some(ownership))
-            .await
-            .map_err(|error| error.to_string())?;
+        check_attempt_ownership(Some(ownership)).await?;
         Ok(realization)
     }
 
@@ -93,7 +122,8 @@ impl PinnedCredentialMaterializer {
         expected_kind: CredentialRealizationKind,
     ) -> Result<Option<RedactedString>, String> {
         self.materialize_claimed_provider_material(candidate, context, expected_kind)
-            .await?
+            .await
+            .map_err(|error| error.to_string())?
             .map(|material| material.into_secret().map_err(|error| error.to_string()))
             .transpose()
     }
@@ -113,7 +143,8 @@ impl PinnedCredentialMaterializer {
             CredentialRealizationKind::WorkerRelay,
             "remote",
         )
-        .await?
+        .await
+        .map_err(|error| error.to_string())?
         .map(|material| material.into_secret().map_err(|error| error.to_string()))
         .transpose()
     }
@@ -123,7 +154,8 @@ impl PinnedCredentialMaterializer {
         candidate: &ResolvedModelCandidate,
         context: &awaken_runtime_contract::RuntimeRunContext,
         expected_kind: CredentialRealizationKind,
-    ) -> Result<Option<awaken_credential_contract::CredentialMaterial>, String> {
+    ) -> Result<Option<awaken_credential_contract::CredentialMaterial>, ClaimedMaterializationError>
+    {
         self.materialize_claimed_material(
             candidate,
             context,
@@ -141,7 +173,8 @@ impl PinnedCredentialMaterializer {
         selected: Option<(&CredentialAccess, &AttemptCredentialBinding)>,
         expected_kind: CredentialRealizationKind,
         kind: &str,
-    ) -> Result<Option<awaken_credential_contract::CredentialMaterial>, String> {
+    ) -> Result<Option<awaken_credential_contract::CredentialMaterial>, ClaimedMaterializationError>
+    {
         let Some((access, binding)) = selected else {
             return Ok(None);
         };
@@ -151,9 +184,7 @@ impl PinnedCredentialMaterializer {
             .delivered_access_for(candidate, access)
             .await
             .map_err(|error| error.to_string())?;
-        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
-            .await
-            .map_err(|error| error.to_string())?;
+        check_attempt_ownership(context.ownership.as_deref()).await?;
         let secret = match candidate.provisioning() {
             ModelProvisioning::Provider { .. } => {
                 self.materialize_provider_for(
@@ -174,23 +205,19 @@ impl PinnedCredentialMaterializer {
                 .await?
             }
             ModelProvisioning::HostExecutor | ModelProvisioning::BackendOwned { .. } => {
-                return Err(format!("model candidate has no {kind} provisioning"));
+                return Err(format!("model candidate has no {kind} provisioning").into());
             }
         };
         // The original read remains owned until it settles. Its returned
         // bytes cannot authorize the receipt after a claim/tenure handoff.
-        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
-            .await
-            .map_err(|error| error.to_string())?;
+        check_attempt_ownership(context.ownership.as_deref()).await?;
         realization
             .record(binding)
             .await
             .map_err(|error| error.to_string())?;
         // A receipt may have committed before its acknowledgement was delayed.
         // Retain that fact, but release no material under superseded authority.
-        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
-            .await
-            .map_err(|error| error.to_string())?;
+        check_attempt_ownership(context.ownership.as_deref()).await?;
         Ok(Some(secret))
     }
 }

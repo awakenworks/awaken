@@ -2881,3 +2881,84 @@ async fn sdk_supplied_activation_preserves_live_context_and_command_precedence()
 }
 
 mod response_reentry;
+
+#[tokio::test(start_paused = true)]
+async fn model_attempt_rechecks_unavailable_ownership_before_sending() {
+    use super::model_operation::ModelOperationJournal;
+    use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct OwnershipAfterTransportFailure {
+        calls: AtomicUsize,
+        fail_at: usize,
+        current: bool,
+    }
+
+    #[async_trait]
+    impl AttemptOwnershipVerifier for OwnershipAfterTransportFailure {
+        async fn verify_current(&self) -> std::result::Result<(), AttemptOwnershipError> {
+            let check = self.calls.fetch_add(1, Ordering::SeqCst);
+            if check == self.fail_at {
+                Err(AttemptOwnershipError::Unavailable(
+                    "transport unavailable".into(),
+                ))
+            } else if check < self.fail_at || self.current {
+                Ok(())
+            } else {
+                Err(AttemptOwnershipError::Lost)
+            }
+        }
+    }
+
+    for (fail_at, current) in [(0, true), (0, false), (1, true), (1, false)] {
+        let ownership = OwnershipAfterTransportFailure {
+            calls: AtomicUsize::new(0),
+            fail_at,
+            current,
+        };
+        let provider = Arc::new(SucceedingLlm {
+            requests: Default::default(),
+            text: "recovered",
+            response_delay: std::time::Duration::ZERO,
+        });
+        let llm: Arc<dyn LlmExecutor> = provider.clone();
+        let context = RuntimeRunContext::new().with_commit(Arc::new(
+            awaken_store_inmem::MemoryCommitCoordinator::new(awaken_time::system_clock()),
+        ));
+        let mut store = Store::default();
+        let mut ledger = StepLedger::new(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let thread = ThreadId("thread".into());
+        let run = RunId("run".into());
+        let mut journal =
+            ModelOperationJournal::new(&mut ledger, &mut store, &context, &thread, &run);
+        let outcome = infer_with_retry_observed(
+            &llm,
+            one_step_request(),
+            &policy(1),
+            &crate::circuit_breaker::CircuitBreaker::default(),
+            &recording(),
+            None,
+            None,
+            &awaken_runtime_contract::CaptureDecision::default(),
+            None,
+            &awaken_runtime_contract::metrics::NoopRecorder,
+            Some(&ownership),
+            Some(&mut journal),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ownership.calls.load(Ordering::SeqCst),
+            fail_at + 2 + usize::from(current),
+        );
+        assert_eq!(
+            provider.requests.lock().unwrap().len(),
+            usize::from(current)
+        );
+        if current {
+            outcome.result.unwrap();
+        } else {
+            assert!(matches!(outcome.result, Err(LlmError::Unauthorized(_))));
+        }
+    }
+}

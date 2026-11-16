@@ -759,9 +759,11 @@ impl BrokeredCandidateExecutor {
         let ownership = self.ownership.as_deref().ok_or_else(|| {
             LlmError::Binding("brokered inference has no attempt ownership fence".into())
         })?;
-        awaken_runtime_contract::execution::verify_attempt_ownership(Some(ownership))
-            .await
-            .map_err(|error| LlmError::Binding(error.to_string()))
+        awaken_runtime_contract::execution::verify_model_attempt_ownership(
+            Some(ownership),
+            LlmError::Binding,
+        )
+        .await
     }
 
     fn executor(&self, lease: &BrokeredInferenceLease) -> Result<Arc<dyn LlmExecutor>, LlmError> {
@@ -1563,7 +1565,12 @@ mod tests {
                         0,
                         "{rule}: stale native entry"
                     );
-                    assert_eq!(error.code(), "binding_rejected", "{rule}");
+                    let unavailable =
+                        matches!(after_grant, Err(AttemptOwnershipError::Unavailable(_)));
+                    assert_eq!(error.is_retryable(), unavailable, "{rule}");
+                    if !unavailable {
+                        assert_eq!(error.code(), "binding_rejected", "{rule}");
+                    }
                     assert_eq!(
                         error.execution_evidence(),
                         ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution()),
