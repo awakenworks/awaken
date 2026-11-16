@@ -193,6 +193,7 @@ if [[ "${1:-}" = "--self-test" ]]; then
   # lane never runs is a claim nobody earned, so it runs here, beside the rollout
   # table, in the same self-test check-all.sh already selects.
   bash "$REPO_ROOT/e2e/k3d/distributed_control_contract_test.sh" || exit "$?"
+  python3 -m unittest discover -s "$REPO_ROOT/e2e/k3d" -p test_rolling_upgrade_audit.py
   exit 0
 fi
 

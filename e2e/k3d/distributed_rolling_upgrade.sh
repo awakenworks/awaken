@@ -177,6 +177,12 @@ rolling_wait_inventory() {
       END { printf "%d %d %d %d",oc,nc,ow,nw }' "$evidence/pods-$name.tsv")
     if [[ "$actual" == "$expected" ]]; then
       cat "$evidence/pods-$name.tsv"
+      if [[ "$ROLLING_REQUIRE_RELEASE" = 1 ]] &&
+          ! awk -F '\t' '{ sub(/^docker-pullable:\/\//, "", $5); if ($4 != $5) exit 1 }' \
+            "$evidence/pods-$name.tsv"; then
+        err "$name has a running image ID that differs from its pinned release image"
+        return 1
+      fi
       return
     fi
     if [[ -f "$evidence/stop" ]]; then
@@ -463,9 +469,23 @@ rolling_upgrade() (
       rolling_attribution || true
     fi
     rolling_k logs rolling-observer >"$evidence/outbox.jsonl" || true
+    if [[ "$ROLLING_REQUIRE_RELEASE" = 1 ]]; then
+      if ! role_logs awaken-api api "$evidence/nginx" >"$evidence/nginx/access.log"; then
+        err "could not read the complete original Nginx log history"
+        role_logs awaken-api api >"$evidence/nginx/unverified-access.log" || true
+        if (( status == 0 )); then status=1; fi
+      fi
+      if ! python3 "$REPO_ROOT/e2e/k3d/rolling_upgrade_audit.py" event-posts "$evidence"; then
+        if (( status == 0 )); then status=1; fi
+      fi
+    fi
     if (( status != 0 )); then tail -30 "$evidence/load.log" >&2 || true; fi
     exit "$status"
   ' EXIT
+  if [[ "$ROLLING_REQUIRE_RELEASE" = 1 ]]; then
+    mkdir "$evidence/nginx"
+    role_logs awaken-api api "$evidence/nginx" freeze >/dev/null
+  fi
   python3 "$REPO_ROOT/e2e/k3d/rolling_pod_observer.py" "$NS" "$evidence" >"$evidence/pod-observer.log" 2>&1 &
   pod_observer_pid=$!
   rolling_run

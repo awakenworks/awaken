@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 
-from rolling_upgrade_audit import attribution, durable_runs, receipts, retirement
+from rolling_upgrade_audit import attribution, durable_runs, event_posts, receipts, retirement
 
 
 def write_records(root, filename, rows):
@@ -14,6 +14,37 @@ def write_records(root, filename, rows):
 
 
 class RollingAuditTests(unittest.TestCase):
+    def test_event_post_gate_checks_raw_nginx_response_even_after_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_records(root, "traffic.jsonl", [
+                {"kind": "accepted", "sessionId": "session-a", "stage": "rolling-back-coordinator"},
+            ])
+            nginx = root / "nginx"
+            nginx.mkdir()
+            anchor = '2026-11-16T00:30:00Z client "GET /readyz HTTP/1.1" 502 157\n'
+            accepted = '2026-11-16T00:31:50Z client "POST /v1/sessions/session-a/events?beta=true HTTP/1.1" 200 145\n'
+            gateway = accepted.replace(" 200 145", " 502 157")
+            log = nginx / "access.log"
+            for name, contents, result, statuses in (
+                ("clean", anchor + accepted, True, {"200": 1}),
+                ("retry recovered", anchor + gateway + accepted, False, {"200": 1, "502": 1}),
+                ("missing successful POST", anchor, False, {}),
+            ):
+                with self.subTest(name=name):
+                    log.write_text(contents, encoding="utf-8")
+                    self.assertEqual(event_posts(root), result)
+                    report = json.loads((root / "event-posts.json").read_text(encoding="utf-8"))
+                    self.assertEqual(report["statuses"], statuses)
+
+            log.unlink()
+            self.assertFalse(event_posts(root))
+            log.write_text(anchor + accepted, encoding="utf-8")
+            write_records(root, "traffic.jsonl", [
+                {"kind": "accepted", "sessionId": "session-a", "stage": "rollback"},
+            ])
+            self.assertFalse(event_posts(root))
+
     def test_public_completion_cannot_hide_a_durable_cancellation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

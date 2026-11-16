@@ -10,6 +10,24 @@ if [ "$#" -ne 0 ]; then
   exit 2
 fi
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+(
+  release_evidence=$(mktemp -d)
+  trap 'rm -rf -- "$release_evidence"' EXIT
+  export ADR71_ROLLING_EVIDENCE_DIR="$release_evidence"
+  export ADR71_ROLLING_LEGACY_IMAGE=old ADR71_ROLLING_CANDIDATE_IMAGE=new
+  export ADR71_ROLLING_LEGACY_WORKER_IMAGE=old-worker ADR71_ROLLING_CANDIDATE_WORKER_IMAGE=new-worker
+  for registry in "" ghcr.io; do
+    status=0
+    ADR71_ROLLING_REGISTRY="$registry" bash "$REPO_ROOT/e2e/k3d/rolling_release_gate.sh" \
+      >/dev/null || status=$?
+    [[ "$status" = 2 ]]
+  done
+  results=("$release_evidence"/rolling-release-*/exit-code)
+  [[ "${#results[@]}" = 2 && "$(cat "${results[@]}")" = $'2\n2' ]]
+  grep -Fq 'Missing ADR71_ROLLING_REGISTRY' "$release_evidence"/rolling-release-*/run.log
+  grep -Fq 'Configure the internal image registry' "$release_evidence"/rolling-release-*/run.log
+)
+
 # Cluster selection cause/effect table: C1 absent/empty override => original
 # identity; C2 valid explicit identity => isolated cluster and forwarder log;
 # C3 malformed identity => exit 2 before any infrastructure or cleanup call.

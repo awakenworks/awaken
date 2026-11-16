@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from datetime import datetime
@@ -81,6 +82,33 @@ def receipts(root):
     print(f"{audited} confirmed receipts and outcomes verified in durable history after rollback")
     assert not errors, f"{len(errors)} turns reached a terminal error; see traffic.jsonl"
     return True
+
+
+def event_posts(root):
+    pattern = re.compile(r'"POST /v1/sessions/([^/? ]+)/events(?:\?[^ ]*)? HTTP/1\.[01]" (\d{3}) ')
+    access_log = root / "nginx" / "access.log"
+    lines = access_log.read_text(encoding="utf-8").splitlines() if access_log.exists() else []
+    statuses, successful = Counter(), Counter()
+    bad_gateways = []
+    for line in lines:
+        if match := pattern.search(line):
+            session, status = match.groups()
+            statuses[status] += 1
+            if status == "200":
+                successful[session] += 1
+            if status == "502":
+                bad_gateways.append(line)
+    traffic = records(root, "traffic.jsonl") if (root / "traffic.jsonl").exists() else []
+    accepted = [item for item in traffic if item["kind"] == "accepted"]
+    missing = Counter(item["sessionId"] for item in accepted) - successful
+    rollback_turns = sum(item["stage"] == "rolling-back-coordinator" for item in accepted)
+    passed = bool(rollback_turns and not missing and not bad_gateways)
+    report = {"passed": passed, "statuses": dict(statuses), "http502": bad_gateways,
+              "coordinatorRollbackTurns": rollback_turns, "missingSuccessfulPosts": dict(missing)}
+    (root / "event-posts.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"Event POST statuses {dict(statuses)}, Coordinator rollback turns {rollback_turns}; "
+          "see event-posts.json")
+    return passed
 
 
 def receipt_run_states(root):
@@ -201,6 +229,7 @@ if __name__ == "__main__":
         "progress": (progress, ("stage",)),
         "replay": (replay, ("fact_id", "before", "after")),
         "receipts": (receipts, ()),
+        "event-posts": (event_posts, ()),
         "durable-runs": (durable_runs, ()),
         "attribution": (attribution, ()),
         "retirement": (retirement, ("legacy", "candidate")),
