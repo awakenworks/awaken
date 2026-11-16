@@ -336,17 +336,19 @@ impl SessionContinuations {
             instruction => return Err(SessionContinuationError::not_a_continuation(instruction)),
         };
         let snapshot = (!effect_ran).then(|| session.snapshot().clone());
-        let root = match mutations
-            .commit_session_snapshot_with_outcome(&owner_scope, session, reason, Vec::new())
-            .await
-        {
-            Ok(commit) => commit.into_session(),
+        let root = match (
+            mutations
+                .commit_session_snapshot_with_outcome(&owner_scope, session, reason, Vec::new())
+                .await,
+            snapshot,
+        ) {
+            (Ok(commit), _) => commit.into_session(),
             // A concurrent root commit (a lease renewal, a Work release)
             // raced this intent. Nothing physical ran, so the caller's loop
             // re-decides from the fresh root at once instead of leaving a due
             // suspend to the next scheduled recovery cycle.
-            Err(SessionMutationError::Conflict) if let Some(snapshot) = snapshot => snapshot,
-            Err(error) => return Err(SessionContinuationError::mutation(error)),
+            (Err(SessionMutationError::Conflict), Some(snapshot)) => snapshot,
+            (Err(error), _) => return Err(SessionContinuationError::mutation(error)),
         };
         Ok(ContinuationStep {
             owner_scope,
