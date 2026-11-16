@@ -350,11 +350,10 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
 
 #[tokio::test]
 async fn native_run_observation_refuses_foreign_scope_source_outage_and_invalid_page() {
-    // R1 foreign owner => NotFound before feed/read effects; R2 Managed policy
-    // => NotFound before feed; R3 missing-feed construction is excluded;
+    // R1 foreign owner => NotFound before feed; R2 historical Managed Root
+    // => missing Run refused after the feed; R3 missing-feed construction is excluded;
     // R4 limit>1024 => Rejected before feed; R5 exact source outage => Unavailable;
-    // R6 unknown Run => NotFound, never reuse the latest Run. These cover scope,
-    // mode, dependency, input and membership causes; all leave root unchanged.
+    // R6 unknown Run => NotFound, with the original root unchanged.
     use awaken_dispatch_contract::DispatchCursor;
     let repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -409,6 +408,8 @@ async fn native_run_observation_refuses_foreign_scope_source_outage_and_invalid_
         ),
         "R1"
     );
+    assert_eq!(feed.calls.load(Ordering::SeqCst), 0, "R1 scope before feed");
+    feed.unavailable.store(false, Ordering::SeqCst);
     assert!(
         matches!(
             read("workspace", SessionId::from("managed-refusals"), 1).await,
@@ -416,10 +417,11 @@ async fn native_run_observation_refuses_foreign_scope_source_outage_and_invalid_
         ),
         "R2"
     );
+    feed.unavailable.store(true, Ordering::SeqCst);
     assert_eq!(
         feed.calls.load(Ordering::SeqCst),
-        0,
-        "R1/R2 scope before feed"
+        1,
+        "R2 historical Managed read reaches the original feed"
     );
     // R3 used a fixture with no feed, then installed one after publication.
     // Complete construction now excludes that object (the constructor's
@@ -435,8 +437,8 @@ async fn native_run_observation_refuses_foreign_scope_source_outage_and_invalid_
 
     assert_eq!(
         feed.calls.load(Ordering::SeqCst),
-        0,
-        "R4 invalid page before feed"
+        1,
+        "R4 invalid page adds no feed reads"
     );
 
     assert!(
@@ -457,7 +459,7 @@ async fn native_run_observation_refuses_foreign_scope_source_outage_and_invalid_
 }
 
 #[tokio::test]
-async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_input() {
+async fn native_run_reply_rejects_foreign_owner_and_nonprimary_or_unfenced_input() {
     // The authorization/admission graph is serial: owner -> profiled mode ->
     // primary target -> positive original version -> stable operation -> Runtime
     // ticket owner. R1 foreign owner and R2 Managed mode stop before Runtime;
@@ -505,17 +507,62 @@ async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_
         ),
         "R1"
     );
+    assert!(
+        matches!(
+            application
+                .coordination
+                .profiled_session_run_reply_receipt_for_owner("foreign", command.clone())
+                .await,
+            Err(crate::SessionProjectionRecoveryError::NotFound)
+        ),
+        "foreign receipt read"
+    );
+    assert!(
+        matches!(
+            application
+                .coordination
+                .cancel_profiled_session_run_for_owner("foreign", &id, &command.expected_run_id)
+                .await,
+            Err(crate::SessionProjectionRecoveryError::NotFound)
+        ),
+        "foreign exact cancellation"
+    );
+    let query_command = command.clone();
     let mut managed = command.clone();
     managed.session_id = SessionId::from("managed-reply-owner");
     assert!(
         matches!(
             application
                 .coordination
-                .reply_profiled_session_run_for_owner("workspace", managed)
+                .reply_profiled_session_run_for_owner("workspace", managed.clone())
                 .await,
-            Err(crate::SessionProjectionRecoveryError::NotFound)
+            Err(crate::SessionProjectionRecoveryError::Rejected(_))
         ),
         "R2"
+    );
+    assert!(
+        matches!(
+            application
+                .coordination
+                .profiled_session_run_reply_receipt_for_owner("workspace", managed.clone())
+                .await,
+            Err(crate::SessionProjectionRecoveryError::Rejected(_))
+        ),
+        "Managed receipt read"
+    );
+    assert!(
+        matches!(
+            application
+                .coordination
+                .cancel_profiled_session_run_for_owner(
+                    "workspace",
+                    &managed.session_id,
+                    &managed.expected_run_id
+                )
+                .await,
+            Err(crate::SessionProjectionRecoveryError::Rejected(_))
+        ),
+        "Managed exact cancellation"
     );
     for invalid in [
         SessionThreadToolReplyCommand {
@@ -548,13 +595,31 @@ async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_
             matches!(
                 application
                     .coordination
-                    .reply_profiled_session_run_for_owner("workspace", invalid)
+                    .reply_profiled_session_run_for_owner("workspace", invalid.clone())
                     .await,
                 Err(crate::SessionProjectionRecoveryError::Rejected(_))
             ),
             "R3"
         );
+        assert!(
+            matches!(
+                application
+                    .coordination
+                    .profiled_session_run_reply_receipt_for_owner("workspace", invalid)
+                    .await,
+                Err(crate::SessionProjectionRecoveryError::Rejected(_))
+            ),
+            "same query admission boundary"
+        );
     }
+    assert!(
+        application
+            .coordination
+            .profiled_session_run_reply_receipt_for_owner("workspace", query_command)
+            .await
+            .is_err(),
+        "a provider without committed receipt reads fails closed"
+    );
     assert_eq!(repository.get(&id).await.unwrap(), before, "E1");
 }
 

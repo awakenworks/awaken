@@ -1,4 +1,5 @@
 use super::*;
+mod work_acquisition;
 use awaken_session_execution_contract::SessionPreparationControl;
 use futures_util::FutureExt;
 
@@ -305,10 +306,21 @@ async fn idle_mcp_preparation_reuses_the_bound_worker_and_refuses_a_foreign_owne
         .await;
         let before = repo.get(&id).await.unwrap();
         let observations = Arc::new(RecordingWorkerObservations::default());
+        let environments = Arc::new(RecordingEnvironmentSource::default());
+        if self_hosted {
+            // This seed represents an accepted MCP update whose Work is queued.
+            awaken_session_application_contract::SessionWorkerAssignment::wake_session(
+                environments.as_ref(),
+                "env-worker",
+                &id,
+            )
+            .await
+            .unwrap();
+        }
         let application = configured_application(
             Arc::new(NoopRuntime),
             SessionPersistence::new(repo.clone(), system_clock()),
-            Arc::new(RecordingEnvironmentSource::default()),
+            environments,
             Default::default(),
             None,
             {

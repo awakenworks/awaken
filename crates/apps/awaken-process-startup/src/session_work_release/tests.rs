@@ -90,6 +90,24 @@ impl Fixture {
         Self::from_sources(d, d_url, roots, work, roots_shared, work_shared, tag).await
     }
 
+    async fn with_execution(
+        workers: Arc<dyn awaken_worker_contract::WorkerIncarnationSource>,
+        placement: Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement>,
+    ) -> Self {
+        let tag = format!("park_{}", uuid::Uuid::now_v7().simple());
+        let (d, d_url) = owned_pool(1, &tag).await;
+        Self::from_sources_with_execution(
+            (d.clone(), d_url),
+            d.clone(),
+            d,
+            true,
+            true,
+            tag,
+            Some((workers, placement)),
+        )
+        .await
+    }
+
     async fn from_sources(
         d: PgPool,
         d_url: String,
@@ -99,6 +117,31 @@ impl Fixture {
         work_shared: bool,
         tag: String,
     ) -> Self {
+        Self::from_sources_with_execution(
+            (d, d_url),
+            roots,
+            work,
+            roots_shared,
+            work_shared,
+            tag,
+            None,
+        )
+        .await
+    }
+
+    async fn from_sources_with_execution(
+        dispatch_source: (PgPool, String),
+        roots: PgPool,
+        work: PgPool,
+        roots_shared: bool,
+        work_shared: bool,
+        tag: String,
+        execution: Option<(
+            Arc<dyn awaken_worker_contract::WorkerIncarnationSource>,
+            Arc<dyn awaken_session_execution_contract::SessionPreparationPlacement>,
+        )>,
+    ) -> Self {
+        let (d, d_url) = dispatch_source;
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100_000));
         let sessions = Arc::new(
             awaken_session_store::PostgresManagedSessionRepository::with_pool(roots.clone())
@@ -120,21 +163,41 @@ impl Fixture {
                 queue, catalog,
             ),
         );
-        let runtime = Arc::new(awaken_protocol_managed_testkit::RehydrateFake::default());
-        let managed = awaken_protocol_managed_testkit::managed_state_from_parts(
-            runtime.clone(),
-            Some(runtime),
-            sessions,
-            environments,
-            clock.clone(),
-            Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
-        );
-        let assignments = managed.session_application().work_assignments();
         let dispatch = Arc::new(
             PostgresDispatchStore::with_pool(d.clone())
                 .await
                 .expect("real Dispatch ledger"),
         );
+        let runtime = Arc::new(awaken_protocol_managed_testkit::RehydrateFake::default());
+        let managed = match execution {
+            Some((workers, placement)) => awaken_protocol_managed::ManagedState::from_application(
+                awaken_protocol_managed_testkit::session_application_from_parts(
+                    awaken_session_execution_contract::SessionExecutionRoles::colocated(
+                        runtime.clone(),
+                        runtime,
+                    ),
+                    sessions,
+                    environments,
+                    clock.clone(),
+                    awaken_session_application::SessionExecutionAdmission::new(
+                        dispatch.clone(),
+                        workers,
+                        placement,
+                    ),
+                    Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+                ),
+                Default::default(),
+            ),
+            None => awaken_protocol_managed_testkit::managed_state_from_parts(
+                runtime.clone(),
+                Some(runtime),
+                sessions,
+                environments,
+                clock.clone(),
+                Arc::new(awaken_ext_builtin_tools::WebToolConfigurationCompiler),
+            ),
+        };
+        let assignments = managed.session_application().work_assignments();
         // Explicit observation/competing-Coordinator connections are outside
         // the product pool cap and carry a different application tag.
         let observer = pool_on(&d_url, 2, &format!("{tag}_observer")).await;
@@ -185,27 +248,12 @@ impl Fixture {
     }
 
     async fn entry_for(&self, owner: &str) -> Entry {
-        self.entry_with_dispatch(owner, |id| {
-            let run = RunId(format!("run-{}", id.as_str()));
-            RunDispatch::new(awaken_runtime_contract::RunActivation::new(
-                run,
-                ThreadId(id.as_str().into()),
-                awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
-                    .model(
-                        awaken_runtime_contract::ModelBinding::parse(
-                            "default",
-                            "parking-model",
-                            "default",
-                        )
-                        .expect("valid canonical Native fixture binding"),
-                    )
-                    .build(),
-                Vec::new(),
-            ))
-            .for_session(ThreadId(id.as_str().into()))
-            .with_session_activity_epoch(1)
-        })
-        .await
+        self.entry_with_dispatch(owner, fixture_run_dispatch).await
+    }
+
+    async fn entry_without_attempt_for(&self, owner: &str) -> Entry {
+        self.entry_with_empty_slot(owner, fixture_run_dispatch)
+            .await
     }
 
     async fn owned_session(&self, owner: &str) -> (SessionId, SessionWorkGrant) {
@@ -235,6 +283,38 @@ impl Fixture {
         owner: &str,
         dispatch: impl FnOnce(&SessionId) -> RunDispatch,
     ) -> Entry {
+        let mut entry = self.entry_with_empty_slot(owner, dispatch).await;
+        let claim = &entry.claim;
+        let run = &entry.claim.run_id;
+        assert_eq!(
+            self.dispatch
+                .begin_attempt(claim, None)
+                .await
+                .expect("physical slot"),
+            awaken_dispatch::AttemptAdmission::Applied
+        );
+        assert_eq!(
+            self.dispatch
+                .close_attempt(claim)
+                .await
+                .expect("irreversible local entry close"),
+            awaken_dispatch::SettleOutcome::Applied
+        );
+        let attempt = self
+            .dispatch
+            .load_physical_attempt(run)
+            .await
+            .unwrap()
+            .expect("occupied closed slot");
+        entry.attempt = Some(attempt);
+        entry
+    }
+
+    async fn entry_with_empty_slot(
+        &self,
+        owner: &str,
+        dispatch: impl FnOnce(&SessionId) -> RunDispatch,
+    ) -> Entry {
         let (id, grant) = self.owned_session(owner).await;
         let request = dispatch(&id);
         let run = request.run_id().clone();
@@ -249,30 +329,17 @@ impl Fixture {
             .unwrap()
             .expect("claim");
         let claim = RunClaim::from(&claimed.lease);
-        assert_eq!(
+        assert!(
             self.dispatch
-                .begin_attempt(&claim, None)
+                .load_physical_attempt(&run)
                 .await
-                .expect("physical slot"),
-            awaken_dispatch::AttemptAdmission::Applied
+                .unwrap()
+                .is_none()
         );
-        assert_eq!(
-            self.dispatch
-                .close_attempt(&claim)
-                .await
-                .expect("irreversible local entry close"),
-            awaken_dispatch::SettleOutcome::Applied
-        );
-        let attempt = self
-            .dispatch
-            .load_physical_attempt(&run)
-            .await
-            .unwrap()
-            .expect("occupied closed slot");
         Entry {
             id,
             claim,
-            attempt,
+            attempt: None,
             grant,
         }
     }
@@ -301,8 +368,33 @@ async fn work_row_on<'e>(
 struct Entry {
     id: SessionId,
     claim: RunClaim,
-    attempt: PhysicalAttempt,
+    attempt: Option<PhysicalAttempt>,
     grant: SessionWorkGrant,
+}
+
+impl Entry {
+    fn attempt(&self) -> &PhysicalAttempt {
+        self.attempt
+            .as_ref()
+            .expect("fixture owns a physical attempt")
+    }
+}
+
+fn fixture_run_dispatch(id: &SessionId) -> RunDispatch {
+    let run = RunId(format!("run-{}", id.as_str()));
+    RunDispatch::new(awaken_runtime_contract::RunActivation::new(
+        run,
+        ThreadId(id.as_str().into()),
+        awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
+            .model(
+                awaken_runtime_contract::ModelBinding::parse("default", "parking-model", "default")
+                    .expect("valid canonical Native fixture binding"),
+            )
+            .build(),
+        Vec::new(),
+    ))
+    .for_session(ThreadId(id.as_str().into()))
+    .with_session_activity_epoch(1)
 }
 
 #[cfg(test)]
@@ -326,7 +418,7 @@ async fn live_postgres_cap_one_and_partial_owner_matrix() {
         let before = f.work_row(&e.id).await;
         assert_eq!(before.0, "active");
         assert!(
-            tokio::time::timeout(PROGRESS, f.release().release(&e.claim, &e.attempt, true))
+            tokio::time::timeout(PROGRESS, f.release().release(&e.claim, e.attempt(), true))
                 .await
                 .expect("P1-P4 must progress with the original one-connection cap")
                 .unwrap()
@@ -443,7 +535,7 @@ async fn live_postgres_cap_two_serializes_duplicate_release_and_claim_takeover()
         .await.unwrap();
     let port = f.release();
     let claim = e.claim.clone();
-    let observed = e.attempt.clone();
+    let observed = e.attempt().clone();
     let first = tokio::spawn(async move { port.release(&claim, &observed, true).await });
     awaken_reliability_testkit::wait_for_postgres_lock_waiters(
         &f.observer,
@@ -456,7 +548,7 @@ async fn live_postgres_cap_two_serializes_duplicate_release_and_claim_takeover()
     .unwrap();
     let port = f.release();
     let claim = e.claim.clone();
-    let observed = e.attempt.clone();
+    let observed = e.attempt().clone();
     let duplicate = tokio::spawn(async move { port.release(&claim, &observed, true).await });
     awaken_reliability_testkit::wait_for_postgres_lock_waiters(
         &f.observer,
@@ -562,13 +654,13 @@ async fn live_postgres_rejects_stale_claim_and_changed_physical_evidence() {
                 .get();
         }
         assert!(
-            !port.release(&claim, &e.attempt, true).await.unwrap(),
+            !port.release(&claim, e.attempt(), true).await.unwrap(),
             "{rule}"
         );
         assert_eq!(f.work_row(&e.id).await, before, "{rule} no effect");
     }
     for rule in ["R3", "R4", "R5"] {
-        let mut observed = e.attempt.clone();
+        let mut observed = e.attempt().clone();
         match rule {
             "R3" => observed.claim.owner = "foreign".into(),
             "R4" => {
@@ -588,7 +680,7 @@ async fn live_postgres_rejects_stale_claim_and_changed_physical_evidence() {
         assert_eq!(f.work_row(&e.id).await, before, "{rule} no effect");
     }
     assert!(
-        !port.release(&e.claim, &e.attempt, false).await.unwrap(),
+        !port.release(&e.claim, e.attempt(), false).await.unwrap(),
         "R6"
     );
     // The caller kept the original closed observation. A concurrent, persisted
@@ -602,12 +694,12 @@ async fn live_postgres_rejects_stale_claim_and_changed_physical_evidence() {
         .await
         .unwrap();
     assert!(
-        !port.release(&e.claim, &e.attempt, true).await.unwrap(),
+        !port.release(&e.claim, e.attempt(), true).await.unwrap(),
         "R7 fresh physical snapshot wins"
     );
     assert_eq!(f.work_row(&e.id).await, before, "R7 no Work effect");
     sqlx::query("UPDATE runtime_dispatch SET active_attempt_owner=$1 WHERE run_id=$2")
-        .bind(&e.attempt.claim.owner)
+        .bind(&e.attempt().claim.owner)
         .bind(&e.claim.run_id.0)
         .execute(&f.d)
         .await
@@ -616,7 +708,10 @@ async fn live_postgres_rejects_stale_claim_and_changed_physical_evidence() {
     // claim fence still owns commit/settle. Decode failure => guard admitted,
     // parking refused, original Work unchanged; SQL/claim faults remain errors.
     // Explicitly release the guard before reusing this capacity-one pool.
-    assert!(e.attempt.binding.is_none(), "R7b original unbound fixture");
+    assert!(
+        e.attempt().binding.is_none(),
+        "R7b original unbound fixture"
+    );
     sqlx::query("UPDATE runtime_dispatch SET active_attempt_binding='not-json' WHERE run_id=$1")
         .bind(&e.claim.run_id.0)
         .execute(&f.d)
@@ -630,7 +725,7 @@ async fn live_postgres_rejects_stale_claim_and_changed_physical_evidence() {
         .expect("R7b ordinary current claim remains guarded");
     guard.release().await.unwrap();
     assert!(
-        !port.release(&e.claim, &e.attempt, true).await.unwrap(),
+        !port.release(&e.claim, e.attempt(), true).await.unwrap(),
         "R7b unreadable physical details cannot authorize parking"
     );
     assert_eq!(f.work_row(&e.id).await, before, "R7b no Work effect");
@@ -670,11 +765,11 @@ async fn live_postgres_rejects_stale_claim_and_changed_physical_evidence() {
         "R8 canonical retry/reclaim advanced the epoch"
     );
     assert!(
-        !port.release(&e.claim, &e.attempt, true).await.unwrap(),
+        !port.release(&e.claim, e.attempt(), true).await.unwrap(),
         "R8 old original lease"
     );
     assert!(
-        !port.release(&successor, &e.attempt, true).await.unwrap(),
+        !port.release(&successor, e.attempt(), true).await.unwrap(),
         "R8 old retried lease"
     );
     assert_eq!(
@@ -687,11 +782,11 @@ async fn live_postgres_rejects_stale_claim_and_changed_physical_evidence() {
             .load_physical_attempt(&e.claim.run_id)
             .await
             .unwrap(),
-        Some(e.attempt.clone()),
+        Some(e.attempt().clone()),
         "R8 logical claim transitions never clear the old physical owner"
     );
     assert!(
-        port.release(&current, &e.attempt, true).await.unwrap(),
+        port.release(&current, e.attempt(), true).await.unwrap(),
         "current claim and exact predecessor evidence"
     );
     f.cleanup().await;
@@ -715,7 +810,7 @@ async fn live_postgres_work_release_rollback_and_epoch_owner_fences() {
         .await.unwrap();
     assert!(
         f.release()
-            .release(&e.claim, &e.attempt, true)
+            .release(&e.claim, e.attempt(), true)
             .await
             .is_err(),
         "W1 storage failure remains loud"
@@ -730,7 +825,7 @@ async fn live_postgres_work_release_rollback_and_epoch_owner_fences() {
             .load_physical_attempt(&e.claim.run_id)
             .await
             .unwrap(),
-        Some(e.attempt.clone()),
+        Some(e.attempt().clone()),
         "W1 no physical closure or replacement"
     );
     f.d.execute("DROP TRIGGER parking_reject_stop ON work_queue_item")
@@ -746,7 +841,7 @@ async fn live_postgres_work_release_rollback_and_epoch_owner_fences() {
     let foreign = f.work_row(&e.id).await;
     assert!(
         !f.release()
-            .release(&e.claim, &e.attempt, true)
+            .release(&e.claim, e.attempt(), true)
             .await
             .unwrap(),
         "W2"
@@ -886,7 +981,7 @@ async fn live_postgres_shared_root_and_separate_work_database() {
     let foreign = f.work_row(&e.id).await;
     assert!(
         !f.release()
-            .release(&e.claim, &e.attempt, true)
+            .release(&e.claim, e.attempt(), true)
             .await
             .unwrap(),
         "DB2 foreign independent Work owner"
@@ -944,7 +1039,7 @@ async fn live_postgres_shared_root_and_separate_work_database() {
         .await.unwrap();
     let port = f.release();
     let claim = e.claim.clone();
-    let observed = e.attempt.clone();
+    let observed = e.attempt().clone();
     let parking = tokio::spawn(async move { port.release(&claim, &observed, true).await });
     awaken_reliability_testkit::wait_for_postgres_lock_waiters(
         &work_observer,

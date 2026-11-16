@@ -26,8 +26,10 @@ pub use execution_evidence::{
 };
 pub use memory_copy_conflicts::memory_copy_conflicts_router;
 pub use profiled_run_events::{
-    ProfiledSessionRunEventsQuery, ProfiledSessionRunResume, profiled_session_run_events_router,
-    profiled_session_run_resume_router,
+    ProfiledSessionRunEventsQuery, ProfiledSessionRunReplyReceipt, ProfiledSessionRunResume,
+    SessionEventBatchReceipt, profiled_session_run_cancel_router,
+    profiled_session_run_events_router, profiled_session_run_reply_receipt_router,
+    profiled_session_run_resume_router, session_event_batch_receipt_router,
 };
 pub use profiled_sessions::{
     ProfiledSessionCreate, ProfiledSessionCreated, ProfiledSessionMcpAttachment,

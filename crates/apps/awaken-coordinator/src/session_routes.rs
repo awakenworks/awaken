@@ -23,6 +23,17 @@ pub(super) fn session_extensions(
     .merge(awaken_extensions::profiled_session_run_resume_router(
         awaken_protocol_managed::resume_profiled_session_run,
     ))
+    .merge(
+        awaken_extensions::profiled_session_run_reply_receipt_router(
+            awaken_protocol_managed::get_profiled_session_run_reply_receipt,
+        ),
+    )
+    .merge(awaken_extensions::session_event_batch_receipt_router(
+        awaken_protocol_managed::get_session_event_batch_receipt,
+    ))
+    .merge(awaken_extensions::profiled_session_run_cancel_router(
+        awaken_protocol_managed::cancel_profiled_session_run,
+    ))
     .merge(awaken_extensions::profiled_session_release_router(
         awaken_protocol_managed::release_profiled_session,
     ))

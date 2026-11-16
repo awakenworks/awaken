@@ -104,3 +104,25 @@ concept.
   and its 2026-09-25 amendment).
 - `RunStore` / `ThreadReader` are now `CommittedThreadView` (+ `CheckpointReader`);
   the dispatch ports are `DispatchQueue` / `Inbox` / `Outbox` ([ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md)).
+
+
+## Outbox delivery index bootstrap
+
+The Session-store owner serializes online delivery-index repair through its
+existing dedicated close-on-drop connection and schema/index advisory key.
+Contention uses a nonblocking advisory probe. Every unsuccessful probe finishes
+its implicit statement transaction before the asynchronous wait. The winner can
+then complete CREATE INDEX CONCURRENTLY while contenders retain their original
+constructor wait semantics.
+
+The same connection owns the session advisory grant throughout the index work.
+Its close-on-drop lifecycle releases the grant after caller cancellation or a
+server-side query error. Invalid-index repair continues through the original
+concurrent DDL and preserves existing outbox rows.
+
+The Session-store outbox_bootstrap PostgreSQL owner checks two concurrent
+single-connection initializers behind an old writer, waiter cancellation and
+pool recovery, and builder cancellation or server error followed by grant
+reacquisition and invalid-index retry. An external old-source negative control
+reproduces the virtual-transaction deadlock through the original blocking
+advisory operation.

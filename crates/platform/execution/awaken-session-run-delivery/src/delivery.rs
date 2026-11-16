@@ -1789,6 +1789,144 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exact_session_run_cancellation_preserves_a_newer_run_and_foreign_affinity() {
+        use awaken_dispatch_contract::{DispatchControlReads as _, DispatchEnqueue as _};
+        let delivery = delivery(Some(skill())).await;
+        install(&delivery, "exact-cancel", Vec::new(), Vec::new());
+        let first = command("exact-cancel", "first");
+        let mut second = command("exact-cancel", "second");
+        second.run_id = RunId("exact-cancel-run-2".into());
+        second.operation_id = "operation-2".into();
+        delivery.reserve_session_run(first.clone()).await.unwrap();
+        delivery.reserve_session_run(second.clone()).await.unwrap();
+        let second_before = delivery
+            .ports
+            .owner
+            .dispatch_summary(&second.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!second_before.cancellation_requested);
+        assert!(
+            awaken_session_execution_contract::StreamingRuns::cancel_session_run(
+                &delivery,
+                &awaken_session_types::SessionId::from("foreign"),
+                &first.run_id,
+            )
+            .await
+            .is_err(),
+            "foreign Session cannot cancel either row"
+        );
+        assert!(
+            !delivery
+                .ports
+                .owner
+                .dispatch_summary(&first.run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .cancellation_requested
+        );
+        awaken_session_execution_contract::StreamingRuns::cancel_session_run(
+            &delivery,
+            &first.session_id,
+            &first.run_id,
+        )
+        .await
+        .unwrap();
+        assert!(
+            delivery
+                .ports
+                .owner
+                .dispatch_summary(&first.run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .cancellation_requested
+        );
+        assert_eq!(
+            delivery
+                .ports
+                .owner
+                .dispatch_summary(&second.run_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            second_before,
+            "R1 cancellation cannot affect R2 of the same Session"
+        );
+        awaken_session_execution_contract::StreamingRuns::cancel_session_run(
+            &delivery,
+            &first.session_id,
+            &first.run_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            delivery
+                .ports
+                .owner
+                .dispatch_summary(&second.run_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            second_before,
+            "exact cancellation retry keeps the newer Run unchanged"
+        );
+        let legacy_run = RunId("legacy-root-run".into());
+        delivery
+            .ports
+            .owner
+            .enqueue(awaken_dispatch_contract::RunDispatch::new(
+                RunActivation::new(
+                    legacy_run.clone(),
+                    ThreadId("exact-cancel".into()),
+                    reviewing_agent(),
+                    Vec::new(),
+                ),
+            ))
+            .await
+            .unwrap();
+        let legacy = delivery
+            .ports
+            .owner
+            .dispatch_summary(&legacy_run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(legacy.session_thread_id.is_none());
+        assert!(legacy.session_activity_epoch.is_none());
+        awaken_session_execution_contract::StreamingRuns::cancel_session_run(
+            &delivery,
+            &first.session_id,
+            &legacy_run,
+        )
+        .await
+        .unwrap();
+        assert!(
+            delivery
+                .ports
+                .owner
+                .dispatch_summary(&legacy_run)
+                .await
+                .unwrap()
+                .unwrap()
+                .cancellation_requested
+        );
+        assert_eq!(
+            delivery
+                .ports
+                .owner
+                .dispatch_summary(&second.run_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            second_before,
+            "the original un-affined root shape still targets only its exact Run"
+        );
+    }
+
+    #[tokio::test]
     async fn coordinator_durable_operations_follow_their_decision_table() {
         use awaken_session_execution_contract::DurableRunOperations as _;
         let delivery = delivery(Some(skill())).await;

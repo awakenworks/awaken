@@ -136,6 +136,94 @@ pub async fn submit_profiled_session_run(
     Ok(Json(receipt))
 }
 
+/// Observe the original reply receipt without admitting or executing a reply.
+pub async fn get_profiled_session_run_reply_receipt(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, run_id)): Path<(String, String)>,
+    RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
+    body: Result<Json<crate::awaken_extensions::ProfiledSessionRunResume>, JsonRejection>,
+) -> Result<Json<crate::awaken_extensions::ProfiledSessionRunReplyReceipt>, WireErr> {
+    let Json(body) = body.map_err(|rejection| {
+        error_response(StateError::Run(RunError::bad_request(
+            crate::routes::extractors::managed_json_message(rejection.body_text()),
+        )))
+    })?;
+    if body.call_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
+        return Err(error_response(StateError::Run(RunError::bad_request(
+            "native reply call id is empty",
+        ))));
+    }
+    let command = body.into_command(
+        awaken_session_types::SessionId::from(id),
+        awaken_agent_contract::RunId(run_id),
+    );
+    let applied = state
+        .roles
+        .profiled_replies
+        .profiled_session_run_reply_receipt_for_owner(&owner_scope, command)
+        .await
+        .map_err(session_projection_error)?;
+    Ok(Json(
+        crate::awaken_extensions::ProfiledSessionRunReplyReceipt { applied },
+    ))
+}
+
+/// Request cancellation of the asserted Run through its original dispatch owner.
+pub async fn cancel_profiled_session_run(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, run_id)): Path<(String, String)>,
+    RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
+) -> Result<Json<crate::awaken_extensions::ProfiledSessionRunReceipt>, WireErr> {
+    let session_id = awaken_session_types::SessionId::from(id.clone());
+    let run_id = awaken_agent_contract::RunId(run_id);
+    state
+        .roles
+        .profiled_replies
+        .cancel_profiled_session_run_for_owner(&owner_scope, &session_id, &run_id)
+        .await
+        .map_err(session_projection_error)?;
+    Ok(Json(crate::awaken_extensions::ProfiledSessionRunReceipt {
+        session_id: id,
+        run_id,
+    }))
+}
+
+/// Observe an exact original Managed reply batch without driving its lifecycle.
+pub async fn get_session_event_batch_receipt(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+    RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
+    headers: axum::http::HeaderMap,
+    body: Result<Json<crate::types::session::SendEventsRequest>, JsonRejection>,
+) -> Result<Json<crate::awaken_extensions::SessionEventBatchReceipt>, WireErr> {
+    let Json(body) = body.map_err(|rejection| {
+        error_response(StateError::Run(RunError::bad_request(
+            crate::routes::extractors::managed_json_message(rejection.body_text()),
+        )))
+    })?;
+    let data_subject_id = super::event_data_subject(&headers)?;
+    let key = super::parse_idempotency_key(&headers)?.ok_or_else(|| {
+        error_response(StateError::Run(RunError::bad_request(
+            "original Idempotency-Key is required",
+        )))
+    })?;
+    let fingerprint = awaken_agent_contract::stable_fingerprint(&(&body, &data_subject_id));
+    let applied = state
+        .roles
+        .events
+        .session_event_batch_reply_receipt(
+            &owner_scope,
+            &awaken_session_types::SessionId::from(id),
+            &key,
+            &fingerprint,
+        )
+        .await
+        .map_err(|error| error_response(StateError::Run(error)))?;
+    Ok(Json(crate::awaken_extensions::SessionEventBatchReceipt {
+        applied,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;

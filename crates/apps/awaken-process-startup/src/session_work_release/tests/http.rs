@@ -1,5 +1,7 @@
 //! Real Worker HTTP over the same selected PostgreSQL Session/Work/Dispatch.
 use super::*;
+mod preparation;
+mod preparation_work;
 mod races;
 mod settlement;
 use awaken_coordinator_client::WorkerControlClient;
@@ -18,7 +20,7 @@ async fn finish_fixture_attempt(fixture: &Fixture, entry: &Entry) {
     // Ordinary ACK is fenced after close; only the existing trusted closure
     // record can retire it. No model/provider execution is started by Entry.
     let closure = awaken_dispatch_contract::AttemptClosureRecord::try_new(
-        entry.attempt.clone(),
+        entry.attempt().clone(),
         awaken_dispatch_contract::AttemptClosureKind::ControlledExecutionClosed,
         format!("http-memory-fixture-closure-{}", entry.id.as_str()),
     )
@@ -37,6 +39,7 @@ struct HttpFixture {
     identity: WorkerIdentity,
     queue: awaken_coordinator_client::HttpDispatchQueue,
     upstream: WorkerUpstream,
+    sessions: Arc<dyn awaken_dispatch_http::WorkerSessionClaims>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -55,23 +58,42 @@ impl HttpFixture {
         fixture: &Fixture,
         observer: Option<Arc<dyn awaken_dispatch::DispatchSettlementObserver>>,
     ) -> Self {
-        Self::with_controls(fixture, observer, None, false).await
+        Self::with_controls(fixture, observer, None, None, None, false).await
     }
 
     async fn with_cut(
         fixture: &Fixture,
         cut: Arc<crate::worker_claimed_persistence::test_cut::FinalAdmissionTestCut>,
     ) -> Self {
-        Self::with_controls(fixture, None, Some(cut), false).await
+        Self::with_controls(fixture, None, Some(cut), None, None, false).await
+    }
+
+    async fn with_preparation(
+        fixture: &Fixture,
+        preparation: Arc<dyn awaken_session_execution_contract::SessionRealizationControl>,
+        cut: Option<Arc<crate::worker_claimed_persistence::test_cut::FinalAdmissionTestCut>>,
+    ) -> Self {
+        Self::with_controls(fixture, None, cut, Some(preparation), None, false).await
     }
 
     async fn with_controls(
         fixture: &Fixture,
         observer: Option<Arc<dyn awaken_dispatch::DispatchSettlementObserver>>,
         cut: Option<Arc<crate::worker_claimed_persistence::test_cut::FinalAdmissionTestCut>>,
+        preparation: Option<Arc<dyn awaken_session_execution_contract::SessionRealizationControl>>,
+        preparation_work: Option<preparation_work::HttpPreparationRoles>,
         legacy_checkpoint_wire: bool,
     ) -> Self {
-        let directory = Arc::new(MemoryWorkerDirectory::new());
+        let directory = preparation_work
+            .as_ref()
+            .map(|roles| roles.directory.clone())
+            .unwrap_or_else(|| Arc::new(MemoryWorkerDirectory::new()));
+        let session_work: Arc<
+            dyn awaken_session_application_contract::SessionWorkerLeaseAuthority,
+        > = match preparation_work {
+            Some(roles) => roles.work,
+            None => fixture.assignments.clone(),
+        };
         let application = fixture.managed.session_application();
         // The same capped D handle supplies recovery; the existing volatile
         // authority is only the explicit non-PG fallback required by assembly.
@@ -100,20 +122,28 @@ impl HttpFixture {
                 ClaimConnectionUse::Independent
             },
         };
-        let mut dependencies = RegisteredDispatchDependencies {
-            claim_persistence: crate::worker_claimed_persistence::select_worker_claimed_persistence(
+        let claim_persistence =
+            crate::worker_claimed_persistence::select_worker_claimed_persistence(
                 persistence,
                 awaken_deployment_config::StoreKind::Postgres,
                 runtime,
                 application.clone(),
                 fixture.clock.clone(),
                 cut,
-            ),
+            );
+        let awaken_dispatch_http::WorkerClaimPersistence::Postgres { sessions, .. } =
+            &claim_persistence
+        else {
+            panic!("this HTTP fixture selected the original PostgreSQL claim owner");
+        };
+        let sessions = sessions.clone();
+        let mut dependencies = RegisteredDispatchDependencies {
+            claim_persistence,
             realizations: application.realizations(),
             session_preparation: application.realizations(),
             terminal_cleanup: application.terminal_cleanups(),
             coordination: application.coordination(),
-            session_work: fixture.assignments.clone(),
+            session_work,
             worker_work_release: fixture.release(),
             ..worker_dispatch_dependencies(
                 fixture.dispatch.clone(),
@@ -121,6 +151,9 @@ impl HttpFixture {
                 fixture.clock.clone(),
             )
         };
+        if let Some(preparation) = preparation {
+            dependencies.realizations = preparation;
+        }
         if let Some(observer) = observer {
             dependencies.terminal_observer = observer;
         }
@@ -196,6 +229,7 @@ impl HttpFixture {
             queue,
             upstream,
             identity,
+            sessions,
             server,
         }
     }
@@ -633,7 +667,7 @@ async fn live_postgres_http_legacy_checkpoint_null_rechecks_exact_claim() {
     use awaken_dispatch_contract::{ClaimedCheckpointTransport as _, DispatchError};
 
     let fixture = Fixture::new(2, true, true).await;
-    let old = HttpFixture::with_controls(&fixture, None, None, true).await;
+    let old = HttpFixture::with_controls(&fixture, None, None, None, None, true).await;
     let new = HttpFixture::new(&fixture).await;
     let entry = fixture.entry_for(&old.identity.lease_owner()).await;
     assert_eq!(

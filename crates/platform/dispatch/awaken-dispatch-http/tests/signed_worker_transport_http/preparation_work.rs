@@ -243,3 +243,221 @@ async fn a_claimed_preparation_takes_its_session_work_or_retires_its_grant() {
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
+
+/// Reuse the original selector while refusing only the final handoff validation.
+struct FailingPreparationValidation {
+    issuer: IssuingPreparation,
+    failure: Mutex<awaken_session_execution_contract::SessionRealizationControlFailure>,
+    validations: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionPreparationControl for FailingPreparationValidation {
+    async fn claim_next_session_preparation(
+        &self,
+        target: awaken_session_execution_contract::SessionRealizationTarget,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionPreparationAssignment>,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        awaken_session_execution_contract::SessionPreparationControl::claim_next_session_preparation(
+            &self.issuer,
+            target,
+        )
+        .await
+    }
+
+    async fn validate_session_preparation_assignment(
+        &self,
+        _assignment: &awaken_session_execution_contract::SessionPreparationAssignment,
+        _target: &awaken_session_execution_contract::SessionRealizationTarget,
+    ) -> Result<bool, awaken_session_execution_contract::SessionRealizationControlFailure> {
+        self.validations.fetch_add(1, Ordering::SeqCst);
+        Err(self.failure.lock().unwrap().clone())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn preparation_handoff_error_survives_exact_retirement_and_work_errors_keep_their_priority() {
+    use awaken_session_contract::SessionRealizationRetirement as R;
+    use awaken_session_execution_contract::SessionRealizationControlFailure as C;
+
+    let clock = Arc::new(ManualClock::new(10_000));
+    let credential = WorkerSigningCredential::new(
+        "preparing-worker",
+        "rotation",
+        "credential",
+        b"preparation-fixture-secret".to_vec(),
+    )
+    .unwrap();
+    let authenticator: Arc<dyn WorkerRequestAuthenticator> = Arc::new(
+        SignedWorkerAuthenticator::new(credential.clone(), clock.clone())
+            .with_time_policy(60_000, 0),
+    );
+    let control = Arc::new(RecordingSessionControl::default());
+    let preparation = Arc::new(FailingPreparationValidation {
+        issuer: IssuingPreparation {
+            claims: AtomicUsize::new(0),
+        },
+        failure: Mutex::new(C::Unavailable("handoff unavailable".into())),
+        validations: AtomicUsize::new(0),
+    });
+    let work = Arc::new(PreparationWork {
+        mode: Mutex::new(WorkMode::NotRequired),
+        causes: Mutex::new(Vec::new()),
+    });
+    let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
+        authenticator,
+        realizations: control.clone(),
+        session_preparation: preparation.clone(),
+        session_work: work.clone(),
+        ..worker_dispatch_dependencies(
+            Arc::new(MemoryDispatchStore::new(clock.clone())),
+            Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new()),
+            clock.clone(),
+        )
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            dispatch_transport_router_with_service(Arc::new(service)),
+        )
+        .await
+        .unwrap()
+    });
+    let bootstrap = WorkerUpstream::new(format!("http://{address}"))
+        .with_worker_id("preparing-worker")
+        .with_request_authorizer(Arc::new(SignedWorkerRequestAuthorizer::new(
+            credential,
+            clock.clone(),
+        )));
+    let identity = WorkerControlClient::new(bootstrap.clone())
+        .register_classified("preparation-boot", current_dispatch_codec_manifest())
+        .await
+        .unwrap()
+        .worker
+        .snapshot
+        .identity;
+    let lifecycle = WorkerControlClient::new(bootstrap.with_worker_identity(identity.clone()));
+    lifecycle
+        .heartbeat(
+            &identity,
+            WorkerHeartbeat {
+                sequence: 1,
+                ready: true,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+                source_retention: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    let target = awaken_session_execution_contract::SessionRealizationTarget {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: identity.lease_owner(),
+        lease_expires_at_unix_ms: 10_020,
+        reassign_existing_lease: false,
+    };
+    // Each signed request issues one grant. A final validation failure remains
+    // authoritative after retirement succeeds, refuses the grant, or fails.
+    // Work failures skip validation and retain the original retirement-first order.
+    let unavailable = C::Unavailable("handoff unavailable".into());
+    let internal = C::Internal("handoff durable state invalid".into());
+    let retirement_failure = C::Internal("retirement durable state invalid".into());
+    let work_failure = C::Unavailable("run failed: Work store is unavailable".into());
+    for (rule, mode, validation_failure, retirement_outcome, expected) in [
+        (
+            "validation unavailable, retired",
+            WorkMode::Free,
+            unavailable.clone(),
+            Ok(R::Retired {}),
+            unavailable.clone(),
+        ),
+        (
+            "validation internal, superseded",
+            WorkMode::Free,
+            internal.clone(),
+            Ok(R::Superseded {}),
+            internal.clone(),
+        ),
+        (
+            "validation unavailable before retirement internal",
+            WorkMode::Free,
+            unavailable.clone(),
+            Err(retirement_failure.clone()),
+            unavailable.clone(),
+        ),
+        (
+            "validation internal before retirement unavailable",
+            WorkMode::Free,
+            internal.clone(),
+            Err(C::Unavailable("retirement unavailable".into())),
+            internal.clone(),
+        ),
+        (
+            "work unavailable after retirement",
+            WorkMode::Unavailable,
+            internal.clone(),
+            Ok(R::Retired {}),
+            work_failure,
+        ),
+        (
+            "retirement internal before work unavailable",
+            WorkMode::Unavailable,
+            internal,
+            Err(retirement_failure.clone()),
+            retirement_failure,
+        ),
+    ] {
+        *work.mode.lock().unwrap() = mode;
+        *preparation.failure.lock().unwrap() = validation_failure;
+        *control.retirement_outcome.lock().unwrap() = Some(retirement_outcome);
+        let validations_before = preparation.validations.load(Ordering::SeqCst);
+        let retirements_before = control.retirements.lock().unwrap().len();
+        let error = lifecycle
+            .claim_next_session_preparation(&identity, target.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error, expected,
+            "{rule}: exact typed cause over signed HTTP"
+        );
+        assert_eq!(
+            preparation.validations.load(Ordering::SeqCst),
+            validations_before + usize::from(mode == WorkMode::Free),
+            "{rule}: validation runs only after this Work grant is admitted"
+        );
+        let retirements = control.retirements.lock().unwrap();
+        assert_eq!(
+            retirements.len(),
+            retirements_before + 1,
+            "{rule}: retirement is attempted despite the prior failure"
+        );
+        let retirement = retirements.last().expect("exact issued grant retirement");
+        assert_eq!(retirement.session_id.as_str(), "prepared", "{rule}");
+        assert_eq!(
+            retirement.lease,
+            awaken_session_configuration_contract::resource::SessionRealizationLease {
+                owner: target.owner.clone(),
+                runtime_incarnation: target.runtime_incarnation.clone(),
+                epoch: 3,
+                expires_at_unix_ms: target.lease_expires_at_unix_ms,
+            },
+            "{rule}: retirement uses every coordinate of the issued grant"
+        );
+    }
+    assert_eq!(preparation.issuer.claims.load(Ordering::SeqCst), 6);
+    assert_eq!(preparation.validations.load(Ordering::SeqCst), 4);
+    assert_eq!(
+        *work.causes.lock().unwrap(),
+        vec![SessionWorkAcquisition::ClaimedPreparation; 6],
+        "one original Work acquisition per signed claim"
+    );
+    assert_eq!(control.retirements.lock().unwrap().len(), 6);
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}

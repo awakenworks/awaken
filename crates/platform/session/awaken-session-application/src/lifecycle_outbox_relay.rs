@@ -157,6 +157,8 @@ impl LifecycleOutboxReplay {
                 let mut heartbeat = tokio::time::interval(CLAIM_TTL / 3);
                 heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 heartbeat.tick().await;
+                // Complete the selected delivery under its live claim. The
+                // service lifecycle joins this drain through its shared deadline.
                 let result = loop {
                     tokio::select! {
                         result = &mut delivery => break Some(result),
@@ -200,6 +202,10 @@ impl LifecycleFactNotifier for LifecycleOutboxRelay {
         self.wake.notify_one();
     }
 }
+
+#[cfg(test)]
+#[path = "lifecycle_outbox_relay/drain_tests.rs"]
+mod drain_tests;
 
 #[cfg(test)]
 mod tests {

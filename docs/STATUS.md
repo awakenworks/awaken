@@ -381,6 +381,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0104-memory-copy-reconciliation-adopts-identical-heads.md` | Memory Copy replay adopts an identical durable head; a lost materialized Copy directory is gone, not empty | Not required | n/a |
 | `adr/0105-native-private-session-ownership.md` | Immutable native personal Session ownership and complete ingress qualification boundary | Not required | n/a |
 | `adr/0106-claimed-mcp-credential-preparation.md` | Role owner | Required | self |
+| `adr/0107-exact-run-command-recovery.md` | Role owner | Required | self |
 
 ## Implementation Context
 

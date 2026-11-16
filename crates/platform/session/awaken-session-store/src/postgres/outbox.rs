@@ -55,12 +55,20 @@ pub(super) async fn migrate(runner: &PostgresMigrationRunner, pool: &PgPool) -> 
     // PostgreSQL requires CONCURRENTLY outside a transaction. Close this
     // dedicated checkout on every exit so cancellation also releases its lock.
     connection.close_on_drop();
-    sqlx::query(
-        "SELECT pg_advisory_lock(hashtext(current_schema()), hashtext('managed_lifecycle_outbox_delivery_idx'))",
-    )
-    .execute(&mut *connection)
-    .await
-    .map_err(|error| error.to_string())?;
+    // Each failed probe finishes its implicit transaction before the async wait,
+    // allowing the current index builder to pass older virtual transactions.
+    loop {
+        let acquired: bool = sqlx::query_scalar(
+            "SELECT pg_try_advisory_lock(hashtext(current_schema()), hashtext('managed_lifecycle_outbox_delivery_idx'))",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| error.to_string())?;
+        if acquired {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     match index_valid(&mut connection)
         .await
         .map_err(|error| error.to_string())?

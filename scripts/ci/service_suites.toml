@@ -43,6 +43,9 @@ args = '''
 --require-case=tests::postgres_normalization_and_index_repair_share_one_crash_boundary
 --require-case=tests::postgres_original_history_converges_with_the_same_domain_effects
 --require-case=tests::postgres_lifecycle_outbox_upgrade_keeps_writes_and_old_schema_verification_live
+--require-case=tests::outbox_bootstrap::postgres_outbox_index_gate_waiters_do_not_deadlock_online_build
+--require-case=tests::outbox_bootstrap::postgres_outbox_index_gate_waiter_abort_restores_single_connection_pool
+--require-case=tests::outbox_bootstrap::postgres_outbox_index_builder_abort_and_error_release_gate_for_retry
 --require-case=tests::postgres_owner_scope_is_recorded_and_survives_a_reopen
 --require-case=tests::postgres_published_prefixes_converge_and_server_open_is_read_only
 --require-case=tests::postgres_round_trips_and_upserts
@@ -271,6 +274,13 @@ args = '''
 --require-case=session_work_release::tests::http::races::live_postgres_http_same_claim_cold_absence_recovers_the_one_accepted_receipt
 --require-case=session_work_release::tests::http::races::live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_root_write
 --require-case=session_work_release::tests::http::settlement::live_postgres_http_memory_observer_release_preserves_a_successor_before_settlement_cas
+--require-case=session_work_release::tests::http::preparation::live_postgres_http_claimed_preparation_commits_once_and_replays_original_receipt
+--require-case=session_work_release::tests::http::preparation::live_postgres_http_unkeyed_credential_no_change_keeps_the_current_root
+--require-case=session_work_release::tests::http::preparation::live_postgres_http_slow_issuer_rechecks_claim_work_expiry_and_physical_slot
+--require-case=session_work_release::tests::http::preparation::live_postgres_http_credential_commit_and_no_change_read_keep_the_final_claim_gate
+--require-case=session_work_release::tests::http::preparation::live_postgres_http_issuer_failure_preserves_the_same_claim_for_retry
+--require-case=session_work_release::tests::http::preparation::live_postgres_http_aborted_preparation_returns_cap_one_for_the_same_http_retry
+--require-case=session_work_release::tests::http::preparation_work::live_postgres_http_preparation_handoff_rechecks_canonical_root_worker_and_profile_after_work
 -- --ignored --test-threads=1
 '''
 

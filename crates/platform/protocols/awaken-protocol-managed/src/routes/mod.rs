@@ -31,8 +31,9 @@ pub(crate) mod vaults;
 pub use dreams::dreams_router;
 pub(crate) use extractors::{ManagedJson, ManagedMultipart, ManagedQuery};
 pub use sessions::{
-    close_event_admission, create_profiled_session, enforce_managed_beta,
-    get_profiled_session_run_events, get_resource_manifest, get_session_content_capture,
+    cancel_profiled_session_run, close_event_admission, create_profiled_session,
+    enforce_managed_beta, get_profiled_session_run_events, get_profiled_session_run_reply_receipt,
+    get_resource_manifest, get_session_content_capture, get_session_event_batch_receipt,
     get_session_execution_evidence, list_thread_messages, release_profiled_session,
     replace_resource_manifest, resume_profiled_session_run, router, run_evidence_at,
     session_timeline, submit_profiled_session_run,

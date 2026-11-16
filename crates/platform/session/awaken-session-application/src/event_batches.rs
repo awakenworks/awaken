@@ -464,6 +464,60 @@ impl SessionEventBatchCommands {
         .idempotency())
     }
 
+    /// Read every complete committed reply of one original retry coordinate.
+    /// Terminal resolution and admission receipts alone cannot confirm effects.
+    pub async fn session_event_batch_reply_receipt(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+        key: &str,
+        request_fingerprint: &str,
+    ) -> Result<bool, RunError> {
+        self.queries
+            .read_session_projection(session_id.as_str(), Some(owner_scope))
+            .await
+            .map_err(|error| match error {
+                crate::SessionProjectionRecoveryError::NotFound => {
+                    repository_run_error(awaken_session_contract::SessionRepositoryError::NotFound)
+                }
+                crate::SessionProjectionRecoveryError::Rejected(error) => error,
+                crate::SessionProjectionRecoveryError::Unavailable(message) => {
+                    RunError::unavailable(message)
+                }
+            })?
+            .ok_or_else(|| {
+                repository_run_error(awaken_session_contract::SessionRepositoryError::NotFound)
+            })?;
+        if key.trim().is_empty() || request_fingerprint.trim().is_empty() {
+            return Err(RunError::bad_request(
+                "complete Event batch retry identity is required",
+            ));
+        }
+        let SessionEventBatchIdempotency::Exact(batch) = self
+            .session_event_batch_idempotency(session_id, key, request_fingerprint)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if batch.admission_closed || batch.events.is_empty() {
+            return Ok(false);
+        }
+        for entry in &batch.events {
+            let SessionEventCommand::ToolReply { reply, .. } = &entry.event else {
+                return Ok(false);
+            };
+            let command = reply.delivery_command(session_id, None);
+            if !self
+                .coordination_reads
+                .session_thread_tool_reply_receipt(&command)
+                .await?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     async fn message_projection_anchor(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -1943,6 +1997,23 @@ fn mutation_run_error(error: SessionMutationError) -> RunError {
 
 #[async_trait::async_trait]
 impl crate::SessionEventBatches for SessionEventBatchCommands {
+    async fn session_event_batch_reply_receipt(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+        key: &str,
+        request_fingerprint: &str,
+    ) -> Result<bool, RunError> {
+        SessionEventBatchCommands::session_event_batch_reply_receipt(
+            self,
+            owner_scope,
+            session_id,
+            key,
+            request_fingerprint,
+        )
+        .await
+    }
+
     async fn append_and_drive_session_event_batch_idempotent(
         &self,
         access: &crate::SessionAccess,

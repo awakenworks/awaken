@@ -774,6 +774,12 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
             content: vec![ContentBlock::text("reply context")],
         }),
     };
+    assert!(
+        !awaken_session_execution_contract::SessionCoordinationReads::session_thread_tool_reply_receipt(
+            host.session_execution_roles().coordination_reads.as_ref(), &command,
+        ).await.expect("query the original Awaiting Run"),
+        "an admitted or staged reply has no committed ResumeApplied proof",
+    );
     let fence = host
         .coordination
         .threads()
@@ -924,6 +930,53 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         ))
         .await
         .expect("commit the accepted reply receipt while consuming its ticket");
+    let query_inbox_before = dispatch.list(&child).await.expect("query Inbox before");
+    assert!(
+        awaken_session_execution_contract::SessionCoordinationReads::session_thread_tool_reply_receipt(
+            host.session_execution_roles().coordination_reads.as_ref(), &command,
+        ).await.expect("query the consumed ticket's original receipt"),
+        "the complete committed reply remains observable without a new delivery",
+    );
+    for axis in 0..6 {
+        let mut changed = command.clone();
+        match axis {
+            0 => changed.tool_request_event_id = Some("another-operation".into()),
+            1 => changed.expected_thread_version = Some(admitted_thread_version + 1),
+            2 => changed.expected_correlation_id.push_str("-other"),
+            3 => changed.tool_use_id.push_str("-other"),
+            4 => {
+                changed.reply = awaken_session_contract::SessionThreadToolReply::Confirm(
+                    PermissionDecision::Deny {
+                        reason: Some("different answer".into()),
+                    },
+                )
+            }
+            5 => {
+                changed.accompanying_system.as_mut().unwrap().content =
+                    vec![ContentBlock::text("different context")]
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            !awaken_session_execution_contract::SessionCoordinationReads::session_thread_tool_reply_receipt(
+                host.session_execution_roles().coordination_reads.as_ref(), &changed,
+            ).await.expect("read the same committed prefix"),
+            "complete reply identity axis {axis} must match",
+        );
+    }
+    assert_eq!(
+        dispatch.list(&child).await.expect("query Inbox after"),
+        query_inbox_before,
+        "receipt queries cannot stage or admit another input"
+    );
+    let mut wrong_run_query = command.clone();
+    wrong_run_query.expected_run_id = RunId("another-run".into());
+    assert!(!matches!(
+        awaken_session_execution_contract::SessionCoordinationReads::session_thread_tool_reply_receipt(
+            host.session_execution_roles().coordination_reads.as_ref(), &wrong_run_query,
+        ).await,
+        Ok(true)
+    ), "a foreign Run has no proof of this reply");
     let replay_fence = host
         .coordination
         .threads()

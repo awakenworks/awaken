@@ -159,6 +159,7 @@ fn rollout_candidates(
 /// Session adoption of credential rollouts over the Session application and
 /// one projection publication.
 pub struct SessionCredentialRolloutAdoption {
+    clock: Arc<dyn awaken_time::WallClock>,
     roots: Arc<dyn SessionRootReads>,
     updates: Arc<dyn SessionUpdates>,
     publication: Arc<dyn SessionProjectionPublication>,
@@ -185,6 +186,7 @@ impl SessionCredentialRolloutAdoption {
         publication: Arc<dyn SessionProjectionPublication>,
     ) -> Self {
         Self {
+            clock: sessions.clock(),
             roots: sessions.queries(),
             updates: sessions.update_commands(),
             publication,
@@ -222,7 +224,29 @@ impl SessionCredentialRolloutAdoption {
             selected_seen |= claimed.is_some();
             if source_already_adopted(&session, event) {
                 if let Some(target) = claimed {
-                    target.record(Ok(ClaimedCredentialPreparationProgress::AlreadyAdopted));
+                    match target
+                        .context
+                        .validate_session_revision(
+                            &session.session_id,
+                            session.revision,
+                            awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
+                        )
+                        .await
+                    {
+                        Ok(true) => {
+                            target.record(Ok(ClaimedCredentialPreparationProgress::AlreadyAdopted))
+                        }
+                        Ok(false) => {
+                            target.record(Err(ClaimedCredentialPreparationFailure::Conflict));
+                            pending = true;
+                            continue;
+                        }
+                        Err(error) => {
+                            target.record(Err(claimed_validation_failure(error)));
+                            pending = true;
+                            continue;
+                        }
+                    }
                 }
                 if !self.publication.publish_committed_session(&session) {
                     pending = true;
@@ -291,6 +315,12 @@ impl SessionCredentialRolloutAdoption {
                         }
                         SessionUpdateError::NotFound => {
                             ClaimedCredentialPreparationFailure::NotFound
+                        }
+                        SessionUpdateError::Rejected(error)
+                            if error.kind
+                                == awaken_runtime_contract::runs::RunErrorKind::Unavailable =>
+                        {
+                            ClaimedCredentialPreparationFailure::Unavailable
                         }
                         SessionUpdateError::NotFrozen
                         | SessionUpdateError::IdempotencyMismatch
@@ -419,6 +449,37 @@ impl ManagedCredentialRolloutTarget for ClaimedCredentialRolloutAdoption<'_> {
         event: &ManagedCredentialRollout,
     ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
         self.adoption.apply_vault_rollout(event, Some(self)).await
+    }
+}
+
+fn claimed_validation_failure(
+    error: awaken_session_execution_contract::SessionMutationError,
+) -> ClaimedCredentialPreparationFailure {
+    use awaken_session_execution_contract::{
+        SessionAdmissionFailure as Admission, SessionMutationError as Mutation,
+        SessionRealizationControlFailure as Control,
+    };
+    match error {
+        Mutation::Conflict => ClaimedCredentialPreparationFailure::Conflict,
+        Mutation::NotFound | Mutation::Admission(Admission::Control(Control::NotFound)) => {
+            ClaimedCredentialPreparationFailure::NotFound
+        }
+        Mutation::Admission(Admission::Control(Control::Conflict)) => {
+            ClaimedCredentialPreparationFailure::Conflict
+        }
+        Mutation::Admission(Admission::Control(Control::NotReady)) => {
+            ClaimedCredentialPreparationFailure::NotReady
+        }
+        Mutation::Unavailable(_)
+        | Mutation::NotApplied(_)
+        | Mutation::Admission(Admission::Control(
+            Control::Unavailable(_) | Control::StaleOwnership,
+        ))
+        | Mutation::Admission(Admission::Runtime {
+            kind: awaken_runtime_contract::runs::RunErrorKind::Unavailable,
+            ..
+        }) => ClaimedCredentialPreparationFailure::Unavailable,
+        _ => ClaimedCredentialPreparationFailure::Invalid,
     }
 }
 

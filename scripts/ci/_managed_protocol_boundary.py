@@ -29,6 +29,9 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
         ("GET", "/v1/awaken/sessions/{}/runs/{}/events"),
         ("GET", "/v1/awaken/sessions/{}/runs/{}/dispatch"),
         ("POST", "/v1/awaken/sessions/{}/runs/{}/resume"),
+        ("POST", "/v1/awaken/sessions/{}/runs/{}/resume/receipt"),
+        ("POST", "/v1/awaken/sessions/{}/runs/{}/cancel"),
+        ("POST", "/v1/awaken/sessions/{}/events/receipt"),
         ("POST", "/v1/awaken/sessions/{}/event-admissions/close"),
         ("POST", "/v1/awaken/sessions/{}/live-inbox"),
         ("PUT", "/v1/awaken/sessions/{}/live-inbox/order"),
@@ -413,6 +416,26 @@ def selftest() -> None:
         remaining = set(AWAKEN_MANAGED_EXTENSION_ROUTES) - {route}
         missing = f"missing listed Awaken managed extension route: {route[0]} {route[1]}"
         assert missing in managed_route_inventory_violations(official, set(official), remaining), "R6 omitted"
+
+    # R7 exact recovery/control stays on the declared Native extension owner.
+    recovery_routes = {
+        ("POST", "/v1/awaken/sessions/{}/runs/{}/resume/receipt"),
+        ("POST", "/v1/awaken/sessions/{}/runs/{}/cancel"),
+        ("POST", "/v1/awaken/sessions/{}/events/receipt"),
+    }
+    for route in recovery_routes:
+        assert route in AWAKEN_MANAGED_EXTENSION_ROUTES, "R7 registered"
+        remaining = set(AWAKEN_MANAGED_EXTENSION_ROUTES) - {route}
+        assert f"missing listed Awaken managed extension route: {route[0]} {route[1]}" in (
+            managed_route_inventory_violations(official, set(official), remaining)
+        ), "R7 omitted"
+        assert f"non-Anthropic route in managed core: {route[0]} {route[1]}" in (
+            managed_route_inventory_violations(official, set(official) | {route}, remaining)
+        ), "R7 wrong owner"
+        replacement = ("GET", route[1])
+        assert f"unlisted Awaken managed extension route: {replacement[0]} {replacement[1]}" in (
+            managed_route_inventory_violations(official, set(official), remaining | {replacement})
+        ), "R7 changed method"
 
     # Admission-ownership cause/effect graph: C8 SessionApplication owns the
     # neutral command and sole adapter; C9 the composition root builds that

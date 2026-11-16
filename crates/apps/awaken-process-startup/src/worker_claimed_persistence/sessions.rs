@@ -49,6 +49,7 @@ impl WorkerSessionClaims for PostgresWorkerClaims {
     async fn resume(
         &self,
         command: WorkerSessionResumeCommand,
+        preparation: &dyn awaken_session_execution_contract::SessionRealizationControl,
     ) -> Result<Option<SessionRealizationDirective>, awaken_dispatch_http::RealizationHttpError>
     {
         // Existing Runtime refusals keep the original selected-PG Boundary
@@ -112,17 +113,25 @@ impl WorkerSessionClaims for PostgresWorkerClaims {
             .await
             .map_err(awaken_session_execution_contract::SessionRealizationControlFailure::from)
             .map_err(awaken_dispatch_http::RealizationHttpError::Control)?;
-        // All cold credential/context work is outside D; only the existing
-        // mutation kernel re-enters this final gate. No second CAS loop exists.
+        let begin = BeginSessionRealization {
+            session_id: command.session_id.clone(),
+            expected_resources,
+            target: command.target,
+        };
+        // The product callback holds only this final admission capability.
+        // Every credential update and no-change result re-enters the same Gate;
+        // no Dispatch connection remains acquired while the issuer is awaited.
+        let context = super::claimed_preparation::PostgresClaimedPreparation::new(&gate, &receipt);
+        preparation
+            .prepare_claimed_session_credentials(&context, &begin)
+            .await
+            .map_err(awaken_dispatch_http::RealizationHttpError::Control)?;
+        gate.validate_claim()
+            .await
+            .map_err(awaken_session_execution_contract::SessionRealizationControlFailure::from)
+            .map_err(awaken_dispatch_http::RealizationHttpError::Control)?;
         let directive = control
-            .begin_session_realization_with_commit(
-                BeginSessionRealization {
-                    session_id: command.session_id.clone(),
-                    expected_resources,
-                    target: command.target,
-                },
-                &gate,
-            )
+            .begin_session_realization_with_commit(begin, &gate)
             .await
             .map_err(awaken_dispatch_http::RealizationHttpError::Control)?;
         if !receipt.binds_realization(

@@ -1,5 +1,6 @@
 //! Session update CAS and its original realization retry are one authority.
 use super::*;
+mod mcp_work_wake;
 
 #[derive(Default)]
 struct FailOnceMcpRealizer {

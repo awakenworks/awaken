@@ -85,9 +85,35 @@ frozen dispatch and Work on the transaction that validates or commits the Root
 ([ADR-0089](0089-session-realization-single-owner.md)). Begin additionally
 requires the same live, uncancelled, empty-slot observation before preparation
 and at its final write or no-write validation. Optional continuation renewal
-keeps its original position before this Begin-only exclusion. This path exposes
-no held context and installs no product Vault rollout preparer; the current
-native realization control performs ordinary realization under that gate.
+keeps its original position before this Begin-only exclusion.
+
+The PostgreSQL resume owner calls the selected
+`SessionRealizationControl::prepare_claimed_session_credentials` before its
+original Begin use case. The default performs ordinary neutral preparation.
+A product explicitly installs its credential demand through that existing
+control. The per-call context retains the original final Root gate, frozen
+activation and Work receipt while the issuer runs outside the Dispatch
+transaction. `verify_current_at` reobserves through the selected owner's Clock.
+Its synchronous `verify_at` refuses a context that requires asynchronous
+PostgreSQL observation.
+
+`SessionRootCommit` and its original typed mutation/admission errors are declared
+in `awaken-session-execution-contract`. The application reexports the same
+canonical declarations for its existing callers. The context lends that
+original final commit capability to the credential update owner. Both keyed
+and unkeyed credential CAS, failed-generation reconciliation and replay or
+no-change results use it. A result validates its current observed Root revision.
+The original command receipt retains its own earlier committed revision.
+Already-adopted rollout events also validate current claim and Root before
+reporting the selected Session's outcome. Every retry retains the existing
+bounded application CAS loop and original typed admission refusal.
+
+The independent-store context retains its held-guard law and default current
+verification. Both paths keep the original credential normalizer, Session
+activity admission, mutation compiler, repository CAS and native realization
+protocol. Credential source custody can have progressed before a later claim
+refusal. That refusal fences the Session desired pin and physical admission.
+Optional continuation renewal retains its earlier independent result.
 
 Every preparation mutation requires a live, uncancelled claim and an empty
 physical-attempt slot from that same locked row. An exact occupied slot, another
@@ -107,6 +133,41 @@ target, holder, usage, origin and topology while advancing the exact pin
 monotonically. Public fields, public MCP replacement and revocation retain
 their ordinary admission paths. The ordinary `update_session` Idle guard is
 unchanged.
+
+### Run-free Work admission
+
+An accepted ordinary MCP update projects its current self-hosted preparation
+obligation through `SessionWorkAssignments::wake_for_mcp_update`. That owner
+rereads the canonical Root and matches the observed desired fingerprint and
+complete desired generation identities. Its eligibility check includes the
+current run-free state and Environment. The original `ProjectionAfterCommit`
+outcome and command receipt retain the recovery boundary when wake fails or its
+acknowledgement is unknown. Exact command replay follows the existing
+current-desired reconciliation, so its observed current generation supplies the
+projection identity for retry.
+
+`SessionRealizations::claim_next_session_preparation` borrows that same
+`SessionWorkAssignments` instance before issuing the selected directive. The
+private `acquire_for_preparation` entry checks the current Root lease on the
+owner Clock and delegates to the published `ClaimedPreparation` acquisition
+cause. The canonical Work owner repairs missing projection and claims queued
+Work under that cause. The selector then rechecks its observed
+Root revision, Ready Worker and current profile through its original admission
+path. Its unissued-grant refusal and lease-expiry recovery retain the existing
+physical-outcome boundary. Accepted MCP demand owns the explicit wake,
+realization renewal owns renewal of an existing lease, and ClaimedRun retains
+its original acquisition-revival rule.
+
+The published HTTP preparation gate takes Work again through its configured
+Session Work authority. Canonical composition reuses the same owner's lease and
+then calls `validate_session_preparation_assignment` after that final await.
+`SessionRealizations` implements this hook with the same current Root lease,
+revision, Ready Worker and profile validator used inside the selector. Each
+independent preparation provider owns its grant validity through handoff and
+retains the original default-success hook. The canonical assembly explicitly
+uses the application implementation. A final refusal follows the existing exact
+grant retirement and physical-outcome law, including a replacement lease or an
+unknown physical response.
 
 ### One desired state and realization path
 
@@ -157,9 +218,9 @@ no execution and must not require issuing or adopting execution credentials.
 
 | Name | Kind | Owns | Uses | Must Not Own | Failure Mode | Guardrail/Test |
 |---|---|---|---|---|---|---|
-| `ClaimedSessionCredentialPreparationContext` | Borrowed boundary port | Observations under the original held claim | Frozen activation, Work receipt and physical slot | Wire authority, stop inference, durable state | Stale or occupied claim authoring credentials | G66; Dispatch HTTP preparation table |
+| `ClaimedSessionCredentialPreparationContext` | Borrowed boundary port | Current observations under the original held claim or selected PostgreSQL final Root gate | Owner Clock, frozen activation, Work receipt, physical slot and canonical `SessionRootCommit` | Wire authority, stop inference, durable state | Stale or occupied claim authoring credentials | G66; Dispatch HTTP and cap-one PostgreSQL preparation tables |
 | `SessionUpdateCommands::update_claimed_session_credentials` | Application command | Credential-only root CAS under current activity proof | Canonical normalizer and replacement law | Public authoring, physical realization | Busy-peer or foreign-Run replacement | G66; Session contract and SQLite rollout tables |
-| `ClaimedCredentialRolloutAdoption` | Per-call rollout adapter | Selected Session outcome of the existing adoption use case | Borrowed context, Session updates and publication | WAL, complete-event acknowledgement, global target replacement | Pending mistaken for a committed desired pin | G66; typed outcome and exact replay assertions |
+| `ClaimedCredentialRolloutAdoption` | Per-call rollout adapter | Current selected Session outcome of the existing adoption use case | Borrowed context, original final Root gate, Session updates and publication | WAL, complete-event acknowledgement, global target replacement | Pending or an old AlreadyAdopted observation mistaken for a current committed desired pin | G66; typed outcome, exact replay and current-claim assertions |
 | `PreparedMcpAttachment` | Runtime observation value | Secret-free actual active MCP access | Native installed generation projection | Desired-state authority or renewal | Desired v2 substituted for active v1 | G66; Host context and credential expiry tests |
 
 ## Alternatives rejected
@@ -171,6 +232,10 @@ no execution and must not require issuing or adopting execution credentials.
   a process-local lock alone cannot prove physical quiescence.
 - A separate preparation queue or stored readiness flag duplicates the Session
   MCP desired/active state and its existing recovery owner.
+- Retaining the Dispatch connection during a product issuer await consumes the
+  single authority slot needed by the canonical Session Root writer.
+- Validating only the following Begin leaves the earlier credential desired-pin
+  CAS and duplicate-event reconciliation outside the original claim fence.
 
 ## Consequences
 
@@ -196,7 +261,9 @@ Deployment and real-provider acceptance remain separate.
 | Real SQLite Session and Dispatch, owned clock, root/repair positive controls, peer/foreign/history/occupied/expired refusal, desired commit through exact ACK, typed replay outcome | [Coordinator claimed preparation tests](../../crates/apps/awaken-coordinator/src/session_credential_rollout_tests/claimed_preparation_tests.rs) |
 | Expiry-only, issuer-generation-only, both and historical unknown; actual old/new Worker assignment and claim; stripped demand and malformed legacy carrier | [Worker compatibility matrix](../../crates/platform/dispatch/awaken-worker-contract/src/requirements/mcp_validity_tests.rs), [Run projection and legacy carrier tests](../../crates/platform/dispatch/awaken-dispatch-contract/src/dispatch/tests/session_mcp_requirement_tests.rs) |
 | Shared Run/run-free metadata demand; original run-free selector excludes old Worker without root mutation and admits new generic Worker | [Dispatch preparation mapper tests](../../crates/platform/execution/awaken-dispatch-execution/src/placement.rs), [Session initial preparation tests](../../crates/platform/session/awaken-session-application/src/tests/realization/initial_preparation.rs) |
+| Accepted MCP demand wakes the original Work projection and current run-free admission acquires its lease, with replay and refusal recovery | [Session MCP Work projection tests](../../crates/platform/session/awaken-session-application/src/tests/authority/session_updates/mcp_work_wake.rs), [run-free Work acquisition tests](../../crates/platform/session/awaken-session-application/src/tests/realization/initial_preparation/work_acquisition.rs), [final HTTP Work handoff tests](../../crates/apps/awaken-process-startup/src/session_work_release/tests/http/preparation_work.rs), [registered Worker MCP Session tests](../../crates/apps/awaken-process-startup/tests/mcp_sessions.rs) |
 | Actual installed active generation becomes the attempt observation | [Native Host MCP generation tests](../../crates/platform/execution/awaken-session-executor/src/host/tests/mcp_generation.rs) |
+| PostgreSQL product preparation runs outside the single authority slot and every current result or credential CAS re-enters its original final gate | [Process-startup HTTP preparation owner](../../crates/apps/awaken-process-startup/src/session_work_release/tests/http/preparation.rs), [final admission race owner](../../crates/apps/awaken-process-startup/src/session_work_release/tests/http/races.rs) |
 
 The SQLite phase test uses explicit physical MCP receipt fixtures and real root
 and Dispatch persistence; it does not claim provider materialization, process

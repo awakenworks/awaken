@@ -57,6 +57,13 @@ CORE_SESSION_WORK_RELEASE_CASE_FLOORS = (
     'session_work_release::tests::http::races::live_postgres_http_same_claim_cold_absence_recovers_the_one_accepted_receipt',
     'session_work_release::tests::http::races::live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_root_write',
     'session_work_release::tests::http::settlement::live_postgres_http_memory_observer_release_preserves_a_successor_before_settlement_cas',
+    'session_work_release::tests::http::preparation::live_postgres_http_claimed_preparation_commits_once_and_replays_original_receipt',
+    'session_work_release::tests::http::preparation::live_postgres_http_unkeyed_credential_no_change_keeps_the_current_root',
+    'session_work_release::tests::http::preparation::live_postgres_http_slow_issuer_rechecks_claim_work_expiry_and_physical_slot',
+    'session_work_release::tests::http::preparation::live_postgres_http_credential_commit_and_no_change_read_keep_the_final_claim_gate',
+    'session_work_release::tests::http::preparation::live_postgres_http_issuer_failure_preserves_the_same_claim_for_retry',
+    'session_work_release::tests::http::preparation::live_postgres_http_aborted_preparation_returns_cap_one_for_the_same_http_retry',
+    'session_work_release::tests::http::preparation_work::live_postgres_http_preparation_handoff_rechecks_canonical_root_worker_and_profile_after_work',
 )
 
 CORE_CLAIMED_COMMIT_CASE_FLOORS = (
@@ -88,6 +95,13 @@ STORAGE_SESSION_EXTRACTION_CASE_FLOORS = frozenset({
 })
 
 
+STORAGE_SESSION_OUTBOX_BOOTSTRAP_CASE_FLOORS = frozenset({
+    'tests::outbox_bootstrap::postgres_outbox_index_gate_waiters_do_not_deadlock_online_build',
+    'tests::outbox_bootstrap::postgres_outbox_index_gate_waiter_abort_restores_single_connection_pool',
+    'tests::outbox_bootstrap::postgres_outbox_index_builder_abort_and_error_release_gate_for_retry',
+})
+
+
 POSTGRES_SELECTORS = {
     "core": ("backend_parity", "work_store_evidence", "http_transport_evidence", "critical_durability_evidence"),
     "storage": ("storage_evidence",),
@@ -108,7 +122,8 @@ def _require_session_extraction_phase(phases):
     runtime_flags = {argument.partition('=')[0] for argument in runtime if argument.startswith('--')}
     floors = {value.removeprefix('--require-case=') for value in before_runtime
               if value.startswith('--require-case=')}
-    if (not (STORAGE_SESSION_EXTRACTION_CASE_FLOORS | STORAGE_SESSION_MUTATION_CASE_FLOORS) <= floors
+    if (not (STORAGE_SESSION_EXTRACTION_CASE_FLOORS | STORAGE_SESSION_MUTATION_CASE_FLOORS
+             | STORAGE_SESSION_OUTBOX_BOOTSTRAP_CASE_FLOORS) <= floors
             or '--lib' not in before_runtime or 'postgres_' not in before_runtime
             or {'--test', '--tests', '--all-targets'} & set(before_runtime)
             or ('--features', 'test-support') not in pairs

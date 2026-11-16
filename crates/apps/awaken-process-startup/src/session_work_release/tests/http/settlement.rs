@@ -186,7 +186,7 @@ async fn live_postgres_http_cap_one_settles_real_memory_once_without_held_guard(
         if cause == "ended-retired-work" {
             assert!(
                 f.release()
-                    .release(&entry.claim, &entry.attempt, true)
+                    .release(&entry.claim, entry.attempt(), true)
                     .await
                     .unwrap()
             );

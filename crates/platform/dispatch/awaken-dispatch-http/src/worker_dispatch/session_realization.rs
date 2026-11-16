@@ -276,7 +276,7 @@ pub(super) async fn session_resume(
             registry_expires_at_unix_ms: registry_expiry,
         };
         if let crate::WorkerClaimPersistence::Postgres { sessions, .. } = &service.claim_persistence {
-            let realization = sessions.resume(command).await?;
+            let realization = sessions.resume(command, service.session_control.as_ref()).await?;
             return Ok(json!({ "realization": realization }));
         }
         let mut guard = service

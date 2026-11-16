@@ -11,7 +11,13 @@ impl awaken_session_execution_contract::SessionRealizationControl for RecordingS
         awaken_session_execution_contract::SessionRealizationControlFailure,
     > {
         self.retirements.lock().unwrap().push(command);
-        Ok(awaken_session_contract::SessionRealizationRetirement::Retired {})
+        self.retirement_outcome
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Ok(
+                awaken_session_contract::SessionRealizationRetirement::Retired {},
+            ))
     }
 
     async fn begin_session_realization(

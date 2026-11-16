@@ -31,7 +31,7 @@ pub(super) async fn claim_next_admitted_preparation(
 > {
     let Some(assignment) = service
         .session_preparation_control
-        .claim_next_session_preparation(target)
+        .claim_next_session_preparation(target.clone())
         .await
         .map_err(RealizationHttpError::from)?
     else {
@@ -45,10 +45,19 @@ pub(super) async fn claim_next_admitted_preparation(
             awaken_session_application_contract::SessionWorkAcquisition::ClaimedPreparation,
         )
         .await;
-    if matches!(&ownership, Ok(ownership) if ownership.permits_effect_for(worker_owner)) {
+    let handoff_admission = if matches!(&ownership, Ok(ownership) if ownership.permits_effect_for(worker_owner))
+    {
+        service
+            .session_preparation_control
+            .validate_session_preparation_assignment(&assignment, &target)
+            .await
+    } else {
+        Ok(false)
+    };
+    if matches!(&handoff_admission, Ok(true)) {
         return Ok(Some(assignment));
     }
-    service
+    let retirement = service
         .session_control
         .retire_session_realization(
             awaken_session_execution_contract::RetireSessionRealization {
@@ -56,8 +65,9 @@ pub(super) async fn claim_next_admitted_preparation(
                 lease: assignment.directive.authority.lease.clone(),
             },
         )
-        .await
-        .map_err(RealizationHttpError::Control)?;
+        .await;
+    handoff_admission.map_err(RealizationHttpError::Control)?;
+    retirement.map_err(RealizationHttpError::Control)?;
     ownership
         .map_err(|error| ApplicationError::internal(error.to_string()))
         .map_err(RealizationHttpError::from)?;

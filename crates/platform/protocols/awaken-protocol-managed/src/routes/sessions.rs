@@ -142,7 +142,9 @@ fn session_time_v2(
     )
 }
 pub use profiled_run::{
-    get_profiled_session_run_events, resume_profiled_session_run, submit_profiled_session_run,
+    cancel_profiled_session_run, get_profiled_session_run_events,
+    get_profiled_session_run_reply_receipt, get_session_event_batch_receipt,
+    resume_profiled_session_run, submit_profiled_session_run,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

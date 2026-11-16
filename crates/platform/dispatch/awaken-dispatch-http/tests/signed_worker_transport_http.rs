@@ -67,6 +67,14 @@ struct RecordingSessionControl {
     begins: Mutex<Vec<awaken_session_execution_contract::BeginSessionRealization>>,
     renewals: Mutex<Vec<awaken_session_execution_contract::RenewSessionRealization>>,
     retirements: Mutex<Vec<awaken_session_execution_contract::RetireSessionRealization>>,
+    retirement_outcome: Mutex<
+        Option<
+            Result<
+                awaken_session_contract::SessionRealizationRetirement,
+                awaken_session_execution_contract::SessionRealizationControlFailure,
+            >,
+        >,
+    >,
     renewal_failure:
         Mutex<Option<awaken_session_execution_contract::SessionRealizationControlFailure>>,
     agent_lists: AtomicUsize,

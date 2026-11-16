@@ -72,6 +72,48 @@ impl ProfiledSessionRunResume {
     }
 }
 
+/// Positive proof of the original complete reply's committed ResumeApplied fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfiledSessionRunReplyReceipt {
+    pub applied: bool,
+}
+
+/// Positive proof that every reply of the exact original batch committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionEventBatchReceipt {
+    pub applied: bool,
+}
+
+pub fn profiled_session_run_reply_receipt_router<H, T, S>(handler: H) -> Router<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new().route(
+        "/v1/awaken/sessions/{id}/runs/{run}/resume/receipt",
+        post(handler),
+    )
+}
+
+pub fn session_event_batch_receipt_router<H, T, S>(handler: H) -> Router<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new().route("/v1/awaken/sessions/{id}/events/receipt", post(handler))
+}
+
+pub fn profiled_session_run_cancel_router<H, T, S>(handler: H) -> Router<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new().route("/v1/awaken/sessions/{id}/runs/{run}/cancel", post(handler))
+}
+
 pub fn profiled_session_run_events_router<H, T, S>(handler: H) -> Router<S>
 where
     H: Handler<T, S>,
@@ -240,3 +282,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod receipt_tests;

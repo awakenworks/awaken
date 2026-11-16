@@ -196,6 +196,17 @@ mod repository_publication_projection_tests {
 /// receipts/acknowledgements to the next phase.
 #[async_trait]
 pub trait SessionRealizationControl: Send + Sync {
+    /// Application-owned credential demand before physical realization. The
+    /// selected claim owner supplies current validation and final Root admission.
+    /// Neutral consumers retain the ordinary realization path.
+    async fn prepare_claimed_session_credentials(
+        &self,
+        _context: &dyn ClaimedSessionCredentialPreparationContext,
+        _command: &BeginSessionRealization,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        Ok(())
+    }
+
     /// Prepare only credentials under the authenticated, still-held Dispatch
     /// claim before returning the ordinary canonical realization directive.
     /// The authenticated caller verifies the borrowed context first. The
@@ -205,6 +216,8 @@ pub trait SessionRealizationControl: Send + Sync {
         _context: &dyn ClaimedSessionCredentialPreparationContext,
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        self.prepare_claimed_session_credentials(_context, &command)
+            .await?;
         self.begin_session_realization(command).await
     }
 
@@ -280,6 +293,18 @@ pub trait SessionPreparationControl: Send + Sync {
         &self,
         target: SessionRealizationTarget,
     ) -> Result<Option<SessionPreparationAssignment>, SessionRealizationControlFailure>;
+
+    /// Revalidate an assignment after the final Session Work admission await.
+    /// Independent providers retain responsibility for their grant semantics
+    /// through handoff. The canonical Session application overrides this method
+    /// to re-read its Root lease, revision, Worker and placement profile.
+    async fn validate_session_preparation_assignment(
+        &self,
+        _assignment: &SessionPreparationAssignment,
+        _target: &SessionRealizationTarget,
+    ) -> Result<bool, SessionRealizationControlFailure> {
+        Ok(true)
+    }
 }
 
 /// The Runtime Host's canonical physical placement compiler, injected into

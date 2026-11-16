@@ -18,25 +18,18 @@ fn rejected_projection(error: impl std::fmt::Display) -> SessionProjectionRecove
 }
 
 impl crate::SessionRunAdmissions {
-    pub(crate) async fn require_profiled_run_owner(
+    /// Read one Session through the original Workspace/private ownership gate.
+    /// Historical profiled roots have the decoder's Managed policy default.
+    pub(crate) async fn read_session_run_root_for_owner(
         &self,
         owner_scope: &str,
         session_id: &SessionId,
-    ) -> Result<(), SessionProjectionRecoveryError> {
-        let projection = self
-            .queries
+    ) -> Result<awaken_session_contract::PersistedSession, SessionProjectionRecoveryError> {
+        self.queries
             .read_session_projection(session_id.as_str(), Some(owner_scope))
             .await?
-            .ok_or(SessionProjectionRecoveryError::NotFound)?;
-        let baseline = projection.session.frozen_baseline().ok_or_else(|| {
-            SessionProjectionRecoveryError::Unavailable(
-                "Session creation finalization is incomplete".into(),
-            )
-        })?;
-        if baseline.mutation_policy.is_managed() {
-            return Err(SessionProjectionRecoveryError::NotFound);
-        }
-        Ok(())
+            .map(|projection| projection.session)
+            .ok_or(SessionProjectionRecoveryError::NotFound)
     }
 
     /// Observe a bounded native page after durable Session authorization.
@@ -54,7 +47,7 @@ impl crate::SessionRunAdmissions {
     ) -> Result<SessionRunEventPage, SessionProjectionRecoveryError> {
         let thread_reads = self.thread_reads.as_ref();
 
-        self.require_profiled_run_owner(owner_scope, session_id)
+        self.read_session_run_root_for_owner(owner_scope, session_id)
             .await?;
         if run_id.0.trim().is_empty() || limit > 1_024 {
             return Err(SessionProjectionRecoveryError::Rejected(

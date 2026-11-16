@@ -7,6 +7,7 @@ use super::*;
 use crate::mutation::ROOT_CAS_ATTEMPTS;
 use awaken_session_application_contract::ExecutableProjectionAdmission;
 use awaken_session_configuration_contract::resource::realization_lease_is_live_at;
+use awaken_session_execution_contract::SessionRealizationTarget;
 use std::sync::Arc;
 use tracing::Instrument as _;
 
@@ -73,6 +74,49 @@ fn apply_activation(
 }
 
 impl SessionRealizations {
+    async fn current_preparation_admission(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        directive: &SessionRealizationDirective,
+        target: &SessionRealizationTarget,
+    ) -> Result<(PersistedSession, bool), SessionRealizationControlFailure> {
+        let current_root = self
+            .mutations
+            .repository()
+            .get(session_id)
+            .await
+            .map_err(repository_control)?;
+        let admitted = match self
+            .execution_admission
+            .worker_for_target(target, self.clock.now_ms())
+            .await?
+        {
+            Some(worker) => {
+                worker.state == awaken_worker_contract::WorkerState::Ready
+                    && current_root.revision == directive.projection.revision
+                    && current_root.is_run_free_preparation_candidate()
+                    && directive.authority.lease.owner == target.owner
+                    && directive.authority.lease.runtime_incarnation == target.runtime_incarnation
+                    && verify_lease(
+                        &current_root,
+                        &directive.authority.lease,
+                        self.clock.now_ms(),
+                    )
+                    .is_ok()
+                    && awaken_worker_contract::can_claim(
+                        &worker.manifest,
+                        &self
+                            .execution_admission
+                            .placement
+                            .requirements(&current_root)?,
+                    )
+                    .is_ok()
+            }
+            None => false,
+        };
+        Ok((current_root, admitted))
+    }
+
     /// Monotonic, idempotent demand on the one Session root. Product callers
     /// can request Worker preparation after creation or after an upgrade; the
     /// Worker polls only this retained intent and never receives a model Run.
@@ -1097,8 +1141,12 @@ impl SessionRealizationControl for SessionRealizations {
         context: &dyn awaken_session_execution_contract::ClaimedSessionCredentialPreparationContext,
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        context.verify_session_at(command.session_id.as_str(), self.clock.now_ms())?;
-        self.begin_session_realization(command).await
+        context
+            .verify_current_session_at(command.session_id.as_str(), self.clock.now_ms())
+            .await?;
+        let commit = context.root_commit(self.mutations.as_ref());
+        self.begin_session_realization_with_commit(command, commit)
+            .await
     }
 
     async fn begin_session_realization(
@@ -1162,6 +1210,16 @@ impl SessionRealizations {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionPreparationControl for SessionRealizations {
+    async fn validate_session_preparation_assignment(
+        &self,
+        assignment: &awaken_session_execution_contract::SessionPreparationAssignment,
+        target: &SessionRealizationTarget,
+    ) -> Result<bool, SessionRealizationControlFailure> {
+        self.current_preparation_admission(&assignment.session_id, &assignment.directive, target)
+            .await
+            .map(|(_, admitted)| admitted)
+    }
+
     async fn claim_next_session_preparation(
         &self,
         target: awaken_session_execution_contract::SessionRealizationTarget,
@@ -1259,34 +1317,21 @@ impl awaken_session_execution_contract::SessionPreparationControl for SessionRea
                         ) => continue,
                         Err(error) => return Err(error),
                     };
+                    let work = self
+                        .work_assignments
+                        .acquire_for_preparation(&session_id, &directive.authority.lease)
+                        .await;
                     // A withdrawn Worker cannot start physical effects from
                     // a lease minted just before its Registry transition. The
                     // refused directive never leaves this process, so its lease
                     // is closed rather than left live on a retiring Worker.
-                    let current_root = self
-                        .mutations
-                        .repository()
-                        .get(&session_id)
-                        .await
-                        .map_err(repository_control)?;
-                    let admitted = match self
-                        .execution_admission
-                        .worker_for_target(&target, self.clock.now_ms())
-                        .await?
-                    {
-                        Some(worker) => {
-                            worker.state == awaken_worker_contract::WorkerState::Ready
-                                && current_root.revision == directive.projection.revision
-                                && current_root.is_run_free_preparation_candidate()
-                                && awaken_worker_contract::can_claim(
-                                    &worker.manifest,
-                                    &compiler.requirements(&current_root)?,
-                                )
-                                .is_ok()
-                        }
-                        None => false,
-                    };
-                    if !admitted {
+                    let (current_root, admitted) = self
+                        .current_preparation_admission(&session_id, &directive, &target)
+                        .await?;
+                    let work_admitted = work.as_ref().is_ok_and(|ownership| {
+                        ownership.permits_effect_for(&target.runtime_incarnation)
+                    });
+                    if !admitted || !work_admitted {
                         if current_root.environment.admits_realization_effects() {
                             self.mutations
                                 .expire_exact_assignment(&session_id, &directive.authority.lease)
@@ -1294,6 +1339,7 @@ impl awaken_session_execution_contract::SessionPreparationControl for SessionRea
                         }
                         // A continuation retains its source generation for retry;
                         // withholding a directive is not physical closure.
+                        let _ = work?;
                         return Ok(None);
                     }
                     return Ok(Some(

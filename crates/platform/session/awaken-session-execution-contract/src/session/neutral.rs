@@ -603,6 +603,16 @@ impl $crate::SessionCoordinationReads for $ty {
     (StreamingRuns for $ty:ty) => {
         #[::async_trait::async_trait]
         impl $crate::StreamingRuns for $ty {
+            async fn cancel_session_run(
+                &self,
+                _session_id: &::awaken_session_types::SessionId,
+                _run_id: &::awaken_agent_contract::agent::run::Id,
+            ) -> Result<(), ::awaken_runtime_contract::runs::RunError> {
+                Err(::awaken_runtime_contract::runs::RunError::unavailable(
+                    "exact Session Run cancellation is unavailable",
+                ))
+            }
+
             /// Run one request with its protocol-projected, backend-neutral content
             /// owner. Adapters that do not support attributed capture may use the
             /// compatibility default; runtime hosts override it and persist attribution

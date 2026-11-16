@@ -30,8 +30,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView as _;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource as _;
 use awaken_dispatch_contract::{
-    DispatchEnqueue as _, DispatchReads as _, PendingInput, SessionContinuationOutbox as _,
-    SessionRunReservations as _,
+    DispatchControlReads as _, DispatchEnqueue as _, DispatchReads as _, PendingInput,
+    SessionContinuationOutbox as _, SessionRunReservations as _,
 };
 use awaken_dispatch_erasure::AnyCoordinatorDispatch;
 use awaken_dispatch_execution::DispatchPublication;
@@ -1041,6 +1041,42 @@ fn select_executable_dispatch_runs(
 }
 
 impl CoordinatedThreads {
+    /// Persist cancellation for one immutable primary Run, independently of the
+    /// Session's current Run. The original dispatch owner performs the mutation.
+    pub async fn cancel_session_run(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        run_id: &RunId,
+    ) -> Result<(), RunError> {
+        let row = self
+            .owner()?
+            .dispatch_summary(run_id)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?
+            .ok_or_else(|| RunError::bad_request("exact Session Run dispatch is absent"))?;
+        let parent = ThreadId(session_id.to_string());
+        if row.thread_id != parent
+            || awaken_session_contract::SessionThreadToolReplyActivity::from_dispatch(
+                &row.thread_id,
+                row.session_thread_id.as_ref(),
+                row.session_activity_epoch,
+                &parent,
+            )
+            .is_none()
+        {
+            return Err(RunError::bad_request(
+                "Run does not belong to the asserted primary Session",
+            ));
+        }
+        self.durable_run_control()?
+            .cancel(
+                run_id,
+                awaken_dispatch_execution::durable_control::RunResidence::Elsewhere,
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Persist interruption of every executable dispatch for one logical child.
     /// A row whose Run already committed `Ended` is the worker's current
     /// before-settle boundary, not executable work; skipping it lets a failed
@@ -1189,6 +1225,16 @@ pub fn check_pending(
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for CoordinatedThreads {
+    async fn session_thread_tool_reply_receipt(
+        &self,
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<bool, RunError> {
+        Ok(
+            CoordinatedThreads::session_thread_tool_reply_receipt(self, command).await?
+                == SessionReplyReceipt::Exact,
+        )
+    }
+
     async fn source_dispatch_observation(
         &self,
         session: &awaken_session_contract::PersistedSession,

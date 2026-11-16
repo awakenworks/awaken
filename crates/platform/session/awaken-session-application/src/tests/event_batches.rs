@@ -584,6 +584,21 @@ impl awaken_session_execution_contract::ChildRunCoordination for EventBatchRunti
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchRuntime {
+    async fn session_thread_tool_reply_receipt(
+        &self,
+        command: &SessionThreadToolReplyCommand,
+    ) -> Result<bool, RunError> {
+        if let Some(error) = self.recovery_read_error.lock().unwrap().take() {
+            return Err(error);
+        }
+        Ok(self
+            .staged_tool_replies
+            .lock()
+            .unwrap()
+            .values()
+            .any(|stored| stored == command))
+    }
+
     async fn source_dispatch_observation(
         &self,
         _session: &awaken_session_contract::PersistedSession,
@@ -770,6 +785,21 @@ impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchR
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::StreamingRuns for EventBatchRuntime {
+    async fn cancel_session_run(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+    ) -> Result<(), RunError> {
+        if run_id.0 != "awaiting-run" {
+            return Err(RunError::bad_request("fixture has no such exact Run"));
+        }
+        self.trace
+            .lock()
+            .unwrap()
+            .push(format!("cancel-exact:{session_id}:{}", run_id.0));
+        Ok(())
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Run one request with its protocol-projected, backend-neutral content
@@ -5757,6 +5787,7 @@ mod concurrent_consumption;
 mod frozen_projection;
 mod pause_transaction;
 mod refused_run_admission;
+mod reply_receipts;
 
 #[test]
 fn postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict_fixture_admission() {

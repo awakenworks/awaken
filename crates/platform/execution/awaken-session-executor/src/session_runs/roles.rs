@@ -76,6 +76,14 @@ impl awaken_session_execution_contract::SessionRuns for SessionRuns {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::StreamingRuns for SessionRuns {
+    async fn cancel_session_run(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        run_id: &awaken_agent_contract::RunId,
+    ) -> Result<(), RunError> {
+        self.threads.cancel_session_run(session_id, run_id).await
+    }
+
     async fn run_attributed(
         &self,
         agent: &str,

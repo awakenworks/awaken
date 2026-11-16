@@ -312,6 +312,16 @@ pub trait SessionCoordinationReads: Send + Sync {
             reason: crate::SessionExecutionRecoveryGap::HistoryUnavailable,
         }
     }
+    /// Observe the original complete reply identity in committed Thread truth.
+    /// This query never admits, stages or executes a reply.
+    async fn session_thread_tool_reply_receipt(
+        &self,
+        _command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<bool, RunError> {
+        Err(RunError::unavailable(
+            "committed Session reply receipts are unavailable",
+        ))
+    }
 
     /// Exact immutable Task command receipt from the existing dispatch row or
     /// retained completion. This read never reserves, claims or reconstructs a
@@ -483,6 +493,14 @@ pub trait BudgetAccounting: Send + Sync {
 /// use awaken_session_execution_contract::StreamingRunRuntime;
 /// ```
 pub trait StreamingRuns: Send + Sync {
+    /// Cancel only the asserted primary Run through its immutable Session affinity.
+    /// The default provides no cancellation authority.
+    async fn cancel_session_run(
+        &self,
+        _session_id: &crate::SessionId,
+        _run_id: &awaken_agent_contract::RunId,
+    ) -> Result<(), RunError>;
+
     /// Run one request with its protocol-projected, backend-neutral content
     /// owner. Adapters that do not support attributed capture may use the
     /// compatibility default; runtime hosts override it and persist attribution

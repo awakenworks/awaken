@@ -130,6 +130,7 @@ pub struct SessionCoordination {
     observations: Arc<crate::SessionObservations>,
     coordination: Arc<dyn awaken_session_execution_contract::ChildRunCoordination>,
     coordination_reads: Arc<dyn awaken_session_execution_contract::SessionCoordinationReads>,
+    streaming_runs: Arc<dyn awaken_session_execution_contract::StreamingRuns>,
     thread_reads: Arc<dyn awaken_session_execution_contract::ThreadReads>,
 }
 
@@ -167,6 +168,7 @@ impl SessionCoordination {
             observations,
             coordination: runtime.coordination.clone(),
             coordination_reads: runtime.coordination_reads.clone(),
+            streaming_runs: runtime.streaming_runs.clone(),
             thread_reads: runtime.thread_reads.clone(),
         }
     }
@@ -1422,8 +1424,64 @@ impl SessionAgentCoordination for SessionCoordination {
     }
 }
 
+fn require_profiled_reply_command(
+    command: &awaken_session_contract::SessionThreadToolReplyCommand,
+) -> Result<(), RunError> {
+    if command.target != awaken_session_contract::SessionThreadTarget::Primary
+        || command
+            .expected_thread_version
+            .is_none_or(|version| version == 0)
+        || command
+            .tool_request_event_id
+            .as_ref()
+            .is_none_or(|id| id.trim().is_empty())
+        || command.accompanying_system.is_some()
+    {
+        return Err(RunError::bad_request(
+            "native Run reply requires one primary Run, exact version and stable operation",
+        ));
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl crate::ProfiledSessionReplies for SessionCoordination {
+    async fn profiled_session_run_reply_receipt_for_owner(
+        &self,
+        owner_scope: &str,
+        command: awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<bool, SessionProjectionRecoveryError> {
+        self.run_admissions
+            .read_session_run_root_for_owner(owner_scope, &command.session_id)
+            .await?;
+        require_profiled_reply_command(&command)
+            .map_err(SessionProjectionRecoveryError::Rejected)?;
+        self.coordination_reads
+            .session_thread_tool_reply_receipt(&command)
+            .await
+            .map_err(SessionProjectionRecoveryError::Rejected)
+    }
+
+    async fn cancel_profiled_session_run_for_owner(
+        &self,
+        owner_scope: &str,
+        session_id: &awaken_session_types::SessionId,
+        run_id: &RunId,
+    ) -> Result<(), SessionProjectionRecoveryError> {
+        self.run_admissions
+            .read_session_run_root_for_owner(owner_scope, session_id)
+            .await?;
+        if run_id.0.trim().is_empty() {
+            return Err(SessionProjectionRecoveryError::Rejected(
+                RunError::bad_request("exact Run identity is required"),
+            ));
+        }
+        self.streaming_runs
+            .cancel_session_run(session_id, run_id)
+            .await
+            .map_err(SessionProjectionRecoveryError::Rejected)
+    }
+
     /// Authorize the native primary-Run reply, then delegate the exact command
     /// to the existing Session activity/continuation/receipt owner.
     async fn reply_profiled_session_run_for_owner(
@@ -1431,27 +1489,12 @@ impl crate::ProfiledSessionReplies for SessionCoordination {
         owner_scope: &str,
         command: awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<(), SessionProjectionRecoveryError> {
-        use awaken_session_contract::SessionThreadTarget;
         use awaken_session_execution_contract::SessionAgentCoordination;
         self.run_admissions
-            .require_profiled_run_owner(owner_scope, &command.session_id)
+            .read_session_run_root_for_owner(owner_scope, &command.session_id)
             .await?;
-        if command.target != SessionThreadTarget::Primary
-            || command
-                .expected_thread_version
-                .is_none_or(|version| version == 0)
-            || command
-                .tool_request_event_id
-                .as_ref()
-                .is_none_or(|id| id.trim().is_empty())
-            || command.accompanying_system.is_some()
-        {
-            return Err(SessionProjectionRecoveryError::Rejected(
-                RunError::bad_request(
-                    "native Run reply requires one primary Run, exact version and stable operation",
-                ),
-            ));
-        }
+        require_profiled_reply_command(&command)
+            .map_err(SessionProjectionRecoveryError::Rejected)?;
         SessionAgentCoordination::reply_session_thread_tool(self, command)
             .await
             .map_err(SessionProjectionRecoveryError::Rejected)

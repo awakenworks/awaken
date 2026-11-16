@@ -654,6 +654,30 @@ async fn frozen_publication(app: &Router, session: &str) -> (StatusCode, Value) 
     (status, evidence["configuration"]["publication"].clone())
 }
 
+async fn record_session_work(app: &Router, session: &str, point: &str) {
+    let Some(directory) = std::env::var_os("AWAKEN_REALIZATION_OBSERVATION_DIR") else {
+        return;
+    };
+    let (status, work) = call(
+        app,
+        "GET",
+        &format!(
+            "/v1/environments/{}/work",
+            awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+        ),
+        None,
+    )
+    .await;
+    std::fs::write(
+        std::path::PathBuf::from(directory).join(format!("{point}-work.json")),
+        serde_json::to_vec(
+            &json!({"session_id": session, "status": status.as_u16(), "work": work}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+}
+
 /// An inline Agent on the registered Worker. Causes: C1 a Session names the
 /// unpublished `assistant` with Session-level MCP and tool overrides; C2 its
 /// Agent is updated mid-Session (`agent.mcp_servers` moves to another server);
@@ -745,6 +769,7 @@ async fn registered_worker_inline_agent_publication_is_frozen_session_scoped_and
     );
 
     // I2: an update replaces the Session overlay; the publication is never mutated.
+    record_session_work(&app, &id, "after-first-run").await;
     if let Some(directory) = std::env::var_os("AWAKEN_REALIZATION_OBSERVATION_DIR") {
         std::fs::write(
             std::path::PathBuf::from(directory).join("armed.json"),
@@ -765,6 +790,7 @@ async fn registered_worker_inline_agent_publication_is_frozen_session_scoped_and
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{updated}");
+    record_session_work(&app, &id, "after-mcp-update").await;
     assert_eq!(
         updated["agent"]["mcp_servers"],
         json!([{ "name": "calc", "type": "url", "url": second_url }]),

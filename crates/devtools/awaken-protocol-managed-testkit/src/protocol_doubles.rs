@@ -1293,6 +1293,16 @@ impl awaken_session_execution_contract::BudgetAccounting for CoordinatedRuntimeF
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::StreamingRuns for CoordinatedRuntimeFake {
+    async fn cancel_session_run(
+        &self,
+        _session_id: &awaken_session_types::SessionId,
+        _run_id: &awaken_agent_contract::RunId,
+    ) -> Result<(), awaken_runtime_contract::runs::RunError> {
+        Err(awaken_runtime_contract::runs::RunError::unavailable(
+            "exact Session Run cancellation is unavailable",
+        ))
+    }
+
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Run one request with its protocol-projected, backend-neutral content

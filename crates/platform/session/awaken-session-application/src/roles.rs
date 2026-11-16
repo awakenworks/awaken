@@ -310,6 +310,19 @@ pub trait SessionEventBatches: Send + Sync {
         key: &str,
         request_fingerprint: &str,
     ) -> Result<SessionEventBatchIdempotency, RunError>;
+    /// Observe every original reply of an exact retained Event batch. Admission
+    /// or terminal processing alone does not prove a committed reply.
+    async fn session_event_batch_reply_receipt(
+        &self,
+        _owner_scope: &str,
+        _session_id: &SessionId,
+        _key: &str,
+        _request_fingerprint: &str,
+    ) -> Result<bool, RunError> {
+        Err(RunError::unavailable(
+            "committed batch reply receipt query is unavailable",
+        ))
+    }
 
     /// See [`SessionApplication::close_session_event_admission`].
     async fn close_session_event_admission(
@@ -374,6 +387,29 @@ pub trait ProfiledSessionCommands: Send + Sync {
 /// Consumer: the profiled Session Run reply edge.
 #[async_trait]
 pub trait ProfiledSessionReplies: Send + Sync {
+    /// Observe the original complete committed reply without changing the Run.
+    async fn profiled_session_run_reply_receipt_for_owner(
+        &self,
+        _owner_scope: &str,
+        _command: awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<bool, SessionProjectionRecoveryError> {
+        Err(SessionProjectionRecoveryError::Unavailable(
+            "committed reply receipt query is unavailable".into(),
+        ))
+    }
+
+    /// Cancel the asserted Run through the existing durable dispatch authority.
+    async fn cancel_profiled_session_run_for_owner(
+        &self,
+        _owner_scope: &str,
+        _session_id: &SessionId,
+        _run_id: &awaken_agent_contract::RunId,
+    ) -> Result<(), SessionProjectionRecoveryError> {
+        Err(SessionProjectionRecoveryError::Unavailable(
+            "exact Run cancellation is unavailable".into(),
+        ))
+    }
+
     /// See [`SessionApplication::reply_profiled_session_run_for_owner`].
     async fn reply_profiled_session_run_for_owner(
         &self,

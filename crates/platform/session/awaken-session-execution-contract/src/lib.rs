@@ -64,6 +64,10 @@ mod resource_operation_fence;
 mod run_admission;
 mod session;
 mod session_realization;
+mod session_root_commit;
+pub use session_root_commit::{
+    SessionAdmissionFailure, SessionMutationError, SessionRootCommit, SessionStateViolation,
+};
 mod source_retention;
 
 #[cfg(test)]

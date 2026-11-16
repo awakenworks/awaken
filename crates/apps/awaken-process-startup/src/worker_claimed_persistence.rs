@@ -25,6 +25,7 @@ use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use crate::{ClaimConnectionUse, SessionWorkReleasePersistence};
 
 mod checkpoints;
+mod claimed_preparation;
 mod gate;
 mod sessions;
 #[cfg(test)]

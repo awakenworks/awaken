@@ -333,6 +333,13 @@ class SessionWorkReleaseSelectionTests(unittest.TestCase):
         'session_work_release::tests::http::races::live_postgres_http_same_claim_cold_absence_recovers_the_one_accepted_receipt',
         'session_work_release::tests::http::races::live_postgres_http_cold_resume_takeover_refuses_before_claim_specific_root_write',
         'session_work_release::tests::http::settlement::live_postgres_http_memory_observer_release_preserves_a_successor_before_settlement_cas',
+        'session_work_release::tests::http::preparation::live_postgres_http_claimed_preparation_commits_once_and_replays_original_receipt',
+        'session_work_release::tests::http::preparation::live_postgres_http_unkeyed_credential_no_change_keeps_the_current_root',
+        'session_work_release::tests::http::preparation::live_postgres_http_slow_issuer_rechecks_claim_work_expiry_and_physical_slot',
+        'session_work_release::tests::http::preparation::live_postgres_http_credential_commit_and_no_change_read_keep_the_final_claim_gate',
+        'session_work_release::tests::http::preparation::live_postgres_http_issuer_failure_preserves_the_same_claim_for_retry',
+        'session_work_release::tests::http::preparation::live_postgres_http_aborted_preparation_returns_cap_one_for_the_same_http_retry',
+        'session_work_release::tests::http::preparation_work::live_postgres_http_preparation_handoff_rechecks_canonical_root_worker_and_profile_after_work',
     )
 
     def test_borrowed_root_cases_stay_in_the_original_storage_phase(self):
@@ -353,12 +360,45 @@ class SessionWorkReleaseSelectionTests(unittest.TestCase):
                 with self.subTest(case=case), self.assertRaisesRegex(ValueError, "independent Session extraction outcomes"):
                     self.verify(table=table, scope="storage")
 
+    def test_outbox_bootstrap_cases_stay_in_the_original_storage_phase(self):
+        # Each real nested case must execute through the existing postgres_
+        # Session store row. Literal names form an independent floor oracle.
+        cases = (
+            'tests::outbox_bootstrap::postgres_outbox_index_gate_waiters_do_not_deadlock_online_build',
+            'tests::outbox_bootstrap::postgres_outbox_index_gate_waiter_abort_restores_single_connection_pool',
+            'tests::outbox_bootstrap::postgres_outbox_index_builder_abort_and_error_release_gate_for_retry',
+        )
+        phase = next(p for p in self.verify(scope="storage")
+                     if p.package == "awaken-session-store")
+        self.assertIn("postgres_", phase.arguments)
+        for case in cases:
+            self.assertIn("--require-case=" + case, phase.arguments)
+            for replacement in ("", "--require-case=unrelated"):
+                table = edit_row(
+                    self.table, "postgres.storage.session-store",
+                    lambda text: text.replace("--require-case=" + case, replacement, 1),
+                )
+                self.assertNotEqual(table, self.table)
+                with self.subTest(case=case, replacement=replacement), self.assertRaisesRegex(
+                    ValueError, "independent Session extraction outcomes"
+                ):
+                    self.verify(table=table, scope="storage")
+            table = edit_row(
+                self.table, "postgres.storage.session-store",
+                lambda text: text.replace("--test-threads=1", "--skip " + case + " --test-threads=1", 1),
+            )
+            self.assertNotEqual(table, self.table)
+            with self.subTest(case=case, skipped=True), self.assertRaisesRegex(
+                ValueError, "independent Session extraction outcomes"
+            ):
+                self.verify(table=table, scope="storage")
+
     def changed_release(self, transform):
         return edit_row(self.table, 'postgres.critical.process-startup-work-release', transform)
 
     def test_additive_release_and_http_floor_preserves_the_original_eighteen_domains(self):
         # R1 original 18 + startup Work + three exact claimed rows + lifecycle Outbox => admit 23; all
-        # fourteen independently named outcomes. The old binding/pool rows remain.
+        # twenty-one independently named outcomes. The old binding/pool rows remain.
         phases = self.verify()
         self.assertEqual(len(phases), 23)
         startup = [p for p in phases if p.package == 'awaken-process-startup']
@@ -378,13 +418,18 @@ class SessionWorkReleaseSelectionTests(unittest.TestCase):
         # R2 missing/replaced any floor or skipping its real execution => refuse;
         # another startup outcome cannot silently substitute for that case.
         for case in self.cases:
+            existing = self.cases[1] if case == self.cases[0] else self.cases[0]
             for mutation in (
                 lambda s: s.replace('--require-case=' + case, '', 1),
                 lambda s: s.replace('--require-case=' + case, '--require-case=unrelated', 1),
+                lambda s: s.replace('--require-case=' + case, '--require-case=' + existing, 1),
+                lambda s: s.replace('--require-case=' + case, '--require-case=' + case + ' --require-case=' + case, 1),
                 lambda s: s.replace('--test-threads=1', '--skip ' + case + ' --test-threads=1', 1),
             ):
+                table = self.changed_release(mutation)
+                self.assertNotEqual(table, self.table, "the negative control must change the actual authored row")
                 with self.subTest(case=case, mutation=mutation), self.assertRaisesRegex(ValueError, 'independent Session Work release'):
-                    self.verify(table=self.changed_release(mutation))
+                    self.verify(table=table)
 
     def test_new_scope_cannot_broaden_or_hide_ignored_cases(self):
         # R3 wrong lib/filter/runtime mode/thread policy => refuse, even while

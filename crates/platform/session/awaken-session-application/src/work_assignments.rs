@@ -15,7 +15,7 @@ use std::sync::Arc;
 use awaken_runtime_contract::runs::RunError;
 use awaken_session_application_contract::{
     SessionWorkAcquisition, SessionWorkGrant, SessionWorkOwnership, SessionWorkerAssignment,
-    SessionWorkerLeases,
+    SessionWorkerLeaseAuthority, SessionWorkerLeases,
 };
 use awaken_session_contract::SessionRepository;
 use awaken_session_contract::{PersistedSession, SessionRepositoryError};
@@ -79,6 +79,74 @@ impl SessionWorkAssignments {
             self.clock.now_ms(),
         )
         .await
+    }
+
+    /// Project the still-current MCP demand after an accepted Session update.
+    /// Replay may reconcile current desired truth, while a superseded observed
+    /// generation and a terminal root cannot wake another Work obligation.
+    pub(crate) async fn wake_for_mcp_update(
+        &self,
+        observed: &PersistedSession,
+    ) -> Result<(), RunError> {
+        let current = match self.repository.get(&observed.session_id).await {
+            Ok(session) => session,
+            Err(SessionRepositoryError::NotFound) => return Ok(()),
+            Err(error) => return Err(RunError::unavailable(error.to_string())),
+        };
+        let observed_generations = observed
+            .mcp
+            .desired_attachments()
+            .into_iter()
+            .map(|attachment| &attachment.generation)
+            .collect::<Vec<_>>();
+        let current_generations = current
+            .mcp
+            .desired_attachments()
+            .into_iter()
+            .map(|attachment| &attachment.generation)
+            .collect::<Vec<_>>();
+        if !current.is_run_free_preparation_candidate()
+            || current.revision < observed.revision
+            || current.mcp.desired_fingerprint != observed.mcp.desired_fingerprint
+            || current_generations != observed_generations
+        {
+            return Ok(());
+        }
+        let Some((environment_id, false)) = session_work_environment(&current) else {
+            return Ok(());
+        };
+        self.assignment
+            .wake_session(&environment_id, &current.session_id)
+            .await
+            .map(|_| ())
+    }
+
+    /// Acquire the canonical Work lease for this current run-free Root grant.
+    /// Passive renewal and stopped-Work revival retain their existing owners.
+    pub(crate) async fn acquire_for_preparation(
+        &self,
+        session_id: &SessionId,
+        asserted: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+    ) -> Result<
+        SessionWorkOwnership,
+        awaken_session_execution_contract::SessionRealizationControlFailure,
+    > {
+        let current = self
+            .repository
+            .get(session_id)
+            .await
+            .map_err(crate::realization::repository_control)?;
+        if !current.is_run_free_preparation_candidate() {
+            return Ok(SessionWorkOwnership::Unowned);
+        }
+        crate::realization::verify_lease(&current, asserted, self.clock.now_ms())?;
+        self.acquire_session_work(
+            session_id,
+            &asserted.runtime_incarnation,
+            SessionWorkAcquisition::ClaimedPreparation,
+        )
+        .await
+        .map_err(|error| crate::SessionMutationError::admission(error).into())
     }
 
     /// Wake one self-hosted Session's stopped Work item for an admitted Run.
