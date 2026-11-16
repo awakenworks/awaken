@@ -76,8 +76,12 @@ async fn sqlite_independent_files_guarded_admission_follows_incarnation_standing
 #[tokio::test]
 async fn sqlite_shared_file_guarded_admission_follows_incarnation_standing() {
     // R2: the embedded composition opens two native owners on one file. Reuse
-    // the Registry transaction for Dispatch, with the original five-second
-    // transcript budget; setup runs before that budget starts.
+    // the Registry transaction for Dispatch. A Dispatch that opened its own
+    // writer instead would wait on the transaction this admission holds until
+    // the pool's busy timeout, then report `database is locked`: every row that
+    // holds authority reads Rejected instead of Applied, so the table itself
+    // fails. No wall-clock budget is needed for that, and one would only
+    // measure the host's IO speed (this transcript commits on every row).
     sqlite_guarded_pair(SqliteTopology::SharedFile).await;
 }
 
@@ -133,13 +137,7 @@ async fn sqlite_guarded_pair(topology: SqliteTopology) {
             async move { claim_with(store.as_ref(), tag, worker).await }
         },
     );
-    if matches!(topology, SqliteTopology::SharedFile) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), transcript)
-            .await
-            .expect("shared-file native admission must not wait on its own Registry transaction");
-    } else {
-        transcript.await;
-    }
+    transcript.await;
 }
 
 #[tokio::test]
