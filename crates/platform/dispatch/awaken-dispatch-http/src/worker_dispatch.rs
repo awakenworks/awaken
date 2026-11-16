@@ -554,6 +554,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         )
         .route("/v1/worker/dispatch/claim", post(claim))
         .route(
+            "/v1/worker/dispatch/claim_for_request",
+            post(run_dispatch_endpoints::claim_for_request),
+        )
+        .route(
             "/v1/worker/dispatch/claim_retry_exhausted",
             post(claim_retry_exhausted),
         )
@@ -788,6 +792,7 @@ async fn bind_claimed_session_work_authority(
     service: &WorkerDispatchService,
     authority: &ClaimAuthority,
     mut claimed: Option<awaken_dispatch::Claimed>,
+    retain_on_error: bool,
 ) -> Result<Option<awaken_dispatch::Claimed>, ApplicationError> {
     let Some(claimed_run) = claimed.as_mut() else {
         return Ok(None);
@@ -816,6 +821,9 @@ async fn bind_claimed_session_work_authority(
                 retry_after_ms = SESSION_WORK_BUSY_RETRY_MS,
                 "Session Work is held by another Worker; deferred only this Dispatch");
             return Ok(None);
+        }
+        Err(error) if retain_on_error => {
+            return Err(ApplicationError::unavailable(error.to_string()));
         }
         Err(error) => {
             let claim = RunClaim::from(&claimed_run.lease);

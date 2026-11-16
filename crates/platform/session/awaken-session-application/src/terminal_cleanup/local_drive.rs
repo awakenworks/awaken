@@ -497,6 +497,15 @@ impl SessionTerminalCleanups {
                     // reconciliation never executes or cancels those commands.
                     return Ok(Some(session.into_snapshot()));
                 }
+                // The Dispatch owner may be on another database. Retire its
+                // data after verified terminal cleanup and before discarding
+                // the Session root that lets this effect be retried.
+                if let Some(retirement) = &self.dispatch_retirement {
+                    retirement
+                        .retire_deleted_session_dispatch(owner_scope, &session.session_id)
+                        .await
+                        .map_err(SessionPreparationError::Rejected)?;
+                }
                 self.commit_delete_tombstone(owner_scope, &session)
                     .await
                     .map_err(mutation_failure)?;

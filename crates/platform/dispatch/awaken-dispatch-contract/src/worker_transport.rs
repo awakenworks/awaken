@@ -169,6 +169,13 @@ pub struct ClaimWorkerRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimWorkRequest {
+    pub identity: Option<WorkerIdentity>,
+    #[serde(flatten)]
+    pub claim: crate::ClaimRequest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimRunRequest {
     pub run_id: String,
     #[serde(default)]

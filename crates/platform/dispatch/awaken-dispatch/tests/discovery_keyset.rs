@@ -11,7 +11,7 @@ use sqlx::postgres::PgPoolOptions;
 
 #[tokio::test]
 async fn incompatible_pages_preserve_priority_time_and_id_with_one_connection() {
-    // Causes: C1 three full pages of genuinely GPU-incompatible requests;
+    // Causes: C1 three full pages excluded by the remote placement check;
     // C2 priority uses both i64 extremes; C3 timestamp/id ties cross pages;
     // C4 the pool has exactly one connection; C5 eligible work appears after
     // an exhausted scan. Effects: E1 no false empty result for a legal tail;
@@ -53,19 +53,19 @@ async fn incompatible_pages_preserve_priority_time_and_id_with_one_connection() 
         .unwrap()
         .unwrap()
         .snapshot;
-    let mut gpu = PlacementRequirements::remote_required();
-    gpu.required_capabilities.insert("gpu".into());
+    let mut local = PlacementRequirements::remote_required();
+    local.location = awaken_dispatch::ExecutionLocation::LocalOnly;
     harness::seed_placement_candidate_prefix(
         &pool,
         RunDispatch::new(harness::activation_on("template", "template-thread"))
-            .with_placement(gpu)
+            .with_placement(local)
             .with_worker_codec_requirements(),
         384,
-        "gpu-",
+        "local-",
         i64::MAX,
     )
     .await;
-    sqlx::query("UPDATE runtime_dispatch SET created_at='2026-01-01T00:00:00.123456Z'::timestamptz WHERE run_id LIKE 'gpu-%'")
+    sqlx::query("UPDATE runtime_dispatch SET created_at='2026-01-01T00:00:00.123456Z'::timestamptz WHERE run_id LIKE 'local-%'")
         .execute(&pool).await.unwrap();
     assert!(
         store

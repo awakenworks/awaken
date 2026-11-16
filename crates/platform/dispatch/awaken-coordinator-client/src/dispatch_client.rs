@@ -18,6 +18,7 @@
 
 use async_trait::async_trait;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -29,10 +30,10 @@ use awaken_agent_contract::stream::sink::Error as StreamError;
 use awaken_credential_contract::CredentialRealizationReceipt;
 use awaken_dispatch_contract::{
     AttemptAdmission, AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest,
-    ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed, CredentialGrantRequest,
-    CredentialRealizationRequest, DeliverAndClaimRequest, DispatchError, DispatchOutcome,
-    EnqueueRequest, LeaseRenewalOutcome, PendingInput, PendingRecord, RecoveryRequest,
-    RenewRequest, RunDispatch, SessionRunReservationResolution,
+    ClaimNewRunRequest, ClaimRequest, ClaimRunRequest, ClaimWorkRequest, ClaimWorkerRequest,
+    Claimed, CredentialGrantRequest, CredentialRealizationRequest, DeliverAndClaimRequest,
+    DispatchError, DispatchOutcome, EnqueueRequest, LeaseRenewalOutcome, PendingInput,
+    PendingRecord, RecoveryRequest, RenewRequest, RunDispatch, SessionRunReservationResolution,
     SessionRunReservationResolutionRequest, SettleOutcome, SettleRequest, StreamEventRequest,
     StreamObservationRequest, SubmitOptions, WorkerCredentialGrant, WorkerCredentialGrantMaterial,
     WorkerCredentialGrantTransport,
@@ -177,6 +178,7 @@ pub struct HttpDispatchQueue {
     worker_identity: WorkerIdentity,
     worker_manifest: Option<awaken_worker_contract::WorkerManifest>,
     request_authorizer: Option<std::sync::Arc<dyn WorkerRequestAuthorizer>>,
+    pending_claims: tokio::sync::Mutex<HashMap<Option<RunId>, String>>,
 }
 
 /// Build the Worker's single authenticated dispatch/live transport instance.
@@ -264,6 +266,7 @@ impl HttpDispatchQueue {
             worker_identity,
             worker_manifest: None,
             request_authorizer: None,
+            pending_claims: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -313,16 +316,27 @@ impl HttpDispatchQueue {
             .map_err(|e| DispatchError::Rejected(format!("dispatch transport decode: {e}")))
     }
 
-    /// Retry a claim-fenced operation whose repeated application is explicitly
-    /// idempotent. This is intentionally separate from `post`: claim/admission
-    /// responses cannot be replayed safely after an ambiguous receipt, while an
-    /// exact-claim sandbox bind writes the same opaque reference each time.
+    /// Retry only a command whose repeated application is explicitly idempotent.
     async fn post_idempotent<T: Serialize + ?Sized>(
         &self,
         path: &str,
         body: &T,
         worker_id: &str,
     ) -> Result<serde_json::Value, DispatchError> {
+        self.post_replayable(path, body, worker_id, None)
+            .await?
+            .ok_or_else(|| {
+                DispatchError::Unavailable("idempotent dispatch response missing".into())
+            })
+    }
+
+    async fn post_replayable<T: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        body: &T,
+        worker_id: &str,
+        claim_may_fallback: Option<bool>,
+    ) -> Result<Option<serde_json::Value>, DispatchError> {
         let mut last_retryable_error = None;
         for attempt in 1..=IDEMPOTENT_TRANSPORT_ATTEMPTS {
             let request = self.client.post(format!("{}{}", self.base_url, path));
@@ -344,6 +358,23 @@ impl HttpDispatchQueue {
                     break;
                 }
             };
+            if let Some(may_fallback) = claim_may_fallback
+                && matches!(
+                    response.status(),
+                    reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::NOT_IMPLEMENTED
+                )
+            {
+                if may_fallback && attempt == 1 {
+                    return Ok(None);
+                }
+                last_retryable_error =
+                    Some("a peer does not yet support replay of the outstanding claim".into());
+                if attempt < IDEMPOTENT_TRANSPORT_ATTEMPTS {
+                    tokio::time::sleep(IDEMPOTENT_TRANSPORT_RETRY_DELAY).await;
+                    continue;
+                }
+                break;
+            }
             if response.status().is_server_error() {
                 // Reuse the one bounded response decoder. Retrying must not
                 // erase the Coordinator's precise failure evidence and leave
@@ -359,7 +390,7 @@ impl HttpDispatchQueue {
                 return Err(dispatch_response_error(response).await);
             }
             match response.json().await {
-                Ok(value) => return Ok(value),
+                Ok(value) => return Ok(Some(value)),
                 Err(error) => {
                     last_retryable_error =
                         Some(format!("idempotent dispatch transport decode: {error}"));
@@ -378,6 +409,40 @@ impl HttpDispatchQueue {
 
     fn worker_id(&self) -> &str {
         &self.worker_identity.worker_id
+    }
+
+    async fn claim_with_receipt(
+        &self,
+        run_id: Option<&RunId>,
+    ) -> Result<Option<Option<Claimed>>, DispatchError> {
+        // The pool cannot deliver the same logical acquisition to two local
+        // execution slots. Retain its request id when the outcome is unknown.
+        let mut pending = self.pending_claims.lock().await;
+        let target = run_id.cloned();
+        let fresh = !pending.contains_key(&target);
+        let request_id = pending
+            .entry(target.clone())
+            .or_insert_with(|| uuid::Uuid::now_v7().to_string());
+        let response = self
+            .post_replayable(
+                "/v1/worker/dispatch/claim_for_request",
+                &ClaimWorkRequest {
+                    identity: Some(self.worker_identity.clone()),
+                    claim: ClaimRequest {
+                        request_id: request_id.clone(),
+                        run_id: target.clone(),
+                    },
+                },
+                self.worker_id(),
+                Some(fresh),
+            )
+            .await?;
+        let claimed = response
+            .as_ref()
+            .map(|value| self.decode_claimed(value))
+            .transpose()?;
+        pending.remove(&target);
+        Ok(claimed)
     }
 
     async fn post_stream_observation(
@@ -558,6 +623,9 @@ impl awaken_dispatch_contract::DispatchClaims for HttpDispatchQueue {
         lease_ms: u64,
         _capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        if let Some(claimed) = self.claim_with_receipt(None).await? {
+            return Ok(claimed);
+        }
         let v = self
             .post(
                 "/v1/worker/dispatch/claim",
@@ -612,6 +680,9 @@ impl awaken_dispatch_contract::DispatchClaims for HttpDispatchQueue {
         lease_ms: u64,
         _capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
+        if let Some(claimed) = self.claim_with_receipt(Some(run_id)).await? {
+            return Ok(claimed);
+        }
         let value = self
             .post(
                 "/v1/worker/dispatch/claim_run",

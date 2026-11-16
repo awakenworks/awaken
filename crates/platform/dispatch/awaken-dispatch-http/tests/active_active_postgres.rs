@@ -54,7 +54,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 
 const CHILD_PORT_ENV: &str = "AWAKEN_ACTIVE_ACTIVE_CHILD_PORT";
 const CHILD_DATABASE_URL_ENV: &str = "AWAKEN_ACTIVE_ACTIVE_CHILD_DATABASE_URL";
-const CHILD_EXIT_AFTER_COMMIT_ENV: &str = "AWAKEN_ACTIVE_ACTIVE_EXIT_AFTER_COMMIT";
+const CHILD_EXIT_AFTER_RESPONSE_ENV: &str = "AWAKEN_ACTIVE_ACTIVE_EXIT_AFTER_RESPONSE";
 const WORKER_ID: &str = "active-active-worker";
 const WORKER_INCARNATION_ID: &str = "active-active-incarnation";
 
@@ -237,13 +237,13 @@ async fn schema_pool(schema: &str) -> Option<(PgPool, String)> {
 }
 
 async fn exit_after_committed_response(
-    State(exit_once): State<Arc<AtomicBool>>,
+    State((fault_path, exit_once)): State<(String, Arc<AtomicBool>)>,
     request: Request,
     next: Next,
 ) -> Response {
-    let claimed_commit = request.uri().path() == "/v1/worker/commit-claimed";
+    let fault_response = request.uri().path() == fault_path;
     let response = next.run(request).await;
-    if claimed_commit && response.status().is_success() && exit_once.swap(false, Ordering::SeqCst) {
+    if fault_response && response.status().is_success() && exit_once.swap(false, Ordering::SeqCst) {
         // The handler has committed and built its success response. Exiting here
         // models a process/network failure in the ambiguous response window.
         std::process::exit(86);
@@ -292,9 +292,9 @@ async fn active_active_control_child() {
         axum::Router::new(),
         commit_service,
     );
-    let router = if std::env::var(CHILD_EXIT_AFTER_COMMIT_ENV).as_deref() == Ok("1") {
+    let router = if let Ok(fault_path) = std::env::var(CHILD_EXIT_AFTER_RESPONSE_ENV) {
         router.layer(axum::middleware::from_fn_with_state(
-            Arc::new(AtomicBool::new(true)),
+            (fault_path, Arc::new(AtomicBool::new(true))),
             exit_after_committed_response,
         ))
     } else {
@@ -315,6 +315,14 @@ struct ChildGuard {
 
 impl ChildGuard {
     fn spawn(port: u16, database_url: &str, exit_after_commit: bool) -> Self {
+        Self::spawn_with_response_fault(
+            port,
+            database_url,
+            exit_after_commit.then_some("/v1/worker/commit-claimed"),
+        )
+    }
+
+    fn spawn_with_response_fault(port: u16, database_url: &str, fault_path: Option<&str>) -> Self {
         let mut command = Command::new(std::env::current_exe().expect("current test executable"));
         command
             .arg("--exact")
@@ -323,8 +331,8 @@ impl ChildGuard {
             .arg("--test-threads=1")
             .env(CHILD_PORT_ENV, port.to_string())
             .env(CHILD_DATABASE_URL_ENV, database_url);
-        if exit_after_commit {
-            command.env(CHILD_EXIT_AFTER_COMMIT_ENV, "1");
+        if let Some(path) = fault_path {
+            command.env(CHILD_EXIT_AFTER_RESPONSE_ENV, path);
         }
         Self::spawn_command(&mut command)
     }
@@ -492,6 +500,352 @@ fn activation(run_id: &RunId, thread_id: &ThreadId) -> RunActivation {
         },
         Vec::new(),
     )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lost_first_claim_response_replays_through_a_different_coordinator() {
+    lost_claim_response(false, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lost_directed_claim_response_replays_through_a_different_coordinator() {
+    lost_claim_response(true, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deleted_session_retires_receipts_with_an_independent_dispatch_backend() {
+    lost_claim_response(true, true).await;
+}
+
+async fn lost_claim_response(directed: bool, independent: bool) {
+    let schema = format!(
+        "t_worker_claim_response_loss_{}_{directed}_{independent}",
+        std::process::id()
+    );
+    let Some((pool, url)) = schema_pool(&schema).await else {
+        return;
+    };
+    let scoped_url = database_url_in_schema(&url, &schema);
+    let port_a = reserve_port().await;
+    let port_b = reserve_port().await;
+    let claim_path = "/v1/worker/dispatch/claim_for_request";
+    let mut control_a =
+        ChildGuard::spawn_with_response_fault(port_a, &scoped_url, Some(claim_path));
+    wait_for_port(port_a, &mut control_a).await;
+    let mut control_b = ChildGuard::spawn(port_b, &scoped_url, false);
+    wait_for_port(port_b, &mut control_b).await;
+    let base_a = format!("http://127.0.0.1:{port_a}");
+    let (identity, _) = configured_worker();
+    let run_id = RunId("claim-response-lost".into());
+    let thread_id = ThreadId("claim-response-lost-thread".into());
+    let mut dispatch = RunDispatch::new(activation(&run_id, &thread_id)).with_execution_scope(
+        awaken_agent_contract::ExecutionScopeRef(awaken_agent_contract::ScopeId(
+            "claim-scope".into(),
+        )),
+    );
+    dispatch.placement = awaken_dispatch::PlacementRequirements::remote_preferred();
+    dispatch.placement.runtime_protocol_version = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    HttpDispatchQueue::new(&base_a, identity.clone())
+        .enqueue(dispatch.with_worker_codec_requirements())
+        .await
+        .expect("enqueue before failure");
+
+    let client = reqwest::Client::new();
+    let mut request = serde_json::json!({
+        "identity": identity,
+        "request_id": uuid::Uuid::now_v7().to_string()
+    });
+    if directed {
+        request["run_id"] = serde_json::json!(run_id);
+    }
+    let send_request = |port, request: &serde_json::Value| {
+        client
+            .post(format!("http://127.0.0.1:{port}{claim_path}"))
+            .header("x-awaken-worker-id", WORKER_ID)
+            .json(request)
+            .send()
+    };
+    let send = |port| send_request(port, &request);
+    assert!(
+        send(port_a).await.is_err(),
+        "first HTTP receipt must be lost"
+    );
+    assert_eq!(control_a.wait_for_exit().await.code(), Some(86));
+
+    let decoy = RunId("claim-response-decoy".into());
+    let mut other = RunDispatch::new(activation(&decoy, &ThreadId("other-thread".into())));
+    other.placement = awaken_dispatch::PlacementRequirements::remote_preferred();
+    other.placement.runtime_protocol_version = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    HttpDispatchQueue::new(format!("http://127.0.0.1:{port_b}"), identity.clone())
+        .enqueue(other.with_worker_codec_requirements())
+        .await
+        .unwrap();
+    let persisted = || {
+        sqlx::query_as::<_, (String, i64, i64)>(
+            "SELECT lease_owner, lease_epoch, attempt_count FROM runtime_dispatch WHERE run_id = $1",
+        )
+        .bind(&run_id.0)
+        .fetch_one(&pool)
+    };
+    let original = persisted().await.expect("first claim is durably visible");
+    assert_eq!(original.0, identity.lease_owner());
+    assert!(
+        original.1 > 0,
+        "the first acquisition issued a nonzero epoch"
+    );
+
+    let body: serde_json::Value = send(port_b)
+        .await
+        .expect("retry via peer")
+        .error_for_status()
+        .expect("peer accepted the same logical request")
+        .json()
+        .await
+        .expect("decode peer reply");
+    let recovered: awaken_dispatch::Claimed = serde_json::from_value(body["claimed"].clone())
+        .expect("retry must recover the first claim receipt");
+    assert_eq!(recovered.request.run_id(), &run_id);
+    assert_eq!(recovered.lease.epoch(), u64::try_from(original.1).unwrap());
+    assert_eq!(
+        persisted().await.unwrap(),
+        original,
+        "replay never reacquires"
+    );
+
+    let conflict = client
+        .post(format!("http://127.0.0.1:{port_b}{claim_path}"))
+        .header("x-awaken-worker-id", WORKER_ID)
+        .json(&serde_json::json!({
+            "identity": identity, "request_id": request["request_id"], "run_id": "different-run"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), reqwest::StatusCode::CONFLICT);
+    let decoy_owner: Option<String> =
+        sqlx::query_scalar("SELECT lease_owner FROM runtime_dispatch WHERE run_id = $1")
+            .bind(&decoy.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        decoy_owner, None,
+        "retry cannot acquire a different pending Run"
+    );
+
+    sqlx::query("UPDATE runtime_dispatch SET lease_until = 1 WHERE run_id = $1")
+        .bind(&run_id.0)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let stale: serde_json::Value = send(port_b)
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        stale["claimed"].is_null(),
+        "the original request cannot reacquire after expiry"
+    );
+    assert_eq!(persisted().await.unwrap(), original);
+
+    let mut next_request = request.clone();
+    next_request["request_id"] = serde_json::json!(uuid::Uuid::now_v7().to_string());
+    let next: serde_json::Value = send_request(port_b, &next_request)
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let next: awaken_dispatch::Claimed = serde_json::from_value(next["claimed"].clone())
+        .expect("a new request can recover the expired Run");
+    assert_eq!(next.request.run_id(), &run_id);
+    assert!(next.lease.epoch() > recovered.lease.epoch());
+    let stale: serde_json::Value = send(port_b)
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(stale["claimed"].is_null());
+
+    if directed {
+        // Keep the live row to check the delete fence independently of
+        // terminal Dispatch settlement.
+        delete_session_for_claim_test(&pool, &thread_id, independent).await;
+        let payloads: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM runtime_dispatch_claim_request WHERE run_id = $1 AND claimed IS NOT NULL",
+        )
+        .bind(&run_id.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            payloads, 0,
+            "Session deletion must remove claim receipt payloads"
+        );
+        let replay: serde_json::Value = send_request(port_b, &next_request)
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            replay["claimed"].is_null(),
+            "Session deletion fences a still-live receipt"
+        );
+    } else {
+        // Seed a logically expired key, then exercise the real cleanup tick
+        // and try a directed claim on a Run that can still be acquired.
+        let old_id = "00000000-0000-7000-8000-000000000001";
+        sqlx::query(
+            "INSERT INTO runtime_dispatch_claim_request (lease_owner, request_id, expires_at_ms)
+             VALUES ($1, $2, 900000)",
+        )
+        .bind(identity.lease_owner())
+        .bind(old_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let store = PostgresDispatchStore::with_pool(pool.clone())
+            .await
+            .unwrap();
+        let mut expired = request.clone();
+        expired["run_id"] = serde_json::json!(decoy);
+        expired["request_id"] = serde_json::json!(old_id);
+        for phase in ["before purge", "after purge"] {
+            let replay: serde_json::Value = send_request(port_b, &expired)
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert!(replay["claimed"].is_null(), "expired request {phase}");
+            if phase == "before purge" {
+                assert_eq!(
+                    awaken_dispatch_contract::Outbox::relay(&store)
+                        .await
+                        .unwrap(),
+                    0
+                );
+                let keys: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM runtime_dispatch_claim_request WHERE request_id = $1",
+                )
+                .bind(old_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                assert_eq!(keys, 0, "the existing relay tick physically purges the key");
+            }
+        }
+        // Simulate a rollback of wall time relative to the time observed by a
+        // prior sweep. This ID is young by the current clock and absent in the
+        // ledger, but at the durable cutoff established by that sweep.
+        let fresh = uuid::Uuid::now_v7();
+        let (seconds, nanos) = fresh.get_timestamp().unwrap().to_unix();
+        let expires_at =
+            i64::try_from(seconds * 1000 + u64::from(nanos / 1_000_000)).unwrap() + 900000;
+        sqlx::query("UPDATE runtime_dispatch_claim_retention SET expired_through_ms = $1")
+            .bind(expires_at)
+            .execute(&pool)
+            .await
+            .unwrap();
+        expired["request_id"] = serde_json::json!(fresh.to_string());
+        let fenced: serde_json::Value = send_request(port_b, &expired)
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            fenced["claimed"].is_null(),
+            "a remembered expiry survives clock rollback"
+        );
+        sqlx::query("UPDATE runtime_dispatch_claim_retention SET expired_through_ms = 0")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let decoy_claim: serde_json::Value = send_request(port_b, &expired)
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            decoy_claim["claimed"]["lease"]["run_id"],
+            serde_json::json!(decoy)
+        );
+    }
+}
+
+async fn delete_session_for_claim_test(pool: &PgPool, thread: &ThreadId, independent: bool) {
+    use awaken_session_contract::{SessionMutationResult, SessionRepository as _};
+    use awaken_store_conformance::session_store::{
+        complete_terminal_cleanup, create_session, delete_mutation, replace_session, session,
+    };
+
+    const SCOPE: &str = "claim-scope";
+    let session_pool = if independent {
+        let schema = format!("t_worker_claim_session_only_{}", std::process::id());
+        schema_pool(&schema).await.unwrap().0
+    } else {
+        pool.clone()
+    };
+    let repo = awaken_session_store::PostgresManagedSessionRepository::with_pool(session_pool)
+        .await
+        .unwrap();
+    let mut root = create_session(
+        &repo,
+        SCOPE,
+        session(&thread.0, "claim receipt"),
+        Vec::new(),
+    )
+    .await;
+    root.request_delete(SCOPE, 0).unwrap().unwrap();
+    complete_terminal_cleanup(&mut root);
+    let root = replace_session(&repo, SCOPE, root, "test:claim-terminal", Vec::new()).await;
+
+    if independent {
+        let dispatch = PostgresDispatchStore::with_pool(pool.clone())
+            .await
+            .unwrap();
+        for scope in ["foreign-scope", SCOPE, SCOPE] {
+            awaken_dispatch_contract::DispatchMaintenance::retire_deleted_session_dispatch(
+                &dispatch, scope, &thread.0,
+            )
+            .await
+            .unwrap();
+            let members: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM runtime_dispatch_session_membership WHERE scope_id = $1 AND session_id = $2",
+            )
+            .bind(SCOPE)
+            .bind(&thread.0)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(members, i64::from(scope != SCOPE));
+        }
+    }
+    let deletion = delete_mutation(&root, "test:claim-delete");
+    assert!(matches!(
+        repo.commit(SCOPE, deletion).await.unwrap(),
+        SessionMutationResult::Applied { .. }
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

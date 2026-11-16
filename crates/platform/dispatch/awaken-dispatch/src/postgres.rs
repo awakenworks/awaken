@@ -24,7 +24,6 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
-use futures_util::TryStreamExt;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
@@ -131,6 +130,7 @@ pub struct PostgresDispatchStore {
     /// Rows whose untrustworthy claim generation this store already reported,
     /// from a claim scan or the depth read.
     reported: crate::ReportedClaimGenerations,
+    discovery: tokio::sync::Semaphore,
 }
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
@@ -388,19 +388,22 @@ impl PostgresDispatchStore {
     /// runtime namespace.
     pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
         migrate(&pool).await?;
-        Ok(Self {
-            pool,
-            reported: crate::ReportedClaimGenerations::default(),
-        })
+        Ok(Self::from_migrated_pool(pool))
     }
 
     /// Build from an existing pool after verifying the externally-owned ledger.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
         verify_schema(&pool).await?;
-        Ok(Self {
+        Ok(Self::from_migrated_pool(pool))
+    }
+
+    fn from_migrated_pool(pool: PgPool) -> Self {
+        let discovery = tokio::sync::Semaphore::new(pool.options().get_max_connections() as usize);
+        Self {
             pool,
             reported: crate::ReportedClaimGenerations::default(),
-        })
+            discovery,
+        }
     }
 
     /// The dispatch pool used by [`PgNotifyWake`](crate::wake::PgNotifyWake) to

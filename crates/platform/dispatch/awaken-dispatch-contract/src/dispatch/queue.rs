@@ -496,6 +496,16 @@ pub trait DispatchReads: Send + Sync {
 /// Coordinator quarantine and garbage-collection commands.
 #[async_trait]
 pub trait DispatchMaintenance: Send + Sync {
+    /// Retire retained dispatch data after terminal cleanup of a deleted Session.
+    /// Backends without Session dispatch membership have no records to retire.
+    async fn retire_deleted_session_dispatch(
+        &self,
+        _scope_id: &str,
+        _session_id: &str,
+    ) -> Result<(), DispatchError> {
+        Ok(())
+    }
+
     /// Manually quarantine expired crashed dispatches at/above `max_attempts`.
     /// Moves rows to `DeadLetter`; automatic services use
     /// [`claim_retry_exhausted`](DispatchClaims::claim_retry_exhausted), so the Run first
@@ -646,6 +656,19 @@ pub trait DispatchAttemptControl: Send + Sync {
 /// Coordinator placement and terminal-recovery claim acquisition.
 #[async_trait]
 pub trait DispatchControlClaims: Send + Sync {
+    /// Atomically acquire or replay one logical request for a registered incarnation.
+    /// An expired or superseded receipt is empty and cannot mint a new epoch.
+    async fn claim_for_request(
+        &self,
+        _request: &ClaimRequest,
+        _requester: &WorkerSnapshot,
+        _workers: Vec<WorkerSnapshot>,
+        _policy: std::sync::Arc<dyn PlacementPolicy>,
+        _lease_ms: u64,
+    ) -> Result<ClaimRequestOutcome, DispatchError> {
+        Ok(ClaimRequestOutcome::Unsupported)
+    }
+
     /// Claim according to a replaceable preference policy while preserving the
     /// same atomic eligibility, recovery and assignment transition. Preference
     /// may use a liveness snapshot, while the backend's final claim transition

@@ -282,6 +282,17 @@ pub trait ChildRunCoordination: Send + Sync {
     ) -> Result<DelegatedRunSnapshot, RunError>;
 }
 
+/// The Dispatch data a verified Session deletion must retire before writing
+/// the final tombstone. A retry may execute this effect again.
+#[async_trait]
+pub trait SessionDispatchRetirement: Send + Sync {
+    async fn retire_deleted_session_dispatch(
+        &self,
+        scope_id: &str,
+        session_id: &crate::SessionId,
+    ) -> Result<(), RunError>;
+}
+
 /// Read-only coordination facts used by Session projection, admission and tool replies.
 /// This role grants no Run execution, claim or mutation authority.
 /// Task receipt, membership and origin-source capabilities are required;

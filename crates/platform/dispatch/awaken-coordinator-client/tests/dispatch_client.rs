@@ -735,6 +735,84 @@ async fn exhausted_finish_transport_remains_retryable_for_the_physical_ack_loop(
 /// | T2 | 503 | yes, bounded | applied on the second response |
 /// | T3 | 400 | no | rejected immediately |
 #[tokio::test]
+async fn ambiguous_claim_retains_its_request_and_does_not_use_legacy_endpoint() {
+    use std::sync::atomic::AtomicBool;
+
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let legacy = Arc::new(AtomicUsize::new(0));
+    let supports_replay = Arc::new(AtomicBool::new(false));
+    let app = axum::Router::new()
+        .route(
+            "/v1/worker/dispatch/claim_for_request",
+            axum::routing::post({
+                let calls = calls.clone();
+                let supports_replay = supports_replay.clone();
+                move |Json(body): Json<Value>| {
+                    let mut calls = calls.lock().unwrap();
+                    calls.push(body);
+                    let status = if supports_replay.load(Ordering::SeqCst) {
+                        StatusCode::OK
+                    } else if calls.len() == 1 {
+                        StatusCode::BAD_GATEWAY
+                    } else {
+                        StatusCode::NOT_FOUND
+                    };
+                    std::future::ready((status, Json(serde_json::json!({"claimed": null}))))
+                }
+            }),
+        )
+        .route(
+            "/v1/worker/dispatch/claim",
+            axum::routing::post({
+                let legacy = legacy.clone();
+                move || {
+                    legacy.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Json(serde_json::json!({"claimed": null})))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let identity = WorkerIdentity::new("replay-worker", "replay-incarnation", 1);
+    let queue = HttpDispatchQueue::new(format!("http://{address}"), identity.clone());
+    let owner = identity.lease_owner();
+    let capabilities = Default::default();
+    let first = queue.claim(&owner, 60_000, &capabilities).await;
+    assert!(matches!(
+        first,
+        Err(awaken_dispatch_contract::DispatchError::Unavailable(_))
+    ));
+    assert_eq!(legacy.load(Ordering::SeqCst), 0);
+
+    supports_replay.store(true, Ordering::SeqCst);
+    assert!(
+        queue
+            .claim(&owner, 60_000, &capabilities)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    {
+        let calls = calls.lock().unwrap();
+        assert!(calls.len() >= 3);
+        assert!(calls[0]["request_id"].is_string());
+        assert!(calls.iter().all(|body| body == &calls[0]));
+    }
+    // A later, fresh request to an old peer can still use the one-shot route.
+    supports_replay.store(false, Ordering::SeqCst);
+    assert!(
+        queue
+            .claim(&owner, 60_000, &capabilities)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(legacy.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
 async fn sandbox_bind_retries_only_ambiguous_transport_outcomes() {
     let claim = RunClaim {
         run_id: RunId("bind-retry".into()),

@@ -14,8 +14,8 @@ use crate::SessionRuns;
 use crate::{
     BudgetAccounting, CapabilityRuntime, ChildRunCoordination, ColocatedRealizationRoles,
     CommittedSessionProjection, CompleteSessionRuntime, LiveInboxAccess, Outcomes,
-    SessionCoordinationReads, SessionPlacementRoles, SessionProjectionSource, StreamingRuns,
-    ThreadReads,
+    SessionCoordinationReads, SessionDispatchRetirement, SessionPlacementRoles,
+    SessionProjectionSource, StreamingRuns, ThreadReads,
 };
 use std::sync::Arc;
 
@@ -61,6 +61,8 @@ pub struct SessionExecutionRoleSelection {
     pub placement: SessionPlacementRoles,
     pub coordination: Arc<dyn ChildRunCoordination>,
     pub coordination_reads: Arc<dyn SessionCoordinationReads>,
+    /// Absent when this composition has no durable Session Dispatch data.
+    pub dispatch_retirement: Option<Arc<dyn SessionDispatchRetirement>>,
     pub budget: Arc<dyn BudgetAccounting>,
     pub streaming_runs: Arc<dyn StreamingRuns>,
     pub thread_reads: Arc<dyn ThreadReads>,
@@ -167,6 +169,7 @@ impl SessionExecutionRoles {
             }),
             coordination: runtime.clone(),
             coordination_reads: runtime.clone(),
+            dispatch_retirement: None,
             budget: runtime.clone(),
             streaming_runs: runtime.clone(),
             thread_reads: runtime.clone(),
@@ -302,6 +305,7 @@ mod tests {
             }),
             coordination: neutral.clone(),
             coordination_reads: neutral.clone(),
+            dispatch_retirement: None,
             budget: neutral.clone(),
             streaming_runs: neutral.clone(),
             thread_reads: neutral.clone(),

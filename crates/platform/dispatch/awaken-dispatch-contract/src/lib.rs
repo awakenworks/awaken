@@ -87,6 +87,7 @@ pub use dispatch::{
     session_run_replacement_candidate_is_safe, verify_attempt_credential_bindings,
     verify_claim_credential_bindings, worker_credential_realization_capabilities,
 };
+pub use dispatch::{ClaimRequest, ClaimRequestOutcome};
 pub use dispatch::{
     DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,
     DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads, DispatchEnqueue,
@@ -108,6 +109,7 @@ pub use run_dispatch::{
     DispatchAdmissionShape, DispatchIdentityScope, RunDispatch, SessionResourceEnvelope,
     SessionRuntimeEnvelope,
 };
+pub use worker_transport::ClaimWorkRequest;
 pub use worker_transport::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
     ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialRealizationRequest,

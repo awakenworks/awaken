@@ -78,6 +78,22 @@ pub struct Claimed {
     pub assignment: Option<WorkerAssignment>,
 }
 
+/// One logical remote acquisition, retained independently of the transport.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimRequest {
+    /// Canonical UUIDv7 reused across all retries of the same acquisition.
+    pub request_id: String,
+    #[serde(default)]
+    pub run_id: Option<RunId>,
+}
+
+#[derive(Debug)]
+pub enum ClaimRequestOutcome {
+    Unsupported,
+    Empty,
+    Claimed(Box<Claimed>),
+}
+
 /// How a claimed attempt resolved. Settled atomically with releasing the lease.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DispatchOutcome {

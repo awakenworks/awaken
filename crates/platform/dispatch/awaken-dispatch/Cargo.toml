@@ -46,6 +46,7 @@ awaken-sql-storage = { workspace = true, optional = true, features = ["postgres"
 async-nats = { version = "0.50", optional = true }
 awaken-time.workspace = true
 futures-lite = { version = "2", optional = true }
+uuid = { version = "1", features = ["v7"], optional = true }
 
 [features]
 default = ["durable"]
@@ -58,6 +59,7 @@ durable = [
     "awaken-scoped-migration/sqlite",
     "dep:awaken-sqlite-pool",
     "dep:awaken-sql-storage",
+    "dep:uuid",
 ]
 # Private SQLite dispatch authority for unit/integration/scenario fixtures.
 test-support = ["durable", "awaken-dispatch-execution/test-support"]

@@ -15,7 +15,9 @@
 use std::sync::Arc;
 
 use awaken_session_configuration_contract::resource::SessionRealizationLease;
-use awaken_session_execution_contract::{ChildRunCoordination, SessionCoordinationReads};
+use awaken_session_execution_contract::{
+    ChildRunCoordination, SessionCoordinationReads, SessionDispatchRetirement,
+};
 use awaken_session_execution_contract::{
     SessionRealizationControlFailure, SessionTerminalCleanupAssignment,
 };
@@ -41,6 +43,7 @@ pub struct SessionTerminalCleanups {
     placement: awaken_session_execution_contract::SessionPlacementRoles,
     coordination: Arc<dyn ChildRunCoordination>,
     coordination_reads: Arc<dyn SessionCoordinationReads>,
+    dispatch_retirement: Option<Arc<dyn SessionDispatchRetirement>>,
 }
 
 /// The collaborators one [`SessionTerminalCleanups`] is built from.
@@ -87,6 +90,7 @@ impl SessionTerminalCleanups {
             placement: runtime.placement.clone(),
             coordination: runtime.coordination.clone(),
             coordination_reads: runtime.coordination_reads.clone(),
+            dispatch_retirement: runtime.dispatch_retirement.clone(),
         }
     }
 }

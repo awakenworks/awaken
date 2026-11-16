@@ -195,6 +195,7 @@ impl WorkerPlacedSessions {
             ),
             coordination: self.clone(),
             coordination_reads: self.threads.clone(),
+            dispatch_retirement: Some(self.threads.clone()),
             budget: self.budgets.clone(),
             streaming_runs: self.clone(),
             thread_reads: self.ports.reads.clone(),

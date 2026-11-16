@@ -574,6 +574,7 @@ impl ExecutorComponents {
             ),
             coordination: self.coordination.clone(),
             coordination_reads: self.session_runs.threads.clone(),
+            dispatch_retirement: Some(self.session_runs.threads.clone()),
             budget: self.budget.clone(),
             streaming_runs: self.session_runs.clone(),
             thread_reads: self.thread_reads.clone(),

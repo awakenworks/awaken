@@ -884,6 +884,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1141,6 +1142,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1259,8 +1261,10 @@ dependencies = [
  "awaken-session-execution-contract",
  "awaken-session-executor",
  "awaken-session-executor-testkit",
+ "awaken-session-store",
  "awaken-session-types",
  "awaken-skill-store",
+ "awaken-store-conformance",
  "awaken-store-inmem",
  "awaken-store-postgres",
  "awaken-sync",
@@ -1282,6 +1286,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

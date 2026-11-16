@@ -229,10 +229,33 @@ impl Outbox for PostgresDispatchStore {
     }
 
     async fn relay(&self) -> Result<usize, DispatchError> {
-        let staged = sqlx::query("SELECT message_id, payload FROM runtime_outbox")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(store_error)?;
+        // Reuse the Coordinator's existing maintenance tick, including idle
+        // queues. Cutoff and deletion commit in the same bounded statement.
+        let staged = sqlx::query(
+            "WITH clock AS (
+                 SELECT FLOOR(EXTRACT(EPOCH FROM statement_timestamp()) * 1000)::bigint AS now_ms
+             ), cutoff AS (
+                 UPDATE runtime_dispatch_claim_retention retention
+                 SET expired_through_ms = GREATEST(retention.expired_through_ms, clock.now_ms)
+                 FROM clock WHERE retention.singleton AND EXISTS (
+                     SELECT 1 FROM runtime_dispatch_claim_request
+                     WHERE expires_at_ms <= GREATEST(retention.expired_through_ms, clock.now_ms)
+                 )
+                 RETURNING retention.expired_through_ms
+             ), due AS MATERIALIZED (
+                 SELECT r.lease_owner, r.request_id
+                 FROM cutoff, runtime_dispatch_claim_request r
+                 WHERE r.expires_at_ms <= cutoff.expired_through_ms
+                 ORDER BY r.expires_at_ms LIMIT 512 FOR UPDATE OF r SKIP LOCKED
+             ), purged AS (
+                 DELETE FROM runtime_dispatch_claim_request r USING due
+                 WHERE r.lease_owner = due.lease_owner AND r.request_id = due.request_id
+             )
+             SELECT message_id, payload FROM runtime_outbox",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
 
         let mut relayed = 0;
         for row in staged {

@@ -10,13 +10,40 @@
 
 /// One read-only discovery order shared by local, compatible, and placed claims.
 /// The exact transaction below remains the only mutation/eligibility authority.
-const CANDIDATE_PAGE_SIZE: i64 = 128;
+const RUNNABLE_SCAN_LIMIT: i64 = 128;
 /// The same page size as a length, for counting decoded rows.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the candidate page size is the constant 128"
 )]
-const CANDIDATE_PAGE_LEN: usize = CANDIDATE_PAGE_SIZE as usize;
+const RUNNABLE_SCAN_LEN: usize = RUNNABLE_SCAN_LIMIT as usize;
+
+const CLAIM_RECEIPT_TTL_MS: i64 = 15 * 60 * 1_000;
+const CLAIM_REQUEST_CLOCK_SKEW_MS: i64 = 60 * 1_000;
+
+#[derive(Clone, Copy)]
+struct ClaimReceiptRequest<'a> {
+    request: &'a awaken_dispatch_contract::ClaimRequest,
+    expires_at_ms: i64,
+}
+
+impl<'a> ClaimReceiptRequest<'a> {
+    fn new(request: &'a awaken_dispatch_contract::ClaimRequest) -> Result<Self, DispatchError> {
+        let invalid =
+            || DispatchError::Rejected("claim request id must be a canonical UUIDv7".into());
+        let id = uuid::Uuid::parse_str(&request.request_id).map_err(|_| invalid())?;
+        if id.get_version_num() != 7 || id.to_string() != request.request_id {
+            return Err(invalid());
+        }
+        let (seconds, nanos) = id.get_timestamp().ok_or_else(invalid)?.to_unix();
+        let issued_at_ms =
+            i64::try_from(seconds * 1_000 + u64::from(nanos / 1_000_000)).map_err(|_| invalid())?;
+        Ok(Self {
+            request,
+            expires_at_ms: issued_at_ms + CLAIM_RECEIPT_TTL_MS,
+        })
+    }
+}
 
 #[derive(Clone, Copy)]
 enum CandidateAudience<'a> {
@@ -79,12 +106,8 @@ fn candidate_epoch_not_exhausted() -> &'static str {
     "d.lease_epoch < 9223372036854775807"
 }
 
-/// The first use limits the cheap status selection before per-Thread/JSON
-/// predicates, so a fresh queue need not evaluate every row before admission.
-/// The remaining scan uses the same order with an exclusive lower bound and
-/// no SQL limit. The outer flags skip ineligible members in either mode;
-/// the exact transaction remains the sole mutation/eligibility authority.
-fn candidate_page_sql(local: bool) -> sqlx::SqlStr {
+/// Restrict each read before the per-Thread and dynamic placement checks.
+fn runnable_runs_sql(local: bool) -> sqlx::SqlStr {
     let p = NS;
     let thread_available = thread_available_for_claim(p);
     let local_filter = if local {
@@ -125,7 +148,11 @@ fn candidate_page_sql(local: bool) -> sqlx::SqlStr {
                (pe.available_at IS NULL OR pe.available_at <= $1)))) OR \
               d.status = 'pending') \
              AND {retry_due} \
+             AND ($8::jsonb IS NULL OR d.cancel_requested = 1 OR \
+                  d.status IN ('reserved', 'reservation_running') OR \
+                  COALESCE(d.request #> '{{placement,required_capabilities}}', '[]') <@ $8) \
              AND (d.status IN ('reserved', 'reservation_running') OR {epoch_not_exhausted}) \
+             AND (NOT $9 OR NOT d.claim_receipts_retired) \
          ) ranked \
              WHERE ($3::integer IS NULL OR \
                  ranked.physical_rank > $3 OR \
@@ -244,40 +271,114 @@ fn candidate_is_admissible(
     }
 }
 
+struct RunnableRuns {
+    runs: Vec<sqlx::postgres::PgRow>,
+    observed_at_ms: u64,
+}
+
+enum ScanResult {
+    Claimed(Box<Claimed>),
+    Continue(CandidatePosition),
+    Finished,
+}
+
 impl PostgresDispatchStore {
+    async fn find_runnable_runs(
+        &self,
+        audience: CandidateAudience<'_>,
+        now_ms: u64,
+        after: Option<&CandidatePosition>,
+        replays_receipts: bool,
+    ) -> Result<RunnableRuns, DispatchError> {
+        let offered = audience
+            .worker()
+            .map(|worker| Json(&worker.manifest.capabilities));
+        let runs = sqlx::query(runnable_runs_sql(audience.local()))
+            .bind(crate::clock::db_millis(now_ms))
+            .bind(RUNNABLE_SCAN_LIMIT)
+            .bind(after.map(|p| p.physical_rank))
+            .bind(after.map(|p| p.state_rank))
+            .bind(after.map(|p| p.priority))
+            .bind(after.map(|p| p.created_at))
+            .bind(after.map(|p| p.run_id.as_str()))
+            .bind(offered)
+            .bind(replays_receipts)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_error)?;
+        Ok(RunnableRuns {
+            runs,
+            observed_at_ms: now_ms,
+        })
+    }
+
     async fn try_claim_discovered(
         &self,
-        run_ids: impl IntoIterator<Item = String>,
+        runnable: RunnableRuns,
         owner: &str,
         lease_ms: u64,
         capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
         audience: CandidateAudience<'_>,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        // A losing batch keeps its checkout, not its transaction or locks.
-        // Rejoining the pool for every stale id amplifies contention while
-        // other readers still hold discovery streams. Exact authority stays
-        // in the original per-id transaction and no read stream crosses here.
-        let mut connection = self.pool.acquire().await.map_err(store_error)?;
-        for run_id in run_ids {
-            let mut tx = sqlx::Acquire::begin(&mut *connection)
+        request: Option<ClaimReceiptRequest<'_>>,
+    ) -> Result<ScanResult, DispatchError> {
+        let more = runnable.runs.len() == RUNNABLE_SCAN_LEN;
+        let mut last = None;
+        let mut connection = None;
+        for row in runnable.runs {
+            let position = CandidatePosition::from_row(&row)?;
+            let eligible = candidate_is_admissible(
+                &row,
+                audience,
+                capabilities,
+                runnable.observed_at_ms,
+                &self.reported,
+            )?;
+            last = Some(position);
+            if !eligible {
+                continue;
+            }
+            // Each losing attempt releases its locks. Keep the checkout until the
+            // bounded scan ends and release it before reading the continuation.
+            if connection.is_none() {
+                connection = Some(self.pool.acquire().await.map_err(store_error)?);
+            }
+            let mut tx = sqlx::Acquire::begin(&mut **connection.as_mut().expect("claim checkout"))
                 .await
                 .map_err(store_error)?;
             let claimed = claim_exact_transaction(
                 &mut tx,
                 ThreadLock::SkipBusy,
-                &RunId(run_id),
+                &RunId(last.as_ref().expect("scanned run").run_id.clone()),
                 owner,
                 lease_ms,
                 audience.worker(),
                 capabilities,
             )
             .await?;
+            if let (Some(request), Some(claimed)) = (request, claimed.as_ref())
+                && !insert_claim_request(&mut tx, owner, request, claimed).await?
+            {
+                // Without a receipt, roll back the tentative claim before
+                // reading a possible concurrent winner.
+                tx.rollback().await.map_err(store_error)?;
+                drop(connection);
+                return Ok(self
+                    .load_requested_claim(owner, request)
+                    .await?
+                    .flatten()
+                    .map_or(ScanResult::Finished, |claim| {
+                        ScanResult::Claimed(Box::new(claim))
+                    }));
+            }
             tx.commit().await.map_err(store_error)?;
-            if claimed.is_some() {
-                return Ok(claimed);
+            if let Some(claimed) = claimed {
+                return Ok(ScanResult::Claimed(Box::new(claimed)));
             }
         }
-        Ok(None)
+        Ok(match last {
+            Some(last) if more => ScanResult::Continue(last),
+            _ => ScanResult::Finished,
+        })
     }
 
     async fn claim_discovered(
@@ -286,123 +387,38 @@ impl PostgresDispatchStore {
         lease_ms: u64,
         capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
         audience: CandidateAudience<'_>,
+        request: Option<ClaimReceiptRequest<'_>>,
     ) -> Result<Option<Claimed>, DispatchError> {
         let discovery = async {
+            // One waiter per connection may scan and try exact claims. A
+            // burst above the pool size otherwise reads the same queue front
+            // repeatedly before there is a connection available to acquire it.
+            let _permit = self
+                .discovery
+                .acquire()
+                .await
+                .map_err(DispatchError::unavailable)?;
             refuse_untrustworthy_expired_leases(&self.pool).await?;
             let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
-            let sql = candidate_page_sql(audience.local());
-            let first = sqlx::query(sql.clone())
-                .bind(crate::clock::db_millis(now_ms))
-                .bind(Some(CANDIDATE_PAGE_SIZE))
-                .bind(None::<i32>)
-                .bind(None::<i32>)
-                .bind(None::<i64>)
-                .bind(None::<sqlx::types::time::OffsetDateTime>)
-                .bind(None::<&str>)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(store_error)?;
-            let exhausted = first.len() < CANDIDATE_PAGE_LEN;
-            let mut position: Option<CandidatePosition> = None;
-            // The fast page has already released its connection. Preserve
-            // ordinary early admission without decoding every request first.
-            for row in first {
-                let next = CandidatePosition::from_row(&row)?;
-                if candidate_is_admissible(&row, audience, capabilities, now_ms, &self.reported)?
-                    && let Some(claimed) = self
-                        .try_claim_discovered(
-                            std::iter::once(next.run_id.clone()),
-                            owner,
-                            lease_ms,
-                            capabilities,
-                            audience,
-                        )
-                        .await?
-                {
-                    return Ok(Some(claimed));
-                }
-                position = Some(next);
-            }
-            if exhausted {
-                return Ok(None);
-            }
+            let mut position = None;
             loop {
-                let lower = position.take();
-                let mut stream = sqlx::query(sql.clone())
-                    .bind(crate::clock::db_millis(now_ms))
-                    // PostgreSQL LIMIT NULL means the remaining ordered scan.
-                    // Buffer admissible ids, not every incompatible payload.
-                    .bind(None::<i64>)
-                    .bind(lower.as_ref().map(|p| p.physical_rank))
-                    .bind(lower.as_ref().map(|p| p.state_rank))
-                    .bind(lower.as_ref().map(|p| p.priority))
-                    .bind(lower.as_ref().map(|p| p.created_at))
-                    .bind(lower.as_ref().map(|p| p.run_id.as_str()))
-                    .fetch(&self.pool);
-                let mut candidates = Vec::with_capacity(CANDIDATE_PAGE_LEN);
-                let mut exhausted = true;
-                let mut inspected = 0_usize;
-                let mut after_first_candidate = 0_usize;
-                let mut scan_error = None;
-                loop {
-                    let row = match stream.try_next().await {
-                        Ok(Some(row)) => row,
-                        Ok(None) => break,
-                        Err(error) => {
-                            scan_error = Some(store_error(error));
-                            break;
-                        }
-                    };
-                    let next = match CandidatePosition::from_row(&row) {
-                        Ok(position) => position,
-                        Err(error) => {
-                            scan_error = Some(error);
-                            break;
-                        }
-                    };
-                    match candidate_is_admissible(
-                        &row,
-                        audience,
+                let runnable = self
+                    .find_runnable_runs(audience, now_ms, position.as_ref(), request.is_some())
+                    .await?;
+                match self
+                    .try_claim_discovered(
+                        runnable,
+                        owner,
+                        lease_ms,
                         capabilities,
-                        now_ms,
-                        &self.reported,
-                    ) {
-                        Ok(true) => candidates.push(next.run_id.clone()),
-                        Ok(false) => {}
-                        Err(error) => {
-                            scan_error = Some(error);
-                            break;
-                        }
-                    }
-                    position = Some(next);
-                    if !candidates.is_empty() {
-                        after_first_candidate += 1;
-                        if after_first_candidate == CANDIDATE_PAGE_LEN {
-                            exhausted = false;
-                            break;
-                        }
-                    }
-                    inspected += 1;
-                    if inspected.is_multiple_of(CANDIDATE_PAGE_LEN) {
-                        tokio::task::yield_now().await;
-                    }
-                }
-                // No retained read connection or stream crosses exact claim.
-                drop(stream);
-                if !candidates.is_empty()
-                    && let Some(claimed) = self
-                        .try_claim_discovered(candidates, owner, lease_ms, capabilities, audience)
-                        .await?
+                        audience,
+                        request,
+                    )
+                    .await?
                 {
-                    return Ok(Some(claimed));
-                }
-                // Preserve observation order: a later corrupt row or stream
-                // failure cannot suppress an earlier successful exact claim.
-                if let Some(error) = scan_error {
-                    return Err(error);
-                }
-                if exhausted {
-                    return Ok(None);
+                    ScanResult::Claimed(claimed) => return Ok(Some(*claimed)),
+                    ScanResult::Continue(last) => position = Some(last),
+                    ScanResult::Finished => return Ok(None),
                 }
             }
         };
@@ -412,6 +428,121 @@ impl PostgresDispatchStore {
                 DispatchError::Unavailable("candidate discovery deadline exceeded".into())
             })?
     }
+
+    async fn load_requested_claim(
+        &self,
+        owner: &str,
+        receipt: ClaimReceiptRequest<'_>,
+    ) -> Result<Option<Option<Claimed>>, DispatchError> {
+        let request = receipt.request;
+        let (expired, too_new, exists, retired, target, claimed) = sqlx::query_as::<_, (
+            bool, bool, bool, bool, Option<String>, Option<Json<Claimed>>,
+        )>(
+            "SELECT $3 <= GREATEST(clock.now_ms, retention.expired_through_ms),
+                    $3 > clock.now_ms + $4,
+                    r.request_id IS NOT NULL, r.claimed IS NULL, r.requested_run,
+                    CASE WHEN $3 > GREATEST(clock.now_ms, retention.expired_through_ms)
+                         AND d.status IN ('running', 'reservation_running')
+                         AND d.lease_until > clock.now_ms THEN r.claimed END
+             FROM (SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint AS now_ms) clock
+             CROSS JOIN runtime_dispatch_claim_retention retention
+             LEFT JOIN runtime_dispatch_claim_request r
+               ON r.lease_owner = $1 AND r.request_id = $2
+             LEFT JOIN runtime_dispatch d ON d.run_id = r.run_id
+               AND d.lease_owner = r.lease_owner AND d.lease_epoch = r.lease_epoch
+             WHERE retention.singleton",
+        )
+        .bind(owner)
+        .bind(&request.request_id)
+        .bind(receipt.expires_at_ms)
+        .bind(CLAIM_RECEIPT_TTL_MS + CLAIM_REQUEST_CLOCK_SKEW_MS)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)?;
+        if expired || (exists && retired) {
+            return Ok(Some(None));
+        }
+        if too_new {
+            return Err(DispatchError::Rejected(
+                "claim request timestamp is ahead of PostgreSQL".into(),
+            ));
+        }
+        if !exists {
+            return Ok(None);
+        }
+        if target.as_deref() != request.run_id.as_ref().map(|id| id.0.as_str()) {
+            return Err(DispatchError::Conflict(
+                "claim request already targets different work".into(),
+            ));
+        }
+        Ok(Some(claimed.map(|Json(claimed)| claimed)))
+    }
+
+    async fn claim_requested_run(
+        &self,
+        request: ClaimReceiptRequest<'_>,
+        run_id: &RunId,
+        worker: &WorkerSnapshot,
+        lease_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let owner = worker.identity.lease_owner();
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            ThreadLock::Wait,
+            run_id,
+            &owner,
+            lease_ms,
+            Some(worker),
+            &installed_worker_credential_capabilities(worker)?,
+        )
+        .await?;
+        if let Some(claimed) = &claimed
+            && !insert_claim_request(&mut tx, &owner, request, claimed).await?
+        {
+            tx.rollback().await.map_err(store_error)?;
+            return Ok(self.load_requested_claim(&owner, request).await?.flatten());
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(claimed)
+    }
+}
+
+async fn insert_claim_request(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &str,
+    receipt: ClaimReceiptRequest<'_>,
+    claimed: &Claimed,
+) -> Result<bool, DispatchError> {
+    let request = receipt.request;
+    // GC advances this durable cutoff before removing keys. A racing INSERT
+    // locks and rechecks the cutoff even if the database clock moved backward.
+    let result = sqlx::query(
+        "WITH retention AS MATERIALIZED (
+            SELECT expired_through_ms FROM runtime_dispatch_claim_retention
+            WHERE singleton FOR SHARE
+         )
+         INSERT INTO runtime_dispatch_claim_request
+         (lease_owner, request_id, requested_run, run_id, lease_epoch, claimed, expires_at_ms)
+         SELECT $1, $2, $3, $4, $5, $6, $7 FROM retention, runtime_dispatch d
+         CROSS JOIN (SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint AS now_ms) clock
+         WHERE d.run_id = $4 AND NOT d.claim_receipts_retired
+           AND $7 > GREATEST(clock.now_ms, retention.expired_through_ms)
+           AND $7 <= clock.now_ms + $8
+         ON CONFLICT (lease_owner, request_id) DO NOTHING",
+    )
+    .bind(owner)
+    .bind(&request.request_id)
+    .bind(request.run_id.as_ref().map(|id| &id.0))
+    .bind(&claimed.lease.run_id().0)
+    .bind(durable_i64("dispatch lease epoch", claimed.lease.epoch())?)
+    .bind(Json(claimed))
+    .bind(receipt.expires_at_ms)
+    .bind(CLAIM_RECEIPT_TTL_MS + CLAIM_REQUEST_CLOCK_SKEW_MS)
+    .execute(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    Ok(result.rows_affected() == 1)
 }
 
 #[derive(Clone, Copy)]
@@ -772,14 +903,14 @@ async fn claim_exact_transaction_with_mode(
     }))
 }
 
-#[async_trait]
-impl awaken_dispatch_contract::DispatchControlClaims for PostgresDispatchStore {
-    async fn claim_placed(
+impl PostgresDispatchStore {
+    async fn claim_placed_with_request(
         &self,
         requester: &WorkerSnapshot,
         mut workers: Vec<WorkerSnapshot>,
         policy: std::sync::Arc<dyn PlacementPolicy>,
         lease_ms: u64,
+        request: Option<ClaimReceiptRequest<'_>>,
     ) -> Result<Option<Claimed>, DispatchError> {
         let capabilities = installed_worker_credential_capabilities(requester)?;
         // A heartbeat can still report a full pool after all of its Runs
@@ -820,8 +951,55 @@ impl awaken_dispatch_contract::DispatchControlClaims for PostgresDispatchStore {
                 workers: &workers,
                 policy: policy.as_ref(),
             },
+            request,
         )
         .await
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchControlClaims for PostgresDispatchStore {
+    async fn claim_placed(
+        &self,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: std::sync::Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        self.claim_placed_with_request(requester, workers, policy, lease_ms, None)
+            .await
+    }
+
+    async fn claim_for_request(
+        &self,
+        request: &awaken_dispatch_contract::ClaimRequest,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: std::sync::Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+    ) -> Result<awaken_dispatch_contract::ClaimRequestOutcome, DispatchError> {
+        use awaken_dispatch_contract::ClaimRequestOutcome::{Claimed, Empty};
+        let owner = requester.identity.lease_owner();
+        let receipt = ClaimReceiptRequest::new(request)?;
+        let outcome = |claimed: Option<crate::Claimed>| {
+            claimed.map_or(Empty, |claim| Claimed(Box::new(claim)))
+        };
+        if let Some(replay) = self.load_requested_claim(&owner, receipt).await? {
+            return Ok(outcome(replay));
+        }
+        let claimed = if let Some(run_id) = &request.run_id {
+            self.claim_requested_run(receipt, run_id, requester, lease_ms)
+                .await?
+        } else {
+            self.claim_placed_with_request(requester, workers, policy, lease_ms, Some(receipt))
+                .await?
+        };
+        match claimed {
+            Some(claimed) => Ok(outcome(Some(claimed))),
+            None => Ok(outcome(
+                self.load_requested_claim(&owner, receipt).await?.flatten(),
+            )),
+        }
     }
 
     async fn claim_for_terminal_recovery(

@@ -149,6 +149,26 @@ impl CoordinatedThreads {
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionDispatchRetirement for CoordinatedThreads {
+    async fn retire_deleted_session_dispatch(
+        &self,
+        scope_id: &str,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<(), RunError> {
+        if let Some(owner) = &self.owner {
+            awaken_dispatch_contract::DispatchMaintenance::retire_deleted_session_dispatch(
+                owner.as_ref(),
+                scope_id,
+                session_id.as_str(),
+            )
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
 fn reply_dispatch_activity(
     dispatch: Option<&awaken_dispatch_contract::DispatchSummary>,
     thread: &ThreadId,

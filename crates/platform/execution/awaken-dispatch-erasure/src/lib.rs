@@ -440,6 +440,14 @@ impl DispatchReads for AnyCoordinatorDispatch {
 }
 #[async_trait]
 impl DispatchMaintenance for AnyCoordinatorDispatch {
+    async fn retire_deleted_session_dispatch(
+        &self,
+        scope_id: &str,
+        session_id: &str,
+    ) -> Result<(), DispatchError> {
+        delegate_owner!(self, retire_deleted_session_dispatch(scope_id, session_id))
+    }
+
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -547,6 +555,20 @@ impl DispatchAttemptControl for AnyCoordinatorDispatch {
 }
 #[async_trait]
 impl DispatchControlClaims for AnyCoordinatorDispatch {
+    async fn claim_for_request(
+        &self,
+        request: &awaken_dispatch_contract::ClaimRequest,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: std::sync::Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+    ) -> Result<awaken_dispatch_contract::ClaimRequestOutcome, DispatchError> {
+        delegate_owner!(
+            self,
+            claim_for_request(request, requester, workers, policy, lease_ms)
+        )
+    }
+
     async fn claim_placed(
         &self,
         requester: &WorkerSnapshot,

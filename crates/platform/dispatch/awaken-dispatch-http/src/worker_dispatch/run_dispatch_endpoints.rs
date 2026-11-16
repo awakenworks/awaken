@@ -94,7 +94,9 @@ async fn finalize_claim(
         .as_ref()
         .map(|claimed| awaken_dispatch::RunClaim::from(&claimed.lease));
     match attach_claim_credential_deliveries(service, claimed).await {
-        Ok(claimed) => bind_claimed_session_work_authority(service, authority, claimed).await,
+        Ok(claimed) => {
+            bind_claimed_session_work_authority(service, authority, claimed, false).await
+        }
         Err(error) => {
             if let Some(claim) = claim {
                 service
@@ -193,6 +195,75 @@ pub(super) async fn claim(
     }
     .await;
     respond(result)
+}
+
+pub(super) async fn claim_for_request(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<awaken_dispatch_contract::ClaimWorkRequest>,
+) -> (StatusCode, Json<Value>) {
+    use awaken_dispatch_contract::{ClaimRequestOutcome, DispatchError};
+
+    let result = async {
+        let id = &request.claim.request_id;
+        if id.is_empty()
+            || id.len() > 128
+            || !id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(ApplicationError::invalid("invalid claim request id"));
+        }
+        let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
+        let workers = if request.claim.run_id.is_none() {
+            service
+                .directory
+                .list()
+                .await
+                .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+                .into_iter()
+                .map(|record| record.snapshot)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let outcome = service
+            .dispatch
+            .claim_for_request(
+                &request.claim,
+                &authority.snapshot,
+                workers,
+                service.placement_policy.clone(),
+                authority.lease_ms,
+            )
+            .await
+            .map_err(|error| match error {
+                DispatchError::Rejected(message) => ApplicationError::invalid(message),
+                DispatchError::Conflict(message) => ApplicationError::conflict(message),
+                DispatchError::Unavailable(message) => ApplicationError::unavailable(message),
+            })?;
+        match outcome {
+            ClaimRequestOutcome::Unsupported => Ok(None),
+            ClaimRequestOutcome::Empty => Ok(Some(json!({ "claimed": null }))),
+            ClaimRequestOutcome::Claimed(claimed) => {
+                // Leave the persisted receipt live across a transient response
+                // preparation error so the same request can finish preparation.
+                let claim = attach_claim_credential_deliveries(&service, Some(*claimed)).await?;
+                let claim =
+                    bind_claimed_session_work_authority(&service, &authority, claim, true).await?;
+                Ok(Some(json!({ "claimed": claim })))
+            }
+        }
+    }
+    .await;
+    match result {
+        Ok(None) => (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({ "error": "replayable claim unsupported" })),
+        ),
+        Ok(Some(response)) => respond(Ok(response)),
+        Err(error) => respond(Err(error)),
+    }
 }
 
 pub(super) async fn claim_retry_exhausted(

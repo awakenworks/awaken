@@ -445,8 +445,14 @@ impl awaken_dispatch_contract::DispatchClaims for PostgresDispatchStore {
         lease_ms: u64,
         capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        self.claim_discovered(owner, lease_ms, capabilities, CandidateAudience::Local)
-            .await
+        self.claim_discovered(
+            owner,
+            lease_ms,
+            capabilities,
+            CandidateAudience::Local,
+            None,
+        )
+        .await
     }
 
     async fn claim_compatible(
@@ -460,6 +466,7 @@ impl awaken_dispatch_contract::DispatchClaims for PostgresDispatchStore {
             lease_ms,
             &capabilities,
             CandidateAudience::Compatible(worker),
+            None,
         )
         .await
     }
@@ -968,6 +975,22 @@ impl awaken_dispatch_contract::DispatchSettlement for PostgresDispatchStore {
 
 #[async_trait]
 impl awaken_dispatch_contract::DispatchMaintenance for PostgresDispatchStore {
+    async fn retire_deleted_session_dispatch(
+        &self,
+        scope_id: &str,
+        session_id: &str,
+    ) -> Result<(), DispatchError> {
+        sqlx::query(
+            "DELETE FROM runtime_dispatch_session_membership WHERE scope_id = $1 AND session_id = $2",
+        )
+        .bind(scope_id)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,

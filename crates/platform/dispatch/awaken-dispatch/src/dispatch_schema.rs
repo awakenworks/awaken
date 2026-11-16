@@ -411,6 +411,12 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 include_str!("migrations/V0011__dispatch_session_membership.postgres.sql").trim(),
                 include_str!("migrations/V0011__dispatch_session_membership.sqlite.sql").trim(),
             )?,
+            Migration::per_dialect(
+                12,
+                "retain logical Worker claim requests",
+                include_str!("migrations/V0012__dispatch_claim_request.postgres.sql").trim(),
+                include_str!("migrations/V0012__dispatch_claim_request.sqlite.sql").trim(),
+            )?,
         ],
     )
 }
@@ -501,7 +507,7 @@ mod tests {
             let applied = runner.run_bundle(&full).await.unwrap();
             assert_eq!(
                 applied.iter().map(|row| row.version).collect::<Vec<_>>(),
-                [7, 8, 9, 10, 11],
+                [7, 8, 9, 10, 11, 12],
                 "I1"
             );
             let observed: (i64, String, i64) = sqlx::query_as(
@@ -669,7 +675,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
             "S1/E1"
         );
         for (table, column) in [
@@ -1149,7 +1155,7 @@ mod tests {
         // U1 compact/expanded already-published stream + converged V9 => only
         // V10 appends its nullable source column. U2 old receipt/old checksums
         // remain byte-identical and source stays NULL, never fabricated. U3
-        // V10 -> V11 appends only its receipt on SQLite without rewriting old
+        // V10 -> V12 appends receipts on SQLite without rewriting old
         // rows or adding the PostgreSQL diagnostic membership table. U4 reopen
         // is empty. V7/V8 identities are original inputs.
         for history in [
@@ -1203,8 +1209,8 @@ mod tests {
                     .iter()
                     .map(|migration| migration.version)
                     .collect::<Vec<_>>(),
-                [11],
-                "U3 only V11 follows the published V10 ledger"
+                [11, 12],
+                "U3 follows the published V10 ledger in order"
             );
             let latest: Vec<(String,i64,String)> = sqlx::query_as("SELECT bundle_id,version,checksum FROM runtime_schema_migrations ORDER BY bundle_id,version").fetch_all(&conn).await.unwrap();
             assert!(
@@ -1223,6 +1229,17 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(membership, 0, "U3 SQLite V11 has no membership projection");
+            let claim_requests: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='runtime_dispatch_claim_request'",
+            )
+            .fetch_one(&conn)
+            .await
+            .unwrap();
+            assert_eq!(
+                claim_requests, 0,
+                "SQLite does not create a claim request store"
+            );
+
             assert!(
                 runner.run_bundle(&full).await.unwrap().is_empty(),
                 "U4 reopen is stable"
@@ -1313,8 +1330,8 @@ mod tests {
                     .iter()
                     .map(|migration| migration.version)
                     .collect::<Vec<_>>(),
-                [11],
-                "U3 only V11 follows the published V10 ledger"
+                [11, 12],
+                "U3 follows the published V10 ledger in order"
             );
             let latest: Vec<(String, i64, String)> =
                 sqlx::query_as(history_sql).fetch_all(&pool).await.unwrap();
@@ -1342,6 +1359,17 @@ mod tests {
                 .await
                 .unwrap();
             assert!(index.is_some(), "U3 indexed Session diagnostics exist");
+            let claim_requests: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {prefix}_dispatch_claim_request"
+            )))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                claim_requests, 0,
+                "V12 does not invent historical claim receipts"
+            );
+
             assert!(
                 runner.run_bundle(&full).await.unwrap().is_empty(),
                 "U4 stable reopen"

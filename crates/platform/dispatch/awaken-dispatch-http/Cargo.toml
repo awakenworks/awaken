@@ -64,6 +64,8 @@ awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-store-inmem.workspace = true
 awaken-store-postgres.workspace = true
+awaken-store-conformance.workspace = true
+awaken-session-store.workspace = true
 awaken-tenancy.workspace = true
 awaken-coordinator-client.workspace = true
 async-trait.workspace = true
@@ -73,6 +75,7 @@ sqlx = { workspace = true, default-features = false, features = ["runtime-tokio"
 tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
+uuid = { version = "1", features = ["v7"] }
 awaken-environment-contract.workspace = true
 awaken-lease-contract.workspace = true
 
