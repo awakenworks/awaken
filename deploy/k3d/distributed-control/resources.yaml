@@ -317,6 +317,7 @@ spec:
     metadata: { labels: { app: coordinator } }
     spec:
       serviceAccountName: coordinator-runtime
+      terminationGracePeriodSeconds: 60
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -330,6 +331,10 @@ spec:
           ports:
             - { name: public, containerPort: 3000 }
             - { name: internal, containerPort: 3001 }
+          lifecycle:
+            # Give the Service time to withdraw the terminating endpoint before Axum closes its listeners.
+            preStop:
+              sleep: { seconds: 5 }
           readinessProbe:
             httpGet: { path: /readyz, port: 3000 }
             initialDelaySeconds: 2
@@ -343,6 +348,9 @@ spec:
           command: ["nginx", "-c", "/etc/nginx-worker/nginx.conf", "-g", "daemon off;"]
           ports:
             - { name: worker-tls, containerPort: 3443 }
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }
           startupProbe:
             tcpSocket: { port: 3443 }
             periodSeconds: 2

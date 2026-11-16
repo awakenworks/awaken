@@ -3,6 +3,7 @@
 // The independent Provider double's private control URL is a fault injector,
 // never a product read/write path or a production termination receipt.
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -230,18 +231,14 @@ async function sendAndWaitForAgentMarker(
   timeoutMs = 180_000,
   onAccepted?: (receiptId: string) => void,
   observeTerminalFailure = false,
+  rollingSubmission?: { idempotencyKey: string; onRetry: (status: number | 'connection') => void },
 ) {
-  // Shared positive-send decision table:
-  // S1 one official SDK send returns one exact User Event receipt -> observe only
-  // history after that receipt; S2 its exact Provider marker then idle commits ->
-  // return the full history and end-to-end elapsed time; S3 missing receipt or
-  // deadline -> fail. K1 maxRetries=0 and no caller replays this non-idempotent
-  // write; K2 latency starts before send and ends only after marker plus idle.
+  // Follow the exact receipt through Provider output and idle. Rolling traffic
+  // can recover an ambiguous POST using the same durable idempotency key.
   const started = performance.now();
-  const receipt = await client.beta.sessions.events.send(sessionId, {
-    events: [{ type: 'user.message', content: [{ type: 'text', text: marker }] }],
-    betas: BETAS,
-  });
+  const receipt = rollingSubmission
+    ? await sendRollingEvent(client, sessionId, marker, rollingSubmission.idempotencyKey, rollingSubmission.onRetry)
+    : await client.beta.sessions.events.send(sessionId, agentMarkerEvent(marker));
   const acceptedAt = performance.now();
   assert.equal(receipt.data?.length, 1, `one exact Event receipt for ${marker}`);
   const receiptId = receipt.data?.[0]?.id;
@@ -260,7 +257,7 @@ async function sendAndWaitForAgentMarker(
       pollMs: 500,
       // Failover receipt observation is idempotent. A replacement replica may
       // correctly reject one mixed committed-prefix read with 503; retry that
-      // read under the same exact receipt, never the Event send above.
+      // read under the same exact receipt.
       retryReadError: (error: unknown) => retryableReadStatus(error) !== null,
       preferStream: true,
     },
@@ -1202,6 +1199,35 @@ async function prepareDispatchLoad(base: string) {
   await expectRawStatus(base, 'POST', `/v1/config/agents/${AGENT}/publish`, 200);
 }
 
+function agentMarkerEvent(marker: string) {
+  return { events: [{ type: 'user.message' as const, content: [{ type: 'text' as const, text: marker }] }], betas: BETAS };
+}
+
+export async function sendRollingEvent(
+  client: Anthropic,
+  sessionId: string,
+  marker: string,
+  idempotencyKey: string,
+  onRetry: (status: number | 'connection') => void,
+) {
+  const body = agentMarkerEvent(marker);
+  const options = { headers: { 'Idempotency-Key': idempotencyKey }, timeout: 10_000, maxRetries: 0 };
+  // awaken-allow(wait): back off between bounded attempts to recover one durable Event receipt.
+  for (let retries = 0; ; retries += 1) {
+    try {
+      return await client.beta.sessions.events.send(sessionId, body, options);
+    } catch (error) {
+      const status = error instanceof Anthropic.APIConnectionError ? 'connection'
+        : error instanceof Anthropic.APIError ? error.status : undefined;
+      if (retries === 5 || (status !== 'connection' && status !== 502 && status !== 503 && status !== 504)) {
+        throw error;
+      }
+      onRetry(status);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+}
+
 export async function deleteRollingSession(
   sessionId: string,
   remove: (sessionId: string) => Promise<unknown>,
@@ -1242,10 +1268,13 @@ async function rollingLoad(base: string, directory: string) {
       while (!stopping()) {
         const marker = `ADR71-ROLLING-${index}-${++turn}`;
         const phase = stage();
+        const idempotencyKey = randomUUID();
         const observation = await sendAndWaitForAgentMarker(client, sessionId, marker, 120_000, (receiptId) => {
           confirmed.push({ receiptId, marker });
-          record({ kind: 'accepted', stage: phase, sessionId, receiptId, marker });
-        }, true).catch((error) => {
+          record({ kind: 'accepted', stage: phase, sessionId, receiptId, marker, idempotencyKey });
+        }, true, { idempotencyKey, onRetry: (status) =>
+          record({ kind: 'event-post-retry', stage: phase, sessionId, marker, idempotencyKey, status }),
+        }).catch((error) => {
           const admitted = confirmed.at(-1);
           if (admitted?.marker === marker) {
             record({ kind: 'observation-failure', stage: phase, sessionId, receiptId: admitted.receiptId, marker });

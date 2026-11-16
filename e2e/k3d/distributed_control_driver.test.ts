@@ -14,6 +14,10 @@ import {
   nativeInFlightHistoryErrors,
   validateFleetEnvironmentIds,
 } from './distributed_control_driver.ts';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
+import Anthropic from '@anthropic-ai/sdk';
+import { sendRollingEvent } from './distributed_control_driver.ts';
 
 test('rolling lifecycle retries an ambiguous delete only for the same Session', async () => {
   const seen: string[] = [];
@@ -322,3 +326,65 @@ test('load campaign bounds are checked before any Session admission', () => {
   assert.throws(()=>loadShape({ADR71_LOAD_ROUNDS:'101'}),/invalid load shape/);
   assert.throws(()=>loadShape({ADR71_LOAD_CONCURRENCY:'49'}),/invalid load shape/);
 });
+
+for (const fault of ['gateway before commit', 'connection reset after commit', 'key conflict', 'gateway unavailable']) {
+  test(`rolling Event POST handles ${fault}`, async (t) => {
+    const attempts: Array<{ path: string | undefined; key: string; body: string }> = [];
+    const receipts = new Map<string, string>();
+    const proxy = createServer(async (req, res) => {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      const key = String(req.headers['idempotency-key']);
+      attempts.push({ path: req.url, key, body });
+      const first = attempts.length === 1;
+      if (fault === 'key conflict') {
+        res.writeHead(409).end();
+        return;
+      }
+      if ((first && fault === 'gateway before commit') || fault === 'gateway unavailable') {
+        res.writeHead(502, { 'Content-Type': 'text/html' }).end('<html>502 Bad Gateway</html>');
+        return;
+      }
+      if (!receipts.has(key)) receipts.set(key, `event-${receipts.size + 1}`);
+      if (first && fault === 'connection reset after commit') {
+        req.socket.resetAndDestroy();
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+        .end(JSON.stringify({ data: [{ id: receipts.get(key) }] }));
+    });
+    proxy.listen(0, '127.0.0.1');
+    t.after(() => { proxy.closeAllConnections(); proxy.close(); });
+    await once(proxy, 'listening');
+    const address = proxy.address();
+    assert.ok(address && typeof address === 'object');
+    const client = new Anthropic({
+      baseURL: `http://127.0.0.1:${address.port}`, apiKey: 'e2e-dummy', maxRetries: 0,
+    });
+    const retries: Array<number | 'connection'> = [];
+    const send = () => sendRollingEvent(client, 'rolling-session', 'one logical turn', 'one-key',
+      (status) => retries.push(status));
+
+    if (fault === 'key conflict') {
+      await assert.rejects(send, { status: 409 });
+      assert.deepEqual(retries, []);
+      assert.equal(attempts.length, 1);
+      assert.equal(receipts.size, 0);
+    } else if (fault === 'gateway unavailable') {
+      await assert.rejects(send, { status: 502 });
+      assert.deepEqual(retries, [502, 502, 502, 502, 502]);
+      assert.equal(attempts.length, 6);
+      assert.equal(receipts.size, 0);
+    } else {
+      const receipt = await send();
+      assert.equal(receipt.data[0].id, 'event-1');
+      assert.deepEqual(retries, [fault === 'gateway before commit' ? 502 : 'connection']);
+      assert.equal(attempts.length, 2);
+      assert.equal(receipts.size, 1);
+    }
+    assert.match(attempts[0].path!, /^\/v1\/sessions\/rolling-session\/events\b/);
+    assert.equal(attempts[0].key, 'one-key');
+    assert.equal(JSON.parse(attempts[0].body).events[0].content[0].text, 'one logical turn');
+    for (const attempt of attempts) assert.deepEqual(attempt, attempts[0]);
+  });
+}
