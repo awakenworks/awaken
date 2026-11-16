@@ -262,3 +262,75 @@ fn local_pool_axis_matches_the_cli_and_new_name_wins() {
         );
     }
 }
+
+#[test]
+fn checkpoint_custody_belongs_to_a_process_that_executes_sessions() {
+    // Cause/effect table: C1 role and its local pool; C2 `sandbox_checkpoint_s3`
+    // configured. E1 resolves with the custody; E2 refused.
+    // | rule | role                 | pool | effect |
+    // | K1   | AllInOne             | yes  | E1     |
+    // | K2   | Worker               | yes  | E1 (registered Workers checkpoint) |
+    // | K3   | AllInOne remote-only | no   | E2     |
+    // | K4   | Control              | no   | E2     |
+    let custody = || {
+        Some(awaken_deployment_config::SandboxCheckpointS3Config {
+            bucket: "checkpoints".into(),
+            region: "us-east-1".into(),
+            prefix: "awaken".into(),
+        })
+    };
+    let all_in_one = resolve(
+        FileConfig {
+            sandbox_checkpoint_s3: custody(),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+    );
+    assert!(all_in_one.runtime.sandbox.checkpoint_s3.is_some(), "K1");
+    let worker = resolve(
+        FileConfig {
+            sandbox_checkpoint_s3: custody(),
+            ..Default::default()
+        },
+        ConfigOverrides {
+            role: Some(Role::Worker),
+            worker_server: Some("http://coordinator".to_owned()),
+            ..Default::default()
+        },
+    );
+    assert!(worker.runtime.sandbox.checkpoint_s3.is_some(), "K2");
+    for (rule, role, file) in [
+        (
+            "K3",
+            Role::AllInOne,
+            FileConfig {
+                run_local_pool: Some(false),
+                internal_bind: Some("127.0.0.1:8081".into()),
+                sandbox_checkpoint_s3: custody(),
+                ..Default::default()
+            },
+        ),
+        (
+            "K4",
+            Role::Control,
+            FileConfig {
+                internal_bind: Some("127.0.0.1:8081".into()),
+                control_service_token_file: Some("/run/control-service-token".into()),
+                sandbox_checkpoint_s3: custody(),
+                ..Default::default()
+            },
+        ),
+    ] {
+        let error = crate::config::resolve_test_file(
+            ConfigOverrides {
+                role: Some(role),
+                ..Default::default()
+            },
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            file,
+        )
+        .unwrap_err();
+        assert!(error.contains("executes Sessions"), "{rule}: {error}");
+    }
+}

@@ -337,8 +337,11 @@ impl ResolvedDeployment {
             disable_local_pool: !run_local_pool,
         };
         runtime.validate_local_execution()?;
-        if runtime.sandbox.checkpoint_s3.is_some() && (role != Role::AllInOne || !run_local_pool) {
-            return Err("sandbox_checkpoint_s3 requires AllInOne with local execution".into());
+        // Checkpoint byte custody belongs to the process that executes Sessions:
+        // the AllInOne co-located Worker or a registered Worker, both of which
+        // advertise and run the checkpoint-and-release continuation.
+        if runtime.sandbox.checkpoint_s3.is_some() && !run_local_pool {
+            return Err("sandbox_checkpoint_s3 requires a process that executes Sessions".into());
         }
         if role == Role::Worker {
             // The registered Worker receives durable claims through its injected

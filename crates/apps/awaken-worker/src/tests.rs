@@ -2134,4 +2134,5 @@ fn resource_capability_follows_the_canonical_registered_remote_projection() {
     );
 }
 
+mod local_checkpoint;
 mod restore_capability;

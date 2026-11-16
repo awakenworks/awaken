@@ -118,6 +118,8 @@ pub struct PreparedLocalWorker {
     stores: awaken_control::InferenceMaterializationStores,
     process: awaken_process_startup::ColocatedWorkerInputs,
     inference_override: Option<Arc<dyn awaken_inference_endpoint::InferenceExecutorMaterializer>>,
+    #[cfg(feature = "test-support")]
+    checkpoint_store: Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
 }
 
 /// Prepare the embedded Worker selected by an AllInOne deployment. Host ACP
@@ -146,6 +148,8 @@ pub(crate) async fn prepare_local_worker_with_workspace(
             stores: prepared.stores,
             process: Default::default(),
             inference_override: None,
+            #[cfg(feature = "test-support")]
+            checkpoint_store: None,
         },
         None => PreparedLocalWorker {
             resolver: None,
@@ -156,6 +160,8 @@ pub(crate) async fn prepare_local_worker_with_workspace(
             .await,
             process: Default::default(),
             inference_override: None,
+            #[cfg(feature = "test-support")]
+            checkpoint_store: None,
         },
     };
     // One registered Worker claims Native, ACP, and outbound A2A attempts. The
@@ -436,7 +442,21 @@ impl PreparedLocalWorker {
             stores,
             process: Default::default(),
             inference_override: None,
+            checkpoint_store: None,
         }
+    }
+
+    /// Test-support: the checkpoint byte custody of this co-located Worker,
+    /// in place of the deployment's `sandbox_checkpoint_s3` bucket. The Worker
+    /// then advertises its local provider's checkpoint format.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn with_environment_checkpoint_store(
+        mut self,
+        store: Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>,
+    ) -> Self {
+        self.checkpoint_store = Some(store);
+        self
     }
 
     /// What the AllInOne process lends this incarnation: its admin tools, its
@@ -476,6 +496,10 @@ impl PreparedLocalWorker {
             builder = builder
                 .with_worker_local_credential_resolver(resolver.clone())
                 .with_acp_capability_observation_source(resolver.clone());
+        }
+        #[cfg(feature = "test-support")]
+        if let Some(store) = &self.checkpoint_store {
+            builder = builder.with_environment_checkpoint_store(store.clone());
         }
         builder
             .prepare_session_environment_from_deployment()
@@ -1099,6 +1123,8 @@ mod tests {
                 },
                 process: Default::default(),
                 inference_override: None,
+                #[cfg(feature = "test-support")]
+                checkpoint_store: None,
             };
             let prepared = if supplied_inference {
                 prepared.with_inference_materializer(Arc::new(CompositionInference))
@@ -1296,6 +1322,8 @@ mod tests {
                 stores: stores.clone(),
                 process: Default::default(),
                 inference_override: None,
+                #[cfg(feature = "test-support")]
+                checkpoint_store: None,
             };
             if product_port {
                 prepared = prepared.with_inference_materializer(Arc::new(CompositionInference));

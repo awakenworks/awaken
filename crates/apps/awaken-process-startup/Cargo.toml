@@ -284,6 +284,10 @@ name = "mcp_sessions"
 required-features = ["test-support"]
 
 [[test]]
+name = "idle_checkpoint_sessions"
+required-features = ["test-support"]
+
+[[test]]
 name = "snapshot_export_offline"
 required-features = ["test-support"]
 

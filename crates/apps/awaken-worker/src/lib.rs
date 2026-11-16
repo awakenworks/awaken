@@ -853,23 +853,37 @@ impl WorkerNodeBuilder {
             self.memory_mounter_factory.is_some(),
             self.credential_materializer.as_ref(),
         ));
-        let provider_checkpoint_formats = self
-            .session_container_provider
-            .as_ref()
-            .map(|installed| installed.provider.checkpoint_formats())
-            .unwrap_or_default()
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
         let dependency_capabilities = self
             .application
             .capabilities()
             .map_err(WorkerNodeBuildError)?;
+        // The deployment's checkpoint byte custody is installed beside the
+        // local Session provider by the shared composition
+        // (`with_session_environment_from_deployment`), exactly as the
+        // builder's explicit store is.
+        let checkpoint_store = dependency_capabilities.checkpoint_store
+            || (self.session_container_provider.is_none()
+                && self.deployment.sandbox.checkpoint_s3.is_some());
+        let provider_checkpoint_formats = match (
+            &self.session_container_provider,
+            &self.prepared_local_sandbox,
+        ) {
+            (Some(installed), _) => installed
+                .provider
+                .checkpoint_formats()
+                .into_iter()
+                .collect(),
+            // A local provider always knows its format; it promises restore
+            // only when this Worker also holds the checkpoint bytes' custody.
+            (None, Some(prepared)) if checkpoint_store => prepared.checkpoint_formats.clone(),
+            (None, _) => std::collections::BTreeSet::new(),
+        };
         checkpoint_topology::validate(
             self.session_container_provider
                 .as_ref()
                 .map(|installed| &installed.provider),
             &provider_checkpoint_formats,
-            dependency_capabilities.checkpoint_store,
+            checkpoint_store,
         )?;
         let sandbox_override = self
             .session_container_provider

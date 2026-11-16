@@ -398,6 +398,9 @@ pub(crate) struct PreparedLocalSandbox {
     pub(crate) capabilities: awaken_provisioning_contract::SandboxCapabilities,
     pub(crate) backend: &'static str,
     pub(crate) readiness: crate::lifecycle::LocalReadinessProbe,
+    /// The effective local provider's own checkpoint formats. Advertised only
+    /// beside an installed checkpoint store (`checkpoint_topology`).
+    pub(crate) checkpoint_formats: std::collections::BTreeSet<String>,
 }
 
 impl PreparedLocalSandbox {
@@ -420,9 +423,11 @@ impl PreparedLocalSandbox {
                 crate::WorkerNodeBuildError(format!("{tier:?} is not a local Session tier"))
             })?;
         let (capabilities, backend) = deployment.sandbox_support_for_tier(tier);
+        let checkpoint_formats = readiness.checkpoint_formats().into_iter().collect();
         Ok(Self {
             capabilities,
             backend,
+            checkpoint_formats,
             readiness: std::sync::Arc::new(move || {
                 let provider = readiness.clone();
                 Box::pin(async move { provider.probe_ready().await })
