@@ -25,6 +25,7 @@ Decision table (``--self-test`` exercises each row in a throwaway repository):
 | V7   | the main-itself run of V5                              | runs the group un-narrowed: narrowed to main it selects no suite and passes vacuously |
 | V4   | main moved since the batch was built                   | re-sync, rebuild on the new main, verify again |
 | V6   | ``--max-rounds`` verifications without a landing       | nothing lands, exit 1 |
+| V8   | no session owner in the environment (a detached launch) | every gate run carries ``AWAKEN_ADMISSION_OWNER=land:<log dir>``, so host admission's fair share counts the run as one owner, not ``unattributed`` |
 
 Each verification (V1, V3's rebuild, V4's rebuild) counts as a round; bisection
 runs only the failed group and is bounded by log2 of the batch size, plus one
@@ -89,6 +90,10 @@ INTEGRATION = "integration"
 CHECK_ALL = "scripts/ci/check-all.sh"
 GATE_ENV = "AWAKEN_LAND_GATE"
 HOST_REFUSAL = 75
+# The variables host build admission reads, in order, to name the session that
+# owns a build; with none set the build is "unattributed" and escapes fair share.
+ADMISSION_OWNER_VARIABLES = ("AWAKEN_ADMISSION_OWNER", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID",
+                             "CODEX_SESSION_ID")
 RUST_GROUPS = ("rust", "api", "contracts", "formal", "reliability", "postgres")
 PATH_TABLE: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("clippy.toml", "rustfmt.toml"), ("rust",)),
@@ -185,6 +190,7 @@ class Context:
     log_dir: Path
     known_groups: list[str]
     requested: list[str]
+    owner: dict[str, str] = field(default_factory=dict)
     runs: list[dict] = field(default_factory=list)
     ejected: list[dict] = field(default_factory=list)
     absorbed: list[str] = field(default_factory=list)
@@ -332,7 +338,7 @@ def run_group(ctx: Context, group: str, tip: str, base: str, label: str) -> dict
     log = ctx.log_dir / f"{label}-{group}.log"
     affected = "" if tip == base else base
     env = environment({"AWAKEN_SERVICE_AFFECTED_BASE": affected, "AWAKEN_FORMAL_TIER": "pr",
-                       "AWAKEN_FORMAL_AFFECTED_BASE": affected})
+                       "AWAKEN_FORMAL_AFFECTED_BASE": affected, **ctx.owner})
     scope = "" if affected else " un-narrowed"
     print(f"→ {label} {group}{scope} on {tip[:10]} (log {log})", flush=True)
     started = time.monotonic()
@@ -539,6 +545,11 @@ def main(argv: list[str] | None = None) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     gate = shlex.split(os.environ.get(GATE_ENV) or CHECK_ALL)
     ctx = Context(git, args.main_ref, gate, log_dir, known, args.group)
+    if not any(os.environ.get(name, "").strip() for name in ADMISSION_OWNER_VARIABLES):
+        # V8: a detached launch (setsid, cron) inherits no session identity.
+        ctx.owner = {"AWAKEN_ADMISSION_OWNER": f"land:{log_dir.name}"}
+        print(f"land: no session owner in the environment; host admission counts this run as "
+              f"{ctx.owner['AWAKEN_ADMISSION_OWNER']}", flush=True)
     status, batch, groups, code = "error", None, [], 1
     try:
         status, batch, groups = land(ctx, args.branches, args.dry_run, args.max_rounds)
@@ -573,7 +584,8 @@ head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=Tr
 with open(root / "gate.jsonl", "a") as log:
     log.write(json.dumps({"group": group, "head": head, "service": os.environ.get("AWAKEN_SERVICE_AFFECTED_BASE"),
                           "tier": os.environ.get("AWAKEN_FORMAL_TIER"),
-                          "formal": os.environ.get("AWAKEN_FORMAL_AFFECTED_BASE")}) + "\n")
+                          "formal": os.environ.get("AWAKEN_FORMAL_AFFECTED_BASE"),
+                          "owner": os.environ.get("AWAKEN_ADMISSION_OWNER")}) + "\n")
 if os.environ.get("FAKE_REFUSE") == group:
     sys.exit(75)
 if os.environ.get("FAKE_HOST_FAULT") == group and os.environ.get("AWAKEN_SERVICE_AFFECTED_BASE") != head:
@@ -603,7 +615,7 @@ class Fixture:
         self.env = environment({"HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config"),
                                 "GIT_CONFIG_NOSYSTEM": "1", "LAND_TEST_ROOT": str(root),
                                 GATE_ENV: shlex.join([sys.executable, str(root / "gate.py")])})
-        for name in ("FAKE_REFUSE", "FAKE_MOVE_MAIN"):
+        for name in ("FAKE_REFUSE", "FAKE_MOVE_MAIN", *ADMISSION_OWNER_VARIABLES):
             self.env.pop(name, None)
         self.repo, self.writer = root / "repo", root / "writer"
         self.repo.mkdir()
@@ -779,6 +791,26 @@ def case_shared_host_fault(fx: Fixture) -> None:
     fx.settled()
 
 
+def case_admission_owner(fx: Fixture) -> None:
+    fx.lane("lane-a", {"a.txt": "a\n"})
+    fx.ready()
+    detached = fx.land("--group", "static", "lane-a")
+    assert detached.returncode == 0, explain(detached)
+    assert "host admission counts this run as land:logs" in detached.stdout, detached.stdout
+    assert [run["owner"] for run in fx.runs()] == ["land:logs"], f"V8: detached run owned: {fx.runs()}"
+    fx.settled()
+
+
+def case_session_owner_kept(fx: Fixture) -> None:
+    fx.lane("lane-a", {"a.txt": "a\n"})
+    fx.ready()
+    result = fx.land("--group", "static", "lane-a", CLAUDE_CODE_SESSION_ID="fixture-session")
+    assert result.returncode == 0, explain(result)
+    assert "no session owner" not in result.stdout, result.stdout
+    assert [run["owner"] for run in fx.runs()] == [None], "V8: a session's own identity is not replaced"
+    fx.settled()
+
+
 def case_absorbed(fx: Fixture) -> None:
     fx.lane("lane-dup", {"u.txt": "u\n"})
     fx.git("checkout", "-q", "trunk")
@@ -846,7 +878,7 @@ def case_selection() -> None:
 
 def self_test() -> None:
     cases = [case_clean_lanes, case_conflict, case_breaking_lane, case_host_refusal, case_main_moves,
-             case_round_limit, case_main_fails, case_shared_host_fault, case_absorbed, case_refusals, case_dry_run]
+             case_round_limit, case_main_fails, case_shared_host_fault, case_admission_owner, case_session_owner_kept, case_absorbed, case_refusals, case_dry_run]
     for case in cases:
         with tempfile.TemporaryDirectory(prefix="land-") as scratch:
             case(Fixture(Path(scratch)))
