@@ -6,6 +6,8 @@
 //! HTTP response reaches the Worker; Control B must return the durable duplicate
 //! receipt, serve authoritative recovery, and settle the same claim.
 
+#[path = "active_active_postgres/claim_receipt_races.rs"]
+mod claim_receipt_races;
 mod postgres_support;
 
 use std::io::{Read, Write};
