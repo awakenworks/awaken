@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod support;
-use support::FakeWorkerUpstream;
+use support::{FakeWorkerUpstream, REPLAYABLE_DISPATCH_CLAIM_PATH};
 
 fn manifest() -> WorkerManifest {
     WorkerManifest {
@@ -86,7 +86,9 @@ fn assert_exact_withdrawal(upstream: &FakeWorkerUpstream, admitted: bool) {
         "only an admitted incarnation drains: {paths:?}"
     );
     assert_eq!(
-        paths.iter().any(|path| path == "/v1/worker/dispatch/claim"),
+        paths
+            .iter()
+            .any(|path| path == REPLAYABLE_DISPATCH_CLAIM_PATH),
         admitted,
         "claims prove initial Ready was admitted: {paths:?}"
     );
@@ -737,7 +739,7 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
             if upstream
                 .requests()
                 .iter()
-                .any(|path| path == "/v1/worker/dispatch/claim")
+                .any(|path| path == REPLAYABLE_DISPATCH_CLAIM_PATH)
             {
                 return Ok(WorkerShutdown::Prompt);
             }
@@ -761,7 +763,7 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     let positions: Vec<_> = [
         "/v1/worker/register",
         "/v1/worker/heartbeat",
-        "/v1/worker/dispatch/claim",
+        REPLAYABLE_DISPATCH_CLAIM_PATH,
         "/v1/worker/drain",
         "/v1/worker/quiesced",
         "/v1/worker/deregister",
@@ -1045,7 +1047,7 @@ async fn startup_transport_gap_retries_the_same_incarnation_until_coordinator_is
         if upstream
             .requests()
             .iter()
-            .any(|path| path == "/v1/worker/dispatch/claim")
+            .any(|path| path == REPLAYABLE_DISPATCH_CLAIM_PATH)
         {
             break;
         }
@@ -1067,7 +1069,7 @@ async fn startup_transport_gap_retries_the_same_incarnation_until_coordinator_is
     assert!(
         requests
             .iter()
-            .any(|path| path == "/v1/worker/dispatch/claim"),
+            .any(|path| path == REPLAYABLE_DISPATCH_CLAIM_PATH),
         "E2 accepted registration reaches claim"
     );
     shutdown_tx
@@ -2231,14 +2233,14 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
             let claims_at_fence = upstream
                 .requests()
                 .iter()
-                .filter(|path| path.as_str() == "/v1/worker/dispatch/claim")
+                .filter(|path| path.as_str() == REPLAYABLE_DISPATCH_CLAIM_PATH)
                 .count();
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert_eq!(
                 upstream
                     .requests()
                     .iter()
-                    .filter(|path| path.as_str() == "/v1/worker/dispatch/claim")
+                    .filter(|path| path.as_str() == REPLAYABLE_DISPATCH_CLAIM_PATH)
                     .count(),
                 claims_at_fence,
                 "E2 no claim attempt after the Registry drain request"

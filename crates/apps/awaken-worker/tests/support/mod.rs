@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+pub const REPLAYABLE_DISPATCH_CLAIM_PATH: &str = "/v1/worker/dispatch/claim_for_request";
+
 pub struct FakeWorkerUpstream {
     url: String,
     stop: Arc<AtomicBool>,
@@ -482,7 +484,9 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
             }
         }
         "/v1/worker/drain" | "/v1/worker/quiesced" => r#"{"mutation":"applied"}"#.to_string(),
-        "/v1/worker/dispatch/claim" => r#"{"claimed":null}"#.to_string(),
+        REPLAYABLE_DISPATCH_CLAIM_PATH
+        | "/v1/worker/dispatch/claim"
+        | "/v1/worker/dispatch/claim_retry_exhausted" => r#"{"claimed":null}"#.to_string(),
         _ => format!(r#"{{"error":"unexpected startup-test path: {path}"}}"#),
     };
     write_response(&mut stream, "200 OK", &response);
