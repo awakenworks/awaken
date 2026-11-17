@@ -16,6 +16,8 @@ pub(in crate::state) struct EventPageIndex {
     /// sole Event vector, not a replay log or another payload collection.
     delivery_changes: BTreeMap<(u64, usize), String>,
     delivery_positions: HashMap<String, (u64, usize)>,
+    closed_preview_responses: HashSet<String>,
+    lifecycle_positions: Vec<usize>,
     #[cfg(test)]
     examined: usize,
 }
@@ -49,6 +51,33 @@ impl EventPageIndex {
                 .entry(event.id.clone())
                 .or_default()
                 .push(position);
+            if let OutboundKind::SpanModelRequestEnd {
+                preview_response_id: Some(id),
+                ..
+            } = &event.kind
+            {
+                self.closed_preview_responses.insert(id.clone());
+            }
+            if matches!(
+                event.type_str(),
+                "session.status_idle"
+                    | "session.status_running"
+                    | "session.status_rescheduled"
+                    | awaken_session_contract::SESSION_TERMINATED
+                    | "session.deleted"
+                    | "session.thread_status_idle"
+                    | "session.thread_status_terminated"
+                    | "session.thread_status_running"
+                    | "session.thread_status_rescheduled"
+                    | "user.message"
+                    | "user.tool_confirmation"
+                    | "user.custom_tool_result"
+                    | "user.tool_result"
+                    | "user.define_outcome"
+                    | "user.interrupt"
+            ) {
+                self.lifecycle_positions.push(position);
+            }
             if owners
                 .get(&event.id)
                 .is_some_and(|owner| owner != session_id)
@@ -74,6 +103,20 @@ impl EventPageIndex {
 
     pub(super) fn positions(&self, id: &str) -> Option<&[usize]> {
         self.positions.get(id).map(Vec::as_slice)
+    }
+
+    pub(in crate::state) fn changed_after(&self, id: &str, cursor: (u64, usize)) -> bool {
+        self.delivery_positions
+            .get(id)
+            .is_some_and(|position| *position > cursor)
+    }
+
+    pub(in crate::state) fn lifecycle_positions(&self) -> &[usize] {
+        &self.lifecycle_positions
+    }
+
+    pub(in crate::state) fn closes_preview(&self, id: &str) -> bool {
+        self.positions.contains_key(id) || self.closed_preview_responses.contains(id)
     }
 
     pub(super) fn inherit_delivery_changes(

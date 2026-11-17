@@ -993,6 +993,9 @@ pub enum OutboundKind {
         // Nullable per the SDK (`boolean | null`): the key is always present.
         is_error: Option<bool>,
         model_usage: SpanModelUsage,
+        // Projection metadata is never part of the Managed wire event.
+        #[serde(skip)]
+        preview_response_id: Option<String>,
     },
     #[serde(rename = "span.outcome_evaluation_start")]
     SpanOutcomeEvaluationStart { outcome_id: String, iteration: u32 },
@@ -1733,6 +1736,7 @@ mod tests {
         let v = serde_json::to_value(ev(OutboundKind::SpanModelRequestEnd {
             model_request_start_id: "evt_start".to_string(),
             is_error: None,
+            preview_response_id: Some("internal-link".into()),
             model_usage: SpanModelUsage {
                 input_tokens: 10,
                 output_tokens: 20,
@@ -1744,6 +1748,7 @@ mod tests {
         .unwrap();
         assert_eq!(v["type"], "span.model_request_end");
         assert_eq!(v["model_request_start_id"], "evt_start");
+        assert!(v.get("preview_response_id").is_none());
         assert!(
             v["is_error"].is_null(),
             "is_error is present and null (SDK: boolean | null)"

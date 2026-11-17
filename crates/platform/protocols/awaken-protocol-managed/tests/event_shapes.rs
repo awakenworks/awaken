@@ -382,6 +382,7 @@ fn samples() -> Vec<Event> {
             model_request_start_id: "sevt_start".into(),
             is_error: None,
             model_usage: SpanModelUsage::default(),
+            preview_response_id: None,
         }),
         event(OutboundKind::SpanOutcomeEvaluationStart {
             outcome_id: "outc_1".into(),

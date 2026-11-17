@@ -34,9 +34,10 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+tokio.workspace = true
+
 [dev-dependencies]
 # Drive the async port default methods (enqueue → enqueue_with, bind_sandbox) in unit tests.
-tokio = { workspace = true, features = ["rt", "macros"] }
 awaken-environment-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-contract.workspace = true

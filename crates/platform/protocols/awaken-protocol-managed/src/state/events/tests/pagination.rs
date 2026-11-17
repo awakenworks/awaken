@@ -107,8 +107,8 @@ async fn history_time_v2_uses_typed_root_and_event_evidence_without_changing_v1(
     );
     assert_eq!(v2["created_at"], LEGACY_UNRECORDED_AT, "R2");
 
-    record.events = vec![message("known"), message("unknown")];
-    for event in &mut record.events {
+    record.events = vec![message("known"), message("unknown")].into();
+    for event in record.events.iter_mut() {
         event.processed_at = Some(LEGACY_UNRECORDED_AT.into());
     }
     record.event_times = HashMap::from([("known".into(), real_placeholder)]);
@@ -469,7 +469,7 @@ async fn indexed_pages_match_filtered_directional_visibility_and_cursor_rules() 
             .get(&id)
             .unwrap()
             .clone();
-        record.events = events.clone();
+        record.events = events.clone().into();
         record.event_thread_owners = HashMap::from([
             ("hidden".into(), "child".into()),
             ("tool".into(), "child".into()),
@@ -582,7 +582,7 @@ async fn page_index_tracks_published_references_owners_replacement_and_order() {
     let (state, id) = page_state().await;
     state
         .publish_projection_update(&id, |record| {
-            record.events = vec![tool("tool"), action("tool"), message("tail")];
+            record.events = vec![tool("tool"), action("tool"), message("tail")].into();
             record
                 .event_thread_owners
                 .insert("tool".into(), "child".into());

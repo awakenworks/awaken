@@ -49,6 +49,7 @@ pub enum EnvironmentExecutionError {
 /// Coordinator-owned executable projection and WorkQueue application service.
 pub struct EnvironmentExecutionApplication {
     work: WorkQueue,
+    work_waits: work_roles::WorkWaits,
     execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
     image_readiness: Option<Arc<dyn EnvironmentImageReadiness>>,
     cloud_native_credential_realization:
@@ -63,6 +64,7 @@ impl EnvironmentExecutionApplication {
     ) -> Self {
         Self {
             work: work.into(),
+            work_waits: Default::default(),
             execution_source,
             image_readiness: None,
             cloud_native_credential_realization: None,
@@ -332,11 +334,14 @@ impl awaken_session_application_contract::SessionWorkerAssignment
         environment_id: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<String, awaken_runtime_contract::runs::RunError> {
-        self.work
+        let item = self
+            .work
             .assignment
             .enqueue_session(environment_id, session_id)
             .await
-            .map_err(session_work_error(session_id.as_str()))
+            .map_err(session_work_error(session_id.as_str()))?;
+        self.work_waits.notify(environment_id);
+        Ok(item)
     }
 
     async fn wake_session(
@@ -344,11 +349,14 @@ impl awaken_session_application_contract::SessionWorkerAssignment
         environment_id: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<String, awaken_runtime_contract::runs::RunError> {
-        self.work
+        let item = self
+            .work
             .assignment
             .wake_session(environment_id, session_id)
             .await
-            .map_err(session_work_error(session_id.as_str()))
+            .map_err(session_work_error(session_id.as_str()))?;
+        self.work_waits.notify(environment_id);
+        Ok(item)
     }
 
     async fn retire_session(

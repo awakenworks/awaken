@@ -272,7 +272,7 @@ impl ManagedState {
                 child.archived_at = Some(at);
             }
         }
-        record.events = canonical;
+        record.events = canonical.into();
         Ok(())
     }
 }

@@ -178,7 +178,7 @@ pub use session::{
     SessionRecoveryPreparationReference, SessionRunExecutionObservation, SessionRuns,
     SessionSandboxCheckpointObservation, SessionSourceDispatchObservation,
     SessionThreadLiveSubscription, SessionToolUseObservation, StreamingRuns, TerminalCleanup,
-    ThreadReads, committed_lifecycle_prefix, drain_mcp_generation_receipt,
+    ThreadLiveObservation, ThreadReads, committed_lifecycle_prefix, drain_mcp_generation_receipt,
     outcome_terminal_commit_cursor, projection_validation_needs_trailing_root,
     publish_mcp_generation_receipt, same_thread_projection_prefix, select_recovery_snapshot_run,
 };

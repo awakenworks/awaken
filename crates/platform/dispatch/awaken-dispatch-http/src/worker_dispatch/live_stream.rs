@@ -106,9 +106,12 @@ async fn publish(
             "live Worker event does not match its claim's logical Thread",
         ));
     }
-    for observation in observations {
-        let _ = service.stream_sink.send_observation(observation).await;
-    }
+    awaken_dispatch_contract::with_preview_claim_epoch(claim, async {
+        for observation in observations {
+            let _ = service.stream_sink.send_observation(observation).await;
+        }
+    })
+    .await;
     // Keep the exact epoch guarded through publication, as on the single path.
     drop(guard);
     Ok(json!({ "accepted": true }))

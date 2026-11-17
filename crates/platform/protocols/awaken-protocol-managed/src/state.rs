@@ -39,7 +39,8 @@ mod deployment_sessions;
 mod error;
 mod events;
 pub(crate) use events::{
-    CommittedEventDelivery, ProjectionObservationDecision, managed_assistant_event_id,
+    CommittedEventDelivery, ProjectionObservationDecision, StreamReplay,
+    managed_assistant_event_id, preview_was_closed,
 };
 mod helpers;
 mod managed_state;

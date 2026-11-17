@@ -79,48 +79,37 @@ pub(super) async fn poll_work(
 ) -> Result<Json<Option<Work>>, WireError> {
     let poll = parse_poll_params(raw.as_deref())?;
     // The official SDK sends worker identity in `Anthropic-Worker-ID`, not in
-    // the query string. Long polling repeatedly drives the same authoritative
-    // atomic claim; it does not introduce a second queue or lease registry.
+    // the query string. The Environment use case owns waiting and keeps the
+    // original store as the sole authority for every grant.
     let lease_owner = work_lease_owner(&headers)?;
     // Worker ID is an optional observation label in the raw Work API. The
     // higher-level WorkPoller supplies it; the generated `work.poll()` method
     // does not require it. When omitted, the opaque credential owner is also the
     // least-privilege liveness coordinate rather than a fabricated public ID.
     let poller_id = worker_id(&headers).unwrap_or(&lease_owner);
-    let started = awaken_time::mono::Stopwatch::start();
-    loop {
-        let claimed = routes
-            .consumer
-            .claim(&id, &lease_owner, poller_id, poll.reclaim_older_than_ms)
-            .await
-            .map_err(map_execution_error)?;
-        if let Some(work) = claimed {
-            return Ok(Json(Some(crate::work_queue::project_claim(&work))));
-        }
-        let Some(wait) = poll.block_ms else {
-            return Ok(Json(None));
-        };
-        if started.elapsed() >= wait {
-            return Ok(Json(None));
-        }
-        tokio::time::sleep(
-            wait.saturating_sub(started.elapsed())
-                .min(std::time::Duration::from_millis(20)),
+    let claimed = routes
+        .consumer
+        .poll(
+            &id,
+            &lease_owner,
+            poller_id,
+            poll.reclaim_older_than_ms,
+            poll.block_ms,
         )
-        .await;
-    }
+        .await
+        .map_err(map_execution_error)?;
+    Ok(Json(claimed.as_ref().map(crate::work_queue::project_claim)))
 }
 
-/// Parsed poll timing. `None` means the caller explicitly sent `block_ms=null`
-/// (serialized by the official SDK as an empty query value); omission uses the
-/// documented 999 ms default.
+/// Parsed poll timing. Both omission and the SDK's empty query value are
+/// non-blocking.
 pub(crate) struct PollParams {
     block_ms: Option<std::time::Duration>,
     reclaim_older_than_ms: Option<u64>,
 }
 
 pub(crate) fn parse_poll_params(raw: Option<&str>) -> Result<PollParams, WireError> {
-    let mut block_ms = Some(std::time::Duration::from_millis(999));
+    let mut block_ms = None;
     let mut reclaim_older_than_ms = None;
     for (key, value) in form_urlencoded::parse(raw.unwrap_or_default().as_bytes()) {
         match key.as_ref() {
@@ -429,7 +418,7 @@ mod tests {
             "explicit null disables blocking"
         );
         assert_eq!(poll_null.reclaim_older_than_ms, None);
-        assert_eq!(poll_omitted.block_ms.unwrap().as_millis(), 999);
+        assert!(poll_omitted.block_ms.is_none());
     }
 
     #[test]

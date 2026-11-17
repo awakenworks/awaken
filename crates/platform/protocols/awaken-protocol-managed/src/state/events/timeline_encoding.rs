@@ -178,10 +178,26 @@ pub(super) fn encode_fact(
             start,
             is_error,
             usage,
+            preview_response,
         } => OutboundKind::SpanModelRequestEnd {
             model_request_start_id: record.fact_id(start),
             is_error: Some(*is_error),
             model_usage: SpanModelUsage::from(*usage),
+            preview_response_id: preview_response.as_deref().and_then(|&(step, response)| {
+                let awaken_managed_session_events::FactProvenance::Audit { run_id, .. } =
+                    &fact.key.provenance
+                else {
+                    return None;
+                };
+                Some(crate::state::managed_assistant_event_id(
+                    &record.session.id,
+                    thread_id,
+                    run_id,
+                    step,
+                    response,
+                    "agent.message",
+                ))
+            }),
         },
         SessionEventKind::MessageSent { message } => OutboundKind::AgentThreadMessageSent {
             to_session_thread_id: thread_id.to_string(),

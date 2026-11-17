@@ -89,24 +89,28 @@ pub(super) fn replay_is_terminal_after(
     event_type: &str,
     scope: SseTerminalScope,
 ) -> bool {
+    replay_terminal_transition(event_type, scope).unwrap_or(current)
+}
+
+fn replay_terminal_transition(event_type: &str, scope: SseTerminalScope) -> Option<bool> {
     match event_type {
         "session.status_idle" | awaken_session_contract::SESSION_TERMINATED | "session.deleted" => {
-            true
+            Some(true)
         }
         "session.thread_status_idle" | "session.thread_status_terminated"
             if scope == SseTerminalScope::ChildThread =>
         {
-            true
+            Some(true)
         }
         "session.thread_status_running" | "session.thread_status_rescheduled"
             if scope == SseTerminalScope::ChildThread =>
         {
-            false
+            Some(false)
         }
         "session.thread_status_idle"
         | "session.thread_status_terminated"
         | "session.thread_status_running"
-        | "session.thread_status_rescheduled" => current,
+        | "session.thread_status_rescheduled" => None,
         "user.message"
         | "user.tool_confirmation"
         | "user.custom_tool_result"
@@ -114,8 +118,8 @@ pub(super) fn replay_is_terminal_after(
         | "user.define_outcome"
         | "user.interrupt"
         | "session.status_running"
-        | "session.status_rescheduled" => false,
-        _ => current,
+        | "session.status_rescheduled" => Some(false),
+        _ => None,
     }
 }
 
@@ -169,7 +173,7 @@ pub(super) struct LiveSseSource {
 /// read the same published Event index. Previews remain connection-local.
 pub(super) fn live_sse_stream<F>(
     source: LiveSseSource,
-    snapshot: Vec<Event>,
+    snapshot: crate::state::StreamReplay,
     mut rx: broadcast::Receiver<Event>,
     previews: PreviewSelection,
     terminal_scope: SseTerminalScope,
@@ -186,21 +190,32 @@ where
     let api_version = source.api_version;
     let presentation = source.state.agent_definition_presentation;
     let stream = async_stream::stream! {
-        let mut delivery = CommittedEventDelivery::default();
+        // Committed identities and their immutable payloads were already
+        // validated by publication. Only process-local overlays need connection
+        // deduplication; the rest is delivered by the shared change index.
+        let mut transient_delivery = CommittedEventDelivery::default();
+        let mut admit = |event: &Event| {
+            if crate::state::is_transient_event_id(&event.id) {
+                transient_delivery.accept(event)
+            } else {
+                Ok(true)
+            }
+        };
         let mut preview_event_ids = HashSet::new();
         let mut thread_preview = thread_preview;
         let mut terminal_hint = false;
         let mut current = source.current;
         let mut cursor = (source.revision, usize::MAX);
-        for event in snapshot {
+        for event in snapshot.events.iter().cloned() {
             let Some(event) = project(event) else { continue; };
             terminal_hint = replay_is_terminal_after(terminal_hint, event.type_str(), terminal_scope);
-            match delivery.accept(&event) {
+            match admit(&event) {
                 Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event), api_version, presentation)),
                 Ok(false) => {},
                 Err(error) => { yield Err(error); return; },
             }
         }
+        drop(snapshot);
         let mut observation = source.refresh.interval();
         observation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut tail_due = true;
@@ -228,7 +243,7 @@ where
                 && let Ok(Some(event)) = source.state.observe_committed_session_deletion(
                     &source.session_id, &source.owner_scope).await
             {
-                match delivery.accept(&event) {
+                match admit(&event) {
                     Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event), api_version, presentation)),
                     Ok(false) => {},
                     Err(error) => { yield Err(error); return; },
@@ -256,7 +271,7 @@ where
                 // resume the indexed tail at that cache revision. The same
                 // delivery equality kernel below suppresses already sent ids
                 // and allows only None->timestamp enrichment.
-                let page = if canonical_catchup_due {
+                let page: Box<dyn Iterator<Item = ((u64, usize), Event)> + Send> = if canonical_catchup_due {
                     if indexed.is_empty() {
                         canonical_catchup_due = false;
                         tail_due = false;
@@ -273,33 +288,32 @@ where
                             Err(error) => { yield Err(error); return; },
                         };
                     rx = receiver;
+                    let after = cursor;
                     cursor = (revision, usize::MAX);
                     canonical_catchup_due = false;
                     tail_due = false;
-                    canonical.into_iter().map(|event| (cursor, event)).collect::<Vec<_>>()
+                    Box::new((0..canonical.events.len()).filter_map(move |index| {
+                        let event = &canonical.events[index];
+                        (crate::state::is_transient_event_id(&event.id) || canonical.changed_after(&event.id, after))
+                            .then(|| (cursor, event.clone()))
+                    }))
                 } else {
                     tail_due = indexed.len() == ManagedState::STREAM_DELIVERY_PAGE_SIZE;
-                    indexed
+                    Box::new(indexed.into_iter())
                 };
                 for (position, event) in page {
                     cursor = position;
                     let Some(event) = project(event) else { continue; };
-                    match delivery.accept(&event) {
+                    match admit(&event) {
                         Ok(false) => continue,
                         Err(error) => { yield Err(error); return; },
                         Ok(true) => {},
                     }
                     if let Some((_, projector)) = thread_preview.as_mut() {
-                        if event.type_str() == "agent.message" {
-                            for preview in projector.take_for_committed(&event.id) {
-                                if accept_preview_frame(&preview, previews, &mut preview_event_ids) {
-                                    yield Ok(sse_frame(&StreamFrame::Preview(preview), api_version, presentation));
-                                }
+                        for preview in projector.observe_committed(&event) {
+                            if accept_preview_frame(&preview, previews, &mut preview_event_ids) {
+                                yield Ok(sse_frame(&StreamFrame::Preview(preview), api_version, presentation));
                             }
-                        } else if matches!(event.type_str(), "agent.thread_message_sent"
-                            | "session.thread_status_idle" | "session.thread_status_terminated")
-                        {
-                            projector.discard_uncommitted();
                         }
                     }
                     terminal_hint |= is_terminal(&StreamFrame::Committed(event.clone()), terminal_scope);
@@ -331,8 +345,9 @@ where
                     Ok((events, _, _)) => events,
                     Err(error) => { yield Err(error); return; },
                 };
-                let terminal = canonical.into_iter().filter_map(&project).fold(false,
-                    |terminal, event| replay_is_terminal_after(terminal, event.type_str(), terminal_scope));
+                let terminal = canonical.lifecycle_events().cloned().filter_map(&project)
+                    .find_map(|event| replay_terminal_transition(event.type_str(), terminal_scope))
+                    .unwrap_or(false);
                 if terminal { break; }
                 terminal_hint = false;
             }
@@ -343,7 +358,7 @@ where
                     Ok(event) if matches!(event.kind, crate::types::OutboundKind::SessionDeleted {}) => {
                         // This producer has already committed the deletion. Its
                         // root is gone and cannot be reconstructed as history.
-                        match delivery.accept(&event) {
+                        match admit(&event) {
                             Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event), api_version, presentation)),
                             Ok(false) => {},
                             Err(error) => { yield Err(error); return; },
@@ -363,9 +378,13 @@ where
                         None => std::future::pending().await,
                     }
                 } => match live {
-                    Ok(Some(event)) => {
+                    Ok(Some(live)) => {
                         let frames = thread_preview.as_mut().expect("live subscription exists")
-                            .1.project(event);
+                            .1.project_checked(live.observation, live.epoch, |event_id| {
+                                crate::state::preview_was_closed(
+                                    &source.state, &source.session_id, event_id
+                                ).unwrap_or(true)
+                            });
                         for frame in frames {
                             if accept_preview_frame(&frame, previews, &mut preview_event_ids) {
                                 yield Ok(sse_frame(&StreamFrame::Preview(frame), api_version, presentation));

@@ -492,9 +492,12 @@ async fn infer_step_attempts(
         // The audit vector shares the existing ThreadCommit watermarks with
         // messages and state. Gate pauses return before this seam and therefore
         // stage no model observation.
-        ledger
-            .audit
-            .push(RunEvent::ModelRequestCompleted(observed.observation).into());
+        let mut audit: awaken_agent_contract::audit::draft::Draft =
+            RunEvent::ModelRequestCompleted(observed.observation).into();
+        // This response coordinate is already carried by the live SDK
+        // observation. Keep it as derived projection evidence in the audit.
+        audit.payload["preview_response"] = serde_json::json!([source_step, truncation_retries]);
+        ledger.audit.push(audit);
         if !context.physical_quiescence.permits_execution() {
             // A timeout is a local observation, not a terminal provider receipt.
             // Bypass both model-pool failover and outer failure tolerance.

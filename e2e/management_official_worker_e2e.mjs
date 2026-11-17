@@ -3,7 +3,7 @@
 // baseline the matrix said was "missing" ships inside @anthropic-ai/sdk as
 // `client.beta.environments.work.poller` (WorkPoller) / `.worker` (EnvironmentWorker).
 // If awaken's work-queue API is compatible with the official worker, the official
-// poller claims, acks, yields, and force-stops awaken's queued items unmodified —
+// poller claims, acks, yields, and stops awaken's queued items unmodified —
 // which is exactly the "vs the official EnvironmentWorker" conformance check.
 //
 // This uses the control-plane WorkPoller (poll -> ack -> yield -> stop) as the
@@ -33,7 +33,21 @@ async function main() {
   const workdir = mkdtempSync(join(tmpdir(), 'awaken-official-worker-'));
   try {
     await waitForPort(PORT);
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+    const stopCalls = new Map();
+    const client = new Anthropic({
+      apiKey: 'e2e-dummy',
+      baseURL: baseUrl,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const match = new URL(request.url).pathname.match(/\/work\/([^/]+)\/stop$/);
+        if (request.method === 'POST' && match) {
+          const body = await request.clone().text();
+          const id = decodeURIComponent(match[1]);
+          stopCalls.set(id, [...(stopCalls.get(id) ?? []), body ? JSON.parse(body).force : undefined]);
+        }
+        return fetch(request);
+      },
+    });
 
     // A self-hosted environment + a session on it → the queue holds a seeded
     // healthcheck plus the session work item.
@@ -56,10 +70,11 @@ async function main() {
     pass('self-hosted env enqueues healthcheck + session work');
 
     // Drive the queue with the OFFICIAL WorkPoller (the reference worker's control
-    // plane): non-blocking drain — claim each item, ack it, yield it, force-stop it,
+    // plane): non-blocking drain — claim each item, ack it, yield it, stop it,
     // and return when the queue empties. If awaken's poll/ack/stop wire matches what
     // the official worker expects, this iterates awaken's items unmodified.
     const seen = [];
+    const seenIds = [];
     for await (const work of client.beta.environments.work.poller({
       environmentId: env.id,
       environmentKey: 'e2e-env-key',
@@ -68,6 +83,7 @@ async function main() {
     })) {
       assert.equal(work.state, 'active', 'the official poller claims each item into the active lease');
       seen.push(work.data.type);
+      seenIds.push(work.id);
       if (work.data.type === 'session') {
         assert.equal(work.data.id, session.id, 'the session work item references the session');
       }
@@ -76,6 +92,9 @@ async function main() {
       seen.includes('healthcheck') && seen.includes('session'),
       `the official WorkPoller claimed awaken's queued items (saw: ${seen.join(',')})`,
     );
+    for (const id of seenIds) {
+      assert.deepEqual(stopCalls.get(id), [undefined], 'WorkPoller releases completed work with ordinary stop');
+    }
     pass('the official SDK WorkPoller drives awaken’s work queue unmodified (poll→ack→stop)');
 
     // After the reference worker drained it, the queue is empty (every item stopped).
@@ -107,7 +126,7 @@ async function main() {
       drain: true,
       blockMs: null,
     })) {
-      // The poller owns acknowledgement and force-stop for the healthcheck.
+      // The poller owns acknowledgement and ordinary stop for the healthcheck.
     }
     const workerSession = await client.beta.sessions.create({
       agent: 'assistant',
@@ -148,6 +167,7 @@ async function main() {
       'the official EnvironmentWorker did not force-stop after cancellation',
     );
     assert.ok(stopped.stopped_at, 'EnvironmentWorker cancellation settles lease ownership');
+    assert.deepEqual(stopCalls.get(active.id), [true], 'EnvironmentWorker requests forced stop on cancellation');
     pass('the official SDK EnvironmentWorker settles Awaken Session work unmodified');
 
     console.log('E2E PASS: awaken’s work queue is driven by the official SDK EnvironmentWorker helper.');

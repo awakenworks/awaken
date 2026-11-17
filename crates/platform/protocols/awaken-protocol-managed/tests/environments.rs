@@ -884,7 +884,7 @@ async fn official_sdk_credential_owns_optional_worker_id_lease_lifecycle() {
 async fn work_poll_honors_documented_blocking_partitions_and_boundaries() {
     // Causes: empty queue and block_ms omitted, explicit null, 1..=999, or out of range.
     // Constraints: null is the non-blocking partition; numeric values must be inclusive 1..=999.
-    // Effects: immediate null, bounded long-poll null, documented default wait, or atomic 400.
+    // Effects: immediate null for omission or null, bounded long-poll null, or atomic 400.
     // Decision rule: self-hosted-sandboxes poll P1-P5.
     let app = app();
     let id = make_env(&app).await;
@@ -950,7 +950,7 @@ async fn work_poll_honors_documented_blocking_partitions_and_boundaries() {
     .expect(StatusCode::OK);
     assert!(empty.is_null());
     assert!(
-        started.elapsed() >= std::time::Duration::from_millis(900),
+        started.elapsed() < std::time::Duration::from_millis(300),
         "P3"
     );
 

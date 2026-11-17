@@ -1187,7 +1187,8 @@ async fn stream_thread_events(
             .map(|subscription| {
                 (
                     subscription,
-                    ThreadPreviewProjector::new(id.clone(), project_thread.clone()),
+                    ThreadPreviewProjector::new(id.clone(), project_thread.clone())
+                        .with_thinking(previews.accepts("agent.thinking")),
                 )
             })
     } else {
@@ -1698,7 +1699,8 @@ async fn stream_events(
             .map(|subscription| {
                 (
                     subscription,
-                    ThreadPreviewProjector::new(id.clone(), id.clone()),
+                    ThreadPreviewProjector::new(id.clone(), id.clone())
+                        .with_thinking(previews.accepts("agent.thinking")),
                 )
             })
     } else {

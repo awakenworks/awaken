@@ -1386,6 +1386,7 @@ dependencies = [
  "awaken-session-configuration-contract",
  "awaken-session-types",
  "awaken-sql-storage",
+ "awaken-sync",
  "awaken-time",
  "awaken-work-store",
  "axum",

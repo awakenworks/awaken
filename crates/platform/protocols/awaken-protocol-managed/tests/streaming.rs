@@ -1051,8 +1051,12 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
     let child_app = app.clone();
     let child_uri =
         format!("/v1/sessions/{id}/threads/{child_id}/stream?event_deltas[]=agent.message");
+    let consumed = Arc::new(tokio::sync::Notify::new());
+    let preview_consumed = consumed.clone();
     let child_stream =
-        tokio::spawn(async move { http_sse(&child_app, &child_uri, &[], None).await });
+        tokio::spawn(
+            async move { http_sse(&child_app, &child_uri, &[], Some(preview_consumed)).await },
+        );
     runtime.wait_for_live_subscription().await;
     // The child route's repeated refresh is idempotent, so the already-caught-up
     // Session receiver remains empty before connection-local previews arrive.
@@ -1061,8 +1065,12 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
     assert!(committed_prefix.is_empty(), "L0/E0 no duplicate projection");
 
     runtime.publish_child_live_reasoning("private chain");
-    runtime.publish_child_live_text("live progress");
+    runtime.publish_child_live_text("live ");
+    runtime.publish_child_live_text("progress");
     runtime.publish_child_live_tool();
+    tokio::time::timeout(std::time::Duration::from_secs(2), consumed.notified())
+        .await
+        .expect("ordinary text is previewed before durable completion");
     assert!(
         matches!(session_frames.try_recv(), Err(TryRecvError::Empty)),
         "L2/E3 child preview never enters the Session/primary broadcast"

@@ -151,9 +151,15 @@ pub async fn drain_mcp_generation_receipt(
 pub trait SessionThreadLiveSubscription: Send {
     /// Wait for the next live observation. `None` means the producer has closed;
     /// lag is implementation-defined and never affects committed truth.
-    async fn recv(
-        &mut self,
-    ) -> Result<Option<awaken_agent_contract::stream::event::Observation>, RunError>;
+    /// A dispatched observation retains its verified epoch through delivery.
+    async fn recv(&mut self) -> Result<Option<ThreadLiveObservation>, RunError>;
+}
+
+/// Platform-only delivery context; the SDK observation remains stable.
+#[derive(Clone, Debug)]
+pub struct ThreadLiveObservation {
+    pub observation: awaken_agent_contract::stream::event::Observation,
+    pub epoch: Option<awaken_lease_contract::fence::Epoch>,
 }
 
 /// The runtime seam the adapter drives (DDD port). Implemented by the server over

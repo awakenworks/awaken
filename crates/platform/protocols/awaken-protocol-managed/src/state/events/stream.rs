@@ -9,6 +9,36 @@ const LIVE_CHANNEL_CAPACITY: usize = 64;
 #[cfg(not(feature = "test-support"))]
 const LIVE_CHANNEL_CAPACITY: usize = 1024;
 
+/// One immutable projection version and its matching delivery index.
+pub(crate) struct StreamReplay {
+    pub(crate) events: Arc<Vec<Event>>,
+    index: Arc<super::super::session_record::event_page_index::EventPageIndex>,
+}
+
+impl StreamReplay {
+    pub(crate) fn changed_after(&self, id: &str, cursor: (u64, usize)) -> bool {
+        self.index.changed_after(id, cursor)
+    }
+
+    pub(crate) fn lifecycle_events(&self) -> impl Iterator<Item = &Event> {
+        self.index
+            .lifecycle_positions()
+            .iter()
+            .rev()
+            .map(|&position| &self.events[position])
+    }
+}
+
+pub(crate) fn preview_was_closed(
+    state: &ManagedState,
+    session_id: &str,
+    event_id: &str,
+) -> Result<bool, StateError> {
+    let sessions = state.sessions.lock()?;
+    let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+    Ok(record.event_page_index.closes_preview(event_id))
+}
+
 impl ManagedState {
     pub(crate) const STREAM_DELIVERY_PAGE_SIZE: usize = 128;
     /// The Session's committed SSE broadcast sender, created on first use.
@@ -33,17 +63,24 @@ impl ManagedState {
         session_id: &str,
     ) -> Result<(Vec<Event>, broadcast::Receiver<Event>), StateError> {
         self.stream_projection_subscribe(session_id)
-            .map(|(snapshot, receiver, _)| (snapshot, receiver))
+            .map(|(snapshot, receiver, _)| ((*snapshot.events).clone(), receiver))
     }
 
     pub(crate) fn stream_projection_subscribe(
         &self,
         session_id: &str,
-    ) -> Result<(Vec<Event>, broadcast::Receiver<Event>, u64), StateError> {
+    ) -> Result<(StreamReplay, broadcast::Receiver<Event>, u64), StateError> {
         let rx = self.live_sender(session_id).subscribe();
         let sessions = self.sessions.lock()?;
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-        Ok((record.events.clone(), rx, record.cache_revision))
+        Ok((
+            StreamReplay {
+                events: record.events.snapshot(),
+                index: record.event_page_index.clone(),
+            },
+            rx,
+            record.cache_revision,
+        ))
     }
 
     pub(crate) fn stream_delivery_page(

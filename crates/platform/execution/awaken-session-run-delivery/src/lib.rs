@@ -88,7 +88,7 @@ pub use delivery::{
     read_run_settlement,
 };
 pub use dispatch_lifecycle::{SessionDispatchLifecycle, drain_session_dispatch};
-pub use hub::{ThreadEvent, ThreadEventHub};
+pub use hub::{ThreadEvent, ThreadEventHub, ThreadSubscription};
 pub use lock::{DeliveryLock, LOCK_POISONED_CODE};
 pub use memory_binding::MemoryBinding;
 pub use memory_binding_compiler::MemoryBindingCompiler;

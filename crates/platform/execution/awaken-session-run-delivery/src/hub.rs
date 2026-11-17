@@ -16,7 +16,7 @@
 //! observations. Neither is a second truth store: the former is lossy preview,
 //! while the latter is reconstructed from the canonical commit.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::DeliveryLock;
 use awaken_sync::InvariantLock;
@@ -24,9 +24,7 @@ use awaken_sync::InvariantLock;
 use awaken_agent_contract::agent::message::Message;
 use tokio::sync::broadcast;
 
-/// Backlog per thread. Sized so a late-attaching observer still sees a short
-/// Run's opening delta; an observer that lags past this loses events (the Run
-/// still completes for the submitter).
+/// Backlog per active Thread. A receiver that lags past this loses volatile events.
 const HUB_CAPACITY: usize = 256;
 
 /// One neutral observation on a thread. Neutral by construction: no protocol
@@ -37,6 +35,8 @@ pub enum ThreadEvent {
     /// Runtime's one neutral stream vocabulary; protocol adapters decide whether
     /// and how to render it. Never durable truth.
     Live(awaken_agent_contract::stream::event::Observation),
+    /// The same observation, attributed by the verified Worker transport.
+    ClaimedLive(awaken_session_execution_contract::ThreadLiveObservation),
     /// Messages committed during one Step (a new Run or a resume).
     Committed(Vec<Message>),
     /// The step reached a terminal position. `awaiting` is true when the run
@@ -56,7 +56,49 @@ pub enum ThreadEvent {
 /// Shared registry of per-thread broadcast channels.
 #[derive(Default)]
 pub struct ThreadEventHub {
-    channels: InvariantLock<HashMap<String, broadcast::Sender<ThreadEvent>>>,
+    channels: Arc<Channels>,
+}
+
+type Channels = InvariantLock<HashMap<String, broadcast::Sender<ThreadEvent>>>;
+
+/// Owns a receiver and removes its channel when the last observer leaves.
+pub struct ThreadSubscription {
+    channels: Arc<Channels>,
+    key: String,
+    receiver: Option<broadcast::Receiver<ThreadEvent>>,
+}
+
+impl ThreadSubscription {
+    pub async fn recv(&mut self) -> Result<ThreadEvent, broadcast::error::RecvError> {
+        self.receiver
+            .as_mut()
+            .expect("live subscription")
+            .recv()
+            .await
+    }
+
+    pub fn try_recv(&mut self) -> Result<ThreadEvent, broadcast::error::TryRecvError> {
+        self.receiver
+            .as_mut()
+            .expect("live subscription")
+            .try_recv()
+    }
+}
+
+impl Drop for ThreadSubscription {
+    fn drop(&mut self) {
+        if let Ok(mut channels) = self.channels.lock() {
+            // Serialize deregistration with subscribe, so dropping the last
+            // previous receiver cannot remove a newly attached receiver.
+            drop(self.receiver.take());
+            if channels
+                .get(&self.key)
+                .is_some_and(|sender| sender.receiver_count() == 0)
+            {
+                channels.remove(&self.key);
+            }
+        }
+    }
 }
 
 impl ThreadEventHub {
@@ -64,42 +106,44 @@ impl ThreadEventHub {
         Self::default()
     }
 
-    /// The thread's channel. The hub carries only best-effort live deltas;
-    /// committed truth is always read back from the Thread store, so:
-    ///
-    /// | Rule | channel map lock | `subscribe`                   | `publish` |
-    /// |---|---|---|---|
-    /// | H1 | healthy  | a receiver of later events   | delivered to attached receivers |
-    /// | H2 | poisoned | refused (`session_executor_lock_poisoned`) | dropped and reported |
-    fn sender(&self, thread_key: &str) -> Result<broadcast::Sender<ThreadEvent>, DeliveryLock> {
-        Ok(self
-            .channels
-            .lock()
-            .map_err(|_| DeliveryLock::ThreadEventHub)?
-            .entry(thread_key.to_string())
-            .or_insert_with(|| broadcast::channel(HUB_CAPACITY).0)
-            .clone())
-    }
-
     /// Subscribe to a thread's live deltas. Only events published after this call
     /// are delivered, so an observer must subscribe before the Run it wants to
     /// watch is submitted.
-    pub fn subscribe(
-        &self,
-        thread_key: &str,
-    ) -> Result<broadcast::Receiver<ThreadEvent>, DeliveryLock> {
-        Ok(self.sender(thread_key)?.subscribe())
+    pub fn subscribe(&self, thread_key: &str) -> Result<ThreadSubscription, DeliveryLock> {
+        let mut channels = self
+            .channels
+            .lock()
+            .map_err(|_| DeliveryLock::ThreadEventHub)?;
+        let receiver = channels
+            .entry(thread_key.to_owned())
+            .or_insert_with(|| broadcast::channel(HUB_CAPACITY).0)
+            .subscribe();
+        Ok(ThreadSubscription {
+            channels: self.channels.clone(),
+            key: thread_key.to_owned(),
+            receiver: Some(receiver),
+        })
     }
 
     /// Publish one event to a thread's observers (a no-op if none are attached).
     pub fn publish(&self, thread_key: &str, event: ThreadEvent) {
-        match self.sender(thread_key) {
-            Ok(sender) => {
-                let _ = sender.send(event);
+        match self.channels.lock() {
+            Ok(channels) => {
+                if let Some(sender) = channels.get(thread_key) {
+                    let event = match (event, awaken_dispatch_contract::preview_claim_epoch()) {
+                        (ThreadEvent::Live(observation), Some(epoch)) => ThreadEvent::ClaimedLive(
+                            awaken_session_execution_contract::ThreadLiveObservation {
+                                observation,
+                                epoch: Some(epoch),
+                            },
+                        ),
+                        (event, _) => event,
+                    };
+                    let _ = sender.send(event);
+                }
             }
-            Err(error) => tracing::error!(
+            Err(_) => tracing::error!(
                 code = crate::LOCK_POISONED_CODE,
-                %error,
                 "live Thread event dropped"
             ),
         }
@@ -122,7 +166,7 @@ impl ThreadEventHub {
 }
 
 struct HubLiveSubscription {
-    receiver: broadcast::Receiver<ThreadEvent>,
+    receiver: ThreadSubscription,
 }
 
 #[async_trait::async_trait]
@@ -130,12 +174,19 @@ impl awaken_session_execution_contract::SessionThreadLiveSubscription for HubLiv
     async fn recv(
         &mut self,
     ) -> Result<
-        Option<awaken_agent_contract::stream::event::Observation>,
+        Option<awaken_session_execution_contract::ThreadLiveObservation>,
         awaken_runtime_contract::runs::RunError,
     > {
+        use awaken_session_execution_contract::ThreadLiveObservation;
         loop {
             match self.receiver.recv().await {
-                Ok(ThreadEvent::Live(event)) => return Ok(Some(event)),
+                Ok(ThreadEvent::Live(observation)) => {
+                    return Ok(Some(ThreadLiveObservation {
+                        observation,
+                        epoch: None,
+                    }));
+                }
+                Ok(ThreadEvent::ClaimedLive(live)) => return Ok(Some(live)),
                 Ok(
                     ThreadEvent::Committed(_)
                     | ThreadEvent::StepEnded { .. }
@@ -160,7 +211,7 @@ mod tests {
 
     #[test]
     fn a_poisoned_channel_map_refuses_subscribers_and_drops_publications() {
-        // Row H2 of `ThreadEventHub::sender`.
+        // Row H2: the Hub refuses reads and drops live publications.
         let hub = ThreadEventHub::new();
         crate::poison_for_test(&hub.channels);
         assert!(
@@ -236,9 +287,72 @@ mod tests {
 
     #[tokio::test]
     async fn publish_with_no_observers_is_a_silent_no_op() {
-        // A submitter always publishes; a thread nobody observes must not error/panic
-        // (the send result is deliberately swallowed).
         let hub = ThreadEventHub::new();
         hub.publish("unobserved", ThreadEvent::StepEnded { awaiting: false });
+        assert!(
+            hub.channels
+                .lock()
+                .is_ok_and(|channels| channels.is_empty())
+        );
+    }
+
+    #[test]
+    fn only_the_last_subscriber_releases_the_thread_channel() {
+        let hub = ThreadEventHub::new();
+        let first = hub.subscribe("t1").unwrap();
+        let mut second = hub.subscribe("t1").unwrap();
+        drop(first);
+        hub.publish("t1", ThreadEvent::StepEnded { awaiting: true });
+        assert!(matches!(
+            second.try_recv(),
+            Ok(ThreadEvent::StepEnded { awaiting: true })
+        ));
+        drop(second);
+        assert!(
+            hub.channels
+                .lock()
+                .is_ok_and(|channels| channels.is_empty())
+        );
+
+        let mut replacement = hub.subscribe("t1").unwrap();
+        hub.publish("t1", ThreadEvent::StepEnded { awaiting: false });
+        assert!(matches!(
+            replacement.try_recv(),
+            Ok(ThreadEvent::StepEnded { awaiting: false })
+        ));
+    }
+
+    #[tokio::test]
+    async fn queued_preview_retains_its_claim_epoch_after_publication_returns() {
+        use awaken_agent_contract::agent::run::Id as RunId;
+        use awaken_agent_contract::event::{AgentEvent, Delta};
+        use awaken_agent_contract::stream::event::Event;
+
+        let hub = ThreadEventHub::new();
+        let mut subscription = hub.live_subscription("t").unwrap();
+        let observation = Event {
+            run_id: RunId("run".into()),
+            kind: AgentEvent::Delta(Delta::TextDelta {
+                delta: "live".into(),
+            }),
+        }
+        .into();
+        let claim = awaken_worker_contract::RunClaim {
+            run_id: RunId("run".into()),
+            owner: "worker".into(),
+            epoch: 7,
+        };
+        awaken_dispatch_contract::with_preview_claim_epoch(&claim, async {
+            hub.publish("t", ThreadEvent::Live(observation));
+        })
+        .await;
+        assert_eq!(awaken_dispatch_contract::preview_claim_epoch(), None);
+        let live = tokio::time::timeout(std::time::Duration::from_secs(30), subscription.recv())
+            .await
+            .expect("the queued observation reaches the subscriber")
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.observation.event.run_id.0, "run");
+        assert_eq!(live.epoch.map(|epoch| epoch.get()), Some(7));
     }
 }

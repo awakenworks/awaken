@@ -586,6 +586,7 @@ pub(crate) use delivery::{CommittedDeliveryPage, CommittedEventDelivery, session
 mod lifecycle_projection;
 mod recovery;
 mod stream;
+pub(crate) use stream::{StreamReplay, preview_was_closed};
 mod timeline_encoding;
 mod transcript_projection;
 

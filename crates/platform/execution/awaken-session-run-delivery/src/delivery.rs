@@ -701,14 +701,17 @@ mod tests {
                 .publish(&target, crate::ThreadEvent::Live(observation.clone()));
             for result in [direct, adapter] {
                 let mut observer = result.unwrap().expect("R1 original hub observer");
-                assert_eq!(
+                let live =
                     tokio::time::timeout(std::time::Duration::from_secs(30), observer.recv())
                         .await
+                        .expect("R1 published live observation arrives")
                         .unwrap()
-                        .unwrap(),
-                    Some(observation.clone()),
+                        .unwrap();
+                assert_eq!(
+                    live.observation, observation,
                     "R1 preserves live filtering and fan-out on the exact channel",
                 );
+                assert_eq!(live.epoch, None, "a local observation has no claim epoch");
             }
         }
     }

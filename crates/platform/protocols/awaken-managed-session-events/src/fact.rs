@@ -57,6 +57,7 @@ pub enum SessionEventKind {
         start: EventIdentity,
         is_error: bool,
         usage: TokenUsage,
+        preview_response: Option<Box<(usize, usize)>>,
     },
     /// The parent sent this message to the key's child Thread.
     MessageSent {

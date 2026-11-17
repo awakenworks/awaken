@@ -56,9 +56,11 @@ impl ClaimBoundStreamSink {
         if observation.event.run_id != self.claim.run_id {
             return Err(StreamError::Closed);
         }
-        self.publisher
-            .publish_observation(&self.claim, observation)
-            .await
+        awaken_dispatch_contract::with_preview_claim_epoch(
+            &self.claim,
+            self.publisher.publish_observation(&self.claim, observation),
+        )
+        .await
     }
 }
 

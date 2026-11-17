@@ -8,9 +8,53 @@ use std::collections::{HashMap, HashSet};
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
-mod event_page_index;
+pub(super) mod event_page_index;
 use super::events::ProjectedToolUseFamily;
 use event_page_index::EventPageIndex;
+
+/// Copy-on-write projection storage. A subscriber holds this exact published
+/// version and visits it incrementally, without copying its payloads.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(test, derive(PartialEq))]
+pub(in crate::state) struct SessionEvents(Arc<Vec<Event>>);
+
+impl serde::Serialize for SessionEvents {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(self.0.as_ref(), serializer)
+    }
+}
+
+impl SessionEvents {
+    pub(super) fn snapshot(&self) -> Arc<Vec<Event>> {
+        self.0.clone()
+    }
+}
+
+impl From<Vec<Event>> for SessionEvents {
+    fn from(events: Vec<Event>) -> Self {
+        Self(Arc::new(events))
+    }
+}
+
+impl FromIterator<Event> for SessionEvents {
+    fn from_iter<I: IntoIterator<Item = Event>>(events: I) -> Self {
+        Vec::from_iter(events).into()
+    }
+}
+
+impl std::ops::Deref for SessionEvents {
+    type Target = Vec<Event>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SessionEvents {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
 
 #[derive(Default)]
 pub(super) struct ProjectedToolIndex {
@@ -244,7 +288,7 @@ pub(super) struct SessionRecord {
     /// Rendered projection result. Durable entries advance only through the one
     /// committed-prefix reducer; bare `evt_N` entries are transient previews.
     /// Session updates never enter this process-local path.
-    pub(super) events: Vec<Event>,
+    pub(super) events: SessionEvents,
     /// Derived lookup data for this published vector and its visibility owners.
     /// Candidate clones share it cheaply; the sole publisher replaces it after
     /// final ordering and before installing the complete record. It is neither
@@ -304,11 +348,12 @@ impl SessionRecord {
             primary_thread_usage: _,
         } = self;
         let transient_events = events
-            .into_iter()
+            .iter()
             .filter(|event| {
                 super::helpers::is_transient_event_id(&event.id)
                     && !matches!(&event.kind, OutboundKind::SessionUpdated { .. })
             })
+            .cloned()
             .collect::<Vec<_>>();
         let transient_ids = transient_events
             .iter()
@@ -336,14 +381,14 @@ impl SessionRecord {
         // that value instead of spreading PartialEq through the public schema.
         let self_wire = serde_json::to_value((
             &self.session,
-            &self.events,
+            self.events.as_slice(),
             &self.child_threads,
             &self.primary_thread_usage,
         ))
         .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
         let other_wire = serde_json::to_value((
             &other.session,
-            &other.events,
+            other.events.as_slice(),
             &other.child_threads,
             &other.primary_thread_usage,
         ))
@@ -529,7 +574,7 @@ impl SessionRecord {
         owner_thread_id: Option<&str>,
     ) -> ProjectedToolIndex {
         let mut index = ProjectedToolIndex::default();
-        for event in &self.events {
+        for event in self.events.iter() {
             // Client replies are admitted on the Session root event log even
             // when their globally qualified tool id targets a child Thread.
             // Index the exact occurrence before applying the tool owner's
@@ -600,7 +645,7 @@ impl SessionRecord {
             event_times: HashMap::new(),
             child_times: HashMap::new(),
             resource_state: root.resources.clone(),
-            events,
+            events: events.into(),
             event_page_index,
             checkpoint,
             permission_decisions: HashMap::new(),

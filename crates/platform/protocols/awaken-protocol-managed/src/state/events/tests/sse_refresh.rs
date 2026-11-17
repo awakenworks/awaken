@@ -21,6 +21,15 @@ async fn concurrent_session_and_thread_streams_share_the_in_flight_refresh() {
     let session = create().await;
     let other = create().await;
     state.refresh_committed_events(&session.id).await.unwrap();
+    let (first, _, revision) = state.stream_projection_subscribe(&session.id).unwrap();
+    for _ in 0..24 {
+        let (next, _, next_revision) = state.stream_projection_subscribe(&session.id).unwrap();
+        assert_eq!(next_revision, revision);
+        assert!(
+            Arc::ptr_eq(&first.events, &next.events),
+            "each subscriber must share the same published history payload"
+        );
+    }
     let primary = state.list_threads(&session.id).unwrap()[0].id.clone();
     let app = crate::router(state).layer(axum::Extension(
         awaken_runtime_contract::runs::scope::WorkspaceScope(

@@ -72,6 +72,10 @@ pub fn run_observation_facts(
                     start,
                     is_error: observation.is_error,
                     usage: observation.usage,
+                    preview_response: audit
+                        .payload
+                        .get("preview_response")
+                        .and_then(|value| serde_json::from_value(value.clone()).ok()),
                 },
             ));
         }

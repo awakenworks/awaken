@@ -69,7 +69,7 @@ pub use claimed_commit::{
     COMMIT_CAPACITY_EXHAUSTED, COMMIT_CONFLICT, COMMIT_FENCED, COMMIT_IDENTITY_MISMATCH,
     COMMIT_OUTCOME_UNKNOWN, ClaimedRunCommit, claimed_commit_sdk_error,
 };
-pub use claimed_stream::ClaimedStreamPublisher;
+pub use claimed_stream::{ClaimedStreamPublisher, preview_claim_epoch, with_preview_claim_epoch};
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosureKind,
     AttemptClosurePage, AttemptClosureRecord, AttemptPhysicalFact, AttemptReturnCause, CasOutcome,

@@ -76,12 +76,19 @@ impl awaken_session_execution_contract::SessionThreadLiveSubscription for FakeLi
     async fn recv(
         &mut self,
     ) -> Result<
-        Option<awaken_agent_contract::stream::event::Observation>,
+        Option<awaken_session_execution_contract::ThreadLiveObservation>,
         awaken_runtime_contract::runs::RunError,
     > {
         loop {
             match self.receiver.recv().await {
-                Ok(event) => return Ok(Some(event)),
+                Ok(observation) => {
+                    return Ok(Some(
+                        awaken_session_execution_contract::ThreadLiveObservation {
+                            observation,
+                            epoch: None,
+                        },
+                    ));
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(None),
             }
