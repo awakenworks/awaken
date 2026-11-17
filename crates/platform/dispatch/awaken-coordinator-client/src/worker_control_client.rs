@@ -514,6 +514,29 @@ impl WorkerControlClient {
             })
     }
 
+    /// Report that a claimed Run-free preparation finished locally under
+    /// `lease`. Returns whether the Coordinator released the Session Work the
+    /// preparation took (no Run was admitted meanwhile).
+    pub async fn finish_session_preparation(
+        &self,
+        identity: &WorkerIdentity,
+        command: awaken_session_execution_contract::FinishSessionPreparation,
+    ) -> Result<bool, awaken_session_execution_contract::SessionRealizationControlFailure> {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/preparation/finish",
+                json!({ "identity": identity, "command": command }),
+            )
+            .await?;
+        body.get("released")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                awaken_session_execution_contract::SessionRealizationControlFailure::Unavailable(
+                    format!("Session preparation finish decode: {body}"),
+                )
+            })
+    }
+
     /// Poll one Coordinator-derived terminal-work projection for this exact
     /// realization generation. `Some(work)` with no commands is a terminal
     /// fence that is not yet ready to execute and must retain the exact frozen

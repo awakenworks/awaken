@@ -41,6 +41,27 @@ fn publication_input_is_exactly_active(
         == 1
 }
 
+/// Whether a Run-free preparation that finished on its Worker under
+/// `prepared` releases the Session Work it took, exactly as a settled root
+/// Run releases its own. Only that grant's still-current generation may
+/// release, and only while no Run is admitted: an admitted Run keeps the
+/// Work and releases it with its own settlement. A Run admitted after this
+/// decision revives the stopped Work through its claim, as after any Run.
+#[must_use]
+pub fn finished_preparation_releases_work(
+    session: &PersistedSession,
+    prepared: &awaken_session_configuration_contract::resource::SessionRealizationLease,
+) -> bool {
+    !session.is_terminal()
+        && session.execution == crate::state::SessionExecutionState::Idle
+        && !session.has_active_activities()
+        && session.realization.as_ref().is_some_and(|current| {
+            awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
+                current, prepared,
+            )
+        })
+}
+
 impl PersistedSession {
     /// Admit negative publication evidence through the aggregate's exact source
     /// before the sidecar mutation. Once retained, byte-identical replay remains
@@ -283,6 +304,84 @@ mod tests {
             root.needs_terminal_cleanup_worker().unwrap(),
             "R2 in progress"
         );
+    }
+
+    #[test]
+    fn a_finished_preparation_releases_its_work_only_without_an_admitted_run() {
+        // Cause/effect decision table over one root and the finished
+        // preparation's grant `g` (owner w, incarnation w:boot, epoch 3).
+        // Causes: C1 the root is Idle; C2 no Run activity is admitted; C3 the
+        // root's grant is `g` or its renewal; C4 the root is not terminal.
+        // Effects: E1 release the Session Work the preparation took; E2 keep
+        // it (an admitted Run releases it with its settlement; a successor or
+        // retired grant is not this preparation's to release).
+        //
+        // | Rule | C1 | C2 | C3                  | C4 | Effect |
+        // |------|----|----|---------------------|----|--------|
+        // | F1   | y  | y  | exact `g`           | y  | E1     |
+        // | F2   | y  | y  | renewed `g`         | y  | E1     |
+        // | F3   | y  | n  | exact `g`           | y  | E2     |
+        // | F4   | n  | y  | exact `g`           | y  | E2     |
+        // | F5   | y  | y  | successor epoch     | y  | E2     |
+        // | F6   | y  | y  | another incarnation | y  | E2     |
+        // | F7   | y  | y  | retired (expiry 0)  | y  | E2     |
+        // | F8   | y  | y  | absent              | y  | E2     |
+        // | F9   | y  | y  | exact `g`           | n  | E2     |
+        use awaken_session_configuration_contract::resource::SessionRealizationLease;
+        let prepared = SessionRealizationLease {
+            owner: "w".into(),
+            runtime_incarnation: "w:boot".into(),
+            epoch: 3,
+            expires_at_unix_ms: 1_000,
+        };
+        let renewed = SessionRealizationLease {
+            expires_at_unix_ms: 9_000,
+            ..prepared.clone()
+        };
+        let successor = SessionRealizationLease {
+            epoch: 4,
+            ..prepared.clone()
+        };
+        let rebooted = SessionRealizationLease {
+            runtime_incarnation: "w:reboot".into(),
+            ..prepared.clone()
+        };
+        let retired = SessionRealizationLease {
+            expires_at_unix_ms: 0,
+            ..prepared.clone()
+        };
+        let exact = Some(prepared.clone());
+        for (rule, idle, admitted, current, terminal, releases) in [
+            ("F1", true, false, exact.clone(), false, true),
+            ("F2", true, false, Some(renewed), false, true),
+            ("F3", true, true, exact.clone(), false, false),
+            ("F4", false, false, exact.clone(), false, false),
+            ("F5", true, false, Some(successor), false, false),
+            ("F6", true, false, Some(rebooted), false, false),
+            ("F7", true, false, Some(retired), false, false),
+            ("F8", true, false, None, false, false),
+            ("F9", true, false, exact, true, false),
+        ] {
+            let mut root = session(&format!("finished-{rule}"), SessionRevision(1));
+            root.execution = if idle {
+                SessionExecutionState::Idle
+            } else {
+                SessionExecutionState::Running
+            };
+            if admitted {
+                root.activity_epoch = 1;
+                root.active_activity_epochs.insert(1);
+            }
+            root.realization = current;
+            if terminal {
+                root.archive("2026-11-15T00:00:00Z", 1).unwrap();
+            }
+            assert_eq!(
+                finished_preparation_releases_work(&root, &prepared),
+                releases,
+                "{rule}"
+            );
+        }
     }
 
     fn repository_publication_intent() -> crate::state::SessionRepositoryPublicationIntent {

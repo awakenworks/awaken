@@ -81,6 +81,7 @@ struct RelinquishReq {
     identity: Option<WorkerIdentity>,
 }
 
+use preparation_work::session_preparation_finish;
 use run_dispatch_endpoints::{
     begin_attempt, claim, claim_new_run, claim_retry_exhausted, claim_run, close_attempt,
     deliver_and_claim, enqueue, finish_attempt, handoff_attempt, record_credential_realization,
@@ -254,6 +255,8 @@ pub struct WorkerDispatchService {
     session_control: Arc<dyn awaken_session_execution_contract::SessionRealizationControl>,
     session_preparation_control:
         Arc<dyn awaken_session_execution_contract::SessionPreparationControl>,
+    session_preparation_work_release:
+        Arc<dyn awaken_session_execution_contract::SessionPreparationWorkRelease>,
     terminal_cleanup_control:
         Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>,
     session_environment_bindings:
@@ -289,6 +292,7 @@ impl WorkerDispatchService {
             realizations,
             terminal_cleanup,
             session_preparation,
+            session_preparation_work_release,
             session_environment_bindings,
             coordination,
             session_work,
@@ -321,6 +325,7 @@ impl WorkerDispatchService {
             stream_sink,
             session_control: realizations,
             session_preparation_control: session_preparation,
+            session_preparation_work_release,
             terminal_cleanup_control: terminal_cleanup,
             session_environment_bindings,
             session_coordination: coordination,
@@ -487,6 +492,10 @@ pub struct RegisteredDispatchDependencies {
     pub realizations: Arc<dyn awaken_session_execution_contract::SessionRealizationControl>,
     pub terminal_cleanup: Arc<dyn awaken_session_execution_contract::SessionTerminalCleanupControl>,
     pub session_preparation: Arc<dyn awaken_session_execution_contract::SessionPreparationControl>,
+    /// The Session Work owner's decision whether a finished Run-free
+    /// preparation hands back the Work its claim took.
+    pub session_preparation_work_release:
+        Arc<dyn awaken_session_execution_contract::SessionPreparationWorkRelease>,
     pub session_environment_bindings:
         Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     pub coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
@@ -609,6 +618,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route(
             "/v1/worker/session/preparation/claim-next",
             post(session_preparation_claim_next),
+        )
+        .route(
+            "/v1/worker/session/preparation/finish",
+            post(session_preparation_finish),
         )
         .route(
             "/v1/worker/session/environment/authorize",

@@ -77,6 +77,7 @@ pub fn worker_dispatch_dependencies(
         realizations: unconfigured.clone(),
         terminal_cleanup: unconfigured.clone(),
         session_preparation: unconfigured.clone(),
+        session_preparation_work_release: unconfigured.clone(),
         session_environment_bindings: unconfigured.clone(),
         coordination: unconfigured.clone(),
         session_work: unconfigured.clone(),
@@ -301,6 +302,16 @@ impl session::SessionPreparationControl for UnconfiguredCollaborators {
         _target: session::SessionRealizationTarget,
     ) -> Result<Option<session::SessionPreparationAssignment>, SessionRealizationControlFailure>
     {
+        Err(refused())
+    }
+}
+
+#[async_trait]
+impl session::SessionPreparationWorkRelease for UnconfiguredCollaborators {
+    async fn finished_preparation_releases_work(
+        &self,
+        _command: session::FinishSessionPreparation,
+    ) -> Result<bool, SessionRealizationControlFailure> {
         Err(refused())
     }
 }

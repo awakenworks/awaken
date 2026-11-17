@@ -170,6 +170,11 @@ preparation the Session root handed to one Ready Worker, such as an Idle MCP
 update) takes the Session's dispatched Work when it is claimed, so its later
 realization phases renew that lease; it never wakes stopped Work, and when the
 Work is held elsewhere the just-issued grant is retired instead of handed out.
+When the Worker's local preparation drive returns, it reports the finished
+grant. The root releases the Work the preparation took (ADR-0106 wakes it for
+an accepted MCP update) when that grant is still current and no Run is
+admitted, exactly as a settled root Run releases its own; a Run admitted
+afterwards revives it through its claim.
 Delegated children use the existing `RunDispatch::session_thread_id()` parent
 affinity and borrow that Work; child settlement retains it for the waiting
 parent, while a root Run owns its release.
@@ -372,7 +377,8 @@ Worker trigger
   -> authenticate Worker incarnation and verify live Work + Run epochs
   -> claimed Run only: repair a stopped item and retry once after a lost wake
      realization renewal: never wake stopped Work
-     claimed Run-free preparation: take dispatched Work, never wake stopped Work
+     claimed Run-free preparation: take dispatched Work, never wake stopped Work;
+     release it when the finished preparation's grant is current and no Run is admitted
   -> delegated child: use parent session_thread_id and retain Work on child settle
   -> resume frozen Session projection
   -> acquire per-Session realization admission

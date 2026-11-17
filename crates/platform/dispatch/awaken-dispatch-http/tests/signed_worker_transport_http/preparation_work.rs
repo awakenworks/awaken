@@ -16,6 +16,7 @@ enum WorkMode {
 struct PreparationWork {
     mode: Mutex<WorkMode>,
     causes: Mutex<Vec<SessionWorkAcquisition>>,
+    released: Mutex<Vec<awaken_session_application_contract::SessionWorkGrant>>,
 }
 
 #[async_trait::async_trait]
@@ -53,9 +54,10 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Prepar
 
     async fn release_session_work(
         &self,
-        _lease: &awaken_session_application_contract::SessionWorkGrant,
+        lease: &awaken_session_application_contract::SessionWorkGrant,
     ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
-        panic!("claiming a preparation never releases Work")
+        self.released.lock().unwrap().push(lease.clone());
+        Ok(true)
     }
 
     async fn release_worker_session_work(
@@ -66,9 +68,12 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Prepar
     }
 }
 
-/// The one Session-root selector: it always issues a grant for `prepared`.
+/// The one Session-root selector: it always issues a grant for `prepared`,
+/// and answers a finished preparation with the root decision under test.
 struct IssuingPreparation {
     claims: AtomicUsize,
+    releases_finished: Mutex<bool>,
+    finished: Mutex<Vec<awaken_session_execution_contract::FinishSessionPreparation>>,
 }
 
 #[async_trait::async_trait]
@@ -103,6 +108,17 @@ impl awaken_session_execution_contract::SessionPreparationControl for IssuingPre
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionPreparationWorkRelease for IssuingPreparation {
+    async fn finished_preparation_releases_work(
+        &self,
+        command: awaken_session_execution_contract::FinishSessionPreparation,
+    ) -> Result<bool, awaken_session_execution_contract::SessionRealizationControlFailure> {
+        self.finished.lock().unwrap().push(command);
+        Ok(*self.releases_finished.lock().unwrap())
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_claimed_preparation_takes_its_session_work_or_retires_its_grant() {
     // Causes: C1 the Root selector issued a Run-free preparation grant to this
@@ -130,15 +146,19 @@ async fn a_claimed_preparation_takes_its_session_work_or_retires_its_grant() {
     let control = Arc::new(RecordingSessionControl::default());
     let preparation = Arc::new(IssuingPreparation {
         claims: AtomicUsize::new(0),
+        releases_finished: Mutex::new(false),
+        finished: Mutex::new(Vec::new()),
     });
     let work = Arc::new(PreparationWork {
         mode: Mutex::new(WorkMode::NotRequired),
         causes: Mutex::new(Vec::new()),
+        released: Mutex::new(Vec::new()),
     });
     let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
         authenticator,
         realizations: control.clone(),
         session_preparation: preparation.clone(),
+        session_preparation_work_release: preparation.clone(),
         session_work: work.clone(),
         ..worker_dispatch_dependencies(
             Arc::new(MemoryDispatchStore::new(clock.clone())),
@@ -240,6 +260,94 @@ async fn a_claimed_preparation_takes_its_session_work_or_retires_its_grant() {
         5,
         "one Work read per claim"
     );
+    assert!(
+        work.released.lock().unwrap().is_empty(),
+        "claiming a preparation never releases Work"
+    );
+
+    // A finished preparation. Causes: C1 the reported grant belongs to this
+    // Worker incarnation or another; C2 the Session root decides release (no
+    // Run admitted, grant current) or keep; C3 the Work is leased to this
+    // Worker or another. Effects: E1 the exact Work grant of this Worker is
+    // released and reported; E2 nothing is released; E3 the report is
+    // refused before the root is asked. Rules: F1=own+release+own=>E1;
+    // F2=own+keep=>E2; F3=own+release+foreign=>E2; F4=foreign grant=>E3.
+    let finished =
+        |incarnation: String| awaken_session_execution_contract::FinishSessionPreparation {
+            session_id: "prepared".into(),
+            lease: awaken_session_configuration_contract::resource::SessionRealizationLease {
+                owner: identity.worker_id.clone(),
+                runtime_incarnation: incarnation,
+                epoch: 3,
+                expires_at_unix_ms: 10_020,
+            },
+        };
+    for (rule, incarnation, releases, mode, released) in [
+        (
+            "F1",
+            identity.lease_owner(),
+            true,
+            WorkMode::Free,
+            Some(true),
+        ),
+        (
+            "F2",
+            identity.lease_owner(),
+            false,
+            WorkMode::Free,
+            Some(false),
+        ),
+        (
+            "F3",
+            identity.lease_owner(),
+            true,
+            WorkMode::Foreign,
+            Some(false),
+        ),
+        (
+            "F4",
+            "preparing-worker:other-boot".to_string(),
+            true,
+            WorkMode::Free,
+            None,
+        ),
+    ] {
+        *preparation.releases_finished.lock().unwrap() = releases;
+        *work.mode.lock().unwrap() = mode;
+        let asked_before = preparation.finished.lock().unwrap().len();
+        let released_before = work.released.lock().unwrap().len();
+        let reported = lifecycle
+            .finish_session_preparation(&identity, finished(incarnation))
+            .await;
+        match released {
+            Some(expected) => assert_eq!(
+                reported.unwrap_or_else(|error| panic!("{rule}: {error}")),
+                expected,
+                "{rule}"
+            ),
+            None => assert!(reported.is_err(), "{rule} E3"),
+        }
+        assert_eq!(
+            preparation.finished.lock().unwrap().len(),
+            asked_before + usize::from(released.is_some()),
+            "{rule} the root decides only an own report"
+        );
+        let released_grants = work.released.lock().unwrap();
+        assert_eq!(
+            released_grants.len(),
+            released_before + usize::from(released == Some(true)),
+            "{rule} E1/E2"
+        );
+        if released == Some(true) {
+            let grant = released_grants.last().expect("released grant");
+            assert_eq!(grant.session_id().as_str(), "prepared", "{rule} E1");
+            assert_eq!(
+                grant.owner(),
+                identity.lease_owner(),
+                "{rule} E1 exact owner"
+            );
+        }
+    }
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
@@ -298,6 +406,8 @@ async fn preparation_handoff_error_survives_exact_retirement_and_work_errors_kee
     let preparation = Arc::new(FailingPreparationValidation {
         issuer: IssuingPreparation {
             claims: AtomicUsize::new(0),
+            releases_finished: Mutex::new(false),
+            finished: Mutex::new(Vec::new()),
         },
         failure: Mutex::new(C::Unavailable("handoff unavailable".into())),
         validations: AtomicUsize::new(0),
@@ -305,6 +415,7 @@ async fn preparation_handoff_error_survives_exact_retirement_and_work_errors_kee
     let work = Arc::new(PreparationWork {
         mode: Mutex::new(WorkMode::NotRequired),
         causes: Mutex::new(Vec::new()),
+        released: Mutex::new(Vec::new()),
     });
     let service = WorkerDispatchService::new(RegisteredDispatchDependencies {
         authenticator,

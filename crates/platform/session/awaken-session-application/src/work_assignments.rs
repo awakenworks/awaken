@@ -285,6 +285,26 @@ pub(crate) async fn reconcile_work_dispatches(
     report
 }
 
+/// A finished Run-free preparation hands back the Work its claim took
+/// (ADR-0106) only while the current root still holds its grant and admitted
+/// no Run; a vanished root releases nothing.
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionPreparationWorkRelease for SessionWorkAssignments {
+    async fn finished_preparation_releases_work(
+        &self,
+        command: awaken_session_execution_contract::FinishSessionPreparation,
+    ) -> Result<bool, awaken_session_execution_contract::SessionRealizationControlFailure> {
+        match self.repository.get(&command.session_id).await {
+            Ok(current) => Ok(awaken_session_contract::finished_preparation_releases_work(
+                &current,
+                &command.lease,
+            )),
+            Err(SessionRepositoryError::NotFound) => Ok(false),
+            Err(error) => Err(crate::realization::repository_control(error)),
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl awaken_session_application_contract::SessionWorkerLeaseAuthority for SessionWorkAssignments {
     fn request_lifecycle_reconciliation(&self) {

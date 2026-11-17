@@ -141,6 +141,7 @@ impl HttpFixture {
             claim_persistence,
             realizations: application.realizations(),
             session_preparation: application.realizations(),
+            session_preparation_work_release: application.work_assignments(),
             terminal_cleanup: application.terminal_cleanups(),
             coordination: application.coordination(),
             session_work,

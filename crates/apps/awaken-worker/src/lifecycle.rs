@@ -1041,6 +1041,26 @@ pub(crate) fn spawn_session_preparation_reconciliation(
                             "Worker Session preparation remained pending for {}: {error}",
                             assignment.session_id
                         );
+                        continue;
+                    }
+                    // The local drive returned: the preparation's effects are
+                    // closed here, so the Session Work it took goes back unless
+                    // a Run was admitted meanwhile (that Run releases it).
+                    if let Err(error) = lifecycle
+                        .control
+                        .finish_session_preparation(
+                            &lifecycle.identity,
+                            awaken_session_execution_contract::FinishSessionPreparation {
+                                session_id: assignment.session_id.clone(),
+                                lease: assignment.directive.authority.lease.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        eprintln!(
+                            "Worker Session preparation finished for {} but its Work release remained pending: {error}",
+                            assignment.session_id
+                        );
                     }
                 }
                 Ok(None) => {}

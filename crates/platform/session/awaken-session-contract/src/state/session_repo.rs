@@ -65,6 +65,7 @@ pub use recovery::{
 };
 pub use repository_publication::{
     SessionArchiveWithRepositoryPublicationError, SessionWorkerObligation,
+    finished_preparation_releases_work,
 };
 
 #[cfg(test)]

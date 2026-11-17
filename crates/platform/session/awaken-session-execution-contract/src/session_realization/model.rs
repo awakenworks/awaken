@@ -492,6 +492,15 @@ pub enum SessionContinuationReceipt {
     ExpiredCheckpointDeleted { checkpoint_id: String },
 }
 
+/// A Worker reports that its claimed Run-free preparation finished locally
+/// under `lease`; the Session root decides whether its Work is released.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FinishSessionPreparation {
+    pub session_id: crate::SessionId,
+    pub lease: SessionRealizationLease,
+}
+
 /// Ask the existing Session root whether an issued local grant may be closed.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

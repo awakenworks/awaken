@@ -603,6 +603,8 @@
 /v1/worker/session/model-request/admit @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/worker/session/preparation/claim-next | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
 /v1/worker/session/preparation/claim-next @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/preparation/finish | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/preparation/finish @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/worker/session/realization/acknowledge | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
 /v1/worker/session/realization/acknowledge @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/worker/session/realization/activate | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type

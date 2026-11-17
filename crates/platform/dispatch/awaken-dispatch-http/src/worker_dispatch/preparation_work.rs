@@ -5,8 +5,12 @@
 //! say) enters Environment effects under the Session's Work, as a claimed Run
 //! does: every later realization request of that Worker only renews the lease.
 //! The claim therefore takes the Session's dispatched Work for the claiming
-//! Worker before the assignment leaves the Coordinator.
+//! Worker before the assignment leaves the Coordinator, and the Worker's
+//! report that the preparation finished releases it again unless a Run has
+//! been admitted meanwhile, as a settled root Run releases its own Work.
 
+#[cfg_attr(not(test), expect(clippy::wildcard_imports))]
+use super::session_requests::*;
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
@@ -72,4 +76,54 @@ pub(super) async fn claim_next_admitted_preparation(
         .map_err(|error| ApplicationError::internal(error.to_string()))
         .map_err(RealizationHttpError::from)?;
     Ok(None)
+}
+
+/// Release the Session Work a finished Run-free preparation took. The Worker
+/// reports only after its local preparation drive returned (Worker-local
+/// closure); the Session root then decides whether the grant it reports is
+/// still the current one and no Run has been admitted; and only Work leased
+/// to this exact Worker incarnation is released (exact claim match).
+///
+/// | Rule | grant owner | root decision      | Work           | effect          |
+/// |------|-------------|--------------------|----------------|-----------------|
+/// | F1   | this Worker | release            | this Worker's  | release, `true` |
+/// | F2   | this Worker | keep (Run admitted)| any            | nothing         |
+/// | F3   | this Worker | release            | another holder | nothing         |
+/// | F4   | another     | -                  | -              | refused         |
+pub(super) async fn session_preparation_finish(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<
+        SessionRealizationReq<awaken_session_execution_contract::FinishSessionPreparation>,
+    >,
+) -> (StatusCode, Json<Value>) {
+    let result: Result<Value, RealizationHttpError> = async {
+        verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
+        claim_authority(&service, &worker, Some(&request.identity), false).await?;
+        let owner = request.identity.lease_owner();
+        if request.command.lease.owner != request.identity.worker_id
+            || request.command.lease.runtime_incarnation != owner
+        {
+            return Err(RealizationHttpError::from(ApplicationError::invalid(
+                "finished Session preparation lease is not owned by the authenticated Worker incarnation",
+            )));
+        }
+        let session_id = request.command.session_id.clone();
+        let releases = service
+            .session_preparation_work_release
+            .finished_preparation_releases_work(request.command)
+            .await
+            .map_err(RealizationHttpError::from)?;
+        let released = releases
+            && awaken_session_application_contract::release_owned_session_work(
+                service.session_work.as_ref(),
+                &session_id,
+                &owner,
+            )
+            .await
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        Ok(json!({ "released": released }))
+    }
+    .await;
+    respond_realization(result)
 }

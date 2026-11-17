@@ -1301,6 +1301,7 @@ async fn mount_with_managed_over_and_models(
             realizations: session_application.realizations(),
             terminal_cleanup: session_application.terminal_cleanups(),
             session_preparation: session_application.realizations(),
+            session_preparation_work_release: session_application.work_assignments(),
             session_environment_bindings: session_application.environment_binding_sink(),
             coordination: session_application.coordination(),
             session_work: session_application.work_assignments(),
