@@ -29,13 +29,18 @@ def source_package(document: dict) -> dict:
 
 def baseline_inventory(root: Path, revision: str) -> dict:
     """Discover names and historical paths from the baseline's complete source."""
-    if "commit" in formal_sources.git_paths(
-            root, "ls-tree", "-r", "--format=%(objecttype)", "-z", revision):
+    with formal_sources.GitBlobReader(root) as git:
+        return _baseline_inventory(git, revision)
+
+
+def _baseline_inventory(git: formal_sources.GitBlobReader, revision: str) -> dict:
+    if "commit" in git.paths(
+            "ls-tree", "-r", "--format=%(objecttype)", "-z", revision):
         raise ValueError("SDK baseline gitlinks cannot establish a complete source inventory")
     # Compare against Git blobs, independent of ambient checkout line endings.
     # Authored archive attributes still apply and must pass the exact-byte gate.
-    archive_bytes = formal_sources.git_output(root, "-c", "core.autocrlf=false", "-c", "core.eol=lf",
-                                             "archive", "--format=tar", revision)
+    archive_bytes = git.output("-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                               "archive", "--format=tar", revision)
     with tempfile.TemporaryDirectory(prefix="sdk-baseline-inventory-") as temporary:
         directory = Path(temporary)
         archive = directory / "source.tar"
@@ -46,15 +51,15 @@ def baseline_inventory(root: Path, revision: str) -> dict:
         # Git archive applies export-ignore/export-subst (including local
         # info/attributes). Only the revision's complete Git manifest inventory
         # and exact compiler documents may authorize first-release classification.
-        documents = [path for path in formal_sources.git_paths(
-            root, "ls-tree", "-r", "--name-only", "-z", revision)
+        documents = [path for path in git.paths(
+            "ls-tree", "-r", "--name-only", "-z", revision)
             if path in ("Cargo.toml", "Cargo.lock") or path.endswith("/Cargo.toml")]
         hashes = {}
         for path in documents:
             archived = source / path
             if not archived.is_file() or archived.is_symlink():
                 raise ValueError("SDK baseline archive omits a historical compiler document: " + path)
-            original = formal_sources.git_output(root, "show", revision + ":" + path)
+            original = git.show(revision, path)
             if archived.read_bytes() != original:
                 raise ValueError("SDK baseline archive rewrites a historical compiler document: " + path)
             hashes[path] = hashlib.sha256(original).hexdigest()
@@ -98,13 +103,19 @@ def observe_source(root: Path, revision: str, members: dict, sdk: list[str], *,
     Verified historical paths stay Git-relative and never resolve through the
     current filesystem; current Cargo metadata keeps its original root check.
     """
+    with formal_sources.GitBlobReader(root) as git:
+        return _observe_source(git, root, revision, members, sdk, git_manifest_paths)
+
+
+def _observe_source(git: formal_sources.GitBlobReader, root: Path, revision: str, members: dict,
+                    sdk: list[str], git_manifest_paths: dict[str, str] | None) -> dict:
     hashes, manifests = {}, {}
 
     def read(path: str) -> dict:
         name = PurePosixPath(path)
         if name.is_absolute() or ".." in name.parts:
             raise ValueError("SDK compiler source path is outside its Git subject")
-        data = formal_sources.git_output(root, "show", revision + ":" + path)
+        data = git.show(revision, path)
         hashes[path] = hashlib.sha256(data).hexdigest()
         return tomllib.loads(data.decode())
 

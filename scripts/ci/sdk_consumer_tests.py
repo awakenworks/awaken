@@ -11,6 +11,11 @@ import tempfile
 import unittest
 from unittest import mock
 
+# Git processes one fixture SemVer qualification may start (G5): 119 when every
+# compiler-input read started its own discovery and `git show`, 90 once they
+# were batched. Nearly all of the rest are the two-frame source-facts captures
+# around each command. Raise this only with a reason a new Git read needs it.
+SEMVER_GIT_PROCESS_BUDGET = 90
 
 def shared_sdk_io_tests(owner):
     """Use the running SDK owner; never import it as a second module instance."""
@@ -255,6 +260,95 @@ def compiler_input_tests(owner):
                             self.assertEqual(receipt["baseline"]["applicability"], "not_applicable")
                             self.assertIsNone(receipt["baseline"]["model"])
                             self.assertEqual(receipt["baseline"]["shared_environment"], "inherited_unused")
+
+        @staticmethod
+        @contextlib.contextmanager
+        def git_processes():
+            """Every Git process started inside the block, whatever owner starts it."""
+            spawned = []
+            start = subprocess.Popen.__init__
+            def counted(process, arguments, *rest, **keywords):
+                program = arguments[0] if isinstance(arguments, (list, tuple)) else str(arguments).split()[0]
+                if Path(str(program)).name.casefold().removesuffix(".exe") == "git":
+                    spawned.append(list(arguments))
+                return start(process, arguments, *rest, **keywords)
+            with mock.patch.object(subprocess.Popen, "__init__", counted):
+                yield spawned
+
+        def test_batched_blob_reads_equal_git_show_and_start_one_reader(self):
+            # G1 blob bytes from the batch reader equal `git show rev:path` for
+            # text, CRLF under eol/textconv attributes, binary NUL bytes, an
+            # empty file, a symlink, spaced and non-ASCII names, interleaved
+            # with repeats. G2 a missing path, a tree and a gitlink keep
+            # git show's own bytes or failure status. G3 any number of reads
+            # starts exactly one discovery and one `git cat-file --batch`.
+            git = owner.SdkConsumerTests.git
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "subject"
+                root.mkdir()
+                git(root, "init", "--quiet")
+                git(root, "config", "user.name", "blob fixture")
+                git(root, "config", "user.email", "fixture@example.invalid")
+                git(root, "config", "commit.gpgsign", "false")
+                git(root, "config", "diff.upper.textconv", "tr a-z A-Z <")
+                files = {"plain.toml": b"[package]\nname=\"plain\"\n", "crlf.txt": b"one\r\ntwo\n",
+                         "binary.bin": b"\0\x01\xff\n\0", "empty.toml": b"",
+                         "dir with space/Cargo.toml": b"spaced\n", "unicodé/Cargo.toml": "é\n".encode()}
+                for name, data in files.items():
+                    (root / name).parent.mkdir(parents=True, exist_ok=True)
+                    (root / name).write_bytes(data)
+                (root / ".gitattributes").write_text("*.txt eol=crlf diff=upper\n")
+                os.symlink("plain.toml", root / "link.toml")
+                git(root, "add", ".")
+                git(root, "update-index", "--add", "--cacheinfo",
+                    "160000," + "1" * 40 + ",module")
+                git(root, "commit", "--quiet", "-m", "blob fixture")
+                revision = owner.formal_sources.git_output(root, "rev-parse", "HEAD").decode().strip()
+                names = [*files, ".gitattributes", "link.toml", "plain.toml", "crlf.txt"]
+                with self.git_processes() as spawned, owner.formal_sources.GitBlobReader(root) as reader:
+                    batched = {name: reader.show(revision, name) for name in names}
+                self.assertEqual([command[-2:] for command in spawned],
+                                 [["--show-toplevel", "--absolute-git-dir"], ["cat-file", "--batch"]], "G3")
+                for name in names:
+                    with self.subTest(blob=name):
+                        self.assertEqual(batched[name],
+                                         owner.formal_sources.git_output(root, "show", revision + ":" + name), "G1")
+                with owner.formal_sources.GitBlobReader(root) as reader:
+                    for name in ("dir with space", "unicodé"):
+                        self.assertEqual(reader.show(revision, name),
+                                         owner.formal_sources.git_output(root, "show", revision + ":" + name), "G2")
+                    for name in ("absent.toml", "module"):
+                        with self.subTest(failure=name):
+                            with self.assertRaises(subprocess.CalledProcessError) as batched_failure:
+                                reader.show(revision, name)
+                            with self.assertRaises(subprocess.CalledProcessError) as original:
+                                owner.formal_sources.git_output(root, "show", revision + ":" + name)
+                            self.assertEqual(batched_failure.exception.returncode, original.exception.returncode)
+                    self.assertEqual(reader.show(revision, "plain.toml"), files["plain.toml"])
+
+        def test_compiler_input_reads_start_a_bounded_number_of_git_processes(self):
+            # G4 the source observation and baseline inventory start a fixed
+            # number of Git processes, however many manifests they read; G5 a
+            # whole SemVer qualification stays within its measured budget, so a
+            # per-read Git process cannot come back unnoticed.
+            with self.subject() as (helper, root):
+                revision = owner.formal_sources.git_output(root, "rev-parse", "HEAD").decode().strip()
+                members = {name: {"manifest_path": str(root / "crates" / name / "Cargo.toml")}
+                           for name in ("fixture-contract", "fixture-provider")}
+                with self.git_processes() as spawned:
+                    owner._sdk_compiler_input.observe_source(root, revision, members,
+                                                             ["fixture-contract", "fixture-provider"])
+                self.assertEqual(len(spawned), 2, "G4 observation")
+                with self.git_processes() as spawned:
+                    owner._sdk_compiler_input.baseline_inventory(root, revision)
+                self.assertEqual(len(spawned), 5, "G4 inventory")
+            with self.subject() as (helper, root):
+                baseline = owner.formal_sources.git_output(root, "rev-parse", "HEAD^").decode().strip()
+                with self.git_processes() as spawned:
+                    status, calls = helper.execute(root, qualification="semver", baseline_rev=baseline,
+                                                   compiler_cause="valid")
+                self.assertEqual((status, len(self.compiles(calls))), (0, 2))
+                self.assertLessEqual(len(spawned), SEMVER_GIT_PROCESS_BUDGET, "G5")
 
         def test_invalid_model_identity_graph_or_ambient_starts_no_compiler(self):
             # K3 empty/conflicting ambient; K4 absent/non-explicit/multiple or
@@ -559,12 +653,13 @@ def compiler_input_tests(owner):
             for error, expected in ((OSError("compiler input unreadable"), 1),
                                     (subprocess.CalledProcessError(75, ["git", "show"]), 75)):
                 with self.subTest(read=expected), self.subject() as (helper, root):
-                    original = owner.formal_sources.git_output
-                    def read(subject, *arguments):
-                        if arguments[0] == "show" and arguments[-1].endswith(":Cargo.toml"):
+                    original = owner.formal_sources.GitBlobReader.show
+                    def read(reader, revision, path):
+                        if path == "Cargo.toml":
                             raise error
-                        return original(subject, *arguments)
-                    with mock.patch.object(owner.formal_sources, "git_output", side_effect=read):
+                        return original(reader, revision, path)
+                    with mock.patch.object(owner.formal_sources.GitBlobReader, "show", autospec=True,
+                                           side_effect=read):
                         status, calls = helper.execute(root, qualification="package", compiler_cause="valid")
                     self.assertEqual((status, self.compiles(calls)), (expected, []))
             with self.subject(cause="root-absent") as (helper, root):

@@ -415,6 +415,17 @@ def run_consumer(*, qualification: str = "", baseline_rev: str = "") -> int:
     return status
 
 
+_REPOSITORY_TEMPLATES: dict[tuple[str, bool], Path] = {}
+_REPOSITORY_TEMPLATE_DIRECTORY: list[tempfile.TemporaryDirectory] = []
+
+
+def _repository_template_root() -> str:
+    """One process-lifetime directory for the built fixture shapes."""
+    if not _REPOSITORY_TEMPLATE_DIRECTORY:
+        _REPOSITORY_TEMPLATE_DIRECTORY.append(tempfile.TemporaryDirectory(prefix="sdk-fixture-templates-"))
+    return _REPOSITORY_TEMPLATE_DIRECTORY[0].name
+
+
 class SdkConsumerTests(unittest.TestCase):
     """Private Git subjects; Cargo calls below are controlled at the sole IO edge."""
 
@@ -459,6 +470,32 @@ class SdkConsumerTests(unittest.TestCase):
         (root / "Cargo.lock").write_text(lock)
 
     def repository(self, outer: Path, name: str = "subject", *, successor: bool = False) -> Path:
+        """A private Git subject; each shape is built once and copied after that.
+
+        Every subtest used to init, configure and commit its own repository and
+        copy the checker's script closure into it: ~10 Git processes and a
+        closure walk per subject, a few thousand processes per suite. Under
+        heavy host IO those processes timed the suite out. The copy keeps the
+        bytes, objects, refs and config of a fresh build; only the hooks path
+        names the new outer directory, as a fresh build would.
+        """
+        key = (name, successor)
+        template = _REPOSITORY_TEMPLATES.get(key)
+        if template is None:
+            outer_template = Path(tempfile.mkdtemp(dir=_repository_template_root()))
+            template = self._build_repository(outer_template, name, successor=successor)
+            _REPOSITORY_TEMPLATES[key] = template
+        root = outer / name
+        shutil.copytree(template, root, symlinks=True)
+        config = root / ".git/config"
+        before = "hooksPath = " + str(template.parent / "fixture-hooks") + "\n"
+        text = config.read_text()
+        if text.count(before) != 1:
+            raise AssertionError("fixture template config does not name its hooks path once")
+        config.write_text(text.replace(before, "hooksPath = " + str(outer / "fixture-hooks") + "\n"))
+        return root
+
+    def _build_repository(self, outer: Path, name: str, *, successor: bool) -> Path:
         root = outer / name
         root.mkdir()
         if name == "subject":

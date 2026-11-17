@@ -117,6 +117,102 @@ def _path_names(output: bytes) -> list[str]:
     return [os.fsdecode(name) for name in output.split(b"\0") if name]
 
 
+class GitBlobReader:
+    """``git show <revision>:<path>`` bytes for many paths from one Git process.
+
+    ``git_output`` rediscovers the repository and starts Git on every read: two
+    processes per file. A qualifier reading a manifest closure paid that for
+    each manifest, and under heavy IO those short processes, not the reads,
+    took the time. This reader discovers ``root`` once and serves every blob
+    from one ``git cat-file --batch``, whose bytes are the raw blob exactly as
+    ``git show`` prints it (neither applies textconv, filters or EOL rules).
+
+    Anything that is not a found blob -- a missing path, an ambiguous name, a
+    tree, a gitlink, a name the line protocol cannot carry -- is re-read with
+    ``git show``, so its bytes or its Git failure stay exactly the original
+    ones. Consumers: the SDK compiler-input source observation.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.environment = _source_environment(root)
+        self._process: subprocess.Popen | None = None
+
+    def __enter__(self) -> GitBlobReader:
+        return self
+
+    def __exit__(self, kind: object, *exception: object) -> None:
+        if kind is None:
+            self.close()
+        elif self._process is not None:
+            # The first failure stays the reported one; retire Git quietly.
+            self._failure()
+
+    def output(self, *arguments: str) -> bytes:
+        """``git_output`` for this root, without rediscovering it."""
+        return _git_output(self.root, self.environment, *arguments)
+
+    def paths(self, *arguments: str) -> list[str]:
+        """``git_paths`` for this root, without rediscovering it."""
+        return _path_names(self.output(*arguments))
+
+    def show(self, revision: str, path: str) -> bytes:
+        name = f"{revision}:{path}"
+        encoded = os.fsencode(name)
+        if any(character in encoded for character in (b"\n", b"\r", b"\0")):
+            return self.output("show", name)
+        process = self._batch()
+        assert process.stdin is not None and process.stdout is not None
+        try:
+            process.stdin.write(encoded + b"\n")
+            process.stdin.flush()
+            header = process.stdout.readline()
+        except OSError as error:
+            raise self._failure() from error
+        if not header.endswith(b"\n"):
+            raise self._failure()
+        fields = header[:-1].split(b" ")
+        if (len(fields) == 3 and re.fullmatch(rb"[a-f0-9]{40}|[a-f0-9]{64}", fields[0])
+                and fields[2].isdigit()):
+            size = int(fields[2])
+            body = process.stdout.read(size + 1)
+            if len(body) != size + 1 or not body.endswith(b"\n"):
+                raise self._failure()
+            if fields[1] == b"blob":
+                return body[:-1]
+        # Not a blob Git found: keep the original reader's bytes or failure.
+        return self.output("show", name)
+
+    def _batch(self) -> subprocess.Popen:
+        if self._process is None:
+            self._process = subprocess.Popen(
+                _git_command(self.environment, "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false",
+                             "-C", str(self.root), "cat-file", "--batch"),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=self.environment,
+            )
+        return self._process
+
+    def _failure(self) -> subprocess.CalledProcessError:
+        """A broken batch protocol; the process is retired, never reused."""
+        process, self._process = self._process, None
+        status = 1
+        if process is not None:
+            process.kill()
+            status = process.wait() or 1
+        return subprocess.CalledProcessError(status, ["git", "cat-file", "--batch"])
+
+    def close(self) -> None:
+        process, self._process = self._process, None
+        if process is None:
+            return
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.close()
+        process.stdout.read()
+        process.stdout.close()
+        if process.wait():
+            raise subprocess.CalledProcessError(process.returncode, ["git", "cat-file", "--batch"])
+
+
 def git_paths(root: Path, *arguments: str) -> list[str]:
     """Exact path identities from a caller's Git command carrying ``-z``."""
     return _path_names(git_output(root, *arguments))
