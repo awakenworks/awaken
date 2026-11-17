@@ -827,8 +827,17 @@ pub async fn build_ephemeral_resource_router(
     trace_file_present: bool,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
+    // On a registered Worker archiving a Session that holds a File edge is
+    // refused with 400 (`resource_ephemeral_e2e.mjs`, w5-slices.md §16), so
+    // these Sessions stay on this executor's claim pool.
     let flat = mount_on_lifecycle(
-        resource_host(Arc::new(EchoModel), "echo-model", trace_file_present).await,
+        deployment::in_process_resource_host_with_deployment(
+            Arc::new(EchoModel),
+            "echo-model",
+            scenario_deployment(),
+            trace_file_present,
+        )
+        .await,
         lifecycle.clone(),
     )
     .await;
@@ -1171,12 +1180,20 @@ pub async fn build_remote_delegation_router(
         })
         .build();
     let publication = fixed_agent_publication([assistant, researcher]);
-    let host = resource_host(model, model_ref, trace_file_present)
-        .await
-        .map_dependencies(|host| {
-            host.with_agent_publications(publication.clone())
-                .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(None))
-        });
+    // On a registered Worker the remote child's cancellation never reaches the
+    // peer (`delegated_remote_lifecycle_e2e.ts`, w5-slices.md §16), so these
+    // Sessions stay on this executor's claim pool.
+    let host = deployment::in_process_resource_host_with_deployment(
+        model,
+        model_ref,
+        scenario_deployment(),
+        trace_file_present,
+    )
+    .await
+    .map_dependencies(|host| {
+        host.with_agent_publications(publication.clone())
+            .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(None))
+    });
     mount_with_agent_source_on_lifecycle(host, publication, lifecycle.clone()).await
 }
 

@@ -49,7 +49,10 @@ pub async fn build_acp_control_router(
         scenario_deployment(),
         awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
-        crate::deployment::ExecutorPlacement::Registered,
+        // Its live inbox never becomes active for a Session on a registered
+        // Worker (`acp_control_lifecycle_e2e.ts`, w5-slices.md §16), so these
+        // Sessions stay on this executor's claim pool.
+        crate::deployment::ExecutorPlacement::InProcess,
         trace_file_present,
         lifecycle.clone(),
     )
@@ -109,7 +112,9 @@ pub async fn build_acp_relaunch_failure_router(
         scenario_deployment(),
         awaken_execution_composition::LaunchSource::Projected(registry),
         None,
-        crate::deployment::ExecutorPlacement::Registered,
+        // Its failure is reached through the live inbox, which never becomes
+        // active for a Session on a registered Worker (w5-slices.md §16).
+        crate::deployment::ExecutorPlacement::InProcess,
         trace_file_present,
         lifecycle.clone(),
     )
