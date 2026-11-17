@@ -14,7 +14,7 @@ const PARK_LIMIT: Duration = Duration::from_secs(20);
 /// Admits exactly like the shared fixture, but parks inside the first admitted
 /// effect, the creation marker's durable write, until the other task reports
 /// that it ran, and records whether it did before the park gave up.
-struct ParkedAuthority {
+pub(crate) struct ParkedAuthority {
     admits: pc::test_support::EffectAuthority,
     other_task: awaken_sync::LeafLock<mpsc::Receiver<()>>,
     parked: AtomicBool,
@@ -46,25 +46,21 @@ impl pc::CurrentExecutionAuthority for ParkedAuthority {
     }
 }
 
-#[test]
-fn a_parked_fenced_creation_hands_its_async_worker_to_other_tasks() {
-    // Decision table. C1 a fenced Workdir creation without mounts runs in a
-    // task on a runtime with one async worker; C2 its first admitted durable
-    // write is parked inside the authority's critical section; C3 another task
-    // queued on that worker is waiting to run, as a lease heartbeat is when it
-    // comes due. E1 that task runs while the write is parked; E2 the creation
-    // still completes under the same fence: the sandbox is Ready with the
-    // spec's realization fingerprint. Inline, the parked write holds the only
-    // worker and the other task runs only after the park gives up.
+/// Run one fenced creation, through `create`, in a task on a runtime with one
+/// async worker while another task queued on that worker waits to run. Returns
+/// the creation's result once both asserted that the other task ran while the
+/// creation's first admitted durable write was parked.
+pub(crate) fn assert_parked_creation_hands_off_its_worker<S, F, Fut>(create: F) -> S
+where
+    S: Send + 'static,
+    F: FnOnce(pc::SandboxEffectFence, Arc<ParkedAuthority>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = S> + Send + 'static,
+{
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
         .build()
         .unwrap();
-    let base = tempfile::tempdir().unwrap();
-    let provider = LocalProvider::new(base.path());
-    let spec = workdir_spec("parked-fenced-creation", false);
-    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec);
     let fence = pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
     let (beat, other_task) = mpsc::channel();
     let authority = Arc::new(ParkedAuthority {
@@ -81,9 +77,7 @@ fn a_parked_fenced_creation_hands_its_async_worker_to_other_tasks() {
                 let other = tokio::spawn(async move {
                     let _ = beat.send(());
                 });
-                let created = provider
-                    .create_sandbox_for_effect(&spec, &fence, None, &*authority)
-                    .await;
+                let created = create(fence, authority).await;
                 other.await.unwrap();
                 created
             })
@@ -97,6 +91,30 @@ fn a_parked_fenced_creation_hands_its_async_worker_to_other_tasks() {
         authority.other_task_ran_while_parked.load(Ordering::SeqCst),
         "E1"
     );
+    created
+}
+
+#[test]
+fn a_parked_fenced_creation_hands_its_async_worker_to_other_tasks() {
+    // Decision table. C1 a fenced Workdir creation without mounts runs in a
+    // task on a runtime with one async worker; C2 its first admitted durable
+    // write is parked inside the authority's critical section; C3 another task
+    // queued on that worker is waiting to run, as a lease heartbeat is when it
+    // comes due. E1 that task runs while the write is parked; E2 the creation
+    // still completes under the same fence: the sandbox is Ready with the
+    // spec's realization fingerprint. Inline, the parked write holds the only
+    // worker and the other task runs only after the park gives up.
+    let base = tempfile::tempdir().unwrap();
+    let provider = LocalProvider::new(base.path());
+    let spec = workdir_spec("parked-fenced-creation", false);
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec);
+
+    let created = assert_parked_creation_hands_off_its_worker(move |fence, authority| async move {
+        provider
+            .create_sandbox_for_effect(&spec, &fence, None, &*authority)
+            .await
+    });
+
     let created = created.expect("E2");
     assert_eq!(
         pc::Sandbox::handle(&created).realization_fingerprint(),

@@ -1446,3 +1446,36 @@ fn runtime_roots_never_expose_host_state() {
     let env = vec![(s("PATH"), s("/:/usr/bin"))];
     assert!(projected_runtime_roots(&env).is_empty());
 }
+
+#[test]
+fn a_parked_fenced_namespace_creation_hands_its_async_worker_to_other_tasks() {
+    // Decision table, the Local provider's own row for this tier. C1 a fenced
+    // Namespace creation without mounts runs in a task on a runtime with one
+    // async worker; C2 its first admitted durable write (the creation marker)
+    // is parked inside the authority's critical section; C3 another task
+    // queued on that worker is waiting to run, as a lease heartbeat is when it
+    // comes due. E1 that task runs while the write is parked; E2 the creation
+    // still completes under the same fence with the spec's realization
+    // fingerprint. Inline, the parked write holds the only worker and the
+    // other task runs only after the park gives up.
+    let base = tempfile::tempdir().unwrap();
+    let provider = NamespaceProvider::new(base.path());
+    let spec = ns_spec("parked-fenced-namespace-creation", Vec::new());
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec);
+
+    let created =
+        crate::provider::fenced_creation_tests::assert_parked_creation_hands_off_its_worker(
+            move |fence, authority| async move {
+                provider
+                    .create_sandbox_for_effect(&spec, &fence, None, &*authority)
+                    .await
+            },
+        );
+
+    let created = created.expect("E2");
+    assert_eq!(
+        pc::Sandbox::handle(&created).realization_fingerprint(),
+        Some(&fingerprint),
+        "E2"
+    );
+}

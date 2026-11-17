@@ -2072,7 +2072,7 @@ impl LocalSandbox {
 
 #[cfg(test)]
 #[path = "provider/fenced_creation_tests.rs"]
-mod fenced_creation_tests;
+pub(crate) mod fenced_creation_tests;
 #[cfg(test)]
 #[path = "provider/path_boundary_tests.rs"]
 mod path_boundary_tests;

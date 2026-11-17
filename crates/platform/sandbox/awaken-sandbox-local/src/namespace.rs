@@ -682,6 +682,16 @@ impl NamespaceProvider {
         self.create_sandbox_inner(spec, None, None).await
     }
 
+    /// Realize a current durable Namespace sandbox under one aggregate-owned
+    /// fence. Its marker writes, root mutations and Ready publication run inside
+    /// the borrowed authority's synchronous critical section, as the Local
+    /// provider's do ([`crate::LocalProvider::create_sandbox_for_effect`]), and
+    /// are scheduled the same way: without mounts, on a multi-thread runtime,
+    /// the creation runs whole in [`tokio::task::block_in_place`], so the
+    /// worker hands its queued tasks (a lease heartbeat among them) to another
+    /// thread before its `fsync`s block it. Mounts resolve through async
+    /// sources a caller may abandon, and a current-thread runtime has no
+    /// worker to hand off to; both stay inline.
     pub async fn create_sandbox_for_effect(
         &self,
         spec: &pc::SandboxSpec,
@@ -692,8 +702,27 @@ impl NamespaceProvider {
         if let Some(handle) = source_handle {
             handle.namespace_payload(Self::provider_kind())?;
         }
-        self.create_sandbox_inner(spec, Some((effect_fence, authority)), source_handle)
-            .await
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime)
+                if spec.mounts.is_empty()
+                    && matches!(
+                        runtime.runtime_flavor(),
+                        tokio::runtime::RuntimeFlavor::MultiThread
+                    ) =>
+            {
+                tokio::task::block_in_place(move || {
+                    runtime.block_on(self.create_sandbox_inner(
+                        spec,
+                        Some((effect_fence, authority)),
+                        source_handle,
+                    ))
+                })
+            }
+            _ => {
+                self.create_sandbox_inner(spec, Some((effect_fence, authority)), source_handle)
+                    .await
+            }
+        }
     }
 
     async fn create_sandbox_inner(
