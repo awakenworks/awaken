@@ -57,11 +57,12 @@ impl SseParser {
             if !self.charge(end) {
                 break;
             }
-            self.line_buf.extend_from_slice(&chunk[..end]);
-            let Some(delimiter) = chunk.get(end) else {
+            let (line, remainder) = chunk.split_at(end);
+            self.line_buf.extend_from_slice(line);
+            let Some((&delimiter, rest)) = remainder.split_first() else {
                 break;
             };
-            self.pending_cr = *delimiter == b'\r';
+            self.pending_cr = delimiter == b'\r';
             if self.pending_cr {
                 if !self.line_buf.is_empty() && !self.charge(1) {
                     break;
@@ -69,7 +70,7 @@ impl SseParser {
             } else {
                 self.finish_line(1, &mut events);
             }
-            chunk = &chunk[end + 1..];
+            chunk = rest;
         }
         events
     }
@@ -95,10 +96,9 @@ impl SseParser {
 
     fn finish_line(&mut self, delimiter_bytes: usize, events: &mut Vec<String>) {
         if self.line_buf.is_empty() {
-            if let Some(data) = self.data.take()
-                && !self.invalid_event
-            {
-                events.push(data);
+            let data = self.data.take();
+            if !self.invalid_event {
+                events.extend(data);
             }
             self.invalid_event = false;
             self.frame_bytes = 0;
@@ -169,6 +169,18 @@ mod tests {
         assert!(parser.exceeded_limit());
         assert!(parser.push("\n\ndata: later\n\n").is_empty());
         assert!(parser.finish().is_empty());
+    }
+
+    #[test]
+    fn carriage_return_over_the_raw_limit_is_rejected_before_lf_arrives() {
+        let mut parser = SseParser {
+            frame_limit: Some(16),
+            ..SseParser::default()
+        };
+        assert!(parser.push("data: 0123456789").is_empty());
+        assert!(!parser.exceeded_limit());
+        assert!(parser.push("\r").is_empty());
+        assert!(parser.exceeded_limit());
     }
 
     #[test]
