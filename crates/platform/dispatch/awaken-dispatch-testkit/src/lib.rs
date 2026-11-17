@@ -349,7 +349,8 @@ pub mod worker_http {
 
         async fn mark_quiesced(
             &self,
-            _identity: &WorkerIdentity,
+            _guard: awaken_worker_contract::WorkerIncarnationGuard,
+            _occupies_physical_slot: bool,
         ) -> Result<RegistryMutation, RegistryError> {
             Ok(RegistryMutation::NotFound)
         }

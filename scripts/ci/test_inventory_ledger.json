@@ -92,6 +92,7 @@
     "local_migration_requires_explicit_initialization_and_publishes_identity_last": "local_migration_initializes_only_the_first_start_row_and_publishes_identity_last",
     "continuation_topology_follows_the_frozen_placement_and_retention": "every_frozen_placement_decides_the_due_suspend_intent",
     "t9_frozen_topology_and_memory_evidence_guard_the_continuation": "t9_memory_evidence_guards_the_continuation",
-    "worker_checkpoint_retention_is_rejected_before_durable_creation": "worker_checkpoint_retention_is_frozen_at_creation"
+    "worker_checkpoint_retention_is_rejected_before_durable_creation": "worker_checkpoint_retention_is_frozen_at_creation",
+    "quiesced_exact_incarnation_still_reports_its_entry_closure": "occupied_incarnation_cannot_quiesce_but_still_reports_its_entry_closure"
   }
 }

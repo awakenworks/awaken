@@ -316,7 +316,17 @@ pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &st
     assert_eq!(draining.snapshot.in_flight, 1);
     assert_eq!(draining.source_retention, reported_retention, "R1");
     assert_eq!(
-        directory.mark_quiesced(&identity).await.unwrap(),
+        directory
+            .mark_quiesced(
+                directory
+                    .lock_incarnation(&identity)
+                    .await
+                    .unwrap()
+                    .expect("current incarnation"),
+                false,
+            )
+            .await
+            .unwrap(),
         RegistryMutation::InvalidTransition
     );
     directory
@@ -337,7 +347,17 @@ pub async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &st
         .await
         .unwrap();
     assert_eq!(
-        directory.mark_quiesced(&identity).await.unwrap(),
+        directory
+            .mark_quiesced(
+                directory
+                    .lock_incarnation(&identity)
+                    .await
+                    .unwrap()
+                    .expect("current incarnation"),
+                false,
+            )
+            .await
+            .unwrap(),
         RegistryMutation::Applied
     );
     assert!(
@@ -550,7 +570,17 @@ pub async fn assert_exact_expiry(directory: Arc<dyn WorkerDirectory>, prefix: &s
                 directory.begin_drain(&identity, 180).await.unwrap();
             }
             if state == WorkerState::Quiesced {
-                directory.mark_quiesced(&identity).await.unwrap();
+                directory
+                    .mark_quiesced(
+                        directory
+                            .lock_incarnation(&identity)
+                            .await
+                            .unwrap()
+                            .expect("current incarnation"),
+                        false,
+                    )
+                    .await
+                    .unwrap();
             }
             if state == WorkerState::Dead {
                 directory.deregister(&identity).await.unwrap();

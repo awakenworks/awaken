@@ -801,9 +801,19 @@ pub trait WorkerDirectory: WorkerCurrentSource + WorkerIncarnationSource {
         deadline_ms: u64,
     ) -> Result<RegistryMutation, RegistryError>;
 
+    /// Quiesce the incarnation `guard` holds, from the original exclusion that
+    /// [`Self::lock_incarnation`] returned, and from the physical-slot
+    /// occupancy read under that same exclusion (Dispatch's guarded
+    /// occupancy read). Physical admission installs slots only under this
+    /// exclusion, so no slot can appear between that read and this decision.
+    /// Quiesced publishes that the incarnation holds nothing: a Draining record
+    /// with nothing in flight and no occupied slot is quiesced; every other
+    /// record, an occupied one included, is refused without a write. The
+    /// guard is consumed; a guard from another directory is rejected.
     async fn mark_quiesced(
         &self,
-        identity: &WorkerIdentity,
+        guard: WorkerIncarnationGuard,
+        occupies_physical_slot: bool,
     ) -> Result<RegistryMutation, RegistryError>;
 
     async fn deregister(
@@ -897,6 +907,11 @@ impl WorkerIncarnationGuard {
                 None
             }
         }
+    }
+    /// Borrow the exact backend resource for a read paired with this
+    /// exclusion, leaving it in place for the Registry decision that follows.
+    pub fn resource_mut<T: Send + 'static>(&mut self) -> Option<&mut T> {
+        self.held.as_deref_mut()?.downcast_mut::<T>()
     }
     pub fn snapshot(&self) -> &WorkerSnapshot {
         &self.snapshot

@@ -1480,6 +1480,20 @@ impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
             .map(Option::flatten)
     }
 
+    async fn physical_slot_occupied_guarded(
+        &self,
+        guard: &mut awaken_worker_contract::WorkerIncarnationGuard,
+    ) -> Result<bool, DispatchError> {
+        // Physical admission installs a slot only while it holds this same
+        // Registry exclusion, so this read cannot miss a concurrent install.
+        let owner = guard.snapshot().identity.lease_owner();
+        Ok(lock(&self.state)?.rows.values().any(|row| {
+            row.active_attempt
+                .as_ref()
+                .is_some_and(|claim| claim.owner == owner)
+        }))
+    }
+
     async fn completion_events_after(
         &self,
         after_sequence: u64,

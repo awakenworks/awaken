@@ -21,7 +21,7 @@ use awaken_lease_testkit::ManualClock;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerCurrentSource, WorkerDirectory,
     WorkerHeartbeat, WorkerIdentity, WorkerIncarnationGuard, WorkerIncarnationSource,
-    WorkerObservationSource, WorkerProcessExit, WorkerRegistration,
+    WorkerObservationSource, WorkerProcessExit, WorkerRegistration, WorkerState,
 };
 use awaken_worker_registry::MemoryWorkerDirectory;
 use axum::Router;
@@ -148,9 +148,12 @@ impl WorkerDirectory for HeldDirectory {
     }
     async fn mark_quiesced(
         &self,
-        identity: &WorkerIdentity,
+        guard: WorkerIncarnationGuard,
+        occupies_physical_slot: bool,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.inner.mark_quiesced(identity).await
+        self.inner
+            .mark_quiesced(guard, occupies_physical_slot)
+            .await
     }
     async fn deregister(
         &self,
@@ -321,6 +324,7 @@ async fn close(
     closure: Closure,
     clock: Arc<ManualClock>,
     directory: Arc<MemoryWorkerDirectory>,
+    store: Arc<MemoryDispatchStore>,
     identity: WorkerIdentity,
 ) -> RegistryMutation {
     match closure {
@@ -332,7 +336,18 @@ async fn close(
                     .unwrap(),
                 RegistryMutation::Applied
             );
-            directory.mark_quiesced(&identity).await.unwrap()
+            // The Coordinator's quiesce: the occupancy read and the Registry
+            // decision both run under the exclusion admission installs under.
+            let mut guard = directory
+                .lock_incarnation(&identity)
+                .await
+                .unwrap()
+                .expect("the exact incarnation is current");
+            let occupied = store
+                .physical_slot_occupied_guarded(&mut guard)
+                .await
+                .unwrap();
+            directory.mark_quiesced(guard, occupied).await.unwrap()
         }
         Closure::Expired => {
             clock.set(EXPIRES_AT_MS);
@@ -393,6 +408,7 @@ async fn interleave(hold: Hold, closure: Closure) -> Option<String> {
         closure,
         fixture.clock.clone(),
         fixture.directory.inner.clone(),
+        fixture.store.clone(),
         fixture.identity.clone(),
     ));
     let first = std::future::poll_fn(|cx| Poll::Ready(closing.as_mut().poll(cx))).await;
@@ -409,20 +425,41 @@ async fn interleave(hold: Hold, closure: Closure) -> Option<String> {
     };
     fixture.directory.release.add_permits(1);
     let (status, body) = request.await.unwrap();
+    let installed = fixture.installed().await;
     if !matches!(first, Poll::Ready(_)) {
+        // A closure that waited decides after the installation. Quiesced
+        // publishes that the incarnation holds nothing, so one waiting behind
+        // an installed slot is refused; every other closure applies.
+        let expected = if closure == Closure::Quiesced && installed {
+            RegistryMutation::InvalidTransition
+        } else {
+            RegistryMutation::Applied
+        };
         assert_eq!(
             closing.await,
-            RegistryMutation::Applied,
-            "{hold:?}/{closure:?}: the waiting closure applies after admission"
+            expected,
+            "{hold:?}/{closure:?}: the waiting closure decides after admission"
         );
     }
-    let installed = fixture.installed().await;
-    // Invariant: no attempt is installed for an incarnation whose closure was
-    // in force before installation.
-    (closed_before_release && installed).then(|| {
-        format!(
+    let quiesced = fixture
+        .directory
+        .inner
+        .incarnation(&fixture.identity)
+        .await
+        .unwrap()
+        .is_some_and(|record| record.snapshot.state == WorkerState::Quiesced);
+    // Invariants: no attempt is installed for an incarnation whose closure was
+    // in force before installation, and no Quiesced incarnation occupies one.
+    if closed_before_release && installed {
+        return Some(format!(
             "{hold:?}/{closure:?}: attempt installed for an incarnation closed \
              before installation (response {status} {body})"
+        ));
+    }
+    (quiesced && installed).then(|| {
+        format!(
+            "{hold:?}/{closure:?}: incarnation published Quiesced while its attempt \
+             occupies a slot (response {status} {body})"
         )
     })
 }
@@ -432,7 +469,9 @@ async fn unbound_physical_admission_never_installs_for_a_closed_incarnation() {
     // Causes: C1 parked point (authority read, Registry exclusion); C2 closure
     // (quiesce, exact expiry, Dead, replacement). Effect: E1 no installed
     // attempt for an incarnation closed before installation; a closure that
-    // waits on the exclusion applies after the installation instead.
+    // waits on the exclusion decides after the installation instead: E2 a
+    // waiting quiesce is refused because the slot is now occupied, and no
+    // Quiesced incarnation ever occupies a slot.
     let mut violations = Vec::new();
     for hold in [Hold::AuthorityRead, Hold::RegistryExclusion] {
         for closure in [

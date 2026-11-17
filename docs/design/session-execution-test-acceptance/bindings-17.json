@@ -438,7 +438,7 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 480,
+        "line": 481,
         "file_sha256": "633a8f54279be950feeb65da15c647613be306434f2a727785d64a70bfec820b",
         "relocated_from": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs:480"
       }
@@ -446,19 +446,19 @@
     "assertion_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 483
+        "line": 484
       },
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 487
-      },
-      {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 496
+        "line": 488
       },
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
         "line": 497
+      },
+      {
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
+        "line": 498
       }
     ],
     "execution_witnesses": [
@@ -493,7 +493,7 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 512,
+        "line": 513,
         "file_sha256": "633a8f54279be950feeb65da15c647613be306434f2a727785d64a70bfec820b",
         "relocated_from": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs:512"
       }
@@ -501,15 +501,15 @@
     "assertion_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 517
+        "line": 518
       },
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 526
+        "line": 527
       },
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 537
+        "line": 538
       }
     ],
     "execution_witnesses": [

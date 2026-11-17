@@ -605,6 +605,13 @@ impl DispatchControlReads for AnyCoordinatorDispatch {
         delegate_owner!(self, load_physical_attempt(run_id))
     }
 
+    async fn physical_slot_occupied_guarded(
+        &self,
+        guard: &mut awaken_worker_contract::WorkerIncarnationGuard,
+    ) -> Result<bool, DispatchError> {
+        delegate_owner!(self, physical_slot_occupied_guarded(guard))
+    }
+
     async fn completion_events_after(
         &self,
         after_sequence: u64,

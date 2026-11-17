@@ -618,7 +618,17 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
             "draining" | "quiesced" => {
                 directory.begin_drain(&identity, 500).await.unwrap();
                 if case == "quiesced" {
-                    directory.mark_quiesced(&identity).await.unwrap();
+                    directory
+                        .mark_quiesced(
+                            directory
+                                .lock_incarnation(&identity)
+                                .await
+                                .unwrap()
+                                .expect("current incarnation"),
+                            false,
+                        )
+                        .await
+                        .unwrap();
                 }
             }
             "dead" | "occupied" | "foreign-slot" => {

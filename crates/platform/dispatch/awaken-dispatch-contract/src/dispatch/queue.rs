@@ -756,6 +756,18 @@ pub trait DispatchControlReads: DispatchAttemptRecordReads {
         run_id: &RunId,
     ) -> Result<Option<PhysicalAttempt>, DispatchError>;
 
+    /// Whether the incarnation `guard` holds occupies any physical attempt
+    /// slot, read under that original Registry exclusion: the exclusion every
+    /// physical admission installs its slot under, so no slot can appear
+    /// between this read and the Registry decision that consumes it. SQL
+    /// adapters sharing the Registry's database read inside its transaction,
+    /// which stays with the guard. An adapter that cannot read under the
+    /// guard must error, never report an empty slot set.
+    async fn physical_slot_occupied_guarded(
+        &self,
+        guard: &mut awaken_worker_contract::WorkerIncarnationGuard,
+    ) -> Result<bool, DispatchError>;
+
     /// Return durable applied-`Done` facts after `after_sequence`, in ascending
     /// sequence order, capped at `limit`.
     ///

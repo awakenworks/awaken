@@ -29,7 +29,17 @@ pub(super) async fn quiesce_worker(directory: &dyn WorkerDirectory, identity: &W
         "real Draining precondition"
     );
     assert_eq!(
-        directory.mark_quiesced(identity).await.unwrap(),
+        directory
+            .mark_quiesced(
+                directory
+                    .lock_incarnation(identity)
+                    .await
+                    .unwrap()
+                    .expect("current incarnation"),
+                false,
+            )
+            .await
+            .unwrap(),
         awaken_dispatch::RegistryMutation::Applied,
         "real Quiesced precondition"
     );

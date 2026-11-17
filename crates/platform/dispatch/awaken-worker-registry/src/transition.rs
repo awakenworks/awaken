@@ -248,9 +248,14 @@ pub(crate) fn begin_drain(
     (Some(next), RegistryMutation::Applied)
 }
 
+/// Quiesced publishes that the incarnation holds nothing. Its heartbeat's
+/// `in_flight` lags physical admission (an admission whose response the Worker
+/// lost is not counted), so the decision also takes the physical-slot
+/// occupancy read under the same Registry exclusion admission installs under.
 pub(crate) fn quiesce(
     current: Option<&RegisteredWorker>,
     identity: &WorkerIdentity,
+    occupies_physical_slot: bool,
 ) -> (Option<RegisteredWorker>, RegistryMutation) {
     let Some(current) = current else {
         return (None, RegistryMutation::NotFound);
@@ -258,7 +263,10 @@ pub(crate) fn quiesce(
     if !identity_matches(current, identity) {
         return (None, RegistryMutation::StaleIncarnation);
     }
-    if current.snapshot.state != WorkerState::Draining || current.snapshot.in_flight != 0 {
+    if current.snapshot.state != WorkerState::Draining
+        || current.snapshot.in_flight != 0
+        || occupies_physical_slot
+    {
         return (None, RegistryMutation::InvalidTransition);
     }
     let mut next = current.clone();
@@ -578,6 +586,49 @@ mod tests {
             std::collections::BTreeSet::from(["shape-b".into()]),
             "H1 replace"
         );
+    }
+
+    #[test]
+    fn quiesce_requires_a_drained_record_with_no_occupied_physical_slot() {
+        // Causes: C1 the exact incarnation is Draining; C2 its heartbeat
+        // reports nothing in flight; C3 it occupies a physical slot, read under
+        // the exclusion admission installs slots under. Effects: E1 Quiesced;
+        // E2 InvalidTransition and no write.
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | Q1   | 1  | 1  | 0  | E1     |
+        // | Q2   | 1  | 1  | 1  | E2     |
+        // | Q3   | 1  | 0  | -  | E2     |
+        // | Q4   | 0  | 1  | -  | E2     |
+        let (starting, _) = register(None, FRESH, registration("boot-1"), 10, 100).unwrap();
+        let identity = starting.snapshot.identity.clone();
+        let (draining, _) = begin_drain(Some(&starting), &identity, 80);
+        let draining = draining.unwrap();
+
+        let (quiesced, outcome) = quiesce(Some(&draining), &identity, false);
+        assert_eq!(outcome, RegistryMutation::Applied, "Q1");
+        assert_eq!(
+            quiesced.unwrap().snapshot.state,
+            WorkerState::Quiesced,
+            "Q1"
+        );
+
+        let (occupied, outcome) = quiesce(Some(&draining), &identity, true);
+        assert!(occupied.is_none(), "Q2 no write");
+        assert_eq!(outcome, RegistryMutation::InvalidTransition, "Q2");
+
+        let mut busy = draining.clone();
+        busy.snapshot.in_flight = 1;
+        for occupies in [false, true] {
+            let (next, outcome) = quiesce(Some(&busy), &identity, occupies);
+            assert!(next.is_none(), "Q3 no write");
+            assert_eq!(outcome, RegistryMutation::InvalidTransition, "Q3");
+        }
+
+        for occupies in [false, true] {
+            let (next, outcome) = quiesce(Some(&starting), &identity, occupies);
+            assert!(next.is_none(), "Q4 no write");
+            assert_eq!(outcome, RegistryMutation::InvalidTransition, "Q4");
+        }
     }
 
     #[test]

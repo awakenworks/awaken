@@ -63,7 +63,6 @@ enum Mutation {
     BeginDrain {
         deadline_ms: u64,
     },
-    Quiesce,
     Deregister,
     Expire {
         now_ms: u64,
@@ -297,7 +296,6 @@ impl PostgresWorkerDirectory {
             Mutation::BeginDrain { deadline_ms } => {
                 transition::begin_drain(current.as_ref(), identity, deadline_ms)
             }
-            Mutation::Quiesce => transition::quiesce(current.as_ref(), identity),
             Mutation::Deregister => transition::deregister(current.as_ref(), identity),
             Mutation::Expire { now_ms } => transition::expire(current.as_ref(), identity, now_ms),
         };
@@ -429,9 +427,33 @@ impl WorkerDirectory for PostgresWorkerDirectory {
 
     async fn mark_quiesced(
         &self,
-        identity: &WorkerIdentity,
+        mut guard: awaken_worker_contract::WorkerIncarnationGuard,
+        occupies_physical_slot: bool,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate(identity, Mutation::Quiesce).await
+        let identity = guard.snapshot().identity.clone();
+        // Decide inside the transaction that holds this Worker's slot lock,
+        // the one physical admission installs its slot in.
+        let Some((mut tx, pool)) =
+            guard.take_resource::<(sqlx::Transaction<'static, sqlx::Postgres>, PgPool)>()
+        else {
+            return Err(RegistryError::Persistence(
+                "quiescence requires this Registry's own incarnation exclusion".into(),
+            ));
+        };
+        if !std::sync::Arc::ptr_eq(&pool.connect_options(), &self.pool.connect_options()) {
+            tx.rollback().await.map_err(persist)?;
+            return Err(RegistryError::Persistence(
+                "quiescence requires this Registry's own incarnation exclusion".into(),
+            ));
+        }
+        let current = Self::read(&mut tx, &identity.worker_id).await?;
+        let (next, outcome) =
+            transition::quiesce(current.as_ref(), &identity, occupies_physical_slot);
+        if let Some(next) = next {
+            Self::write(&mut tx, &next).await?;
+        }
+        tx.commit().await.map_err(persist)?;
+        Ok(outcome)
     }
 
     async fn deregister(

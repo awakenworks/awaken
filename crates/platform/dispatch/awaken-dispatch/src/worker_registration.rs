@@ -184,6 +184,54 @@ impl WorkerRegistryCommands<'_> {
         Ok(mutation)
     }
 
+    /// Quiesce one exact incarnation. Physical admission installs a slot only
+    /// under the incarnation's Registry exclusion; this command takes that
+    /// exclusion, reads the incarnation's slot occupancy under it and hands
+    /// both to the Registry's one quiesce decision, so an attempt admitted
+    /// after the Worker's last heartbeat (whose response it may never have
+    /// seen) can no longer be published as holding nothing.
+    pub async fn quiesce(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<RegistryMutation, ApplicationError> {
+        let Some(mut guard) = self
+            .directory
+            .lock_incarnation(identity)
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        else {
+            // No exclusion means this identity is not the current record:
+            // report which refusal, as the Registry decision would.
+            let current = self
+                .directory
+                .current(&identity.worker_id)
+                .await
+                .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+            return Ok(match current {
+                None => RegistryMutation::NotFound,
+                Some(_) => RegistryMutation::StaleIncarnation,
+            });
+        };
+        let occupied = match self
+            .dispatch
+            .physical_slot_occupied_guarded(&mut guard)
+            .await
+        {
+            Ok(occupied) => occupied,
+            Err(error) => {
+                guard
+                    .release()
+                    .await
+                    .map_err(ApplicationError::unavailable)?;
+                return Err(ApplicationError::unavailable(error.to_string()));
+            }
+        };
+        self.directory
+            .mark_quiesced(guard, occupied)
+            .await
+            .map_err(|error| ApplicationError::internal(error.to_string()))
+    }
+
     /// Closure and final physical admission share the Registry exclusion. A
     /// closed exact incarnation cannot acquire another slot after this read.
     pub async fn release_closed_idle_evidence(

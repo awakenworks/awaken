@@ -100,11 +100,9 @@ pub(super) async fn quiesce_worker(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_identity(&worker, &request.identity).map_err(ApplicationError::invalid)?;
-        let mutation = service
-            .directory
-            .mark_quiesced(&request.identity)
-            .await
-            .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        let mutation = registry_commands(&service)
+            .quiesce(&request.identity)
+            .await?;
         if mutation == RegistryMutation::Applied {
             release_closed_idle_worker_evidence(&service, &request.identity).await?;
         }

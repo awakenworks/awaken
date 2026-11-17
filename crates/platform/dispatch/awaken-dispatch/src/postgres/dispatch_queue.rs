@@ -1347,6 +1347,33 @@ impl awaken_dispatch_contract::DispatchControlReads for PostgresDispatchStore {
         }))
     }
 
+    async fn physical_slot_occupied_guarded(
+        &self,
+        guard: &mut awaken_worker_contract::WorkerIncarnationGuard,
+    ) -> Result<bool, DispatchError> {
+        let owner = guard.snapshot().identity.lease_owner();
+        // Read inside the Registry transaction that holds this Worker's slot
+        // lock, the transaction physical admission installs slots in.
+        let Some((tx, pool)) = guard.resource_mut::<(Transaction<'static, Postgres>, PgPool)>()
+        else {
+            return Err(DispatchError::Rejected(
+                "PostgreSQL occupancy requires its original Registry transaction".into(),
+            ));
+        };
+        if !std::sync::Arc::ptr_eq(&pool.connect_options(), &self.pool.connect_options()) {
+            return Err(DispatchError::Rejected(
+                "Registry and Dispatch do not share the original process pool".into(),
+            ));
+        }
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM runtime_dispatch WHERE active_attempt_owner = $1)",
+        )
+        .bind(&owner)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(store_error)
+    }
+
     async fn load_physical_attempt(
         &self,
         run_id: &RunId,

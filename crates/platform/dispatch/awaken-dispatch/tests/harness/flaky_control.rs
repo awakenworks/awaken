@@ -27,6 +27,13 @@ impl awaken_dispatch_contract::DispatchAttemptControl for FlakyDispatchStore {
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
 impl awaken_dispatch_contract::DispatchControlReads for FlakyDispatchStore {
+    async fn physical_slot_occupied_guarded(
+        &self,
+        guard: &mut awaken_worker_contract::WorkerIncarnationGuard,
+    ) -> Result<bool, awaken_dispatch::DispatchError> {
+        self.inner.physical_slot_occupied_guarded(guard).await
+    }
+
     async fn current_credential_binding(
         &self,
         claim: &awaken_dispatch::RunClaim,

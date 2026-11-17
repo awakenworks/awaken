@@ -507,7 +507,17 @@ async fn assert_registration_history(
             }
             if state == "quiesced" {
                 assert_eq!(
-                    first.mark_quiesced(&identity).await.unwrap(),
+                    first
+                        .mark_quiesced(
+                            first
+                                .lock_incarnation(&identity)
+                                .await
+                                .unwrap()
+                                .expect("current incarnation"),
+                            false,
+                        )
+                        .await
+                        .unwrap(),
                     RegistryMutation::Applied
                 );
             }

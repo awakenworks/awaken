@@ -115,6 +115,38 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
         })
     }
 
+    async fn physical_slot_occupied_guarded(
+        &self,
+        guard: &mut awaken_worker_contract::WorkerIncarnationGuard,
+    ) -> Result<bool, DispatchError> {
+        const OCCUPIED: &str =
+            "SELECT EXISTS(SELECT 1 FROM runtime_dispatch WHERE active_attempt_owner = ?1)";
+        let owner = guard.snapshot().identity.lease_owner();
+        // A Registry sharing this database holds its one connection in the
+        // transaction physical admission installs slots in: read inside it.
+        // An independently persisted Registry keeps its exclusion in the guard
+        // while this store's own connection reads.
+        if let Some((tx, registry_pool)) =
+            guard.resource_mut::<(awaken_sqlite_pool::EmbeddedTransaction, EmbeddedPool)>()
+            && self
+                .pool
+                .shares_database(registry_pool)
+                .map_err(store_error)?
+        {
+            return sqlx::query_scalar::<_, bool>(OCCUPIED)
+                .bind(&owner)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(store_error);
+        }
+        let (_authority, mut conn) = self.with_conn().await?;
+        sqlx::query_scalar::<_, bool>(OCCUPIED)
+            .bind(&owner)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(store_error)
+    }
+
     async fn completion_events_after(
         &self,
         after_sequence: u64,

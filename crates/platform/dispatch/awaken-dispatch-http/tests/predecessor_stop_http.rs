@@ -2396,10 +2396,13 @@ async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker
 }
 
 #[tokio::test]
-async fn quiesced_exact_incarnation_still_reports_its_entry_closure() {
-    // Q1 a drained incarnation that published quiescence holds no other
-    // authority, yet the exact quiescence ACK of its own physical attempt is
-    // still admitted: closure needs no current/Ready/TTL standing.
+async fn occupied_incarnation_cannot_quiesce_but_still_reports_its_entry_closure() {
+    // Causes: C1 a drained incarnation whose heartbeat reports nothing in
+    // flight; C2 it still occupies the physical slot of its admitted attempt.
+    // Effects: Q1 the Coordinator's quiesce endpoint refuses it
+    // (InvalidTransition) and the Registry record stays Draining: Quiesced
+    // would publish that it holds nothing; Q2 the exact quiescence ACK of its
+    // own physical attempt is still admitted.
     let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 1_000, 5_000).await;
     let old_worker = f.binding.worker().clone();
     let heartbeat = WorkerHeartbeat {
@@ -2417,15 +2420,45 @@ async fn quiesced_exact_incarnation_still_reports_its_entry_closure() {
             .await
             .unwrap(),
         awaken_dispatch::RegistryMutation::Applied,
-        "Q0 live Worker premise"
+        "C1 live Worker premise"
     );
     assert_eq!(
         f.directory.begin_drain(&old_worker, 10_000).await.unwrap(),
-        awaken_dispatch::RegistryMutation::Applied
+        awaken_dispatch::RegistryMutation::Applied,
+        "C1"
     );
     assert_eq!(
-        f.directory.mark_quiesced(&old_worker).await.unwrap(),
-        awaken_dispatch::RegistryMutation::Applied
+        f.store
+            .load_physical_attempt(&f.old.run_id)
+            .await
+            .unwrap()
+            .map(|attempt| attempt.claim),
+        Some(f.old.clone()),
+        "C2"
+    );
+    let reply = reqwest::Client::new()
+        .post(format!("{}/v1/worker/quiesced", f.address))
+        .header("x-awaken-worker-id", &old_worker.worker_id)
+        .json(&json!({"identity": old_worker}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reply.status(), reqwest::StatusCode::OK, "Q1");
+    assert_eq!(
+        reply.json::<Value>().await.unwrap()["mutation"],
+        json!(awaken_dispatch::RegistryMutation::InvalidTransition),
+        "Q1"
+    );
+    assert_eq!(
+        f.directory
+            .incarnation(&old_worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .snapshot
+            .state,
+        WorkerState::Draining,
+        "Q1"
     );
     let _probe = AttemptStopProbe::install(&f);
     let reply = reqwest::Client::new()
@@ -2435,18 +2468,8 @@ async fn quiesced_exact_incarnation_still_reports_its_entry_closure() {
         .send()
         .await
         .unwrap();
-    assert_eq!(reply.status(), reqwest::StatusCode::OK, "Q1");
-    assert_eq!(reply.json::<Value>().await.unwrap()["closed"], true, "Q1");
-    assert_eq!(
-        f.directory
-            .incarnation(&old_worker)
-            .await
-            .unwrap()
-            .unwrap()
-            .snapshot
-            .state,
-        WorkerState::Quiesced
-    );
+    assert_eq!(reply.status(), reqwest::StatusCode::OK, "Q2");
+    assert_eq!(reply.json::<Value>().await.unwrap()["closed"], true, "Q2");
 }
 
 #[tokio::test]

@@ -86,12 +86,14 @@ async fn applied(mutation: impl Future<Output = Result<RegistryMutation, Registr
 /// Move a Ready, claimed incarnation into `standing` through the Registry
 /// kernel. `Expired` is the half-open boundary: the Registry lease ends
 /// exactly at the store's current time (`expires_at_ms == now`).
-async fn enter<N, NF>(
+async fn enter<S, N, NF>(
+    store: &S,
     directory: &dyn WorkerDirectory,
     identity: &WorkerIdentity,
     standing: WorkerStanding,
     store_now: &N,
 ) where
+    S: DispatchControlReads + ?Sized,
     N: Fn() -> NF,
     NF: Future<Output = u64>,
 {
@@ -108,7 +110,11 @@ async fn enter<N, NF>(
         WorkerStanding::Quiesced => {
             let now = store_now().await;
             applied(directory.begin_drain(identity, now + TTL_MS)).await;
-            applied(directory.mark_quiesced(identity)).await;
+            assert_eq!(
+                quiesce(store, directory, identity).await,
+                RegistryMutation::Applied,
+                "Quiesced row: the claimed incarnation occupies no slot yet"
+            );
         }
         WorkerStanding::Expired => {
             // A heartbeat stamped one TTL ago renews the lease to end exactly
@@ -127,6 +133,28 @@ async fn enter<N, NF>(
     }
 }
 
+/// The Coordinator's quiesce over this backend pair: the slot occupancy read
+/// and the Registry decision both run under the incarnation's exclusion.
+async fn quiesce<S>(
+    store: &S,
+    directory: &dyn WorkerDirectory,
+    identity: &WorkerIdentity,
+) -> RegistryMutation
+where
+    S: DispatchControlReads + ?Sized,
+{
+    let mut guard = directory
+        .lock_incarnation(identity)
+        .await
+        .unwrap()
+        .expect("the exact incarnation is still the current record");
+    let occupied = store
+        .physical_slot_occupied_guarded(&mut guard)
+        .await
+        .unwrap();
+    directory.mark_quiesced(guard, occupied).await.unwrap()
+}
+
 /// Decision table: standing × binding → `admit_attempt_guarded` outcome and
 /// slot effect. Causes: C1 the guarded incarnation's standing on the store
 /// clock (six values, Expired at `expires_at_ms == now`); C2 binding absent,
@@ -136,6 +164,9 @@ async fn enter<N, NF>(
 /// R2 !holds_authority(C1) + C2∈{absent, exact} → E2;
 /// R3 C2 foreign → E3 whatever C1: a guard that names another attempt is an
 /// integrity error, decided before time is consulted.
+/// R4 after E1 for a Draining incarnation, its quiesce reads the installed
+/// slot under the same exclusion and is refused (InvalidTransition): Quiesced
+/// never names an incarnation that still occupies a slot.
 pub async fn assert_guarded_admission_follows_standing<S, N, NF, C, CF>(
     backend: &str,
     store: &S,
@@ -173,7 +204,7 @@ pub async fn assert_guarded_admission_follows_standing<S, N, NF, C, CF>(
                 .unwrap()
                 .snapshot;
             let run_claim = claim(tag.clone(), snapshot).await;
-            enter(directory, &identity, standing, &store_now).await;
+            enter(store, directory, &identity, standing, &store_now).await;
             let guard = directory
                 .lock_incarnation(&identity)
                 .await
@@ -221,6 +252,15 @@ pub async fn assert_guarded_admission_follows_standing<S, N, NF, C, CF>(
                      (slot {expected_installed}), observed {observed} (slot {installed}) \
                      {outcome:?}"
                 ));
+            }
+            if standing == WorkerStanding::Draining && installed {
+                let refused = quiesce(store, directory, &identity).await;
+                if refused != RegistryMutation::InvalidTransition {
+                    mismatches.push(format!(
+                        "{backend}: {standing:?} × {binding_kind:?}: quiesce of an \
+                         incarnation occupying a slot returned {refused:?}"
+                    ));
+                }
             }
         }
     }

@@ -249,12 +249,31 @@ impl WorkerDirectory for MemoryWorkerDirectory {
 
     async fn mark_quiesced(
         &self,
-        identity: &WorkerIdentity,
+        mut guard: awaken_worker_contract::WorkerIncarnationGuard,
+        occupies_physical_slot: bool,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate_async(identity, |current| {
-            Ok(transition::quiesce(current, identity))
+        let identity = guard.snapshot().identity.clone();
+        // Decide under the exclusion the guard already holds; a fresh lock
+        // here would wait for the guard and open a window for admission.
+        let Some(mut workers) =
+            guard.take_resource::<tokio::sync::OwnedMutexGuard<WorkerRecords>>()
+        else {
+            return Err(RegistryError::Persistence(
+                "quiescence requires this Registry's own incarnation exclusion".into(),
+            ));
+        };
+        if !std::sync::Arc::ptr_eq(tokio::sync::OwnedMutexGuard::mutex(&workers), &self.workers) {
+            return Err(RegistryError::Persistence(
+                "quiescence requires this Registry's own incarnation exclusion".into(),
+            ));
+        }
+        mutate_records(&mut workers, &identity, |current| {
+            Ok(transition::quiesce(
+                current,
+                &identity,
+                occupies_physical_slot,
+            ))
         })
-        .await
     }
 
     async fn deregister(

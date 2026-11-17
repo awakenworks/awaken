@@ -356,12 +356,33 @@ impl WorkerDirectory for SqliteWorkerDirectory {
 
     async fn mark_quiesced(
         &self,
-        identity: &WorkerIdentity,
+        mut guard: awaken_worker_contract::WorkerIncarnationGuard,
+        occupies_physical_slot: bool,
     ) -> Result<RegistryMutation, RegistryError> {
-        self.mutate(identity, |current| {
-            Ok(transition::quiesce(current, identity))
-        })
-        .await
+        let identity = guard.snapshot().identity.clone();
+        // Decide inside the `BEGIN IMMEDIATE` transaction the guard holds, the
+        // one physical admission installs its slot in.
+        let Some((mut tx, pool)) =
+            guard.take_resource::<(awaken_sqlite_pool::EmbeddedTransaction, EmbeddedPool)>()
+        else {
+            return Err(RegistryError::Persistence(
+                "quiescence requires this Registry's own incarnation exclusion".into(),
+            ));
+        };
+        if !self.pool.shares_database(&pool).map_err(persist)? {
+            tx.rollback().await.map_err(persist)?;
+            return Err(RegistryError::Persistence(
+                "quiescence requires this Registry's own incarnation exclusion".into(),
+            ));
+        }
+        let current = Self::read(&mut tx, &identity.worker_id).await?;
+        let (next, outcome) =
+            transition::quiesce(current.as_ref(), &identity, occupies_physical_slot);
+        if let Some(next) = next {
+            Self::write(&mut tx, &next).await?;
+        }
+        tx.commit().await.map_err(persist)?;
+        Ok(outcome)
     }
 
     async fn deregister(
