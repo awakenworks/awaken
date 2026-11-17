@@ -6,19 +6,23 @@
 // OAuth source, not the connection key, authenticated the run.
 //
 // Cause/effect graph. C1 the profile binds the OAuth source; C2 its helper runs
-// and the minted token is presented; C3 the provider currently accepts that
-// token; C4 the process is new (no minted token cached). Effects: E1 the Run
-// replies and every inference presented a helper-minted token (never the
+// and the minted token is presented; C3 the provider currently accepts the
+// cached token; C4 the process is new (no minted token cached); C5 the
+// provider already refused the cached token in this process. Effects: E1 the
+// Run replies and every inference presented a helper-minted token (never the
 // connection key); E2 within one process the token is minted once and reused;
-// E3 a token the provider no longer accepts fails the Run loudly with no
-// reply and no fallback to another credential; E4 a new process mints a new
-// token, which authenticates.
+// E3 a token the provider no longer accepts fails that Run loudly with no
+// reply, no silent retry and no fallback to another credential, and the
+// refusal retires the cached token; E4 the next Run mints a new token, which
+// authenticates, so the refused token is presented at most once per cache
+// entry; E5 a new process mints a new token, which authenticates.
 //
-// | Rule | C1 | C2 | C3 | C4 | Effect |
-// | O1   | Y  | Y  | Y  | Y  | E1 (first token T1) |
-// | O2   | Y  | Y  | Y  | N  | E1 + E2 (T1 again) |
-// | O3   | Y  | Y  | N  | N  | E3 (T1 refused, nothing else presented) |
-// | O4   | Y  | Y  | Y  | Y  | E1 + E4 (T2 != T1) |
+// | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+// | O1   | Y  | Y  | Y  | Y  | N  | E1 (first token T1) |
+// | O2   | Y  | Y  | Y  | N  | N  | E1 + E2 (T1 again) |
+// | O3   | Y  | Y  | N  | N  | N  | E3 (T1 refused once, Run fails) |
+// | O4   | Y  | Y  | -  | N  | Y  | E1 + E4 (T2 != T1, T1 not presented again) |
+// | O5   | Y  | Y  | Y  | Y  | N  | E1 + E5 (T3 not in {T1, T2}) |
 //
 // Run: (from e2e/)  node oauth_credential_e2e.mjs
 
@@ -80,6 +84,7 @@ async function main() {
   });
   try {
     let firstToken;
+    let secondToken;
     await withServer('oauth-resolved', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({
@@ -108,26 +113,45 @@ async function main() {
         `O2 the cached minted token authenticated again: ${JSON.stringify(o2)}`);
       pass('O2 the minted token is reused within its freshness window');
 
-      // O3: the provider expires T1. The Run must fail on it, loudly, and must
-      // not be rescued by any other credential (the connection key included).
+      // O3: the provider revokes T1 while it is still cached. The Run that
+      // presents it fails loudly; it is neither retried silently nor rescued
+      // by any other credential (the connection key included).
       revoked.add(firstToken);
-      mark = upstream.credentials.length;
+      const revokedAt = upstream.credentials.length;
+      mark = revokedAt;
       const refusedBefore = upstream.unauthorized;
       const third = await turn(client, session.id, 'after expiry');
       const o3 = inferenceCredentials(mark);
-      assert.ok(o3.length >= 1, 'O3 the Run reached the provider');
-      assert.ok(o3.every(({ presented, accepted }) => !accepted && presented === firstToken),
-        `O3 only the expired token was presented and it was refused: ${JSON.stringify(o3)}`);
-      assert.ok(upstream.unauthorized > refusedBefore, 'O3 the provider refused the expired token');
+      assert.deepEqual(o3.map(({ presented, accepted }) => ({ presented, accepted })),
+        [{ presented: firstToken, accepted: false }],
+        `O3 the revoked token was presented exactly once and refused: ${JSON.stringify(o3)}`);
+      assert.ok(upstream.unauthorized > refusedBefore, 'O3 the provider refused the revoked token');
       assert.ok(!replyText(third).includes('FAKE:after expiry'), `O3 no reply was fabricated: ${replyText(third)}`);
       const idle = third.filter((event) => event.type === 'session.status_idle').at(-1);
       assert.notEqual(idle?.stop_reason?.type, 'end_turn', `O3 the Run did not end its turn: ${JSON.stringify(idle)}`);
       assert.ok(third.some((event) => event.type === 'session.error'),
         `O3 the refusal is reported: ${third.map((event) => event.type)}`);
-      pass('O3 an expired minted token is refused and the Run fails without a credential fallback');
+      pass('O3 a revoked cached token is refused once and the Run fails without a credential fallback');
+
+      // O4: the refusal retired the cached token, so the next Run in the same
+      // process mints a fresh one through the helper and succeeds, long
+      // before the cache TTL would have expired T1.
+      mark = upstream.credentials.length;
+      const fourth = await turn(client, session.id, 'after refresh');
+      assert.ok(replyText(fourth).includes('FAKE:after refresh'), `O4 the run replied: ${replyText(fourth)}`);
+      const o4 = inferenceCredentials(mark);
+      assert.ok(o4.length >= 1 && o4.every(({ presented, accepted }) => accepted
+        && MINTED.test(presented) && presented !== firstToken),
+      `O4 a freshly minted token authenticated: ${JSON.stringify(o4)}`);
+      secondToken = o4[0].presented;
+      const refusedPresentations = inferenceCredentials(revokedAt)
+        .filter(({ presented }) => presented === firstToken);
+      assert.equal(refusedPresentations.length, 1,
+        `O4 the refused token is presented at most once per cache entry: ${JSON.stringify(refusedPresentations)}`);
+      pass('O4 a provider refusal retires the cached token and the next Run mints a fresh one');
     }, configuration);
 
-    // O4: a new process holds no minted token; its helper run mints a new one.
+    // O5: a new process holds no minted token; its helper run mints a new one.
     await withServer('oauth-resolved', Number(process.env.E2E_PORT), async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({
@@ -137,12 +161,12 @@ async function main() {
       });
       const mark = upstream.credentials.length;
       const events = await turn(client, session.id, 'fresh process');
-      assert.ok(replyText(events).includes('FAKE:fresh process'), `O4 the run replied: ${replyText(events)}`);
-      const o4 = inferenceCredentials(mark);
-      assert.ok(o4.length >= 1 && o4.every(({ presented, accepted }) => accepted
-        && MINTED.test(presented) && presented !== firstToken),
-      `O4 a newly minted token authenticated: ${JSON.stringify(o4)}`);
-      pass('O4 a new process mints a new token through the helper');
+      assert.ok(replyText(events).includes('FAKE:fresh process'), `O5 the run replied: ${replyText(events)}`);
+      const o5 = inferenceCredentials(mark);
+      assert.ok(o5.length >= 1 && o5.every(({ presented, accepted }) => accepted
+        && MINTED.test(presented) && presented !== firstToken && presented !== secondToken),
+      `O5 a newly minted token authenticated: ${JSON.stringify(o5)}`);
+      pass('O5 a new process mints a new token through the helper');
     }, configuration);
 
     assert.ok(upstream.credentials.filter(isInference).every(({ presented }) => presented !== CONNECTION_KEY),

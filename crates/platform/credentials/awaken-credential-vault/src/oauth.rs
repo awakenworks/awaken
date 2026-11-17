@@ -119,6 +119,21 @@ impl<T: TokenSource> CachingTokenSource<T> {
             cached: LeafLock::new(None),
         }
     }
+
+    /// The provider refused `presented`. Drop the cached entry only while it
+    /// still holds exactly that token: the next call mints through the helper,
+    /// and a token minted after the refused one is never discarded by a late
+    /// report. Returns whether an entry was retired.
+    pub fn retire_refused(&self, presented: &RedactedString) -> bool {
+        let mut cached = self.cached.lock();
+        let holds_refused = cached
+            .as_ref()
+            .is_some_and(|(token, _)| token.expose_secret() == presented.expose_secret());
+        if holds_refused {
+            *cached = None;
+        }
+        holds_refused
+    }
 }
 
 #[async_trait::async_trait]
@@ -166,6 +181,21 @@ pub(crate) async fn oauth_access_token(
             .clone()
     };
     cached.access_token().await
+}
+
+/// The provider refused `presented`, an access token minted for `source_id`.
+/// Retire the per-source cache entry if it still serves that token, so the
+/// next materialization runs the helper instead of re-presenting a revoked or
+/// rotated token for the rest of the TTL. An absent entry has nothing cached.
+pub(crate) fn retire_refused_oauth_token(
+    source_id: &CredentialSourceId,
+    presented: &RedactedString,
+) -> bool {
+    let Some(sources) = OAUTH_SOURCES.get() else {
+        return false;
+    };
+    let source = sources.lock().get(&source_id.0).cloned();
+    source.is_some_and(|source| source.retire_refused(presented))
 }
 
 #[cfg(all(test, windows))]
@@ -320,6 +350,111 @@ mod tests {
         caching.access_token().await.unwrap();
         // A zero TTL expires immediately, so each call refreshes.
         assert_eq!(caching.inner.calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A `TokenSource` that mints a distinct token per refresh (`tok-1`,
+    /// `tok-2`, ...), as a real helper does once its grant is rotated.
+    struct MintingSource {
+        calls: AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl TokenSource for MintingSource {
+        async fn access_token(&self) -> Result<RedactedString, CredentialError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(RedactedString::new(format!("tok-{call}")))
+        }
+    }
+
+    fn minting_cache() -> CachingTokenSource<MintingSource> {
+        CachingTokenSource::new(
+            MintingSource {
+                calls: AtomicUsize::new(0),
+            },
+            Duration::from_secs(300),
+        )
+    }
+
+    /// Refusal decision table for the token cache. Causes: C1 an entry is
+    /// cached; C2 the refused token is the cached one. Effects: E1 the entry
+    /// is retired and the next call mints a new token; E2 the entry (and its
+    /// TTL) is kept and the next call is served from it.
+    ///
+    /// | Rule | C1 | C2 | Effect |
+    /// |---|---|---|---|
+    /// | R1 | Y | Y | E1 |
+    /// | R2 | Y | N | E2 (a late refusal of an older token keeps a newer one) |
+    /// | R3 | N | - | nothing retired; the next call mints as usual |
+    #[tokio::test]
+    async fn a_refused_cached_token_is_retired_and_the_next_call_mints_a_new_one() {
+        // R1
+        let caching = minting_cache();
+        let first = caching.access_token().await.unwrap();
+        assert_eq!(first.expose_secret(), "tok-1");
+        assert!(caching.retire_refused(&first), "R1 retired");
+        let second = caching.access_token().await.unwrap();
+        assert_eq!(second.expose_secret(), "tok-2", "R1 a new token is minted");
+        assert_eq!(caching.inner.calls.load(Ordering::SeqCst), 2);
+        // The refused token is presented at most once: it is never served again.
+        assert_eq!(
+            caching.access_token().await.unwrap().expose_secret(),
+            "tok-2"
+        );
+        assert_eq!(caching.inner.calls.load(Ordering::SeqCst), 2);
+
+        // R2: the refusal of tok-1 arrives after tok-2 replaced it.
+        assert!(
+            !caching.retire_refused(&first),
+            "R2 a stale refusal retires nothing"
+        );
+        assert_eq!(
+            caching.access_token().await.unwrap().expose_secret(),
+            "tok-2"
+        );
+        assert_eq!(
+            caching.inner.calls.load(Ordering::SeqCst),
+            2,
+            "R2 the newer entry is kept"
+        );
+
+        // R3
+        let empty = minting_cache();
+        assert!(!empty.retire_refused(&RedactedString::new("tok-1")), "R3");
+        assert_eq!(empty.access_token().await.unwrap().expose_secret(), "tok-1");
+    }
+
+    /// The process-wide per-source cache retires only the entry of the source
+    /// that served the refused token, and only while it still holds it.
+    #[tokio::test]
+    async fn oauth_refusal_retires_only_the_serving_source_entry() {
+        let id = CredentialSourceId("cred:ws:oauth-refusal-retire".into());
+        let other = CredentialSourceId("cred:ws:oauth-refusal-other".into());
+        let unknown = CredentialSourceId("cred:ws:oauth-refusal-unknown".into());
+        let token = oauth_access_token(&id, &test_stdout_command("tok-refused"))
+            .await
+            .unwrap();
+        let other_token = oauth_access_token(&other, &test_stdout_command("tok-refused"))
+            .await
+            .unwrap();
+        assert!(
+            !retire_refused_oauth_token(&unknown, &token),
+            "no entry, nothing retired"
+        );
+        assert!(
+            !retire_refused_oauth_token(&id, &RedactedString::new("tok-other")),
+            "a token this entry does not hold retires nothing"
+        );
+        assert!(
+            retire_refused_oauth_token(&id, &token),
+            "the serving entry is retired"
+        );
+        assert!(
+            !retire_refused_oauth_token(&id, &token),
+            "retired at most once"
+        );
+        assert!(
+            retire_refused_oauth_token(&other, &other_token),
+            "another source's entry was untouched"
+        );
     }
 
     #[tokio::test]

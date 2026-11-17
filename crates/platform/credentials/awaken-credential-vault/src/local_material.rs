@@ -285,6 +285,22 @@ impl CredentialMaterialResolver for VaultLocalMaterialAuthority {
             material,
         })
     }
+
+    /// Only an OAuth helper token is reused across resolutions; sealed Vault
+    /// bytes are re-read on every resolution, so nothing else is retired.
+    async fn retire_refused_material(
+        &self,
+        request: CredentialMaterialRequest<'_>,
+        presented: &RedactedString,
+    ) {
+        #[cfg(feature = "oauth-command")]
+        crate::oauth::retire_refused_oauth_token(
+            &CredentialSourceId(request.access.credential.id.clone()),
+            presented,
+        );
+        #[cfg(not(feature = "oauth-command"))]
+        let _ = (request, presented);
+    }
 }
 
 mod attempt_delivery;
@@ -364,6 +380,70 @@ mod tests {
                 expected_provider,
             })
             .await
+    }
+
+    /// A provider refusal reported for material this authority served reaches
+    /// the OAuth cache entry of exactly that source.
+    #[cfg(feature = "oauth-command")]
+    #[tokio::test]
+    async fn a_refused_oauth_token_is_retired_through_the_resolver() {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Oauth,
+                provider_id: Some("provider-a".into()),
+                env_key: None,
+                secret: None,
+                oauth_command: Some(crate::oauth::test_stdout_command("ya29.resolver-refused")),
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+            awaken_time::system_clock().as_ref(),
+        )
+        .await
+        .unwrap();
+        let authority = VaultLocalMaterialAuthority::new(
+            credentials.clone(),
+            secrets.clone(),
+            awaken_time::system_clock(),
+        );
+        let holder =
+            PlaintextHolder::new(PlaintextBoundary::Worker, SELF_HOSTED_WORKER_TRUST_DOMAIN);
+        let access = CredentialAccess::new(
+            CredentialRef {
+                id: source.id.0.clone(),
+                revision: u64::try_from(source.version).unwrap(),
+            },
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::ProviderAdapter,
+            CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+        )
+        .with_target(CredentialTarget::new(
+            CredentialPurpose::ProviderAdapter,
+            "provider-a",
+        ));
+        let binding =
+            CredentialMaterialBinding::for_target("workspace-a", &"provider-a", &access.usage);
+        let expected = CredentialProviderExpectation {
+            provider_id: "provider-a",
+            protocol_endpoint_id: None,
+        };
+        let request = CredentialMaterialRequest {
+            access: &access,
+            selected_holder: &holder,
+            binding: &binding,
+            expected_provider: Some(expected),
+        };
+        let resolved = authority.resolve_exact(request).await.unwrap();
+        let presented = resolved.material.single_secret().unwrap().clone();
+        assert_eq!(presented.expose_secret(), "ya29.resolver-refused");
+        authority.retire_refused_material(request, &presented).await;
+        assert!(
+            !crate::oauth::retire_refused_oauth_token(&source.id, &presented),
+            "the resolver already retired the cached token it served"
+        );
     }
 
     #[tokio::test]

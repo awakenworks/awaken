@@ -163,17 +163,18 @@ impl CredentialInferenceMaterializer {
             .map_err(LlmError::Binding);
         }
 
-        let secret = self
+        let served = self
             .credentials
-            .materialize_claimed_provider_material(
+            .materialize_claimed_provider_served(
                 candidate,
                 context,
                 awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
             )
             .await?
-            .map(|material| {
+            .map(|(material, served)| {
                 material
                     .into_secret()
+                    .map(|secret| (secret, served))
                     .map_err(|error| LlmError::Binding(error.to_string()))
             })
             .transpose()?;
@@ -185,10 +186,18 @@ impl CredentialInferenceMaterializer {
             &endpoint.api_dialect,
             &endpoint.adapter_kind,
             Some(&endpoint.base_url),
-            secret.as_ref(),
+            served.as_ref().map(|(secret, _)| secret),
             *unspecified_reasoning,
         )
         .map_err(|error| LlmError::Binding(error.to_string()))?;
+        let inner = match served {
+            Some((presented, served)) => Arc::new(RefusalRetiringExecutor {
+                inner,
+                presented,
+                served,
+            }) as Arc<dyn LlmExecutor>,
+            None => inner,
+        };
         Ok(Some(shaped(Arc::new(PinnedModelExecutor {
             inner,
             upstream_model: endpoint.upstream_model.clone(),
@@ -239,6 +248,61 @@ impl LlmExecutor for ToolImageExecutor {
     ) -> Result<ChatResponse, LlmError> {
         shape_tool_result_images(&mut request.messages, self.image_input);
         self.inner.infer_streaming(request, sink).await
+    }
+}
+
+/// Presents one materialized provider credential. When the provider refuses
+/// it as an authentication failure, the resolver that served it retires that
+/// exact material, so the next materialization acquires new material instead
+/// of presenting the refused bytes until a reuse window ends. The failed call
+/// is returned unchanged: no retry and no other credential is attempted here.
+struct RefusalRetiringExecutor {
+    inner: Arc<dyn LlmExecutor>,
+    presented: awaken_agent_contract::RedactedString,
+    served: crate::ServedProviderMaterial,
+}
+
+impl RefusalRetiringExecutor {
+    async fn observe<T>(&self, result: Result<T, LlmError>) -> Result<T, LlmError> {
+        if let Err(error) = &result
+            && refuses_presented_credential(error)
+        {
+            self.served.retire_refused(&self.presented).await;
+        }
+        result
+    }
+}
+
+/// The provider's authentication verdict on the presented credential, read
+/// from the typed failure classification (never from message text).
+fn refuses_presented_credential(error: &LlmError) -> bool {
+    matches!(
+        error.classification(),
+        LlmError::Unauthorized(_) | LlmError::LoginRequired(_)
+    )
+}
+
+#[async_trait]
+impl LlmExecutor for RefusalRetiringExecutor {
+    fn effect_scope(
+        &self,
+        request: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        self.inner.effect_scope(request)
+    }
+
+    async fn infer(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        let result = self.inner.infer(request).await;
+        self.observe(result).await
+    }
+
+    async fn infer_streaming(
+        &self,
+        request: ChatRequest,
+        sink: &dyn DeltaSink,
+    ) -> Result<ChatResponse, LlmError> {
+        let result = self.inner.infer_streaming(request, sink).await;
+        self.observe(result).await
     }
 }
 
@@ -558,6 +622,177 @@ mod tests {
                     "P1/P2 exact effects"
                 );
             }
+        }
+    }
+
+    /// Authentication refusal decision table for a presented provider
+    /// credential. Causes: C1 the inner call failed; C2 its typed
+    /// classification is an authentication refusal (`Unauthorized` or
+    /// `LoginRequired`, wrapped in evidence or not). Effects: E1 the serving
+    /// resolver is asked to retire exactly the presented secret for exactly
+    /// that credential, once per refused call; E2 nothing is retired. Either
+    /// way the call's own result is returned unchanged (no retry here).
+    ///
+    /// | Rule | C1 | C2 | Effect |
+    /// |---|---|---|---|
+    /// | A1 | Y | Y | E1 |
+    /// | A2 | Y | N | E2 |
+    /// | A3 | N | - | E2 |
+    #[tokio::test]
+    async fn an_authentication_refusal_retires_the_presented_credential_at_its_resolver() {
+        use awaken_agent_contract::credential::{
+            CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
+            CredentialPurpose, CredentialRef, CredentialTarget, CredentialUsage,
+            ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+        };
+        use awaken_credential_contract::{
+            CredentialMaterialBinding, CredentialMaterialCapability, CredentialMaterialError,
+            CredentialMaterialRequest, CredentialMaterialResolver, ResolvedCredentialMaterial,
+        };
+
+        #[derive(Default)]
+        struct RecordingResolver {
+            retired: std::sync::Mutex<Vec<(String, String)>>,
+        }
+        #[async_trait]
+        impl CredentialMaterialResolver for RecordingResolver {
+            fn material_capabilities(
+                &self,
+            ) -> std::collections::BTreeSet<CredentialMaterialCapability> {
+                [CredentialMaterialCapability {
+                    holder: PlaintextHolder::new(
+                        PlaintextBoundary::Worker,
+                        awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                    ),
+                    source: CredentialMaterialSource::WorkerReference,
+                    envelope: false,
+                }]
+                .into_iter()
+                .collect()
+            }
+            async fn resolve_exact(
+                &self,
+                _request: CredentialMaterialRequest<'_>,
+            ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
+                Err(CredentialMaterialError::Unavailable)
+            }
+            async fn retire_refused_material(
+                &self,
+                request: CredentialMaterialRequest<'_>,
+                presented: &RedactedString,
+            ) {
+                self.retired.lock().unwrap().push((
+                    request.access.credential.id.clone(),
+                    presented.expose_secret().to_string(),
+                ));
+            }
+        }
+
+        struct Fail(fn() -> Result<ChatResponse, LlmError>);
+        #[async_trait]
+        impl LlmExecutor for Fail {
+            async fn infer(&self, _request: ChatRequest) -> Result<ChatResponse, LlmError> {
+                (self.0)()
+            }
+        }
+
+        let holder = PlaintextHolder::new(
+            PlaintextBoundary::Worker,
+            awaken_agent_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        );
+        let access = CredentialAccess::new(
+            CredentialRef {
+                id: "provider-source".into(),
+                revision: 1,
+            },
+            CredentialMaterialSource::WorkerReference,
+            CredentialUsage::ProviderAdapter,
+            CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+        )
+        .with_target(CredentialTarget::new(
+            CredentialPurpose::ProviderAdapter,
+            "provider-a",
+        ));
+        let binding =
+            CredentialMaterialBinding::for_target("workspace-a", &"provider-a", &access.usage);
+        let unauthorized: fn() -> Result<ChatResponse, LlmError> =
+            || Err(LlmError::Unauthorized("401".into()));
+        let observed: fn() -> Result<ChatResponse, LlmError> = || {
+            Err(
+                LlmError::LoginRequired("expired grant".into()).with_execution_evidence(
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown,
+                ),
+            )
+        };
+        let provider: fn() -> Result<ChatResponse, LlmError> =
+            || Err(LlmError::Provider("503".into()));
+        let rate_limited: fn() -> Result<ChatResponse, LlmError> = || {
+            Err(LlmError::RateLimited {
+                message: "429".into(),
+                retry_after: None,
+            })
+        };
+        let success: fn() -> Result<ChatResponse, LlmError> = || {
+            Ok(ChatResponse {
+                output: awaken_runtime_contract::llm::AssistantOutput::text("ok"),
+                usage: None,
+                stop_reason: None,
+            })
+        };
+        for (rule, outcome, retires) in [
+            ("A1 unauthorized", unauthorized, true),
+            ("A1 login required with evidence", observed, true),
+            ("A2 provider error", provider, false),
+            ("A2 rate limited", rate_limited, false),
+            ("A3 success", success, false),
+        ] {
+            let resolver = Arc::new(RecordingResolver::default());
+            let served = crate::ServedProviderMaterial {
+                materializer: crate::PinnedCredentialMaterializer::external_only(
+                    resolver.clone(),
+                    awaken_time::system_clock(),
+                ),
+                access: access.clone(),
+                holder: holder.clone(),
+                binding: binding.clone(),
+                expected_provider: awaken_credential_contract::CredentialProviderExpectationOwned {
+                    provider_id: "provider-a".into(),
+                    protocol_endpoint_id: None,
+                },
+            };
+            let executor = RefusalRetiringExecutor {
+                inner: Arc::new(Fail(outcome)),
+                presented: RedactedString::new("presented-token"),
+                served,
+            };
+            let request = ChatRequest {
+                model_binding: ModelBinding::parse("p", "upstream", "b").unwrap(),
+                inference: Default::default(),
+                messages: Vec::new(),
+                tools: Vec::new(),
+            };
+            let expected = outcome().map(|_| ()).map_err(|error| error.code());
+            for streaming in [false, true] {
+                let result = if streaming {
+                    executor
+                        .infer_streaming(request.clone(), &crate::NoopDeltaSink)
+                        .await
+                } else {
+                    executor.infer(request.clone()).await
+                };
+                assert_eq!(
+                    result.map(|_| ()).map_err(|error| error.code()),
+                    expected,
+                    "{rule}: the call's own result is returned unchanged"
+                );
+            }
+            let retired = resolver.retired.lock().unwrap().clone();
+            let want = if retires {
+                vec![("provider-source".to_string(), "presented-token".to_string()); 2]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(retired, want, "{rule}");
         }
     }
 

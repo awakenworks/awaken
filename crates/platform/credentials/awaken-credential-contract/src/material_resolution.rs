@@ -285,6 +285,20 @@ pub trait CredentialMaterialResolver: Send + Sync {
         &self,
         request: CredentialMaterialRequest<'_>,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError>;
+
+    /// The selected provider refused `presented`, which this resolver returned
+    /// for `request`, as an authentication failure. An adapter that serves the
+    /// same minted material across resolutions retires exactly that entry when
+    /// it still holds `presented`, so the next resolution acquires new material
+    /// instead of presenting the refused bytes until a reuse window ends.
+    /// Adapters that reuse nothing have nothing to retire. This never selects,
+    /// resolves, or returns other material.
+    async fn retire_refused_material(
+        &self,
+        _request: CredentialMaterialRequest<'_>,
+        _presented: &RedactedString,
+    ) {
+    }
 }
 
 #[cfg(test)]

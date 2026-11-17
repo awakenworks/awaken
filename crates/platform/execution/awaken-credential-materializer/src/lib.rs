@@ -272,18 +272,27 @@ impl PinnedCredentialMaterializer {
             CredentialRealizationKind::WorkerProviderAdapter,
         )
         .await?
+        .0
         .into_secret()
         .map_err(|error| error.to_string())
     }
 
     /// Materialize for the exact holder and mechanism selected by admission.
+    /// The returned [`ServedProviderMaterial`] names the resolution that
+    /// produced the material, so a provider refusal can retire exactly it.
     async fn materialize_provider_for(
         &self,
         candidate: &ResolvedModelCandidate,
         delivered_access: Option<&CredentialAccess>,
         selected_holder: &PlaintextHolder,
         realization: CredentialRealizationKind,
-    ) -> Result<awaken_credential_contract::CredentialMaterial, String> {
+    ) -> Result<
+        (
+            awaken_credential_contract::CredentialMaterial,
+            ServedProviderMaterial,
+        ),
+        String,
+    > {
         let ModelProvisioning::Provider { .. } = candidate.provisioning() else {
             return Err("model candidate does not require a provider credential".into());
         };
@@ -311,12 +320,19 @@ impl PinnedCredentialMaterializer {
             .resolve_validated(
                 credential,
                 selected_holder,
-                material_binding,
+                material_binding.clone(),
                 Some(expectation.as_borrowed()),
             )
             .await
             .map_err(|error| error.to_string())?;
-        Ok(resolved.material)
+        let served = ServedProviderMaterial {
+            materializer: self.clone(),
+            access: credential.clone(),
+            holder: selected_holder.clone(),
+            binding: material_binding,
+            expected_provider: expectation,
+        };
+        Ok((resolved.material, served))
     }
 
     async fn materialize_remote_for(
@@ -544,6 +560,36 @@ pub enum CredentialExtensionRegistryError {
     DuplicateConsumer(String),
 }
 
+/// The exact resolution that produced one provider credential. The executor
+/// that presents the material keeps it, so an authentication refusal reaches
+/// the resolver that served those bytes and no other credential is consulted.
+#[derive(Clone)]
+pub(crate) struct ServedProviderMaterial {
+    materializer: PinnedCredentialMaterializer,
+    access: CredentialAccess,
+    holder: PlaintextHolder,
+    binding: CredentialMaterialBinding,
+    expected_provider: awaken_credential_contract::CredentialProviderExpectationOwned,
+}
+
+impl ServedProviderMaterial {
+    /// The provider refused `presented` as an authentication failure: let the
+    /// serving resolver retire it so the next resolution acquires new material.
+    pub(crate) async fn retire_refused(&self, presented: &awaken_agent_contract::RedactedString) {
+        self.materializer
+            .retire_refused_material(
+                CredentialMaterialRequest {
+                    access: &self.access,
+                    selected_holder: &self.holder,
+                    binding: &self.binding,
+                    expected_provider: Some(self.expected_provider.as_borrowed()),
+                },
+                presented,
+            )
+            .await;
+    }
+}
+
 #[async_trait::async_trait]
 impl CredentialMaterialResolver for PinnedCredentialMaterializer {
     fn material_capabilities(
@@ -573,6 +619,21 @@ impl CredentialMaterialResolver for PinnedCredentialMaterializer {
             request.expected_provider,
         )
         .await
+    }
+
+    async fn retire_refused_material(
+        &self,
+        request: CredentialMaterialRequest<'_>,
+        presented: &awaken_agent_contract::RedactedString,
+    ) {
+        // The same selection that resolved the material receives its refusal.
+        // A selection that no longer admits the request has served nothing
+        // this caller may retire.
+        if let Ok((resolver, _)) =
+            self.exact_resolver(request.access, request.selected_holder, request.binding)
+        {
+            resolver.retire_refused_material(request, presented).await;
+        }
     }
 }
 

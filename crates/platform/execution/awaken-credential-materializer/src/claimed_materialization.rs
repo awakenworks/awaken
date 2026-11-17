@@ -14,7 +14,7 @@ use awaken_runtime_contract::execution::check_attempt_ownership;
 use awaken_runtime_contract::llm::Error as LlmError;
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 
-use super::PinnedCredentialMaterializer;
+use super::{PinnedCredentialMaterializer, ServedProviderMaterial};
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum ClaimedMaterializationError {
@@ -128,6 +128,38 @@ impl PinnedCredentialMaterializer {
             .transpose()
     }
 
+    /// The claimed provider material together with the exact resolution that
+    /// served it, for an executor that presents it to the provider and must
+    /// report an authentication refusal back to that resolution.
+    pub(crate) async fn materialize_claimed_provider_served(
+        &self,
+        candidate: &ResolvedModelCandidate,
+        context: &awaken_runtime_contract::RuntimeRunContext,
+        expected_kind: CredentialRealizationKind,
+    ) -> Result<
+        Option<(
+            awaken_credential_contract::CredentialMaterial,
+            ServedProviderMaterial,
+        )>,
+        ClaimedMaterializationError,
+    > {
+        let Some((material, served)) = self
+            .materialize_claimed_material(
+                candidate,
+                context,
+                Self::claimed_provider_binding(candidate, context)?,
+                expected_kind,
+                "provider",
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let served =
+            served.ok_or_else(|| "provider material has no serving resolution".to_string())?;
+        Ok(Some((material, served)))
+    }
+
     /// Materialize the exact A2A HTTP-header credential frozen in the current
     /// claim. Anonymous remote publications return `None`; selection and Agent
     /// Card interpretation remain publication concerns.
@@ -145,7 +177,7 @@ impl PinnedCredentialMaterializer {
         )
         .await
         .map_err(|error| error.to_string())?
-        .map(|material| material.into_secret().map_err(|error| error.to_string()))
+        .map(|(material, _)| material.into_secret().map_err(|error| error.to_string()))
         .transpose()
     }
 
@@ -156,14 +188,16 @@ impl PinnedCredentialMaterializer {
         expected_kind: CredentialRealizationKind,
     ) -> Result<Option<awaken_credential_contract::CredentialMaterial>, ClaimedMaterializationError>
     {
-        self.materialize_claimed_material(
-            candidate,
-            context,
-            Self::claimed_provider_binding(candidate, context)?,
-            expected_kind,
-            "provider",
-        )
-        .await
+        Ok(self
+            .materialize_claimed_material(
+                candidate,
+                context,
+                Self::claimed_provider_binding(candidate, context)?,
+                expected_kind,
+                "provider",
+            )
+            .await?
+            .map(|(material, _)| material))
     }
 
     async fn materialize_claimed_material(
@@ -173,8 +207,13 @@ impl PinnedCredentialMaterializer {
         selected: Option<(&CredentialAccess, &AttemptCredentialBinding)>,
         expected_kind: CredentialRealizationKind,
         kind: &str,
-    ) -> Result<Option<awaken_credential_contract::CredentialMaterial>, ClaimedMaterializationError>
-    {
+    ) -> Result<
+        Option<(
+            awaken_credential_contract::CredentialMaterial,
+            Option<ServedProviderMaterial>,
+        )>,
+        ClaimedMaterializationError,
+    > {
         let Some((access, binding)) = selected else {
             return Ok(None);
         };
@@ -187,23 +226,26 @@ impl PinnedCredentialMaterializer {
         check_attempt_ownership(context.ownership.as_deref()).await?;
         let secret = match candidate.provisioning() {
             ModelProvisioning::Provider { .. } => {
-                self.materialize_provider_for(
-                    candidate,
-                    delivered.as_ref(),
-                    &binding.selected_plaintext_holder,
-                    binding.selected_realization_kind,
-                )
-                .await?
+                let (material, served) = self
+                    .materialize_provider_for(
+                        candidate,
+                        delivered.as_ref(),
+                        &binding.selected_plaintext_holder,
+                        binding.selected_realization_kind,
+                    )
+                    .await?;
+                (material, Some(served))
             }
-            ModelProvisioning::Remote { .. } => {
+            ModelProvisioning::Remote { .. } => (
                 self.materialize_remote_for(
                     candidate,
                     delivered.as_ref(),
                     &binding.selected_plaintext_holder,
                     binding.selected_realization_kind,
                 )
-                .await?
-            }
+                .await?,
+                None,
+            ),
             ModelProvisioning::HostExecutor | ModelProvisioning::BackendOwned { .. } => {
                 return Err(format!("model candidate has no {kind} provisioning").into());
             }
