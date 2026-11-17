@@ -102,7 +102,15 @@ allow-git = [
 ]
 
 # The mandatory trust-root guard limits this semver-shim false positive.
+# RUSTSEC-2026-0542/0543/0555 (chronotope/chrono#1768) mark the chrono family
+# unmaintained, not vulnerable, and name no maintained release. object_store
+# 0.14 requires chrono and humantime, so the whole family stays until a jiff
+# migration replaces the direct uses and object_store no longer needs them;
+# cargo-deny reports each entry as not detected once that happens.
 [advisories]
 ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "Unmaintained, not vulnerable, no maintained release (chronotope/chrono#1768). Required by object_store 0.14 and used directly for Managed timestamps, deployment schedules and execution context; leaves with a jiff migration." },
+    { id = "RUSTSEC-2026-0555", reason = "Unmaintained, not vulnerable, no maintained release (chronotope/chrono#1768). IANA zones for deployment schedules and execution context; replaced together with chrono by jiff's bundled time-zone database." },
+    { id = "RUSTSEC-2026-0542", reason = "Unmaintained, not vulnerable, no maintained release. Reached only through object_store 0.14's duration parsing; no workspace crate depends on humantime directly." },
     { id = "RUSTSEC-2026-0381", reason = "Immutable webpki-roots 0.26.11 only re-exports v1 certificate data. check_trust_roots.py pins its registry checksum and forwarding edge, rejects actual data below 1.0.10, and refuses this exception once the last shim is removed." },
 ]

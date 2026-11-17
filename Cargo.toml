@@ -218,7 +218,7 @@ tokio-util = "0.7"
 yamux = "0.14"
 url = "2.5"
 # One version/feature choice for Skill ingestion and its test-only ZIP writers.
-zip = { version = "9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 genai = "=0.7.0-rc.8"
 axum = "0.8"
 # Property-based (lightweight formal) verification: dev-only. Encodes universally-
