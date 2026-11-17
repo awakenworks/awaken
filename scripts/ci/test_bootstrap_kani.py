@@ -651,6 +651,45 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), [str(self.cache / "A"), str(self.cache / "backend-A/bin"), "A"])
 
 
+    def test_formal_gate_judges_an_edited_procedure_in_place(self):
+        """An edited bootstrap names a new receipt; the gate judges it, never rebuilds.
+
+        | Rule | state after editing bootstrap_kani.sh   | Effect                               |
+        |------|-----------------------------------------|--------------------------------------|
+        | E1   | --verify-source                         | 75 names the unjudged receipt        |
+        | E2   | --ensure-qualified, fixtures pass       | receipt published, cmake never runs  |
+        | E3   | --ensure-qualified, a fixture fails     | that status, no receipt, never 75    |
+        """
+        self.assertEqual(self.run_bootstrap().returncode, 0)
+        package = self.backend()
+        script = self.scripts / "bootstrap_kani.sh"
+        script.write_text(script.read_text().replace(
+            "#!/usr/bin/env bash\n", "#!/usr/bin/env bash\n# an edit that changes no artifact\n", 1))
+        receipt = self.receipt(package)
+        self.assertFalse(receipt.exists())
+        # check_formal exports the frozen default backend, as here.
+        selected = {"AWAKEN_KANI_BACKEND_DIR": str(package / "bin")}
+        unjudged = self.verify(**selected)
+        self.assertEqual(unjudged.returncode, 75, unjudged.stderr)
+        self.assertIn("never qualified by this procedure", unjudged.stderr, "E1")
+
+        def ensure(**changes):
+            return subprocess.run(["bash", str(script), "--ensure-qualified", str(self.patched)],
+                                  env=dict(self.env, **selected, **changes), capture_output=True, text=True)
+
+        self.calls.write_text("")
+        failed = ensure(REGRESSION_EXIT="24")
+        self.assertEqual(failed.returncode, 24, failed.stderr)
+        self.assertFalse(receipt.exists(), "E3 a failed fixture publishes no judgement")
+        self.calls.write_text("")
+        judged = ensure()
+        self.assertEqual(judged.returncode, 0, judged.stderr)
+        self.assertTrue(receipt.exists(), "E2")
+        self.assertIn("source=", judged.stdout, "E2 the gate still receives the verified identity")
+        self.assertEqual([line for line in self.calls.read_text().splitlines() if line.startswith("cmake")],
+                         [], "E2 judging an edited procedure never rebuilds")
+        self.assertEqual(self.verify(**selected).returncode, 0, "E2")
+
     def test_cache_names_the_artifact_and_the_receipt_names_the_judgement(self):
         """The build and its qualification are separate facts.
 

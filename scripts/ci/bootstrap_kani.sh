@@ -24,6 +24,7 @@ source "$script_dir/_provider_environment.sh"
 awaken_append_repo_tools
 # Keep the unmodified source cache intact, including any in-flight proof runs.
 source_dir="$cache_root/$kani_revision-${kani_patch_sha256:0:12}"
+readonly default_source_dir="$source_dir"
 qualification_sha256="$(sha256sum "$0" "$script_dir/fixtures/cbmc_recursive_alias.c" "$script_dir/fixtures/kani_wide_niche.rs" \
   "$script_dir/_cargo_target.sh" \
   "$script_dir/fixtures/kani_constructor/Cargo.toml" "$script_dir/fixtures/kani_constructor/Cargo.lock" \
@@ -195,9 +196,11 @@ verify_backend() {
   local identity name selected
   identity="$(backend_identity)" || exit 1
   if [ ! -f "$backend_root/$qualified_receipt" ]; then
+    # Host state, not a defect: the receipt is named by this script's bytes, so
+    # every edit of it starts unjudged. --ensure-qualified judges it in place.
     echo "Kani backend was never qualified by this procedure: $backend_root/$qualified_receipt" >&2
     echo "  run scripts/ci/bootstrap_kani.sh to re-run the qualification fixtures" >&2
-    exit 1
+    exit 75
   fi
   if [ "$(cat "$backend_root/$qualified_receipt")" != "$identity" ]; then
     echo "Kani backend differs from its qualified cache: $backend_root" >&2
@@ -263,10 +266,37 @@ elif [ "${1:-}" = "--verify-source" ] && [ "$#" -eq 2 ]; then
     "build_sha256=$(cat "$source_dir/target/awaken-kani-build.sha256")"
   backend_identity
   exit 0
+elif [ "${1:-}" = "--ensure-qualified" ] && [ "$#" -eq 2 ]; then
+  # The formal gate's entry. Exactly --verify-source, with one difference: when
+  # this cache's own built packages are present but this procedure has not
+  # judged them yet -- this script was edited since -- the qualification
+  # fixtures run now against those packages, as a plain bootstrap would, and
+  # the selection is verified again. Nothing is built: a missing artifact, a
+  # changed byte or an explicitly selected package stays the read-only refusal.
+  selected="$(readlink -e "$2")" || exec "$0" --verify-source "$2"
+  if [ "$selected" = "$(readlink -m "$default_source_dir")" ] \
+      && [ "$backend_root" = "$(readlink -m "$cache_root")/$backend_key" ] \
+      && [ -f "$selected/target/awaken-kani-build.sha256" ] \
+      && [ ! -f "$backend_root/$qualified_receipt" ] \
+      && (source_dir="$selected"; verify_kani_source && verify_kani_build) >/dev/null \
+      && (backend_identity) >/dev/null 2>&1; then
+    echo "Qualifying the cached Kani packages for this procedure: $backend_root/$qualified_receipt" >&2
+    # A failed fixture is a real verdict on these packages: report its status,
+    # never the 75 an unjudged package would otherwise read as.
+    env -u AWAKEN_KANI_BACKEND_DIR -u AWAKEN_KANI_SOURCE_DIR "$0" >&2 || exit "$?"
+  fi
+  exec "$0" --verify-source "$2"
 elif [ "$#" -ne 0 ]; then
-  echo "usage: bootstrap_kani.sh [--build-identity | --solver-tools | --paths | --verify-source PATH]" >&2
+  echo "usage: bootstrap_kani.sh [--build-identity | --solver-tools | --paths | --verify-source PATH | --ensure-qualified PATH]" >&2
   exit 1
 fi
+
+# Every path below writes the shared cache. Two writers -- two worktrees, or two
+# formal gates qualifying the same edited procedure -- would remove and rewrite
+# each other's fixture logs and pending receipts, so they take turns.
+mkdir -p "$cache_root"
+exec 9>>"$cache_root/.bootstrap.lock"
+flock 9
 
 # An explicitly selected backend must already be qualified. Bootstrap never
 # imports an arbitrary binary or mutates a selected external package in place.

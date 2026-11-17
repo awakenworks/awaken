@@ -899,7 +899,8 @@ It qualifies fixed build options with upstream unit/Z3/native tests, two intenti
 Matching GOTO tools reuse the existing Kani setup installation trust; no independent release-archive verification is claimed.
 Immutable receipts bind the three actual tool paths/bytes, configuration, qualification contract/fixtures and Z3 identity.
 `AWAKEN_KANI_CACHE_DIR` selects the shared cache; `AWAKEN_KANI_SOURCE_DIR` and `AWAKEN_KANI_BACKEND_DIR` select already qualified compiler and backend (`bin`) directories.
-The gate freezes physical paths using bootstrap `--paths`, then calls its `--verify-source`; sealed artifacts retain the same runtime identity.
+The gate freezes physical paths using bootstrap `--paths`, then calls its `--ensure-qualified`: the read-only `--verify-source`, except that cached default packages this edited bootstrap has not judged yet run the qualification fixtures first (never a build); sealed artifacts retain the same runtime identity.
+A missing source cache or an unjudged explicit selection exits 75, the host-state refusal.
 Tool qualification checks Boolean/scalar results and preserves typed unknown array elements in JSON traces; it does not provide a complete lambda-array model interpreter or concrete playback. It does not establish business properties whose proofs timed out or did not run.
 
 The script names every Kani harness and uses isolated TLC state directories so
