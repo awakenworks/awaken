@@ -209,6 +209,19 @@ impl JsonRpcPeer {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        Self::with_frame_limit(reader, writer, request_handler, crate::MAX_FRAME_BYTES)
+    }
+
+    fn with_frame_limit<R, W>(
+        reader: R,
+        writer: W,
+        request_handler: Option<Arc<dyn ServerRequestHandler>>,
+        max_frame_bytes: usize,
+    ) -> (Self, mpsc::Receiver<ServerNotification>)
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
         let (write_tx, mut write_rx) = mpsc::channel::<String>(256);
         let (notif_tx, notif_rx) = mpsc::channel::<ServerNotification>(256);
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
@@ -244,11 +257,11 @@ impl JsonRpcPeer {
                 let next = tokio::select! {
                     biased;
                     _ = closed_r.cancelled() => break,
-                    next = read_frame(&mut reader, &mut frame) => next,
+                    next = read_frame(&mut reader, &mut frame, max_frame_bytes) => next,
                 };
                 match next {
                     Ok(true) => {
-                        if frame.len() > crate::MAX_FRAME_BYTES {
+                        if frame.len() > max_frame_bytes {
                             for (_, sender) in pending_r.lock().await.drain() {
                                 let _ = sender.send(Err(McpTransportError::ProtocolError(
                                     "stdio MCP frame exceeds the byte limit".into(),
@@ -365,8 +378,8 @@ impl JsonRpcPeer {
 async fn read_frame(
     reader: &mut (impl tokio::io::AsyncBufRead + Unpin),
     frame: &mut Vec<u8>,
+    max: usize,
 ) -> std::io::Result<bool> {
-    let max = crate::MAX_FRAME_BYTES;
     // Read at most one byte beyond the limit. At the boundary, only a CR
     // might justify looking at one more byte to distinguish CRLF from overflow.
     reader
@@ -450,21 +463,28 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 
-    /// Wire the peer to an in-memory "server" end. Returns the peer, its
-    /// notification receiver, and the server's read/write halves.
-    #[allow(clippy::type_complexity)]
-    fn wired(
-        handler: Option<Arc<dyn ServerRequestHandler>>,
-    ) -> (
+    type WiredPeer = (
         JsonRpcPeer,
         mpsc::Receiver<ServerNotification>,
         BufReader<ReadHalf<tokio::io::DuplexStream>>,
         WriteHalf<tokio::io::DuplexStream>,
-    ) {
+    );
+
+    /// Wire the peer to an in-memory "server" end. Returns the peer, its
+    /// notification receiver, and the server's read/write halves.
+    fn wired(handler: Option<Arc<dyn ServerRequestHandler>>) -> WiredPeer {
+        wired_with_frame_limit(handler, crate::MAX_FRAME_BYTES)
+    }
+
+    fn wired_with_frame_limit(
+        handler: Option<Arc<dyn ServerRequestHandler>>,
+        max_frame_bytes: usize,
+    ) -> WiredPeer {
         let (client_side, server_side) = tokio::io::duplex(8192);
         let (client_r, client_w) = tokio::io::split(client_side);
         let (server_r, server_w) = tokio::io::split(server_side);
-        let (peer, notif_rx) = JsonRpcPeer::new(client_r, client_w, handler);
+        let (peer, notif_rx) =
+            JsonRpcPeer::with_frame_limit(client_r, client_w, handler, max_frame_bytes);
         (peer, notif_rx, BufReader::new(server_r), server_w)
     }
 
@@ -476,7 +496,13 @@ mod tests {
 
     #[tokio::test]
     async fn stdio_bounds_raw_frames_before_decoding_and_without_eof() {
-        let (peer, _, mut server_r, mut server_w) = wired(None);
+        // Exercise the same boundary under Miri without scanning 8 MiB of JSON whitespace.
+        let limit = if cfg!(miri) {
+            64
+        } else {
+            crate::MAX_FRAME_BYTES
+        };
+        let (peer, _, mut server_r, mut server_w) = wired_with_frame_limit(None, limit);
         let server = tokio::spawn(async move {
             let request = read_line(&mut server_r).await;
             let mut exact = serde_json::to_vec(
@@ -484,15 +510,12 @@ mod tests {
             )
             .unwrap();
             // JSON whitespace still counts toward the raw frame budget.
-            exact.resize(crate::MAX_FRAME_BYTES, b' ');
+            exact.resize(limit, b' ');
             exact.extend_from_slice(b"\r\n");
             server_w.write_all(&exact).await.unwrap();
 
             let _ = read_line(&mut server_r).await;
-            server_w
-                .write_all(&vec![b' '; crate::MAX_FRAME_BYTES + 1])
-                .await
-                .unwrap();
+            server_w.write_all(&vec![b' '; limit + 1]).await.unwrap();
             // Keep the pipe open until the transport itself rejects the frame.
             let mut line = String::new();
             assert_eq!(server_r.read_line(&mut line).await.unwrap(), 0);
