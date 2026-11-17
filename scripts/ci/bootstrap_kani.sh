@@ -248,7 +248,13 @@ elif [ "${1:-}" = "--paths" ] && [ "$#" -eq 1 ]; then
   printf '%s\n' "$(readlink -m "${AWAKEN_KANI_SOURCE_DIR:-$cache_root/current}")" "$backend_dir"
   exit 0
 elif [ "${1:-}" = "--verify-source" ] && [ "$#" -eq 2 ]; then
-  source_dir="$(readlink -e "$2")"
+  # A missing selection is host state (a reclaimed or never-built cache), not a
+  # repository defect. Name it and exit 75 so callers rerun after a bootstrap
+  # instead of reading a silent `set -e` exit 1 as a failed proof.
+  if ! source_dir="$(readlink -e "$2")"; then
+    echo "Kani source cache missing at $2; run scripts/ci/bootstrap_kani.sh to rebuild it" >&2
+    exit 75
+  fi
   verify_kani_source
   verify_kani_build
   verify_backend

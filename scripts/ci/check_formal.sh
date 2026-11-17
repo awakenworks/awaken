@@ -505,8 +505,18 @@ AWAKEN_SESSION_EVIDENCE_DIR="$formal_artifact_dir/session-observations" \
   run_admitted_phase "$formal_phase_budget" scripts/ci/check-reliability.sh --session-observations
 
 if command -v cargo-kani >/dev/null 2>&1; then
+  kani_verify_result=0
   run_admitted_phase "$formal_phase_budget" scripts/ci/bootstrap_kani.sh --verify-source "$kani_source_dir" \
-    > "$formal_artifact_dir/kani-source-build.txt"
+    > "$formal_artifact_dir/kani-source-build.txt" || kani_verify_result=$?
+  if [ "$kani_verify_result" -ne 0 ]; then
+    # 75 is a missing host cache (bootstrap_kani.sh names it); any other status
+    # is a selected toolchain that no longer matches its qualification.
+    formal_failure_kind="execution-failed"
+    formal_failure_stage="kani-source-verification"
+    formal_failure_subject="$kani_source_dir"
+    echo "Kani source verification failed (exit $kani_verify_result): $kani_source_dir" >&2
+    exit "$kani_verify_result"
+  fi
   # A matching version string cannot establish full-width enum code generation.
   run_with_deadline --admit "$kani_batch_timeout_seconds" kani \
     scripts/ci/fixtures/kani_wide_niche.rs \

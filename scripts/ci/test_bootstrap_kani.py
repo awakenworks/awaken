@@ -440,6 +440,18 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("qualified cache", result.stderr)
         self.assertEqual(compiler.read_text(), "changed compiler bytes")
 
+    def test_a_missing_selected_source_is_named_and_refused_as_host_state(self):
+        # R8 the selected cache was reclaimed or never built -> name the path
+        # and exit 75 (rerun after a bootstrap), never a silent `set -e` exit 1.
+        missing = self.cache / "reclaimed"
+        result = subprocess.run(["bash", str(self.scripts / "bootstrap_kani.sh"),
+                                 "--verify-source", str(missing)],
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn(f"Kani source cache missing at {missing}", result.stderr)
+        self.assertIn("scripts/ci/bootstrap_kani.sh", result.stderr)
+        self.assertEqual(result.stdout, "")
+
     def backend(self):
         return next(self.cache.glob("cbmc-*"))
 
