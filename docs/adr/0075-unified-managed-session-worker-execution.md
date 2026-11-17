@@ -174,7 +174,11 @@ When the Worker's local preparation drive returns, it reports the finished
 grant. The root releases the Work the preparation took (ADR-0106 wakes it for
 an accepted MCP update) when that grant is still current and no Run is
 admitted, exactly as a settled root Run releases its own; a Run admitted
-afterwards revives it through its claim.
+afterwards revives it through its claim. The Work store records the epoch the
+preparation's claim was granted, and any Run acquisition of that Work clears
+it. The release is one compare-and-release on that record under the lock every
+acquisition takes, so a Run that acquired the Work after the root was read
+keeps it.
 Delegated children use the existing `RunDispatch::session_thread_id()` parent
 affinity and borrow that Work; child settlement retains it for the waiting
 parent, while a root Run owns its release.

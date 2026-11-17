@@ -434,6 +434,35 @@ impl awaken_session_application_contract::SessionWorkerLeases for EnvironmentExe
             .await
             .map_err(session_work_error(worker_owner))
     }
+
+    async fn acquire_preparation_session(
+        &self,
+        environment_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<
+        Option<awaken_session_types::SessionWorkLease>,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        self.work
+            .worker_leases
+            .acquire_preparation_session(environment_id, session_id, worker_owner)
+            .await
+            .map_err(session_work_error(session_id.as_str()))
+    }
+
+    async fn release_preparation_session(
+        &self,
+        environment_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
+        self.work
+            .worker_leases
+            .release_preparation_session(environment_id, session_id, worker_owner)
+            .await
+            .map_err(session_work_error(session_id.as_str()))
+    }
 }
 
 /// Registration and WorkQueue intent converge before Control receives an acknowledgement.
@@ -1573,6 +1602,28 @@ mod tests {
         ) -> Result<Option<awaken_session_types::SessionWorkLease>, WorkQueueError> {
             self.require_session_storage("acquire")?;
             self.inner.acquire_session(env, session, worker).await
+        }
+        async fn acquire_preparation_session(
+            &self,
+            env: &str,
+            session: &awaken_session_types::SessionId,
+            worker: &str,
+        ) -> Result<Option<awaken_session_types::SessionWorkLease>, WorkQueueError> {
+            self.require_session_storage("acquire")?;
+            self.inner
+                .acquire_preparation_session(env, session, worker)
+                .await
+        }
+        async fn release_preparation_session(
+            &self,
+            env: &str,
+            session: &awaken_session_types::SessionId,
+            worker: &str,
+        ) -> Result<bool, WorkQueueError> {
+            self.require_session_storage("release")?;
+            self.inner
+                .release_preparation_session(env, session, worker)
+                .await
         }
         async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
             self.require_session_storage("release_owner")?;

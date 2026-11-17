@@ -287,21 +287,37 @@ pub(crate) async fn reconcile_work_dispatches(
 
 /// A finished Run-free preparation hands back the Work its claim took
 /// (ADR-0106) only while the current root still holds its grant and admitted
-/// no Run; a vanished root releases nothing.
+/// no Run, and the Work store still records the preparation's hold; a vanished
+/// root releases nothing.
+///
+/// | Rule | root decision      | Work store hold                | effect          |
+/// |------|--------------------|--------------------------------|-----------------|
+/// | R1   | release            | held by this preparation       | release, `true` |
+/// | R2   | keep (Run admitted)| any                            | nothing         |
+/// | R3   | release            | a Run acquired it since        | nothing         |
+/// | R4   | release            | another holder or none         | nothing         |
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionPreparationWorkRelease for SessionWorkAssignments {
-    async fn finished_preparation_releases_work(
+    async fn release_finished_preparation_work(
         &self,
         command: awaken_session_execution_contract::FinishSessionPreparation,
+        worker_owner: &str,
     ) -> Result<bool, awaken_session_execution_contract::SessionRealizationControlFailure> {
-        match self.repository.get(&command.session_id).await {
-            Ok(current) => Ok(awaken_session_contract::finished_preparation_releases_work(
-                &current,
-                &command.lease,
-            )),
-            Err(SessionRepositoryError::NotFound) => Ok(false),
-            Err(error) => Err(crate::realization::repository_control(error)),
+        let current = match self.repository.get(&command.session_id).await {
+            Ok(current) => current,
+            Err(SessionRepositoryError::NotFound) => return Ok(false),
+            Err(error) => return Err(crate::realization::repository_control(error)),
+        };
+        if !awaken_session_contract::finished_preparation_releases_work(&current, &command.lease) {
+            return Ok(false);
         }
+        let Some((environment_id, _terminal)) = session_work_environment(&current) else {
+            return Ok(false);
+        };
+        self.leases
+            .release_preparation_session(&environment_id, &command.session_id, worker_owner)
+            .await
+            .map_err(|error| crate::SessionMutationError::admission(error).into())
     }
 }
 
@@ -331,10 +347,15 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Sessio
                 .map(SessionWorkOwnership::Leased)
                 .unwrap_or(SessionWorkOwnership::Unowned));
         }
-        let acquired = self
-            .leases
-            .acquire_session(&environment_id, session_id, worker_owner)
-            .await?;
+        let acquired = if acquisition == SessionWorkAcquisition::ClaimedPreparation {
+            self.leases
+                .acquire_preparation_session(&environment_id, session_id, worker_owner)
+                .await?
+        } else {
+            self.leases
+                .acquire_session(&environment_id, session_id, worker_owner)
+                .await?
+        };
         if !awaken_session_application_contract::session_work_revival_is_authorized(
             acquisition,
             terminal,

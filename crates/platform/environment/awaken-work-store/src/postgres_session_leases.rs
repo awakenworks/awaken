@@ -3,16 +3,16 @@
 // @formal reason: both standalone and composed paths still consume the one Work/lease kernels.
 //! Session Work SQL on a caller-owned transaction. No pool checkout or close occurs here.
 use super::{
-    HEARTBEAT_TTL_SECONDS, LeaseFence, SessionWorkLease, SessionWorkReleaseAdmission,
-    StoredLeaseAuthorityInput, StoredSessionWorkRow, WallClock, WorkQueueError,
-    claim_stored_lease_authority, db_millis, granted_epoch, lease_expiry,
+    HEARTBEAT_TTL_SECONDS, LeaseFence, SessionWorkClaimant, SessionWorkLease,
+    SessionWorkReleaseAdmission, StoredLeaseAuthorityInput, StoredSessionWorkRow, WallClock,
+    WorkQueueError, claim_stored_lease_authority, db_millis, granted_epoch, lease_expiry,
     reclaimed_lease_authority, release_stored_lease_authority, renew_stored_lease_authority,
     session_work_release_admission, storage, stored_lease_epoch,
 };
 use awaken_time::WallClockExt as _;
 
 enum Admission<'a> {
-    Claim,
+    Claim(SessionWorkClaimant),
     Renew(Option<&'a SessionWorkLease>),
 }
 
@@ -24,6 +24,27 @@ pub async fn acquire_postgres_session_work_on(
     env_id: &str,
     session_id: &awaken_session_types::SessionId,
     worker_owner: &str,
+) -> Result<(Option<SessionWorkLease>, bool), WorkQueueError> {
+    acquire_postgres_session_work_as(
+        connection,
+        clock,
+        env_id,
+        session_id,
+        worker_owner,
+        SessionWorkClaimant::Run,
+    )
+    .await
+}
+
+/// The same acquisition on behalf of `claimant`: a Run clears a Run-free
+/// preparation's hold, a preparation records it on a fresh claim (ADR-0106).
+pub(crate) async fn acquire_postgres_session_work_as(
+    connection: &mut sqlx::PgConnection,
+    clock: &dyn WallClock,
+    env_id: &str,
+    session_id: &awaken_session_types::SessionId,
+    worker_owner: &str,
+    claimant: SessionWorkClaimant,
 ) -> Result<(Option<SessionWorkLease>, bool), WorkQueueError> {
     let work_id = super::backends::insert_postgres_work_on(
         connection,
@@ -40,7 +61,7 @@ pub async fn acquire_postgres_session_work_on(
         env_id,
         session_id,
         worker_owner,
-        Admission::Claim,
+        Admission::Claim(claimant),
     )
     .await
 }
@@ -126,7 +147,11 @@ async fn acquire_existing_on(
     // The one reading this grant is minted and judged on, sampled under the
     // Environment lock so no later writer can commit an earlier deadline.
     let now_ms = clock.now_ms();
-    let may_claim = matches!(admission, Admission::Claim);
+    let claimant = match admission {
+        Admission::Claim(claimant) => Some(claimant),
+        Admission::Renew(_) => None,
+    };
+    let may_claim = claimant.is_some();
     if may_claim {
         let cleared = reclaimed_lease_authority();
         sqlx::query(
@@ -207,7 +232,8 @@ async fn acquire_existing_on(
             ));
         };
         sqlx::query(
-            "UPDATE work_queue_item SET lease_expires_ms = $1, lease_refreshed_ms = $2 \
+            "UPDATE work_queue_item SET lease_expires_ms = $1, lease_refreshed_ms = $2, \
+                 preparation_lease_epoch = CASE WHEN $6 THEN NULL ELSE preparation_lease_epoch END \
                  WHERE work_id = $3 AND environment_id = $4 AND lease_owner = $5",
         )
         .bind(next_authority.expires_at)
@@ -215,6 +241,7 @@ async fn acquire_existing_on(
         .bind(&work_id)
         .bind(env_id)
         .bind(worker_owner)
+        .bind(SessionWorkClaimant::clears_preparation_hold(claimant))
         .execute(&mut *connection)
         .await
         .map_err(storage)?;
@@ -240,17 +267,20 @@ async fn acquire_existing_on(
             lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
         )?;
         let granted = next_authority.granted_epoch()?;
+        let granted_db = stored_lease_epoch(granted)?;
         sqlx::query(
             "UPDATE work_queue_item SET state = 'active', started_at = $1, \
                  lease_owner = $2, lease_epoch = $3, lease_expires_ms = $4, \
-                 lease_refreshed_ms = $5, latest_heartbeat_at = NULL WHERE work_id = $6",
+                 lease_refreshed_ms = $5, latest_heartbeat_at = NULL, \
+                 preparation_lease_epoch = $7 WHERE work_id = $6",
         )
         .bind(awaken_time::utc::epoch_millis_to_rfc3339(now_ms))
         .bind(next_authority.owner)
-        .bind(stored_lease_epoch(granted)?)
+        .bind(granted_db)
         .bind(next_authority.expires_at)
         .bind(next_authority.refreshed_at)
         .bind(&work_id)
+        .bind(SessionWorkClaimant::held_epoch(claimant, granted_db))
         .execute(&mut *connection)
         .await
         .map_err(storage)?;

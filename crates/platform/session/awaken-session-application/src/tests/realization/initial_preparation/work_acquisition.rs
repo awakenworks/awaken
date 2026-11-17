@@ -1,4 +1,5 @@
-//! Current run-free Root grants acquire Work through the original lease role.
+//! Current run-free Root grants acquire Work through the lease role's
+//! preparation claim, which records the hold a Run acquisition clears.
 use super::*;
 use awaken_session_application_contract::{SessionWorkOwnership, SessionWorkerLeases};
 use awaken_session_types::SessionWorkLease;
@@ -61,6 +62,15 @@ impl PreparationWork {
 impl SessionWorkerLeases for PreparationWork {
     async fn acquire_session(
         &self,
+        _: &str,
+        _: &SessionId,
+        _: &str,
+    ) -> Result<Option<SessionWorkLease>, RunError> {
+        panic!("a run-free preparation claims Work through the preparation role")
+    }
+
+    async fn acquire_preparation_session(
+        &self,
         environment: &str,
         session: &SessionId,
         owner: &str,
@@ -121,6 +131,16 @@ impl SessionWorkerLeases for PreparationWork {
     async fn release_owner(&self, _: &str) -> Result<usize, RunError> {
         self.releases.fetch_add(1, Ordering::SeqCst);
         Ok(0)
+    }
+
+    async fn release_preparation_session(
+        &self,
+        _: &str,
+        _: &SessionId,
+        _: &str,
+    ) -> Result<bool, RunError> {
+        self.releases.fetch_add(1, Ordering::SeqCst);
+        Ok(false)
     }
 }
 

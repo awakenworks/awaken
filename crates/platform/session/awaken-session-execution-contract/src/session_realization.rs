@@ -309,14 +309,18 @@ pub trait SessionPreparationControl: Send + Sync {
 
 /// The Session Work side of a Run-free preparation's end. A preparation the
 /// root handed out takes the Session's Work when it is claimed; once the
-/// Worker reports it finished, the Work owner decides from the current root
-/// whether that Work goes back: no Run admitted and the preparation's grant
-/// still current. Reads only; the caller releases the exact Worker's Work.
+/// Worker reports it finished, the Work goes back when the current root admits
+/// no Run and still holds the preparation's grant, and only while
+/// `worker_owner` still holds that Work under the preparation's claim. The
+/// last condition is one compare-and-release in the Work store, so a Run that
+/// acquired the Work after the root was read keeps it. Returns whether Work
+/// was released.
 #[async_trait]
 pub trait SessionPreparationWorkRelease: Send + Sync {
-    async fn finished_preparation_releases_work(
+    async fn release_finished_preparation_work(
         &self,
         command: FinishSessionPreparation,
+        worker_owner: &str,
     ) -> Result<bool, SessionRealizationControlFailure>;
 }
 

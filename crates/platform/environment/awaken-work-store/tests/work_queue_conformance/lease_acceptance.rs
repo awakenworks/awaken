@@ -1084,3 +1084,6 @@ mod credential_generation;
 
 #[path = "lease_acceptance/exact_boundary.rs"]
 mod exact_boundary;
+
+#[path = "lease_acceptance/preparation_hold.rs"]
+mod preparation_hold;

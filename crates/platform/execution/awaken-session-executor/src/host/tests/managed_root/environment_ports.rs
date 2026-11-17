@@ -115,4 +115,22 @@ impl SessionWorkerLeases for UnusedEnvironmentPorts {
     async fn release_owner(&self, _worker_owner: &str) -> Result<usize, RunError> {
         panic!("private Root fixture must not release a Work owner")
     }
+
+    async fn acquire_preparation_session(
+        &self,
+        _environment_id: &str,
+        _session_id: &SessionId,
+        _worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, RunError> {
+        panic!("private Root fixture must not acquire a Work lease")
+    }
+
+    async fn release_preparation_session(
+        &self,
+        _environment_id: &str,
+        _session_id: &SessionId,
+        _worker_owner: &str,
+    ) -> Result<bool, RunError> {
+        panic!("private Root fixture must not release a Work lease")
+    }
 }

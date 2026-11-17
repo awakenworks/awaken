@@ -673,6 +673,25 @@ impl awaken_session_application_contract::SessionWorkerLeases for AdmissionEnvir
     ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
         Ok(0)
     }
+    async fn acquire_preparation_session(
+        &self,
+        _environment_id: &str,
+        _session_id: &awaken_session_types::SessionId,
+        _worker_owner: &str,
+    ) -> Result<
+        Option<awaken_session_types::SessionWorkLease>,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        Ok(None)
+    }
+    async fn release_preparation_session(
+        &self,
+        _environment_id: &str,
+        _session_id: &awaken_session_types::SessionId,
+        _worker_owner: &str,
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
+        Ok(false)
+    }
 }
 
 pub(super) fn creation_command(session_id: &str) -> CreateSessionCommand {

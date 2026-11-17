@@ -73,7 +73,12 @@ impl awaken_session_application_contract::SessionWorkerLeaseAuthority for Prepar
 struct IssuingPreparation {
     claims: AtomicUsize,
     releases_finished: Mutex<bool>,
-    finished: Mutex<Vec<awaken_session_execution_contract::FinishSessionPreparation>>,
+    finished: Mutex<
+        Vec<(
+            awaken_session_execution_contract::FinishSessionPreparation,
+            String,
+        )>,
+    >,
 }
 
 #[async_trait::async_trait]
@@ -110,11 +115,15 @@ impl awaken_session_execution_contract::SessionPreparationControl for IssuingPre
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionPreparationWorkRelease for IssuingPreparation {
-    async fn finished_preparation_releases_work(
+    async fn release_finished_preparation_work(
         &self,
         command: awaken_session_execution_contract::FinishSessionPreparation,
+        worker_owner: &str,
     ) -> Result<bool, awaken_session_execution_contract::SessionRealizationControlFailure> {
-        self.finished.lock().unwrap().push(command);
+        self.finished
+            .lock()
+            .unwrap()
+            .push((command, worker_owner.to_owned()));
         Ok(*self.releases_finished.lock().unwrap())
     }
 }
@@ -266,12 +275,14 @@ async fn a_claimed_preparation_takes_its_session_work_or_retires_its_grant() {
     );
 
     // A finished preparation. Causes: C1 the reported grant belongs to this
-    // Worker incarnation or another; C2 the Session root decides release (no
-    // Run admitted, grant current) or keep; C3 the Work is leased to this
-    // Worker or another. Effects: E1 the exact Work grant of this Worker is
-    // released and reported; E2 nothing is released; E3 the report is
-    // refused before the root is asked. Rules: F1=own+release+own=>E1;
-    // F2=own+keep=>E2; F3=own+release+foreign=>E2; F4=foreign grant=>E3.
+    // Worker incarnation or another; C2 the Session Work owner releases (root
+    // admits no Run and the store still records this preparation's hold) or
+    // keeps it (Run admitted, a Run acquired the Work since, or another
+    // holder). Effects: E1 the exact Worker owner is asked and `true` is
+    // reported; E2 `false` is reported; E3 the report is refused before the
+    // Work owner is asked. Rules: F1=own+release=>E1; F2/F3/F5=own+keep=>E2;
+    // F4=foreign grant=>E3. The store-level race (F5) is proven against every
+    // Work backend in the work-store lease acceptance suite.
     let finished =
         |incarnation: String| awaken_session_execution_contract::FinishSessionPreparation {
             session_id: "prepared".into(),
@@ -282,44 +293,17 @@ async fn a_claimed_preparation_takes_its_session_work_or_retires_its_grant() {
                 expires_at_unix_ms: 10_020,
             },
         };
-    for (rule, incarnation, releases, mode, released) in [
-        (
-            "F1",
-            identity.lease_owner(),
-            true,
-            WorkMode::Free,
-            Some(true),
-        ),
-        (
-            "F2",
-            identity.lease_owner(),
-            false,
-            WorkMode::Free,
-            Some(false),
-        ),
-        (
-            "F3",
-            identity.lease_owner(),
-            true,
-            WorkMode::Foreign,
-            Some(false),
-        ),
-        (
-            "F4",
-            "preparing-worker:other-boot".to_string(),
-            true,
-            WorkMode::Free,
-            None,
-        ),
+    for (rule, incarnation, releases, reported_release) in [
+        ("F1", identity.lease_owner(), true, Some(true)),
+        ("F2/F3/F5", identity.lease_owner(), false, Some(false)),
+        ("F4", "preparing-worker:other-boot".to_string(), true, None),
     ] {
         *preparation.releases_finished.lock().unwrap() = releases;
-        *work.mode.lock().unwrap() = mode;
         let asked_before = preparation.finished.lock().unwrap().len();
-        let released_before = work.released.lock().unwrap().len();
         let reported = lifecycle
             .finish_session_preparation(&identity, finished(incarnation))
             .await;
-        match released {
+        match reported_release {
             Some(expected) => assert_eq!(
                 reported.unwrap_or_else(|error| panic!("{rule}: {error}")),
                 expected,
@@ -327,27 +311,22 @@ async fn a_claimed_preparation_takes_its_session_work_or_retires_its_grant() {
             ),
             None => assert!(reported.is_err(), "{rule} E3"),
         }
+        let asked = preparation.finished.lock().unwrap();
         assert_eq!(
-            preparation.finished.lock().unwrap().len(),
-            asked_before + usize::from(released.is_some()),
-            "{rule} the root decides only an own report"
+            asked.len(),
+            asked_before + usize::from(reported_release.is_some()),
+            "{rule} the Work owner decides only an own report"
         );
-        let released_grants = work.released.lock().unwrap();
-        assert_eq!(
-            released_grants.len(),
-            released_before + usize::from(released == Some(true)),
-            "{rule} E1/E2"
-        );
-        if released == Some(true) {
-            let grant = released_grants.last().expect("released grant");
-            assert_eq!(grant.session_id().as_str(), "prepared", "{rule} E1");
-            assert_eq!(
-                grant.owner(),
-                identity.lease_owner(),
-                "{rule} E1 exact owner"
-            );
+        if reported_release.is_some() {
+            let (command, owner) = asked.last().expect("asked");
+            assert_eq!(command.session_id.as_str(), "prepared", "{rule} E1/E2");
+            assert_eq!(owner, &identity.lease_owner(), "{rule} exact Worker owner");
         }
     }
+    assert!(
+        work.released.lock().unwrap().is_empty(),
+        "the handler never releases Work outside the Work owner's compare-and-release"
+    );
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }

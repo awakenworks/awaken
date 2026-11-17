@@ -4,7 +4,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 343,
+        "line": 363,
         "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312",
         "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_parity.rs:343"
       }
@@ -12,11 +12,11 @@
     "assertion_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 344
+        "line": 364
       },
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 354
+        "line": 374
       }
     ],
     "execution_witnesses": [
@@ -50,7 +50,7 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 374,
+        "line": 394,
         "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312",
         "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_parity.rs:374"
       }

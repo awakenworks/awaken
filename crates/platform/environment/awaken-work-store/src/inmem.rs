@@ -24,9 +24,12 @@ use awaken_executable_environment_contract::{
     SessionWorkerLeaseStore, WorkClaim, WorkConsumer, WorkItem, WorkLeaseMutationAdmission,
     WorkMetadataPatch, WorkMutationResult, WorkPayload, WorkQueries, WorkQueueError,
     WorkSessionAccess, WorkState, WorkerLeaseObservation, admit_environment_work_revision,
-    session_work_release_admission, work_lease_mutation_admission,
+    preparation_work_release_admission, session_work_release_admission,
+    work_lease_mutation_admission,
 };
 use awaken_session_types::SessionWorkLease;
+
+use super::SessionWorkClaimant;
 use awaken_time::WallClock;
 
 use super::mutation::{LeaseFence, StopReceipt};
@@ -54,6 +57,8 @@ struct InMemoryQueueAuthority {
     environment_revisions: BTreeMap<String, (EnvironmentRevision, Operation)>,
     works: BTreeMap<String, WorkItem>,
     ack_epochs: BTreeMap<String, u64>,
+    /// The lease epoch a Run-free preparation's claim holds, per Work id.
+    preparation_holds: BTreeMap<String, u64>,
     stop_receipts: BTreeMap<String, StopReceipt>,
     session_token_sha256: HashMap<String, SessionAccessDigest>,
     book: LeaseBook,
@@ -913,6 +918,71 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        self.acquire_session_as(env_id, session_id, worker_owner, SessionWorkClaimant::Run)
+    }
+
+    async fn acquire_preparation_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        self.acquire_session_as(
+            env_id,
+            session_id,
+            worker_owner,
+            SessionWorkClaimant::Preparation,
+        )
+    }
+
+    async fn release_preparation_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<bool, WorkQueueError> {
+        let mut authority = self.authority.lock();
+        let InMemoryQueueAuthority {
+            works,
+            book,
+            session_token_sha256,
+            preparation_holds,
+            ..
+        } = &mut *authority;
+        let Some(work) = works.values_mut().find(|work| {
+            work.environment_id == env_id
+                && matches!(&work.data, WorkPayload::Session { id } if id == session_id)
+        }) else {
+            return Ok(false);
+        };
+        let lease = book.snapshot(&work.id);
+        if !preparation_work_release_admission(
+            true,
+            work.state == WorkState::Active,
+            lease.owner.as_deref() == Some(worker_owner),
+            lease.epoch.is_some() && preparation_holds.get(&work.id).copied() == lease.epoch,
+        ) {
+            return Ok(false);
+        }
+        let stopped_at = self.clock.observed_at();
+        work.stop_requested_at = Some(stopped_at.clone());
+        work.stopped_at = Some(stopped_at);
+        work.state = WorkState::Stopped;
+        book.release(&work.id);
+        session_token_sha256.remove(&work.id);
+        preparation_holds.remove(&work.id);
+        Ok(true)
+    }
+}
+
+impl InMemoryWorkQueue {
+    fn acquire_session_as(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+        claimant: SessionWorkClaimant,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
         let mut authority = self.authority.lock();
         // The one reading this grant is minted and judged on.
         let now_ms = self.clock.now_ms();
@@ -921,6 +991,9 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
                 return Ok(Some(lease));
             }
             authority.book.lease(lease.work_id(), now_ms);
+            if SessionWorkClaimant::clears_preparation_hold(Some(claimant)) {
+                authority.preparation_holds.remove(lease.work_id());
+            }
             return Ok(authority.current_session_lease(env_id, session_id, now_ms));
         }
         let work_id =
@@ -930,6 +1003,7 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
                 works,
                 book,
                 session_token_sha256,
+                preparation_holds,
                 ..
             } = &mut *authority;
             for (id, work) in works.iter_mut() {
@@ -959,6 +1033,12 @@ impl SessionWorkerLeaseStore for InMemoryWorkQueue {
             work.state = WorkState::Active;
             work.started_at = Some(awaken_time::utc::epoch_millis_to_rfc3339(now_ms));
             work.latest_heartbeat_at = None;
+            match book.snapshot(&work_id).epoch {
+                Some(epoch) if claimant == SessionWorkClaimant::Preparation => {
+                    preparation_holds.insert(work_id.clone(), epoch)
+                }
+                _ => preparation_holds.remove(&work_id),
+            };
         }
         Ok(authority.current_session_lease(env_id, session_id, now_ms))
     }

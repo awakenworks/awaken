@@ -53,6 +53,9 @@ pub use postgres_session_leases::{
     acquire_postgres_session_work_on, release_postgres_session_work_on,
     renew_exact_postgres_session_work_on, renew_postgres_session_work_on,
 };
+mod preparation_hold;
+use preparation_hold::SessionWorkClaimant;
+pub use preparation_hold::release_postgres_preparation_work_on;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -505,7 +508,7 @@ impl SessionWorkerLeaseStore for SqliteWorkQueue {
             lease.environment_id(),
             lease.session_id(),
             lease.owner(),
-            false,
+            None,
             Some(lease),
         )
         .await
@@ -604,7 +607,39 @@ impl SessionWorkerLeaseStore for SqliteWorkQueue {
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        self.acquire_session_inner(env_id, session_id, worker_owner, true, None)
+        self.acquire_session_inner(
+            env_id,
+            session_id,
+            worker_owner,
+            Some(SessionWorkClaimant::Run),
+            None,
+        )
+        .await
+    }
+
+    async fn acquire_preparation_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        self.acquire_session_inner(
+            env_id,
+            session_id,
+            worker_owner,
+            Some(SessionWorkClaimant::Preparation),
+            None,
+        )
+        .await
+    }
+
+    async fn release_preparation_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<bool, WorkQueueError> {
+        self.release_preparation_session_inner(env_id, session_id, worker_owner)
             .await
     }
 
@@ -614,7 +649,7 @@ impl SessionWorkerLeaseStore for SqliteWorkQueue {
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
-        self.acquire_session_inner(env_id, session_id, worker_owner, false, None)
+        self.acquire_session_inner(env_id, session_id, worker_owner, None, None)
             .await
     }
 }
@@ -1046,6 +1081,45 @@ impl SessionWorkerLeaseStore for PostgresWorkQueue {
         .await?;
         tx.commit().await.map_err(storage)?;
         Ok(result)
+    }
+
+    async fn acquire_preparation_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let (result, _) = postgres_session_leases::acquire_postgres_session_work_as(
+            &mut tx,
+            self.clock.as_ref(),
+            env_id,
+            session_id,
+            worker_owner,
+            SessionWorkClaimant::Preparation,
+        )
+        .await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(result)
+    }
+
+    async fn release_preparation_session(
+        &self,
+        env_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<bool, WorkQueueError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let released = release_postgres_preparation_work_on(
+            &mut tx,
+            self.clock.as_ref(),
+            env_id,
+            session_id,
+            worker_owner,
+        )
+        .await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(released)
     }
 }
 

@@ -422,9 +422,10 @@ impl SqliteWorkQueue {
         env_id: &str,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
-        may_claim: bool,
+        claimant: Option<SessionWorkClaimant>,
         exact: Option<&SessionWorkLease>,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        let may_claim = claimant.is_some();
         let mut conn = self.connection().await?;
         if may_claim {
             Self::insert(
@@ -509,7 +510,8 @@ impl SqliteWorkQueue {
                 ));
             };
             sqlx::query(
-                "UPDATE work_queue_item SET lease_expires_ms = ?1, lease_refreshed_ms = ?2 \
+                "UPDATE work_queue_item SET lease_expires_ms = ?1, lease_refreshed_ms = ?2, \
+                 preparation_lease_epoch = CASE WHEN ?6 THEN NULL ELSE preparation_lease_epoch END \
                  WHERE work_id = ?3 AND environment_id = ?4 AND lease_owner = ?5",
             )
             .bind(next.expires_at)
@@ -517,6 +519,7 @@ impl SqliteWorkQueue {
             .bind(&work_id)
             .bind(env_id)
             .bind(worker_owner)
+            .bind(SessionWorkClaimant::clears_preparation_hold(claimant))
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
@@ -545,7 +548,8 @@ impl SqliteWorkQueue {
             sqlx::query(
                 "UPDATE work_queue_item SET state = 'active', started_at = ?1, \
                  lease_owner = ?2, lease_epoch = ?3, lease_expires_ms = ?4, \
-                 lease_refreshed_ms = ?5, latest_heartbeat_at = NULL WHERE work_id = ?6",
+                 lease_refreshed_ms = ?5, latest_heartbeat_at = NULL, \
+                 preparation_lease_epoch = ?7 WHERE work_id = ?6",
             )
             .bind(started_at)
             .bind(next.owner.clone())
@@ -553,6 +557,7 @@ impl SqliteWorkQueue {
             .bind(next.expires_at)
             .bind(next.refreshed_at)
             .bind(&work_id)
+            .bind(SessionWorkClaimant::held_epoch(claimant, epoch_db))
             .execute(&mut *tx)
             .await
             .map_err(storage)?;

@@ -308,9 +308,10 @@ impl session::SessionPreparationControl for UnconfiguredCollaborators {
 
 #[async_trait]
 impl session::SessionPreparationWorkRelease for UnconfiguredCollaborators {
-    async fn finished_preparation_releases_work(
+    async fn release_finished_preparation_work(
         &self,
         _command: session::FinishSessionPreparation,
+        _worker_owner: &str,
     ) -> Result<bool, SessionRealizationControlFailure> {
         Err(refused())
     }

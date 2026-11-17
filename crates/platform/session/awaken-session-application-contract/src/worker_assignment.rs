@@ -54,4 +54,21 @@ pub trait SessionWorkerLeases: Send + Sync {
     }
     async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, RunError>;
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, RunError>;
+    /// Claim or renew for a Run-free preparation (ADR-0106): a fresh claim
+    /// records the preparation's hold, which any later Run acquisition clears.
+    async fn acquire_preparation_session(
+        &self,
+        environment_id: &str,
+        session_id: &SessionId,
+        worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, RunError>;
+    /// Hand back the Work only while this owner still holds it under the
+    /// preparation's claim, as one store compare-and-release; `false` when a
+    /// Run acquired it since or it is held elsewhere.
+    async fn release_preparation_session(
+        &self,
+        environment_id: &str,
+        session_id: &SessionId,
+        worker_owner: &str,
+    ) -> Result<bool, RunError>;
 }

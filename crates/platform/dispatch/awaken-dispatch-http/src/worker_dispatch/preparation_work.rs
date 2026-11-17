@@ -81,15 +81,17 @@ pub(super) async fn claim_next_admitted_preparation(
 /// Release the Session Work a finished Run-free preparation took. The Worker
 /// reports only after its local preparation drive returned (Worker-local
 /// closure); the Session root then decides whether the grant it reports is
-/// still the current one and no Run has been admitted; and only Work leased
-/// to this exact Worker incarnation is released (exact claim match).
+/// still the current one and no Run has been admitted; and the Work store
+/// releases only Work this exact Worker incarnation still holds under the
+/// preparation's claim, in one compare-and-release.
 ///
-/// | Rule | grant owner | root decision      | Work           | effect          |
-/// |------|-------------|--------------------|----------------|-----------------|
-/// | F1   | this Worker | release            | this Worker's  | release, `true` |
-/// | F2   | this Worker | keep (Run admitted)| any            | nothing         |
-/// | F3   | this Worker | release            | another holder | nothing         |
-/// | F4   | another     | -                  | -              | refused         |
+/// | Rule | grant owner | root decision      | Work                         | effect          |
+/// |------|-------------|--------------------|------------------------------|-----------------|
+/// | F1   | this Worker | release            | held by this preparation     | release, `true` |
+/// | F2   | this Worker | keep (Run admitted)| any                          | nothing         |
+/// | F3   | this Worker | release            | another holder               | nothing         |
+/// | F4   | another     | -                  | -                            | refused         |
+/// | F5   | this Worker | release            | a Run acquired it since      | nothing         |
 pub(super) async fn session_preparation_finish(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -108,20 +110,11 @@ pub(super) async fn session_preparation_finish(
                 "finished Session preparation lease is not owned by the authenticated Worker incarnation",
             )));
         }
-        let session_id = request.command.session_id.clone();
-        let releases = service
+        let released = service
             .session_preparation_work_release
-            .finished_preparation_releases_work(request.command)
+            .release_finished_preparation_work(request.command, &owner)
             .await
             .map_err(RealizationHttpError::from)?;
-        let released = releases
-            && awaken_session_application_contract::release_owned_session_work(
-                service.session_work.as_ref(),
-                &session_id,
-                &owner,
-            )
-            .await
-            .map_err(|error| ApplicationError::internal(error.to_string()))?;
         Ok(json!({ "released": released }))
     }
     .await;

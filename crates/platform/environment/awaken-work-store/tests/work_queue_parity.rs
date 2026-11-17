@@ -307,6 +307,26 @@ impl SessionWorkerLeaseStore for RebuildsMutationResult {
     ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
         self.inner.acquire_session(env, session, owner).await
     }
+    async fn acquire_preparation_session(
+        &self,
+        env: &str,
+        session: &SessionId,
+        owner: &str,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        self.inner
+            .acquire_preparation_session(env, session, owner)
+            .await
+    }
+    async fn release_preparation_session(
+        &self,
+        env: &str,
+        session: &SessionId,
+        owner: &str,
+    ) -> Result<bool, WorkQueueError> {
+        self.inner
+            .release_preparation_session(env, session, owner)
+            .await
+    }
 }
 
 #[async_trait]

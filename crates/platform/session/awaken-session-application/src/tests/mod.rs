@@ -5179,6 +5179,26 @@ impl awaken_session_application_contract::SessionWorkerLeases for RecordingEnvir
     ) -> Result<usize, awaken_runtime_contract::runs::RunError> {
         Ok(0)
     }
+    async fn acquire_preparation_session(
+        &self,
+        environment_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        worker_owner: &str,
+    ) -> Result<
+        Option<awaken_session_types::SessionWorkLease>,
+        awaken_runtime_contract::runs::RunError,
+    > {
+        self.acquire_session(environment_id, session_id, worker_owner)
+            .await
+    }
+    async fn release_preparation_session(
+        &self,
+        _environment_id: &str,
+        _session_id: &awaken_session_types::SessionId,
+        _worker_owner: &str,
+    ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
+        Ok(false)
+    }
 }
 
 pub(crate) fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {

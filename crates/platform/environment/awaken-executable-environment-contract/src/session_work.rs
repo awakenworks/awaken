@@ -195,6 +195,30 @@ pub const fn session_work_release_admission(
     }
 }
 
+/// Storage-neutral rule for handing back Session Work that a Run-free
+/// preparation's claim took (ADR-0106). A backend reads every fact under the
+/// same row lock or transaction its `acquire_session` takes. A Run that
+/// acquires the Work between the Session root's decision and this release
+/// clears the preparation's hold in that same serialised order, so the release
+/// can never take Work a Run holds.
+///
+/// | Rule | identity | active | owner | held under the preparation's epoch | effect  |
+/// |------|----------|--------|-------|------------------------------------|---------|
+/// | H1   | yes      | yes    | yes   | yes                                | release |
+/// | H2   | yes      | yes    | yes   | no (a Run acquired it since)       | keep    |
+/// | H3   | yes      | yes    | no    | any                                | keep    |
+/// | H4   | yes      | no     | any   | any                                | keep    |
+/// | H5   | no       | any    | any   | any                                | keep    |
+#[must_use]
+pub const fn preparation_work_release_admission(
+    identity_matches: bool,
+    state_is_active: bool,
+    owner_matches: bool,
+    held_by_preparation: bool,
+) -> bool {
+    identity_matches && state_is_active && owner_matches && held_by_preparation
+}
+
 /// One queued/leased unit of work in an environment's queue (the domain shape; the
 /// Managed adapter renders the `BetaSelfHostedWork` wire object from it).
 #[derive(Clone, Debug)]
@@ -625,6 +649,28 @@ pub trait SessionWorkerLeaseStore: Send + Sync {
         worker_owner: &str,
     ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
 
+    /// [`acquire_session`](Self::acquire_session) for a Run-free preparation
+    /// (ADR-0106). A fresh claim records that the preparation holds the granted
+    /// epoch; renewing a lease this owner already holds keeps that record as it
+    /// is. A later `acquire_session` by any Run clears it.
+    async fn acquire_preparation_session(
+        &self,
+        env_id: &str,
+        session_id: &SessionId,
+        worker_owner: &str,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
+
+    /// Hand back the Session's Work only while `worker_owner` still holds it
+    /// under the preparation's claim, as one store compare-and-release under
+    /// the lock `acquire_session` takes ([`preparation_work_release_admission`]).
+    /// Work a Run has acquired since stays where it is and this returns `false`.
+    async fn release_preparation_session(
+        &self,
+        env_id: &str,
+        session_id: &SessionId,
+        worker_owner: &str,
+    ) -> Result<bool, WorkQueueError>;
+
     /// Renew the exact live Work generation. The persisted expiry is checked on
     /// the store clock. An exact mismatch or expiry leaves Work unchanged.
     async fn renew_exact_session(
@@ -774,8 +820,8 @@ pub trait EnvironmentWorkLifecycle: Send + Sync {
 mod tests {
     use super::{
         SessionWorkLease, SessionWorkOwnership, SessionWorkReleaseAdmission,
-        WorkLeaseMutationAdmission, next_heartbeat_receipt, session_work_release_admission,
-        work_lease_mutation_admission,
+        WorkLeaseMutationAdmission, next_heartbeat_receipt, preparation_work_release_admission,
+        session_work_release_admission, work_lease_mutation_admission,
     };
 
     /// A backend that does not bind the digest refuses the claim.
@@ -1027,6 +1073,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_preparation_hands_back_only_work_it_still_holds() {
+        // Causes: C1 exact Environment/Session identity; C2 Active; C3 exact
+        // owner; C4 still held under the preparation's epoch (a Run acquiring
+        // the Work clears it). Effects: E1 release only for H1 (all true);
+        // E2 every other combination keeps the Work, including H2: the same
+        // Worker's Run acquired it between the root decision and the release.
+        for identity in [false, true] {
+            for active in [false, true] {
+                for owner in [false, true] {
+                    for held in [false, true] {
+                        assert_eq!(
+                            preparation_work_release_admission(identity, active, owner, held),
+                            identity && active && owner && held,
+                            "C1={identity} C2={active} C3={owner} C4={held}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            !preparation_work_release_admission(true, true, true, false),
+            "H2 a Run took the Work"
+        );
     }
 }
 
