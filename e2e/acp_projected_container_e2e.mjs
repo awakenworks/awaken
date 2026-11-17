@@ -24,6 +24,7 @@ import {
   FILES_BETA,
   initializeE2EInstallation,
   waitForSessionEventReceipt,
+  waitForValue,
 } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -130,7 +131,22 @@ function awakenBin() {
     targetName: 'awaken',
     features: ['container-docker'],
     prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+    // Another E2E may rebuild target/debug/awaken without this feature before
+    // spawn; launch an exact copy of the bytes this build produced.
+    snapshotDestination: path.join(TMP, 'bin', 'awaken'),
   });
+}
+
+// Session delete disposes the Session's sandbox asynchronously, and the
+// sandbox deliberately survives server shutdown for crash recovery. Stopping
+// the server before disposal settles therefore strands a live container.
+async function deleteSessionAndAwaitDisposal(client, sessionId, created, label) {
+  await client.beta.sessions.delete(sessionId, { betas: BETAS });
+  return waitForValue(() => {
+    const live = new Set(fixtureContainerIds());
+    return created.filter((id) => live.has(id));
+  }, (remaining) => remaining.length === 0, `${label}: Session delete to dispose its container`,
+  { timeoutMs: 60_000, pollMs: 250 });
 }
 
 async function ready(child) {
@@ -286,6 +302,7 @@ async function main() {
   let client;
   let session;
   let secureSession;
+  let beforeProjected = [];
 
   try {
     await ready(server);
@@ -476,6 +493,7 @@ async function main() {
       }],
       betas: BETAS,
     });
+    beforeProjected = fixtureContainerIds();
     // D2 receipt rule: C4 exact anonymous projected command receipt; E2 the
     // processed delta contains CONTAINER_PROJECTED; K1 no prior Session history
     // can satisfy the container/resource oracle. Decision D2+C4=>launch+E2.
@@ -511,6 +529,12 @@ async function main() {
     assert.match(reply, /file=yes/u, 'the File binding was materialized in the container');
     assert.match(reply, /mcp=yes/u, 'the ACP session received the frozen MCP server list');
     assert.match(reply, /home=\/workspace\/\.acp-config/u);
+    const created = fixtureContainerIds().filter((id) => !beforeProjected.includes(id));
+    assert.ok(created.length > 0, 'D2 a new fixture container ran the projected launch');
+    // D2 teardown: deleting the Session disposes its container before the
+    // server stops, so a passing run leaves nothing behind.
+    await deleteSessionAndAwaitDisposal(client, session.id, created, 'D2');
+    session = undefined;
 
     console.log(
       'E2E PASS: production awaken projected publication-pinned model access, MCP, and File input into one Docker ACP run.',
@@ -521,15 +545,23 @@ async function main() {
     // shutdown for crash recovery. Dispose the Session while the server is live
     // so this E2E does not strand a container (and its writable layer) on either
     // success or an assertion failure.
-    if (client && session && server.exitCode === null && server.signalCode === null) {
-      await client.beta.sessions.delete(session.id, { betas: BETAS }).catch(() => {});
+    const serverLive = () => server.exitCode === null && server.signalCode === null;
+    if (client && session && serverLive()) {
+      const created = fixtureContainerIds().filter((id) => !beforeProjected.includes(id));
+      await deleteSessionAndAwaitDisposal(client, session.id, created, 'failure teardown')
+        .catch(() => {});
     }
-    if (client && secureSession && server.exitCode === null && server.signalCode === null) {
+    if (client && secureSession && serverLive()) {
       await client.beta.sessions.delete(secureSession.id, { betas: BETAS }).catch(() => {});
     }
     await stop(server).catch(() => {});
     await fixture.close();
     await anonymousFixture.close();
+    // A failed run can leave containers of this fixture image behind (for
+    // example an interrupted capability probe); remove exactly those.
+    const leftovers = spawnSync('docker', ['ps', '--all', '--quiet', '--filter', `ancestor=${IMAGE}`],
+      { encoding: 'utf8' }).stdout?.trim().split(/\s+/u).filter(Boolean) ?? [];
+    if (leftovers.length > 0) spawnSync('docker', ['rm', '--force', ...leftovers], { stdio: 'ignore' });
     spawnSync('docker', ['image', 'rm', '--force', IMAGE], { stdio: 'ignore' });
     fs.rmSync(TMP, { recursive: true, force: true });
   }
