@@ -85,7 +85,7 @@ fn write_binding(
 async fn lock_target(
     root: &Path,
 ) -> Result<awaken_fs_durability::ExclusiveFileLock, pc::SandboxError> {
-    std::fs::create_dir_all(root.parent().ok_or_else(|| {
+    awaken_fs_durability::create_directory_all(root.parent().ok_or_else(|| {
         pc::SandboxError::invalid("local restoration root has no provider parent")
     })?)
     .map_err(|error| pc::SandboxError::backend("lock_target", error))?;

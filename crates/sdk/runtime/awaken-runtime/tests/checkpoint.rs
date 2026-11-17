@@ -360,7 +360,9 @@ async fn filesystem_recovery_waits_for_reopened_committed_predecessor() {
         let commit_dir = root.path().join("commits");
         let checkpoint_dir = root.path().join("checkpoints");
         {
-            let checkpoint = FsStreamCheckpointStore::open(&checkpoint_dir).expect("checkpoint");
+            let checkpoint = FsStreamCheckpointStore::open(&checkpoint_dir)
+                .await
+                .expect("checkpoint");
             checkpoint
                 .put(StreamCheckpoint {
                     run_id: RUN_ID.to_string(),
@@ -409,7 +411,9 @@ async fn filesystem_recovery_waits_for_reopened_committed_predecessor() {
                 .expect("reopened commit store"),
         );
         let checkpoints = Arc::new(
-            FsStreamCheckpointStore::open(&checkpoint_dir).expect("reopened checkpoint store"),
+            FsStreamCheckpointStore::open(&checkpoint_dir)
+                .await
+                .expect("reopened checkpoint store"),
         );
         let model = Arc::new(AlwaysLlm {
             text: "and done",

@@ -690,7 +690,7 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
         self.wake.clone()
     }
 
-    fn stream_checkpoint(
+    async fn stream_checkpoint(
         &self,
         thread: &str,
     ) -> Result<Arc<dyn StreamCheckpointStore>, RuntimeAuthorityError> {
@@ -712,6 +712,7 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
             .join(thread_path_stem(thread))
             .join("stream-checkpoints");
         FsStreamCheckpointStore::open(&path)
+            .await
             .map(|store| Arc::new(store) as Arc<dyn StreamCheckpointStore>)
             .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))
     }
@@ -971,7 +972,10 @@ pub(crate) mod tests {
         .await
         .expect("A2/E2");
         authority.open_commit("a/b").await.expect("A2 commit");
-        authority.stream_checkpoint("a/b").expect("A2 checkpoint");
+        authority
+            .stream_checkpoint("a/b")
+            .await
+            .expect("A2 checkpoint");
         assert!(root.path().join("dispatch.db").exists(), "A2 dispatch");
         assert!(root.path().join("a_2fb.db").exists(), "A2 commit");
 

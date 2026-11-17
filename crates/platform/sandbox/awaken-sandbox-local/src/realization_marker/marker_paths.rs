@@ -86,7 +86,10 @@ pub(super) fn acquire(
     let parent = lock
         .parent()
         .ok_or_else(|| pc::SandboxError::invalid("sandbox realization lock has no parent"))?;
-    std::fs::create_dir_all(parent).map_err(|error| pc::SandboxError::backend("acquire", error))?;
+    // The provider parent holds the marker and the root of every sandbox: a
+    // parent created here is flushed into its own parent before either exists.
+    awaken_fs_durability::create_directory_all(parent)
+        .map_err(|error| pc::SandboxError::backend("acquire", error))?;
     awaken_fs_durability::try_lock_exclusive(&lock).map_err(|error| {
         if error.kind() == std::io::ErrorKind::WouldBlock {
             pc::SandboxError::not_ready(format!(

@@ -53,8 +53,8 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
-use awaken_fs_durability::sync_directory;
 use awaken_fs_durability::{ExclusiveFileLock, PathEntry, try_lock_exclusive};
+use awaken_fs_durability::{create_directory_all, sync_directory};
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryCommitReplay};
 use awaken_sync::InvariantLock;
 
@@ -331,7 +331,9 @@ impl FsCommitCoordinator {
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> std::io::Result<Self> {
         let dir = dir.as_path();
-        std::fs::create_dir_all(dir)?;
+        // The log is durable truth only while its directory is: each directory
+        // created here is flushed into its parent before anything is acked.
+        create_directory_all(dir)?;
         let path: PathBuf = dir.join(LOG_FILE);
         let lifecycle_lock = try_lock_exclusive(&dir.join(LOG_LOCK_FILE))?;
         migrate_log_if_needed(&lifecycle_lock)?;
@@ -566,11 +568,16 @@ pub struct FsStreamCheckpointStore {
 
 impl FsStreamCheckpointStore {
     /// Open (creating if needed) a checkpoint directory rooted at `dir`.
-    pub fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
+    ///
+    /// Every directory created on the way is flushed into its parent, so a
+    /// checkpoint a later `put` reports durable cannot vanish with a directory
+    /// the crash forgot. Like every other operation of this store, the creation
+    /// and its `fsync`s run on the blocking pool, never on the awaiting worker.
+    pub async fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(&dir)?;
-        sync_directory(&dir)?;
-        Ok(Self { dir })
+        off_async_worker(async move { create_directory_all(&dir).map(|()| Self { dir }) })
+            .await
+            .unwrap_or_else(|not_run| Err(std::io::Error::other(not_run)))
     }
 
     /// The checkpoint file path for `run_id`. The id is filename-encoded so an

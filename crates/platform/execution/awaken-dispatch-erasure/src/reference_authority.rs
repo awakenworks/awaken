@@ -74,7 +74,7 @@ impl RuntimeAuthority for ReferenceAuthority {
         None
     }
 
-    fn stream_checkpoint(
+    async fn stream_checkpoint(
         &self,
         thread: &str,
     ) -> Result<Arc<dyn StreamCheckpointStore>, RuntimeAuthorityError> {

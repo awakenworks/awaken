@@ -64,12 +64,113 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
             "directory durability requires a directory handle",
         ));
     }
+    #[cfg(test)]
+    tests::record_flush(path);
     directory.sync_all()
+}
+
+/// Create `path` and every missing ancestor, durably, then flush `path`.
+///
+/// A new directory exists only as an entry in its parent, so each directory
+/// this call creates is followed by a flush of that parent: a crash after the
+/// call cannot lose a directory, nor anything later made durable inside it,
+/// that the call reported as present. `std::fs::create_dir_all` followed by
+/// [`sync_directory`] of the leaf flushes only the leaf's own entries. A
+/// component that already exists is not re-created; one another process is
+/// creating at the same moment is treated as created here and its parent is
+/// flushed too, so neither caller returns before that entry is durable. An
+/// existing non-directory at `path` is refused by the final flush.
+pub fn create_directory_all(path: &Path) -> io::Result<()> {
+    let created = match std::fs::create_dir(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            else {
+                return Err(error);
+            };
+            create_directory_all(parent)?;
+            match std::fs::create_dir(path) {
+                Ok(()) => true,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => true,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(error) => return Err(error),
+    };
+    if created {
+        match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => sync_directory(parent)?,
+            _ => sync_directory(Path::new("."))?,
+        }
+    }
+    sync_directory(path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static FLUSHED: std::cell::RefCell<Vec<std::path::PathBuf>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn record_flush(path: &Path) {
+        FLUSHED.with(|flushed| flushed.borrow_mut().push(path.to_path_buf()));
+    }
+
+    fn take_flushed() -> Vec<std::path::PathBuf> {
+        FLUSHED.with(|flushed| std::mem::take(&mut *flushed.borrow_mut()))
+    }
+
+    #[test]
+    fn creating_a_directory_tree_flushes_the_parent_of_every_created_directory() {
+        // Causes: C1 how many trailing components are missing (0, 1, 2); C2 the
+        // leaf is an existing regular file. Effects: E1 every missing component
+        // exists afterwards; E2 the parent of each created component is flushed
+        // after its creation, outermost first, then the leaf; E3 an existing
+        // leaf flushes only itself; E4 a regular file is refused and nothing is
+        // created. `create_dir_all` + leaf flush satisfies E1/E3/E4 but flushes
+        // no parent, so a crash can drop the whole new tree.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let middle = root.join("a");
+        let leaf = middle.join("b");
+
+        let _ = take_flushed();
+        create_directory_all(&leaf).unwrap();
+        assert!(leaf.is_dir(), "C1=2 E1");
+        assert_eq!(
+            take_flushed(),
+            [root.clone(), middle.clone(), middle.clone(), leaf.clone()],
+            "C1=2 E2"
+        );
+
+        let sibling = middle.join("c");
+        create_directory_all(&sibling).unwrap();
+        assert!(sibling.is_dir(), "C1=1 E1");
+        assert_eq!(take_flushed(), [middle.clone(), sibling], "C1=1 E2");
+
+        create_directory_all(&leaf).unwrap();
+        assert_eq!(take_flushed(), [leaf], "C1=0 E3");
+
+        let file = root.join("file");
+        std::fs::write(&file, b"data").unwrap();
+        assert_eq!(
+            create_directory_all(&file).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput,
+            "C2 E4"
+        );
+        assert!(
+            create_directory_all(&file.join("child")).is_err(),
+            "C2 E4 below a file"
+        );
+        assert!(file.is_file(), "C2 E4");
+        assert!(take_flushed().is_empty(), "C2 E4 nothing flushed");
+    }
 
     #[test]
     fn native_directory_flush_accepts_only_a_real_directory() {

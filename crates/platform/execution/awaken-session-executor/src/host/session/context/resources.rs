@@ -205,7 +205,7 @@ pub(super) async fn acquire(
     let commit = host.authority.open_for_read(thread).await?;
     // Durable interrupted-stream checkpoints follow the commit's durability
     // (Phase 3): a mid-recovery crash resumes from the flushed partial.
-    let stream_checkpoint = host.authority.stream_checkpoint(thread)?;
+    let stream_checkpoint = host.authority.stream_checkpoint(thread).await?;
     // Runtime selection is known before MCP realization. Native execution
     // connects staged servers as in-process McpPlugins; ACP hands the same
     // typed server set to the CLI's own MCP client and must not open a second

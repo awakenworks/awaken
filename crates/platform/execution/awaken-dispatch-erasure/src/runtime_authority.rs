@@ -120,7 +120,9 @@ pub trait RuntimeAuthority: Send + Sync {
 
     fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>>;
 
-    fn stream_checkpoint(
+    /// Open the durable interrupted-stream checkpoint store of `thread`. Opening
+    /// may create and flush directories, so it is awaited, never run inline.
+    async fn stream_checkpoint(
         &self,
         thread: &str,
     ) -> Result<Arc<dyn StreamCheckpointStore>, RuntimeAuthorityError>;

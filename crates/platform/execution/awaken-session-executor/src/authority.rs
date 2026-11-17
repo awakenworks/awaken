@@ -136,6 +136,7 @@ impl LocalCommitQueries<awaken_store_inmem::MemoryCommitCoordinator> for Scripte
 /// dependencies (Session Control, the Worker credential resolver) stay outside.
 /// Raw commit access uses the shared `SessionCommitSource` role; execution
 /// choices remain here, with no second commit-opening interface.
+#[async_trait::async_trait]
 pub(crate) trait SessionAuthority: SessionCommitSource {
     fn coordinator_run_commits(
         &self,
@@ -148,7 +149,7 @@ pub(crate) trait SessionAuthority: SessionCommitSource {
     /// The durable interrupted-stream checkpoint store, when this process owns
     /// one. A Worker persists checkpoints through its claim-fenced dispatch
     /// transport, so a local store would be a second authority.
-    fn stream_checkpoint(
+    async fn stream_checkpoint(
         &self,
         thread: &str,
     ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::SessionExecutionError>;
@@ -327,6 +328,7 @@ impl SessionCommitSource for LocalAuthority {
     }
 }
 
+#[async_trait::async_trait]
 impl SessionAuthority for LocalAuthority {
     fn coordinator_run_commits(
         &self,
@@ -338,11 +340,11 @@ impl SessionAuthority for LocalAuthority {
         Some(self.runtime.clone().run_commits())
     }
 
-    fn stream_checkpoint(
+    async fn stream_checkpoint(
         &self,
         thread: &str,
     ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::SessionExecutionError> {
-        Ok(Some(self.runtime.stream_checkpoint(thread)?))
+        Ok(Some(self.runtime.stream_checkpoint(thread).await?))
     }
 
     #[cfg(test)]
@@ -500,6 +502,7 @@ impl SessionCommitSource for UpstreamAuthority {
     }
 }
 
+#[async_trait::async_trait]
 impl SessionAuthority for UpstreamAuthority {
     fn coordinator_run_commits(
         &self,
@@ -511,7 +514,7 @@ impl SessionAuthority for UpstreamAuthority {
         None
     }
 
-    fn stream_checkpoint(
+    async fn stream_checkpoint(
         &self,
         _thread: &str,
     ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::SessionExecutionError> {

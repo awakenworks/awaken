@@ -42,7 +42,7 @@ async fn acknowledged_checkpoint_mutations_survive_real_process_kill()
     if let Some(mode) = std::env::var_os(CRASH_MODE) {
         let directory = std::path::PathBuf::from(std::env::var_os(CRASH_DIRECTORY).unwrap());
         let marker = std::path::PathBuf::from(std::env::var_os(CRASH_MARKER).unwrap());
-        let store = FsStreamCheckpointStore::open(directory)?;
+        let store = FsStreamCheckpointStore::open(directory).await?;
         match mode.to_str() {
             Some("put") => {
                 let mut checkpoint = sample("crash-run");
@@ -60,7 +60,7 @@ async fn acknowledged_checkpoint_mutations_survive_real_process_kill()
     let root = tempfile::tempdir()?;
     let directory = root.path().join("checkpoints");
     let marker = root.path().join("acknowledged.marker");
-    let store = FsStreamCheckpointStore::open(&directory)?;
+    let store = FsStreamCheckpointStore::open(&directory).await?;
     store.put(sample("crash-run")).await?;
     drop(store);
 
@@ -77,7 +77,7 @@ async fn acknowledged_checkpoint_mutations_survive_real_process_kill()
         .map_err(std::io::Error::other)?;
         assert!(!status.success(), "{mode} child must be killed");
 
-        let reopened = FsStreamCheckpointStore::open(&directory)?;
+        let reopened = FsStreamCheckpointStore::open(&directory).await?;
         match mode {
             "put" => assert_eq!(
                 present(reopened.get("crash-run").await),
@@ -102,10 +102,10 @@ async fn a_checkpoint_survives_a_fresh_instance_over_the_same_dir() {
     let _ = std::fs::remove_dir_all(&dir);
 
     let expected = {
-        let store = FsStreamCheckpointStore::open(&dir).expect("open");
+        let store = FsStreamCheckpointStore::open(&dir).await.expect("open");
         writes_are_exact(&store, "run-1").await
     };
-    let store = FsStreamCheckpointStore::open(&dir).expect("reopen");
+    let store = FsStreamCheckpointStore::open(&dir).await.expect("reopen");
     assert_eq!(present(store.get("run-1").await), expected);
     delete_is_idempotent(&store, "run-1").await;
 
@@ -119,7 +119,7 @@ async fn a_put_overwrites_and_path_bearing_ids_stay_scoped_to_the_dir() {
     // opaque run id inside the configured persistence root.
     let dir = std::env::temp_dir().join("awaken_ckpt_overwrite");
     let _ = std::fs::remove_dir_all(&dir);
-    let store = FsStreamCheckpointStore::open(&dir).expect("open");
+    let store = FsStreamCheckpointStore::open(&dir).await.expect("open");
 
     // A run id with path separators must not escape the directory or collide.
     let mut first = sample("../evil/run 1");
@@ -145,8 +145,16 @@ async fn concurrent_same_run_puts_leave_one_complete_reopenable_checkpoint() {
     // forbidden. A fresh instance validates that the winner is durable.
     let dir = std::env::temp_dir().join("awaken_ckpt_concurrent_same_run");
     let _ = std::fs::remove_dir_all(&dir);
-    let first_store = Arc::new(FsStreamCheckpointStore::open(&dir).expect("open first"));
-    let second_store = Arc::new(FsStreamCheckpointStore::open(&dir).expect("open second"));
+    let first_store = Arc::new(
+        FsStreamCheckpointStore::open(&dir)
+            .await
+            .expect("open first"),
+    );
+    let second_store = Arc::new(
+        FsStreamCheckpointStore::open(&dir)
+            .await
+            .expect("open second"),
+    );
     let mut tasks = Vec::new();
 
     for writer in 0..32 {
@@ -167,7 +175,7 @@ async fn concurrent_same_run_puts_leave_one_complete_reopenable_checkpoint() {
     drop(first_store);
     drop(second_store);
 
-    let reopened = FsStreamCheckpointStore::open(&dir).expect("reopen");
+    let reopened = FsStreamCheckpointStore::open(&dir).await.expect("reopen");
     let recovered = present(reopened.get("one-run").await);
     assert!(recovered.partial_text.starts_with("writer-"));
     let entries = std::fs::read_dir(&dir)
@@ -195,7 +203,9 @@ async fn corrupt_checkpoint_is_reported_instead_of_looking_absent() {
             .expect("clock after epoch")
             .as_nanos()
     ));
-    let store = FsStreamCheckpointStore::open(&directory).expect("open");
+    let store = FsStreamCheckpointStore::open(&directory)
+        .await
+        .expect("open");
     store
         .put(sample("corrupt-run"))
         .await

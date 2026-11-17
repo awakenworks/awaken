@@ -793,7 +793,7 @@ pub enum WorkerTransportBuildError {
     MissingFileApplication,
 }
 
-fn worker_checkpoint_authority(
+async fn worker_checkpoint_authority(
     dispatch: &awaken_dispatch::AnyCoordinatorDispatch,
     store_dir: Option<&std::path::Path>,
 ) -> Result<
@@ -806,6 +806,7 @@ fn worker_checkpoint_authority(
     if let Some(root) = store_dir {
         let path = root.join("worker-stream-checkpoints");
         return awaken_store_fs::FsStreamCheckpointStore::open(&path)
+            .await
             .map(|store| {
                 Arc::new(store)
                     as Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>
@@ -832,8 +833,8 @@ mod worker_checkpoint_authority_tests {
     use super::*;
     use awaken_dispatch::{AnyCoordinatorDispatch, MemoryDispatchStore};
 
-    #[test]
-    fn checkpoint_authority_selection_is_fail_closed() {
+    #[tokio::test]
+    async fn checkpoint_authority_selection_is_fail_closed() {
         // Cause/effect graph: C1 the dispatch store owns a paired checkpoint ->
         // E1 reuse it; otherwise C2 storage_dir exists and opens -> E2 durable FS;
         // C2 exists but cannot open -> E3 startup error; with neither, C3 explicit
@@ -852,25 +853,30 @@ mod worker_checkpoint_authority_tests {
         ));
         let root = tempfile::tempdir().expect("R2 root");
         assert!(
-            worker_checkpoint_authority(&dispatch, Some(root.path())).is_ok(),
+            worker_checkpoint_authority(&dispatch, Some(root.path()))
+                .await
+                .is_ok(),
             "R2"
         );
 
         let invalid = tempfile::NamedTempFile::new().expect("R3 invalid root");
         assert!(
             matches!(
-                worker_checkpoint_authority(&dispatch, Some(invalid.path())),
+                worker_checkpoint_authority(&dispatch, Some(invalid.path())).await,
                 Err(WorkerTransportBuildError::CheckpointOpen { .. })
             ),
             "R3"
         );
 
         #[cfg(feature = "test-support")]
-        assert!(worker_checkpoint_authority(&dispatch, None).is_ok(), "R4");
+        assert!(
+            worker_checkpoint_authority(&dispatch, None).await.is_ok(),
+            "R4"
+        );
         #[cfg(not(feature = "test-support"))]
         assert!(
             matches!(
-                worker_checkpoint_authority(&dispatch, None),
+                worker_checkpoint_authority(&dispatch, None).await,
                 Err(WorkerTransportBuildError::MissingCheckpointAuthority)
             ),
             "R5"
@@ -1287,7 +1293,7 @@ async fn mount_with_managed_over_and_models(
     // over the dispatch transport and pushes committed facts to the commit ingest.
     let dispatch = execution.coordinator_dispatch.clone();
     let checkpoint =
-        worker_checkpoint_authority(dispatch.as_ref(), execution.storage_dir.as_deref())?;
+        worker_checkpoint_authority(dispatch.as_ref(), execution.storage_dir.as_deref()).await?;
     let dispatch_router = awaken_dispatch_http::registered_dispatch_router(
         awaken_dispatch_http::RegisteredDispatchDependencies {
             claim_persistence: execution.worker_claim_persistence.clone(),

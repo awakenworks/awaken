@@ -238,7 +238,7 @@ async fn a_parked_checkpoint_read_leaves_the_one_async_worker_free() {
     // checkpoint. Inline, the writer gives up after PARK_LIMIT and writes bytes
     // that are no checkpoint, and the read reports them as Unknown.
     let dir = tempfile::tempdir().unwrap();
-    let store = FsStreamCheckpointStore::open(dir.path()).unwrap();
+    let store = FsStreamCheckpointStore::open(dir.path()).await.unwrap();
     let fifo = dir.path().join("run-fifo.json");
     let made = std::process::Command::new("mkfifo")
         .arg(&fifo)
@@ -272,4 +272,49 @@ async fn a_parked_checkpoint_read_leaves_the_one_async_worker_free() {
         Observed::Present(read) => assert_eq!(read, checkpoint, "E2"),
         unexpected => panic!("E1 the read held the worker: {unexpected:?}"),
     }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_parked_checkpoint_open_leaves_the_one_async_worker_free() {
+    use awaken_store_fs::FsStreamCheckpointStore;
+
+    // Decision table. C1 the checkpoint directory path names a FIFO, so the
+    // open's directory flush parks opening it until a writer appears; C2
+    // another task on the one async worker is waiting to run, as a lease
+    // heartbeat is when it comes due. E1 that task runs while the open is
+    // parked, and its signal lets the writer release the open; E2 the open is
+    // still refused, because a FIFO is not a directory. Inline, the open holds
+    // the only worker: the task runs only after the writer gives up.
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("checkpoints");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success(), "C1");
+    let (beat, heartbeat) = mpsc::channel();
+    let writer = std::thread::spawn({
+        let fifo = fifo.clone();
+        move || {
+            let ran = heartbeat.recv_timeout(PARK_LIMIT).is_ok();
+            // Opening the write end releases the parked open either way.
+            let _ = std::fs::OpenOptions::new().write(true).open(&fifo);
+            ran
+        }
+    });
+    let other = tokio::spawn(async move {
+        let _ = beat.send(());
+    });
+
+    let opened = FsStreamCheckpointStore::open(&fifo).await;
+
+    let ran = writer.join().unwrap();
+    other.await.unwrap();
+    assert!(ran, "E1 the open held the async worker");
+    assert_eq!(
+        opened.err().map(|error| error.kind()),
+        Some(std::io::ErrorKind::InvalidInput),
+        "E2"
+    );
 }
