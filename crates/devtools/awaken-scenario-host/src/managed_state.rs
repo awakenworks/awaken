@@ -4,8 +4,9 @@
 //! The Coordinator links no executor, so the scenario root builds it here:
 //! one executor, one Session application over it, the executor's edges bound
 //! back into that application, and the Coordinator's execution ports
-//! selected through the same [`awaken_cli::coordinator_execution`] the
-//! product binary uses.
+//! selected through [`awaken_cli::coordinator_execution`]. A mounted scenario's
+//! executor runs no claim pool: its Sessions execute on a registered Worker
+//! ([`crate::deployment::ScenarioExecution`]).
 
 use std::sync::Arc;
 
@@ -60,6 +61,9 @@ pub struct LocalManagedState {
     pub host: Arc<ExecutorComponents>,
     /// What the Coordinator's scenario mounts consume.
     pub state: awaken_coordinator::ScenarioManagedState,
+    /// The credential plane the Session application authors into; a
+    /// co-located registered Worker materializes from the same stores.
+    pub credential_stores: awaken_control::InferenceMaterializationStores,
 }
 
 /// Assemble the local/single-process Managed adapter with one shared ephemeral
@@ -234,6 +238,10 @@ async fn local_managed_state_over(
         clock.clone(),
         None,
     ));
+    let credential_stores = awaken_control::InferenceMaterializationStores {
+        credentials: credentials.clone(),
+        secrets: secrets.clone(),
+    };
     // The Session aggregate lives in the same `sessions.db` as the Memory
     // extraction intents: the composition that built this Host selected its
     // extraction repository over that file before construction. The two
@@ -385,5 +393,6 @@ async fn local_managed_state_over(
             worker_directory,
         },
         host,
+        credential_stores,
     }
 }

@@ -135,6 +135,41 @@ pub async fn start_all_in_one_with_worker_and_web_providers(
     start_over(stores, authz, options, model_supply, worker).await
 }
 
+/// A volatile AllInOne test process over the caller's `deployment` that
+/// publishes one deterministic host executor, with its co-located registered
+/// Worker. The deployment runs no claim pool of its own; `web_search_providers`
+/// and `trace_file_present` select the process inputs before assembly.
+pub async fn start_volatile_all_in_one_with_worker(
+    model: (
+        Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
+        awaken_runtime_contract::resolved::ModelBinding,
+    ),
+    mut deployment: awaken_deployment_config::DeploymentConfig,
+    web_search_providers: Option<awaken_ext_builtin_tools::WebSearchProviderRegistry>,
+    trace_file_present: bool,
+    worker: impl FnOnce(ColocatedTestWorkerInputs) -> Arc<dyn crate::ColocatedWorker>,
+) -> Result<ColocatedTestProcess, String> {
+    let stores = crate::local_process_stores::in_memory_process_stores().await;
+    let mut options = crate::exact_host_model::registered_test_process_options(&stores);
+    deployment.disable_local_pool = true;
+    options.content_capture_ceiling = awaken_data_governance_contract::clamp_for_trace_file(
+        deployment.content_capture.level,
+        trace_file_present,
+    );
+    options.trace_file_present = trace_file_present;
+    options.deployment = Some(deployment);
+    options.web_search_providers = web_search_providers;
+    let (executor, binding) = model;
+    start_over(
+        stores,
+        None,
+        options,
+        crate::PublicationModelSupply::Host { executor, binding },
+        worker,
+    )
+    .await
+}
+
 async fn start_over(
     stores: crate::ProcessStores,
     authz: Option<Arc<crate::ManagementAuthz>>,
@@ -202,6 +237,42 @@ async fn start_over(
         service_lifecycle,
         authz,
     })
+}
+
+/// Supervise a co-located registered Worker for a test composition that
+/// assembled its own Coordinator: serve `private_router` (its Worker
+/// transport) on a loopback listener and run `worker` against it on
+/// `lifecycle`, in the AllInOne drain order. `runtime` is the deployment the
+/// Worker executes under; `inputs` are the process handles it borrows.
+pub async fn spawn_colocated_test_worker(
+    lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    private_router: Router,
+    worker: Arc<dyn crate::ColocatedWorker>,
+    runtime: awaken_deployment_config::DeploymentConfig,
+    inputs: crate::ColocatedWorkerInputs,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Result<(), String> {
+    let deployment = worker_deployment(runtime, clock.clone())?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|error| format!("bind the loopback Worker surface: {error}"))?;
+    let upstream = format!(
+        "http://{}",
+        listener
+            .local_addr()
+            .map_err(|error| format!("loopback Worker surface address: {error}"))?
+    );
+    crate::service::spawn_colocated_worker(
+        lifecycle,
+        listener,
+        private_router,
+        worker,
+        upstream,
+        deployment,
+        inputs,
+        clock,
+    )
+    .await
 }
 
 /// The Worker's view of this process's deployment: the test `runtime` over a

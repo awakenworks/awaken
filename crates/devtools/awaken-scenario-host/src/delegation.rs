@@ -17,7 +17,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use axum::Router;
 
-use super::deployment::{resource_host_with_deployment, scenario_deployment};
+use super::deployment::scenario_deployment;
 use super::scenario_platform::{fixed_agent_publication, mount_with_agent_source_on_lifecycle};
 use super::{DelegatingModel, FAKE_ACP_JSONRPC_SCRIPT, scenario_model, scenario_shell_argv};
 
@@ -191,7 +191,15 @@ pub async fn build_delegation_router_with_deployment(
     let publication = fixed_agent_publication(snapshots);
     let launch = delegation_acp_launch();
     let platform = crate::acp_scenarios::bind_acp_session_environment(
-        resource_host_with_deployment(model, model_ref, deployment, trace_file_present).await,
+        // ACP launch is not yet selectable on the co-located Worker: these
+        // Sessions stay on this executor's claim pool.
+        crate::deployment::in_process_resource_host_with_deployment(
+            model,
+            model_ref,
+            deployment,
+            trace_file_present,
+        )
+        .await,
         awaken_execution_composition::LaunchSource::FixedAcp(Box::new(launch)),
         None,
     )

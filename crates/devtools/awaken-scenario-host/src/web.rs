@@ -97,12 +97,12 @@ pub async fn build_management_web_service(
     registry
         .register(Arc::new(ScenarioWebSearchProvider))
         .expect("the scenario Web provider descriptor is valid and unique");
-    awaken_cli::build_all_in_one_service_with_host_customizer(
+    awaken_cli::build_all_in_one_service_on_worker(
         Arc::new(WebToolDrivingModel),
         ModelBinding::new("default", "management-web", "default"),
         crate::scenario_deployment(),
         Some(registry),
-        |host| host,
+        None,
         trace_file_present,
     )
     .await

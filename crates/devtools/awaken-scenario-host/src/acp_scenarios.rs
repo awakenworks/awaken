@@ -202,7 +202,9 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
     // incompatible substrate decision after the process boundary had selected
     // Namespace/Container.
     let host_publication = publication.clone();
-    let platform = resource_host_with_deployment(
+    // ACP launch is not yet selectable on the co-located Worker: these
+    // Sessions stay on this executor's claim pool.
+    let platform = crate::deployment::in_process_resource_host_with_deployment(
         Arc::new(OversizedToolModel),
         "awaken",
         deployment.clone(),
@@ -352,8 +354,10 @@ pub async fn build_acp_tool_bridge_router(
         .build();
     let publication = fixed_agent_publication([snapshot]);
     let host_publication = publication.clone();
+    // ACP launch is not yet selectable on the co-located Worker: these
+    // Sessions stay on this executor's claim pool.
     let platform = bind_acp_session_environment(
-        runtime_resource_host_with_deployment(
+        crate::deployment::in_process_runtime_resource_host_with_deployment(
             Arc::new(EchoModel),
             "awaken",
             deployment,
@@ -772,8 +776,10 @@ async fn build_acp_session_environment_router(
     deployment
         .sandbox_dir
         .get_or_insert_with(|| storage_dir.join("sandboxes"));
+    // ACP launch is not yet selectable on the co-located Worker: these
+    // Sessions stay on this executor's claim pool.
     let platform = bind_acp_session_environment(
-        resource_host_with_deployment(
+        crate::deployment::in_process_resource_host_with_deployment(
             Arc::new(EchoModel),
             "awaken",
             deployment,
@@ -974,20 +980,26 @@ pub async fn build_acp_container_router(
         (publication, launch, Arc::new(EchoModel))
     };
     let host_publication = publication.clone();
-    let platform =
-        resource_host_with_deployment(model, "awaken", deployment.clone(), trace_file_present)
-            .await
-            .map_dependencies_async(|host| async move {
-                awaken_execution_composition::with_acp_launch_source(
-                    host.with_agent_publications(host_publication),
-                    &deployment,
-                    awaken_tool_relay::relay_hand_executor_factory(),
-                    launch,
-                )
-                .await
-                .expect("scenario Session environment must be available")
-            })
-            .await;
+    // ACP launch is not yet selectable on the co-located Worker: these
+    // Sessions stay on this executor's claim pool.
+    let platform = crate::deployment::in_process_resource_host_with_deployment(
+        model,
+        "awaken",
+        deployment.clone(),
+        trace_file_present,
+    )
+    .await
+    .map_dependencies_async(|host| async move {
+        awaken_execution_composition::with_acp_launch_source(
+            host.with_agent_publications(host_publication),
+            &deployment,
+            awaken_tool_relay::relay_hand_executor_factory(),
+            launch,
+        )
+        .await
+        .expect("scenario Session environment must be available")
+    })
+    .await;
     // Use the same shared Resource Registry + Managed ACL assembly as every other
     // scenario, with the exact Environment Execution application mounted by the API.
     mount_with_environments_and_agent_source(platform, Some(publication), lifecycle.clone()).await

@@ -145,8 +145,13 @@ pub async fn build_model_route_router(
     let platform = resource_host(default_model, "default", trace_file_present)
         .await
         .map_dependencies(|host| host.with_agent_publications(publication.clone()))
-        .map_dependencies(|host| host.with_inference_materializer(Arc::new(RouteProvider)));
-    let (host, resources) = platform.into_dependencies();
+        .map_dependencies(|host| host.with_inference_materializer(Arc::new(RouteProvider)))
+        // The Worker that executes the Session resolves each pinned candidate
+        // through the same routing materializer.
+        .select_worker_backend(|worker| {
+            worker.with_inference_materializer(Arc::new(RouteProvider))
+        });
+    let (host, resources, execution) = platform.into_mount_parts();
     let managed = crate::local_managed_state_with_agent_source_and_model_publication_resolver(
         host,
         &resources,
@@ -154,12 +159,7 @@ pub async fn build_model_route_router(
         Arc::new(RoutePublicationResolver),
     )
     .await;
-    awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
-        managed.state,
-        resources.clone(),
-        lifecycle,
-        None,
-    )
-    .await
-    .0
+    crate::scenario_platform::mount_managed(managed, resources, execution, lifecycle, None)
+        .await
+        .0
 }

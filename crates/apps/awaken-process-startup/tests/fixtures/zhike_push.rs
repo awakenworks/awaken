@@ -480,6 +480,11 @@ async fn scenario(
             }
         })
     });
+    // The provider pushes customer input into the Session through MCP
+    // application notifications. Only a co-located Native Session application
+    // accepts that input; a registered Worker refuses it
+    // (`awaken_session_mcp` `validate_input_placement`, w5-slices.md §16), so
+    // these dialogues stay on this process's own claim pool until it does.
     let (app, lifecycle) = awaken_cli::build_all_in_one_service_with_host_customizer(
         executor,
         awaken_runtime_contract::resolved::ModelBinding::parse("default", model_name, "genai")

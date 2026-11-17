@@ -162,6 +162,7 @@ pub async fn mount_with_managed(
         None,
     )
     .await
+    .single_listener()
     .0
 }
 
@@ -206,21 +207,33 @@ async fn with_scenario_session_lifecycle(
     router.layer(axum::Extension(lifecycle))
 }
 
+/// A Scenario Coordinator's surfaces: its public router (Session lifecycle
+/// bound), the private Worker transport its registered Workers claim through,
+/// and the Dream aggregate mounted beside them.
 #[cfg(feature = "test-support")]
-fn with_scenario_worker_transport(
-    public: Router,
-    worker_private: Router,
-    remote_worker_required: bool,
-) -> Router {
-    // Production keeps the Worker transport on its private listener. The
-    // single-listener Scenario surface exposes that exact router only for the
-    // coordinator-only deployment axis whose local pool is disabled; ordinary
-    // Scenario servers retain the same isolation instead of publishing an
-    // unused private API.
-    if remote_worker_required {
-        public.merge(worker_private)
-    } else {
-        public
+pub struct ScenarioCoordinatorMount {
+    pub public: Router,
+    pub worker_transport: Router,
+    /// Whether this Coordinator runs no claim pool of its own, so its
+    /// Sessions need a registered Worker.
+    pub remote_worker_required: bool,
+    pub dreams: Arc<awaken_dream_application::DreamApplication>,
+}
+
+#[cfg(feature = "test-support")]
+impl ScenarioCoordinatorMount {
+    /// The single-listener Scenario surface. Production keeps the Worker
+    /// transport on its private listener; this surface exposes that exact
+    /// router only for the coordinator-only deployment axis whose Workers run
+    /// in other processes. A composition that co-locates its Worker serves
+    /// [`Self::worker_transport`] on its own private listener instead.
+    pub fn single_listener(self) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+        let public = if self.remote_worker_required {
+            self.public.merge(self.worker_transport)
+        } else {
+            self.public
+        };
+        (public, self.dreams)
     }
 }
 
@@ -283,8 +296,28 @@ pub async fn mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+    mount_scenario_coordinator_on_lifecycle(
+        managed_state,
+        resources,
+        lifecycle,
+        dream_executor_decorator,
+    )
+    .await
+    .single_listener()
+}
+
+/// [`mount_with_managed_and_resource_registry_and_dreams_on_lifecycle`] with
+/// the Worker transport returned beside the public surface, for a Scenario
+/// composition that serves it to its co-located registered Worker.
+#[cfg(feature = "test-support")]
+pub async fn mount_scenario_coordinator_on_lifecycle(
+    managed_state: ScenarioManagedState,
+    resources: awaken_resource_application::ResourcesApplication,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+    dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
+) -> ScenarioCoordinatorMount {
     let local_workspace = managed_state.local_workspace.clone();
-    let (data, dreams) = mount_with_managed_over(
+    let mut mount = mount_with_managed_over(
         managed_state,
         resources,
         ApplicationAccessMount::ExplicitlyUnguardedTest,
@@ -296,8 +329,13 @@ pub async fn mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
     // Awaken policy authoring projection reachable here so deterministic SDK and
     // Console E2E can exercise it. Production startup mounts this exact
     // router on `CoordinatorComponent::management_router`, behind IAM + audit.
-    let router = data.merge(awaken_protocol_awaken::dream_policy_router(dreams.clone()));
-    (with_local_workspace_scope(router, local_workspace), dreams)
+    let router = mount
+        .public
+        .merge(awaken_protocol_awaken::dream_policy_router(
+            mount.dreams.clone(),
+        ));
+    mount.public = with_local_workspace_scope(router, local_workspace);
+    mount
 }
 
 /// Test-support data plane with application credentials enforced on browser-facing
@@ -316,6 +354,7 @@ pub async fn mount_with_managed_and_application_access(
         None,
     )
     .await
+    .single_listener()
     .0
 }
 
@@ -380,12 +419,21 @@ pub async fn mount_with_managed_and_application_access_and_models(
     )
     .await
     .expect("test-support Worker transport must assemble");
-    let public = with_scenario_worker_transport(
+    let public = with_scenario_session_lifecycle(
         managed.merge(data).merge(application),
-        worker_private,
+        supervised_state,
+        lifecycle,
+        &dreams,
+    )
+    .await;
+    ScenarioCoordinatorMount {
+        public,
+        worker_transport: worker_private,
         remote_worker_required,
-    );
-    with_scenario_session_lifecycle(public, supervised_state, lifecycle, &dreams).await
+        dreams,
+    }
+    .single_listener()
+    .0
 }
 
 /// Router-owned services that must move together into the managed data plane.
@@ -922,7 +970,7 @@ async fn mount_with_managed_over(
     application_access: ApplicationAccessMount,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
-) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+) -> ScenarioCoordinatorMount {
     let resource_authorities = resources.authorities();
     let resource_registry = resource_authorities.resource_registry();
     let execution = managed_state.execution.clone();
@@ -979,15 +1027,19 @@ async fn mount_with_managed_over(
         )
         .await
         .expect("test-support Worker transport must assemble");
-    let public = with_scenario_worker_transport(
+    let public = with_scenario_session_lifecycle(
         managed.merge(public).merge(application),
-        worker_private,
-        remote_worker_required,
-    );
-    (
-        with_scenario_session_lifecycle(public, supervised_state, lifecycle, &dreams).await,
-        dreams,
+        supervised_state,
+        lifecycle,
+        &dreams,
     )
+    .await;
+    ScenarioCoordinatorMount {
+        public,
+        worker_transport: worker_private,
+        remote_worker_required,
+        dreams,
+    }
 }
 
 fn executable_agent_inventory_reads(

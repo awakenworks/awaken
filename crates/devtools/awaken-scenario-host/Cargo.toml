@@ -32,7 +32,9 @@ awaken-session-run-delivery.workspace = true
 awaken-installation-workspace.workspace = true
 awaken-config-service.workspace = true
 awaken-ext-builtin-tools.workspace = true
+awaken-ext-compact.workspace = true
 awaken-ext-memory.workspace = true
+awaken-ext-state-machine.workspace = true
 awaken-ext-skills.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
 awaken-worker-transport-security.workspace = true

@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use awaken_cli::build_all_in_one_service_with_host_customizer;
+use awaken_cli::build_all_in_one_service_on_worker;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ModelBinding;
 
@@ -305,7 +305,10 @@ async fn wait_for_spec(
     specs: &Arc<Mutex<Vec<pc::SandboxSpec>>>,
     count: usize,
 ) -> pc::SandboxSpec {
-    for _ in 0..200 {
+    // The co-located Worker claims the Session's preparation over its
+    // loopback Worker transport, so provisioning follows the trigger by that
+    // claim's round trip rather than by an in-process hand-off.
+    for _ in 0..30_000 {
         if let Some(spec) = specs.lock().unwrap().get(count - 1).cloned() {
             return spec;
         }
@@ -347,21 +350,19 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
     });
     let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_deployment_config::SandboxTier::Local;
-    let installed = deployment.clone();
-    let (app, lifecycle) = build_all_in_one_service_with_host_customizer(
+    // The co-located registered Worker realizes the Session containers: its
+    // builder installs the provider, so its manifest advertises the container
+    // isolation the Coordinator places these Sessions by.
+    let (app, lifecycle) = build_all_in_one_service_on_worker(
         Arc::new(EchoModel),
         ModelBinding::new("host", "echo", "genai"),
         deployment,
         None,
-        move |host| {
-            awaken_execution_composition::install_container_provider(
-                host,
-                &installed,
-                provider,
-                None,
-                Arc::new(UnusedHandFactory),
-            )
-        },
+        Some(Arc::new(move |worker: awaken_worker::WorkerNodeBuilder| {
+            worker
+                .with_hand_executor_factory(Arc::new(UnusedHandFactory))
+                .with_session_container_provider("recording", provider.clone())
+        })),
         false,
     )
     .await;

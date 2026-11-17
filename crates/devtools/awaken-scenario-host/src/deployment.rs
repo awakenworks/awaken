@@ -17,9 +17,126 @@ pub(crate) struct ScenarioPlatform {
     /// The typed Deployment the dependencies were selected from; Session
     /// environment, ACP and Memory mount selection read it explicitly.
     deployment: awaken_deployment_config::DeploymentConfig,
+    /// Where this platform's Sessions execute.
+    execution: ScenarioExecution,
+}
+
+/// Where a Scenario platform's Sessions execute, selected once when the
+/// platform is assembled.
+///
+/// | Rule | cause | Coordinator claim pool | Sessions execute on |
+/// |---|---|---|---|
+/// | E1 | a mounted scenario, `disable_local_pool` unset | none | its co-located registered Worker, over a loopback Worker transport (the topology the `awaken` launcher ships) |
+/// | E2 | a mounted scenario, `disable_local_pool` set | none | registered Workers of other processes, through the Worker transport on the scenario listener |
+/// | E3 | an unmounted executor a test drives directly | in process | that executor's own claim pool |
+pub(crate) enum ScenarioExecution {
+    ColocatedWorker(Box<ScenarioWorker>),
+    RemoteWorkers,
+    InProcess,
+}
+
+/// The co-located registered Worker of a mounted scenario: the scenario's
+/// deterministic model as its host executor, the scenario's Deployment, and
+/// the backends the scenario selects through the Worker builder.
+pub(crate) struct ScenarioWorker {
+    model: Arc<dyn LlmExecutor>,
+    deployment: awaken_deployment_config::DeploymentConfig,
+    selections: Vec<awaken_cli::WorkerBackendSelection>,
+    process: awaken_process_startup::ColocatedWorkerInputs,
+}
+
+/// The one host executor a deterministic scenario publishes; its Worker
+/// materializes exactly that executor for host-executor candidates.
+pub(crate) struct HostExecutorInference(pub(crate) Arc<dyn LlmExecutor>);
+
+impl awaken_inference_endpoint::InferenceExecutorMaterializer for HostExecutorInference {
+    fn supported_access_schemes(&self) -> &'static [&'static str] {
+        &[awaken_dispatch::HOST_EXECUTOR_CAPABILITY]
+    }
+
+    fn materialize_pinned(
+        &self,
+        candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+        _context: &awaken_runtime_contract::RuntimeRunContext,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        matches!(
+            candidate.provisioning(),
+            awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
+        )
+        .then(|| self.0.clone())
+    }
+}
+
+impl ScenarioWorker {
+    /// Serve `transport` on a loopback listener and supervise this Worker
+    /// against it on `lifecycle`; it reads the Coordinator's own `stores`.
+    pub(crate) async fn spawn(
+        self,
+        lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+        transport: axum::Router,
+        stores: awaken_control::InferenceMaterializationStores,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) {
+        let selections = self.selections;
+        let select: Option<awaken_cli::WorkerBackendSelection> =
+            (!selections.is_empty()).then(|| {
+                Arc::new(move |builder| {
+                    selections
+                        .iter()
+                        .fold(builder, |builder, select| select(builder))
+                }) as awaken_cli::WorkerBackendSelection
+            });
+        let worker = awaken_cli::colocated_scenario_worker(
+            awaken_process_startup::ColocatedTestWorkerInputs {
+                stores,
+                host_inference: Some(Arc::new(HostExecutorInference(self.model))),
+            },
+            select,
+        );
+        awaken_process_startup::spawn_colocated_test_worker(
+            lifecycle,
+            transport,
+            worker,
+            self.deployment,
+            self.process,
+            clock,
+        )
+        .await
+        .expect("start the scenario's co-located registered Worker");
+    }
 }
 
 impl ScenarioPlatform {
+    /// Select a backend on the co-located registered Worker through the
+    /// Worker builder's own APIs. A platform whose Sessions do not run on a
+    /// co-located Worker has no such builder, so the selection is not needed.
+    #[must_use]
+    pub(crate) fn select_worker_backend(
+        mut self,
+        select: impl Fn(awaken_worker::WorkerNodeBuilder) -> awaken_worker::WorkerNodeBuilder
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        if let ScenarioExecution::ColocatedWorker(worker) = &mut self.execution {
+            worker.selections.push(Arc::new(select));
+        }
+        self
+    }
+
+    /// Lend the co-located Worker the process handles it cannot obtain over
+    /// its transport (administrative tools).
+    #[must_use]
+    pub(crate) fn with_worker_process_inputs(
+        mut self,
+        process: awaken_process_startup::ColocatedWorkerInputs,
+    ) -> Self {
+        if let ScenarioExecution::ColocatedWorker(worker) = &mut self.execution {
+            worker.process = process;
+        }
+        self
+    }
+
     /// The typed Deployment this platform was selected from.
     #[must_use]
     pub(crate) fn deployment(&self) -> &awaken_deployment_config::DeploymentConfig {
@@ -53,6 +170,19 @@ impl ScenarioPlatform {
         SessionExecutorBuilder,
         awaken_resource_application::ResourcesApplication,
     ) {
+        let (dependencies, resources, _) = self.into_mount_parts();
+        (dependencies, resources)
+    }
+
+    /// [`Self::into_dependencies`] with where the mounted Sessions execute.
+    #[must_use]
+    pub(crate) fn into_mount_parts(
+        self,
+    ) -> (
+        SessionExecutorBuilder,
+        awaken_resource_application::ResourcesApplication,
+        ScenarioExecution,
+    ) {
         (
             awaken_cli::with_platform_memory_data_plane(
                 self.dependencies,
@@ -61,6 +191,7 @@ impl ScenarioPlatform {
                 self.memory_invalidator,
             ),
             self.resources,
+            self.execution,
         )
     }
 
@@ -263,8 +394,65 @@ pub(crate) async fn resource_host_with_deployment(
         deployment,
         SCENARIO_RUNTIME_AUTHORITY.get(),
         trace_file_present,
+        ExecutorPlacement::Registered,
     )
     .await
+}
+
+/// [`resource_host_with_deployment`] for an unmounted executor a test
+/// drives directly: Sessions run on that executor's own claim pool (E3).
+pub(crate) async fn in_process_resource_host_with_deployment(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
+) -> ScenarioPlatform {
+    resource_host_with_selected_runtime(
+        llm,
+        model_ref,
+        deployment,
+        SCENARIO_RUNTIME_AUTHORITY.get(),
+        trace_file_present,
+        ExecutorPlacement::InProcess,
+    )
+    .await
+}
+
+/// Whether a platform's executor drains claims itself or leaves them to
+/// registered Workers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExecutorPlacement {
+    Registered,
+    InProcess,
+}
+
+/// The decision table of [`ScenarioExecution`]: the Deployment the
+/// executor's process is selected from, and where its Sessions execute.
+fn select_execution(
+    placement: ExecutorPlacement,
+    llm: &Arc<dyn LlmExecutor>,
+    deployment: &awaken_deployment_config::DeploymentConfig,
+) -> (
+    awaken_deployment_config::DeploymentConfig,
+    ScenarioExecution,
+) {
+    let mut process = deployment.clone();
+    let execution = match placement {
+        ExecutorPlacement::InProcess => ScenarioExecution::InProcess,
+        ExecutorPlacement::Registered if deployment.disable_local_pool => {
+            ScenarioExecution::RemoteWorkers
+        }
+        ExecutorPlacement::Registered => {
+            process.disable_local_pool = true;
+            ScenarioExecution::ColocatedWorker(Box::new(ScenarioWorker {
+                model: llm.clone(),
+                deployment: deployment.clone(),
+                selections: Vec::new(),
+                process: Default::default(),
+            }))
+        }
+    };
+    (process, execution)
 }
 
 /// One assembly path for the binary's installed authority and direct test
@@ -280,7 +468,9 @@ async fn resource_host_with_selected_runtime(
     deployment: awaken_deployment_config::DeploymentConfig,
     selected: Option<&Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>>,
     trace_file_present: bool,
+    placement: ExecutorPlacement,
 ) -> ScenarioPlatform {
+    let (process_deployment, execution) = select_execution(placement, &llm, &deployment);
     // The Scenario process's Resources clock.
     let clock = awaken_time::system_clock();
     let memory_invalidator = Arc::new(awaken_resource_contract::LocalInvalidator::default());
@@ -317,7 +507,7 @@ async fn resource_host_with_selected_runtime(
     let local_workspace = scenario_workspace.unwrap_or(installation_workspace);
     let model_ref: String = model_ref.into();
     let process = awaken_session_executor::SessionExecutionProcess::from_deployment(
-        &deployment,
+        &process_deployment,
         local_workspace,
         clock,
         trace_file_present,
@@ -347,6 +537,7 @@ async fn resource_host_with_selected_runtime(
         resources,
         memory_invalidator,
         deployment,
+        execution,
     }
 }
 
@@ -386,8 +577,28 @@ pub(crate) async fn runtime_resource_host_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
     trace_file_present: bool,
 ) -> ScenarioPlatform {
-    let platform =
-        resource_host_with_deployment(llm, model_ref, deployment, trace_file_present).await;
+    with_session_environment_from_deployment(
+        resource_host_with_deployment(llm, model_ref, deployment, trace_file_present).await,
+    )
+    .await
+}
+
+/// [`runtime_resource_host_with_deployment`] for an executor whose Sessions
+/// run on its own claim pool (E3).
+pub(crate) async fn in_process_runtime_resource_host_with_deployment(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
+) -> ScenarioPlatform {
+    with_session_environment_from_deployment(
+        in_process_resource_host_with_deployment(llm, model_ref, deployment, trace_file_present)
+            .await,
+    )
+    .await
+}
+
+async fn with_session_environment_from_deployment(platform: ScenarioPlatform) -> ScenarioPlatform {
     let deployment = platform.deployment().clone();
     platform
         .map_dependencies_async(|dependencies| async move {
@@ -439,6 +650,7 @@ mod tests {
             deployment,
             Some(&selected),
             false,
+            ExecutorPlacement::InProcess,
         )
         .await
         .into_parts();

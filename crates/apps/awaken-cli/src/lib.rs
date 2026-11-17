@@ -24,8 +24,10 @@ mod local_model;
 mod scenario_process;
 #[cfg(feature = "test-support")]
 pub use scenario_process::{
-    build_all_in_one_service_with_host_customizer, colocated_test_worker,
-    scenario_requires_local_placement, scenario_worker_preparation, start_test_all_in_one,
+    WorkerBackendSelection, build_all_in_one_service_on_worker,
+    build_all_in_one_service_with_host_customizer, colocated_scenario_worker,
+    colocated_test_worker, scenario_requires_local_placement, scenario_worker_preparation,
+    start_test_all_in_one,
 };
 mod memory_data_plane;
 
@@ -120,27 +122,36 @@ impl ColocatedWorker for PreparedLocalWorker {
         deployment: &ResolvedDeployment,
         inputs: &awaken_process_startup::ColocatedWorkerInputs,
         clock: Arc<dyn awaken_time::WallClock>,
-        mut shutdown: tokio::sync::watch::Receiver<Option<WorkerShutdown>>,
+        shutdown: tokio::sync::watch::Receiver<Option<WorkerShutdown>>,
     ) -> Result<Result<(), String>, String> {
         let worker = self
             .clone()
             .with_process_inputs(inputs.clone())
             .build_worker(upstream, deployment, clock)
             .await?;
-        let result = worker
-            .run_until(async move {
-                loop {
-                    if let Some(mode) = *shutdown.borrow() {
-                        return Ok(mode);
-                    }
-                    shutdown.changed().await.map_err(|_| {
-                        Box::new(std::io::Error::other(
-                            "AllInOne Worker shutdown owner dropped",
-                        )) as Box<dyn std::error::Error + Send + Sync>
-                    })?;
-                }
-            })
-            .await;
-        Ok(result.map_err(|error| error.to_string()))
+        Ok(run_worker_until_shutdown(worker, shutdown).await)
     }
+}
+
+/// Run one built incarnation until `shutdown` selects a mode or it ends on
+/// its own; the result is how the incarnation ended.
+pub(crate) async fn run_worker_until_shutdown(
+    worker: awaken_worker::WorkerNode,
+    mut shutdown: tokio::sync::watch::Receiver<Option<WorkerShutdown>>,
+) -> Result<(), String> {
+    worker
+        .run_until(async move {
+            loop {
+                if let Some(mode) = *shutdown.borrow() {
+                    return Ok(mode);
+                }
+                shutdown.changed().await.map_err(|_| {
+                    Box::new(std::io::Error::other(
+                        "AllInOne Worker shutdown owner dropped",
+                    )) as Box<dyn std::error::Error + Send + Sync>
+                })?;
+            }
+        })
+        .await
+        .map_err(|error| error.to_string())
 }

@@ -476,6 +476,23 @@ impl PreparedLocalWorker {
         deployment: &awaken_process_startup::config::ResolvedDeployment,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Result<awaken_worker::WorkerNode, String> {
+        self.worker_builder(upstream, deployment, clock)?
+            .prepare_session_environment_from_deployment()
+            .await
+            .map_err(|error| error.to_string())?
+            .build()
+            .map_err(|error| error.to_string())
+    }
+
+    /// This Worker's builder before its deployment-selected Session
+    /// environment is prepared: the point where a composition may still
+    /// select a backend through the builder's own APIs.
+    pub(crate) fn worker_builder(
+        &self,
+        upstream: impl Into<String>,
+        deployment: &awaken_process_startup::config::ResolvedDeployment,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Result<awaken_worker::WorkerNodeBuilder, String> {
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
             Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
                 self.stores.credentials.clone(),
@@ -501,12 +518,7 @@ impl PreparedLocalWorker {
         if let Some(store) = &self.checkpoint_store {
             builder = builder.with_environment_checkpoint_store(store.clone());
         }
-        builder
-            .prepare_session_environment_from_deployment()
-            .await
-            .map_err(|error| error.to_string())?
-            .build()
-            .map_err(|error| error.to_string())
+        Ok(builder)
     }
 }
 

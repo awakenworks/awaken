@@ -103,7 +103,7 @@ async fn grounding_review_uses_a_tool_free_platform_agent_and_the_existing_parse
     // J0 authored reviewer with no tools -> actual Control/Session/Runtime
     // request preserves that restriction and evidence. This validates wiring,
     // not the fake Judge's accuracy; live positive/negative controls own that.
-    let (app, lifecycle) = awaken_cli::build_all_in_one_service_with_host_customizer(
+    let (app, lifecycle) = awaken_cli::build_all_in_one_service_on_worker(
         Arc::new(ContractJudge),
         awaken_runtime_contract::resolved::ModelBinding::parse("default", "judge-fixture", "genai")
             .unwrap(),
@@ -112,7 +112,7 @@ async fn grounding_review_uses_a_tool_free_platform_agent_and_the_existing_parse
             ..awaken_deployment_config::DeploymentConfig::ephemeral()
         },
         None,
-        |host| host,
+        None,
         false,
     )
     .await;
@@ -136,7 +136,7 @@ async fn live_grounding_judge_rejects_invented_details_and_accepts_bounded_claim
     // J2 concrete automatic reminders and no-miss guarantee absent from card ->
     // not satisfied. Both use the same Judge Agent, strict parser and API path.
     let (executor, model) = deepseek_executor();
-    let (app, lifecycle) = awaken_cli::build_all_in_one_service_with_host_customizer(
+    let (app, lifecycle) = awaken_cli::build_all_in_one_service_on_worker(
         executor,
         awaken_runtime_contract::resolved::ModelBinding::parse("default", &model, "genai").unwrap(),
         awaken_deployment_config::DeploymentConfig {
@@ -144,7 +144,7 @@ async fn live_grounding_judge_rejects_invented_details_and_accepts_bounded_claim
             ..awaken_deployment_config::DeploymentConfig::ephemeral()
         },
         None,
-        |host| host,
+        None,
         false,
     )
     .await;

@@ -121,8 +121,16 @@ pub async fn build_outcome_matrix_router(
         .max_steps(2)
         .build();
     let publication = fixed_host_backend_publication("acp-agent", "acp:claude", Vec::new());
+    // ACP launch is not yet selectable on the co-located Worker: these
+    // Sessions stay on this executor's claim pool.
     let platform = acp_scenarios::bind_acp_session_environment(
-        resource_host(model, model_ref, trace_file_present).await,
+        deployment::in_process_resource_host_with_deployment(
+            model,
+            model_ref,
+            scenario_deployment(),
+            trace_file_present,
+        )
+        .await,
         awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
     )
@@ -253,7 +261,7 @@ pub async fn build_compaction_router(
     // Compaction changes run behavior, not deployment ownership. Reuse the
     // canonical Scenario platform so durable Session/resource identity is
     // reconstructed from the same storage root after restart.
-    let host = resource_host(model, model_ref, trace_file_present).await;
+    let host = resource_host(model, model_ref.clone(), trace_file_present).await;
     // `AWAKEN_COMPACT_MAX_TOKENS` is an exact effective trigger override, matching
     // the publication output rather than reopening a ratio decision in the Host.
     // Otherwise derive the typed default (3/4 of the model window); the fully
@@ -268,8 +276,25 @@ pub async fn build_compaction_router(
         .or_else(|| env_u("AWAKEN_MODEL_CONTEXT_WINDOW").map(|window| window / 4 * 3))
         .unwrap_or(1);
     let keep_last = env_u("AWAKEN_COMPACT_KEEP_LAST").unwrap_or(2) as usize;
-    let host = host.map_dependencies(|host| host.with_compaction_tokens(window, keep_last));
-    mount_on_lifecycle(host, lifecycle.clone()).await
+    // The Session's `assistant` publication carries the same trigger, so the
+    // registered Worker compacts from the frozen publication.
+    let publication = scenario_platform::fixed_assistant_with_plugins(
+        &model_ref,
+        [(
+            awaken_ext_compact::COMPACT_PLUGIN_ID,
+            serde_json::to_value(awaken_ext_compact::CompactConfig {
+                max_tokens: Some(window),
+                keep_last,
+                ..Default::default()
+            })
+            .expect("CompactConfig is serializable"),
+        )],
+    );
+    let host = host.map_dependencies(|host| {
+        host.with_compaction_tokens(window, keep_last)
+            .with_agent_publications(publication.clone())
+    });
+    mount_with_agent_source_on_lifecycle(host, publication, lifecycle.clone()).await
 }
 
 /// A router whose model fails a Run on the `BOOM` trigger (the session-error
@@ -496,9 +521,14 @@ pub async fn build_unmounted_platform(
     SessionExecutorBuilder,
     awaken_resource_application::ResourcesApplication,
 ) {
-    resource_host(llm, model_ref, trace_file_present)
-        .await
-        .into_dependencies()
+    deployment::in_process_resource_host_with_deployment(
+        llm,
+        model_ref,
+        scenario_deployment(),
+        trace_file_present,
+    )
+    .await
+    .into_dependencies()
 }
 
 /// The unmounted scenario composition with an explicit deployment. Resources
@@ -510,15 +540,24 @@ pub async fn build_unmounted_dependencies_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
     trace_file_present: bool,
 ) -> SessionExecutorBuilder {
-    resource_host_with_deployment(llm, model_ref, deployment, trace_file_present)
-        .await
-        .into_dependencies()
-        .0
+    deployment::in_process_resource_host_with_deployment(
+        llm,
+        model_ref,
+        deployment,
+        trace_file_present,
+    )
+    .await
+    .into_dependencies()
+    .0
 }
 
 /// Scenario assembly whose Runtime and Managed adapters can share the exact
 /// immutable Agent publication authority. The catalog may be populated after
 /// construction once the generated local workspace id is known.
+///
+/// The returned executor runs this router's Sessions on its own claim pool, so
+/// a caller can drain that executor's dispatch directly; the shipped topology
+/// has no such in-process executor to inspect.
 pub async fn build_router_and_host_with_agent_publications(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
@@ -528,13 +567,19 @@ pub async fn build_router_and_host_with_agent_publications(
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
     let publication = scenario_platform::fixed_agent_publication(publications);
-    let (host, resources) = resource_host(llm, model_ref, trace_file_present)
-        .await
-        .map_dependencies(|host| host.with_agent_publications(publication.clone()))
-        .into_dependencies();
+    let (host, resources, execution) = deployment::in_process_resource_host_with_deployment(
+        llm,
+        model_ref,
+        scenario_deployment(),
+        trace_file_present,
+    )
+    .await
+    .map_dependencies(|host| host.with_agent_publications(publication.clone()))
+    .into_mount_parts();
     scenario_platform::mount_parts_with_agent_source_on_lifecycle(
         host,
         resources,
+        execution,
         publication,
         lifecycle.clone(),
     )
@@ -585,8 +630,8 @@ async fn build_router_and_host_from(
 
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
-    let (host, resources) = platform.into_dependencies();
-    scenario_platform::mount_parts_on_lifecycle(host, resources, lifecycle.clone()).await
+    let (host, resources, execution) = platform.into_mount_parts();
+    scenario_platform::mount_parts_on_lifecycle(host, resources, execution, lifecycle.clone()).await
 }
 
 pub(crate) async fn build_router_and_host_with_model_publication_resolver(
@@ -598,10 +643,11 @@ pub(crate) async fn build_router_and_host_with_model_publication_resolver(
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<ExecutorComponents>) {
     let platform = resource_host(llm, model_ref, trace_file_present).await;
-    let (host, resources) = platform.into_dependencies();
+    let (host, resources, execution) = platform.into_mount_parts();
     scenario_platform::mount_parts_with_model_publication_resolver(
         host,
         resources,
+        execution,
         resolver,
         None,
         lifecycle.clone(),
@@ -819,10 +865,32 @@ pub async fn build_statemachine_router(
         }]
     });
     let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine");
+    mount_state_machine(model, model_ref, machine, trace_file_present, lifecycle).await
+}
+
+/// One state-machine scenario: its `assistant` publication enables the
+/// machine, and the Host enables the same machine for flat-protocol Threads.
+async fn mount_state_machine(
+    model: Arc<dyn LlmExecutor>,
+    model_ref: String,
+    machine: serde_json::Value,
+    trace_file_present: bool,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
+    let publication = scenario_platform::fixed_assistant_with_plugins(
+        &model_ref,
+        [(
+            awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID,
+            machine.clone(),
+        )],
+    );
     let host = resource_host(model, model_ref, trace_file_present)
         .await
-        .map_dependencies(|host| host.with_state_machine(machine));
-    mount_on_lifecycle(host, lifecycle.clone()).await
+        .map_dependencies(|host| {
+            host.with_state_machine(machine)
+                .with_agent_publications(publication.clone())
+        });
+    mount_with_agent_source_on_lifecycle(host, publication, lifecycle).await
 }
 
 /// A richer tool state machine (coverage): a per-key machine (`key`/`key_normalizer`)
@@ -961,10 +1029,7 @@ pub async fn build_statemachine_rich_router(
         }]
     });
     let (model, model_ref) = scenario_model(Arc::new(StateMachineModel), "statemachine-rich");
-    let host = resource_host(model, model_ref, trace_file_present)
-        .await
-        .map_dependencies(|host| host.with_state_machine(machine));
-    mount_on_lifecycle(host, lifecycle.clone()).await
+    mount_state_machine(model, model_ref, machine, trace_file_present, lifecycle).await
 }
 
 /// A router with the config data plane (`/v1/config/agents/*`) over an in-memory
@@ -1002,7 +1067,9 @@ pub async fn build_schedule_router(
     let host =
         resource_host_with_deployment(model, model_ref, scenario_deployment(), trace_file_present)
             .await
-            .map_dependencies(|host| host.with_gate_override(Arc::new(ScheduleGate)));
+            .map_dependencies(|host| host.with_gate_override(Arc::new(ScheduleGate)))
+            // The gate wraps the tool calls of the Worker that runs the Session.
+            .select_worker_backend(|worker| worker.with_tool_gate(Arc::new(ScheduleGate)));
     mount_on_lifecycle(host, lifecycle.clone()).await
 }
 
@@ -1322,10 +1389,19 @@ pub async fn build_config_router(
         .map_dependencies(|host| {
             host.with_local_workspace(platform_workspace.clone())
                 .with_agent_publications(executable_agent_catalog.clone())
-                .with_admin_tools(admin_execs)
+                .with_admin_tools(admin_execs.clone())
                 .with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(None))
+        })
+        // The admin tools close over this process's Control stores: the
+        // co-located Worker borrows them in process, as AllInOne lends its own.
+        .with_worker_process_inputs(awaken_process_startup::ColocatedWorkerInputs {
+            admin_tools: admin_execs,
+            web_search_providers: None,
+        })
+        .select_worker_backend(|worker| {
+            worker.with_remote_attempt_executor(awaken_cli::a2a_attempt_executor(None))
         });
-    let (host, resources) = host.into_dependencies();
+    let (host, resources, execution) = host.into_mount_parts();
     // Rebuild the disposable executable catalog through the same registration
     // recovery used by Control. This replays durable publication truth; it does
     // not create a second warm-install path or reinterpret a claimed Run.
@@ -1363,6 +1439,7 @@ pub async fn build_config_router(
     let (flat, host) = scenario_platform::mount_parts_with_agent_source_on_lifecycle(
         host,
         resources,
+        execution,
         executable_agent_catalog,
         lifecycle.clone(),
     )
