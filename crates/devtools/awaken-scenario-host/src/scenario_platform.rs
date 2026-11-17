@@ -70,6 +70,7 @@ pub(super) async fn mount_managed(
         state,
         credential_stores,
     } = managed;
+    let worker_directory = state.worker_directory.clone();
     let mount = awaken_coordinator::mount_scenario_coordinator_on_lifecycle(
         state,
         resources,
@@ -88,6 +89,7 @@ pub(super) async fn mount_managed(
                     &lifecycle,
                     mount.worker_transport,
                     credential_stores,
+                    worker_directory,
                     host.clock(),
                 )
                 .await;

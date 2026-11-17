@@ -70,11 +70,14 @@ impl awaken_inference_endpoint::InferenceExecutorMaterializer for HostExecutorIn
 impl ScenarioWorker {
     /// Serve `transport` on a loopback listener and supervise this Worker
     /// against it on `lifecycle`; it reads the Coordinator's own `stores`.
+    /// Returns once `directory` holds the Worker Ready, so the scenario serves
+    /// only when its Sessions have a Worker to run on.
     pub(crate) async fn spawn(
         self,
         lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
         transport: axum::Router,
         stores: awaken_control::InferenceMaterializationStores,
+        directory: Arc<dyn awaken_coordinator::WorkerDirectory>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) {
         let selections = self.selections;
@@ -103,6 +106,30 @@ impl ScenarioWorker {
         )
         .await
         .expect("start the scenario's co-located registered Worker");
+        wait_for_ready_worker(directory.as_ref()).await;
+    }
+}
+
+/// Wait until `directory` holds a Ready Worker. A Coordinator places a
+/// Session's preparation only on a Ready Worker; one created before its
+/// co-located Worker registers waits in `rescheduling`.
+async fn wait_for_ready_worker(directory: &dyn awaken_coordinator::WorkerDirectory) {
+    let deadline = awaken_time::mono::now() + std::time::Duration::from_secs(60);
+    loop {
+        let workers = awaken_coordinator::WorkerObservationSource::list(directory)
+            .await
+            .expect("read the scenario Worker directory");
+        if workers
+            .iter()
+            .any(|worker| worker.snapshot.state.accepts_work())
+        {
+            return;
+        }
+        assert!(
+            awaken_time::mono::now() < deadline,
+            "the scenario's co-located registered Worker did not become Ready: {workers:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
 
@@ -399,6 +426,26 @@ pub(crate) async fn resource_host_with_deployment(
     .await
 }
 
+/// [`resource_host_with_deployment`] whose executor placement the caller
+/// selects explicitly.
+pub(crate) async fn resource_host_with_placement(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
+    placement: ExecutorPlacement,
+) -> ScenarioPlatform {
+    resource_host_with_selected_runtime(
+        llm,
+        model_ref,
+        deployment,
+        SCENARIO_RUNTIME_AUTHORITY.get(),
+        trace_file_present,
+        placement,
+    )
+    .await
+}
+
 /// [`resource_host_with_deployment`] for an unmounted executor a test
 /// drives directly: Sessions run on that executor's own claim pool (E3).
 pub(crate) async fn in_process_resource_host_with_deployment(
@@ -577,8 +624,28 @@ pub(crate) async fn runtime_resource_host_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
     trace_file_present: bool,
 ) -> ScenarioPlatform {
-    let platform =
-        resource_host_with_deployment(llm, model_ref, deployment, trace_file_present).await;
+    with_session_environment_from_deployment(
+        resource_host_with_deployment(llm, model_ref, deployment, trace_file_present).await,
+    )
+    .await
+}
+
+/// [`runtime_resource_host_with_deployment`] for an executor whose Sessions
+/// run on its own claim pool (E3).
+pub(crate) async fn in_process_runtime_resource_host_with_deployment(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    deployment: awaken_deployment_config::DeploymentConfig,
+    trace_file_present: bool,
+) -> ScenarioPlatform {
+    with_session_environment_from_deployment(
+        in_process_resource_host_with_deployment(llm, model_ref, deployment, trace_file_present)
+            .await,
+    )
+    .await
+}
+
+async fn with_session_environment_from_deployment(platform: ScenarioPlatform) -> ScenarioPlatform {
     let deployment = platform.deployment().clone();
     platform
         .map_dependencies_async(|dependencies| async move {

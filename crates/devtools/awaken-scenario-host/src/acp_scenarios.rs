@@ -49,6 +49,7 @@ pub async fn build_acp_control_router(
         scenario_deployment(),
         awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
+        crate::deployment::ExecutorPlacement::Registered,
         trace_file_present,
         lifecycle.clone(),
     )
@@ -108,6 +109,7 @@ pub async fn build_acp_relaunch_failure_router(
         scenario_deployment(),
         awaken_execution_composition::LaunchSource::Projected(registry),
         None,
+        crate::deployment::ExecutorPlacement::Registered,
         trace_file_present,
         lifecycle.clone(),
     )
@@ -256,6 +258,7 @@ pub async fn build_acp_permission_router_with_deployment(
         deployment,
         awaken_execution_composition::LaunchSource::FixedAcp(Box::new(launch)),
         None,
+        crate::deployment::ExecutorPlacement::Registered,
         trace_file_present,
         lifecycle.clone(),
     )
@@ -539,25 +542,31 @@ impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
 pub async fn build_acp_managed_mcp_service(
     trace_file_present: bool,
 ) -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
-    let resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver> = Arc::new(FixedAcpModel);
-    let secret_broker = resolver.secret_broker();
-    let launch = awaken_execution_composition::LaunchSource::Projected(
-        awaken_execution_composition::AcpLaunchRegistry::single(
-            scenario_host_acp_cli(fake_acp_mcp_cli()),
-            resolver,
-        ),
-    );
-    awaken_cli::build_all_in_one_service_on_worker(
+    let fixture_cli = fake_acp_mcp_cli();
+    let deployment = scenario_deployment();
+    let store_dir = deployment.storage_dir.clone();
+    let installed = deployment.clone();
+    // On a registered Worker its A4 row (a Session that names no MCP server)
+    // reaches the fake CLI with a `search` server (`acp_managed_mcp_e2e.mjs`,
+    // w5-slices.md §16), so it stays on this process's own claim pool.
+    awaken_cli::build_all_in_one_service_with_host_customizer(
         Arc::new(McpToolModel),
         ModelBinding::new("scenario", "acp-managed-mcp", "acp:claude"),
-        scenario_deployment(),
+        deployment,
         None,
-        // The co-located Worker keeps its one Deployment-owned
-        // SessionEnvironment and serves only these projected ACP launch facts;
-        // a static executor would bypass that environment.
-        Some(Arc::new(move |worker: awaken_worker::WorkerNodeBuilder| {
-            worker.with_acp_launch(launch.clone(), secret_broker.clone())
-        })),
+        // The full managed process has already selected its one
+        // Deployment-owned SessionEnvironment. Override only the projected ACP
+        // launch facts; a static executor here would bypass that environment
+        // and reopen the process-placement decision.
+        move |host| {
+            awaken_execution_composition::with_projected_acp(
+                awaken_execution_composition::with_backend_owned_environment(host, &installed),
+                &installed,
+                scenario_host_acp_cli(fixture_cli),
+                Arc::new(FixedAcpModel),
+                store_dir,
+            )
+        },
         trace_file_present,
     )
     .await
@@ -607,25 +616,25 @@ pub async fn build_acp_real_mcp_service(
         .unwrap_or_else(|error| {
             panic!("ANTHROPIC_MODEL `{model_ref}` / AWAKEN_ACP_CLI `{cli_id}`: {error}")
         });
-    let resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver> =
-        Arc::new(acp_gateway::ScenarioEnvAcpModel);
-    let secret_broker = resolver.secret_broker();
-    let launch = awaken_execution_composition::LaunchSource::Projected(
-        awaken_execution_composition::AcpLaunchRegistry::single_with_resolved_argv(
-            cli,
-            resolver,
-            launch_argv,
-        )
-        .unwrap_or_else(|error| panic!("configure projected ACP launch route: {error}")),
-    );
-    awaken_cli::build_all_in_one_service_on_worker(
+    let store_dir = deployment.storage_dir.clone();
+    let installed = deployment.clone();
+    // The live twin of `acp-managed-mcp`, kept on the same claim pool
+    // (w5-slices.md §16).
+    awaken_cli::build_all_in_one_service_with_host_customizer(
         Arc::new(McpToolModel),
         binding,
         deployment,
         None,
-        Some(Arc::new(move |worker: awaken_worker::WorkerNodeBuilder| {
-            worker.with_acp_launch(launch.clone(), secret_broker.clone())
-        })),
+        move |host| {
+            awaken_execution_composition::with_projected_acp_argv(
+                awaken_execution_composition::with_backend_owned_environment(host, &installed),
+                &installed,
+                cli,
+                Arc::new(acp_gateway::ScenarioEnvAcpModel),
+                store_dir,
+                launch_argv,
+            )
+        },
         trace_file_present,
     )
     .await
@@ -704,6 +713,7 @@ pub async fn build_acp_gateway_router_with_deployment(
         deployment,
         awaken_execution_composition::LaunchSource::Projected(registry),
         broker,
+        crate::deployment::ExecutorPlacement::Registered,
         trace_file_present,
         lifecycle.clone(),
     )
@@ -741,6 +751,11 @@ pub async fn build_acp_sandboxed_router_with_deployment(
         deployment,
         awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
+        // Its specs observe a Session created with an initial event as
+        // `running` at once: the status law of a Coordinator-realized Session.
+        // A Worker-placed Session reports `rescheduling` until a Worker
+        // realizes it (w5-slices.md §16), so these stay on the claim pool.
+        crate::deployment::ExecutorPlacement::InProcess,
         trace_file_present,
         lifecycle.clone(),
     )
@@ -756,6 +771,7 @@ async fn build_acp_session_environment_router(
     mut deployment: awaken_deployment_config::DeploymentConfig,
     source: awaken_execution_composition::LaunchSource,
     secret_broker: Option<Arc<dyn awaken_run_executor_acp::SecretBroker>>,
+    placement: crate::deployment::ExecutorPlacement,
     trace_file_present: bool,
 
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
@@ -776,11 +792,12 @@ async fn build_acp_session_environment_router(
         .sandbox_dir
         .get_or_insert_with(|| storage_dir.join("sandboxes"));
     let platform = bind_acp_session_environment(
-        resource_host_with_deployment(
+        crate::deployment::resource_host_with_placement(
             Arc::new(EchoModel),
             "awaken",
             deployment,
             trace_file_present,
+            placement,
         )
         .await,
         source,

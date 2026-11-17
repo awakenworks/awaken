@@ -191,7 +191,10 @@ pub async fn build_delegation_router_with_deployment(
     let publication = fixed_agent_publication(snapshots);
     let launch = delegation_acp_launch();
     let platform = crate::acp_scenarios::bind_acp_session_environment(
-        crate::deployment::resource_host_with_deployment(
+        // On a registered Worker its coordinated ACP child never reaches the
+        // `requires_action` boundary (`managed_delegation_e2e.mjs`,
+        // w5-slices.md §16), so these Sessions stay on this executor's claim pool.
+        crate::deployment::in_process_resource_host_with_deployment(
             model,
             model_ref,
             deployment,

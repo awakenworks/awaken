@@ -1065,7 +1065,7 @@ async fn a2a_history_accumulates_across_runs() {
     let task = serde_json::from_str::<Value>(&body).unwrap()["task"].clone();
     let texts: Vec<String> = task["history"]
         .as_array()
-        .unwrap()
+        .unwrap_or_else(|| panic!("DIAG second send body: {body}"))
         .iter()
         .filter_map(|m| m["parts"][0]["text"].as_str().map(str::to_string))
         .collect();

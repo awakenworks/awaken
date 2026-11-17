@@ -121,8 +121,18 @@ pub async fn build_outcome_matrix_router(
         .max_steps(2)
         .build();
     let publication = fixed_host_backend_publication("acp-agent", "acp:claude", Vec::new());
+    // The Outcome Judge runs on the executor that hosts the Outcome
+    // controller, this Coordinator's own; with no claim pool there the
+    // retained Outcome never reaches a terminal grade (w5-slices.md §16), so
+    // these Sessions stay on this executor's claim pool.
     let platform = acp_scenarios::bind_acp_session_environment(
-        resource_host(model, model_ref, trace_file_present).await,
+        deployment::in_process_resource_host_with_deployment(
+            model,
+            model_ref,
+            scenario_deployment(),
+            trace_file_present,
+        )
+        .await,
         awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
     )
@@ -144,7 +154,16 @@ pub async fn build_memory_router(
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(MemoryProbeModel), "memory");
-    let host = resource_host(model, model_ref, trace_file_present).await;
+    // Its auxiliary agents (the Memory selector/extractor, the compactor) run
+    // on a registered Worker's placeholder executor instead of the pinned model
+    // (w5-slices.md §16), so these Sessions stay on this executor's claim pool.
+    let host = deployment::in_process_resource_host_with_deployment(
+        model,
+        model_ref,
+        scenario_deployment(),
+        trace_file_present,
+    )
+    .await;
     scenario_platform::mount_with_memory_publication_on_lifecycle(
         host,
         "memory",
@@ -222,9 +241,16 @@ pub async fn build_full_chain_router_with_deployment(
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
-    let host =
-        runtime_resource_host_with_deployment(model, model_ref, deployment, trace_file_present)
-            .await;
+    // Its auxiliary agents (the Memory selector/extractor, the compactor) run
+    // on a registered Worker's placeholder executor instead of the pinned model
+    // (w5-slices.md §16), so these Sessions stay on this executor's claim pool.
+    let host = deployment::in_process_runtime_resource_host_with_deployment(
+        model,
+        model_ref,
+        deployment,
+        trace_file_present,
+    )
+    .await;
     mount_with_memory_publication_on_lifecycle(
         host,
         "full-chain",
@@ -253,7 +279,17 @@ pub async fn build_compaction_router(
     // Compaction changes run behavior, not deployment ownership. Reuse the
     // canonical Scenario platform so durable Session/resource identity is
     // reconstructed from the same storage root after restart.
-    let host = resource_host(model, model_ref.clone(), trace_file_present).await;
+    //
+    // Its auxiliary agents (the Memory selector/extractor, the compactor) run
+    // on a registered Worker's placeholder executor instead of the pinned model
+    // (w5-slices.md §16), so these Sessions stay on this executor's claim pool.
+    let host = deployment::in_process_resource_host_with_deployment(
+        model,
+        model_ref,
+        scenario_deployment(),
+        trace_file_present,
+    )
+    .await;
     // `AWAKEN_COMPACT_MAX_TOKENS` is an exact effective trigger override, matching
     // the publication output rather than reopening a ratio decision in the Host.
     // Otherwise derive the typed default (3/4 of the model window); the fully
@@ -268,25 +304,8 @@ pub async fn build_compaction_router(
         .or_else(|| env_u("AWAKEN_MODEL_CONTEXT_WINDOW").map(|window| window / 4 * 3))
         .unwrap_or(1);
     let keep_last = env_u("AWAKEN_COMPACT_KEEP_LAST").unwrap_or(2) as usize;
-    // The Session's `assistant` publication carries the same trigger, so the
-    // registered Worker compacts from the frozen publication.
-    let publication = scenario_platform::fixed_assistant_with_plugins(
-        &model_ref,
-        [(
-            awaken_ext_compact::COMPACT_PLUGIN_ID,
-            serde_json::to_value(awaken_ext_compact::CompactConfig {
-                max_tokens: Some(window),
-                keep_last,
-                ..Default::default()
-            })
-            .expect("CompactConfig is serializable"),
-        )],
-    );
-    let host = host.map_dependencies(|host| {
-        host.with_compaction_tokens(window, keep_last)
-            .with_agent_publications(publication.clone())
-    });
-    mount_with_agent_source_on_lifecycle(host, publication, lifecycle.clone()).await
+    let host = host.map_dependencies(|host| host.with_compaction_tokens(window, keep_last));
+    mount_on_lifecycle(host, lifecycle.clone()).await
 }
 
 /// A router whose model fails a Run on the `BOOM` trigger (the session-error
@@ -315,9 +334,18 @@ pub async fn build_worker_router(
 ) -> Router {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "worker");
-    let host = resource_host(model, model_ref, trace_file_present)
-        .await
-        .map_dependencies(|host| host.with_client_tools(client_tools));
+    // Its self-hosted Environment's first Run is never processed when the
+    // Coordinator also has a co-located registered Worker
+    // (`management_self_hosted_worker_e2e.mjs` W1, w5-slices.md §16), so these
+    // Sessions stay on this executor's claim pool.
+    let host = deployment::in_process_resource_host_with_deployment(
+        model,
+        model_ref,
+        scenario_deployment(),
+        trace_file_present,
+    )
+    .await
+    .map_dependencies(|host| host.with_client_tools(client_tools));
     mount_with_environments_and_agent_source(host, None, lifecycle.clone()).await
 }
 
@@ -330,8 +358,17 @@ pub async fn build_environment_matrix_router(
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "environment-matrix");
+    // Its fail-closed rows expect the claim pool's own `prepare_environment`
+    // refusal; a registered Worker without the capability is never placed
+    // (w5-slices.md §16), so these Sessions stay on this executor's claim pool.
     mount_with_environments_and_agent_source(
-        resource_host(model, model_ref, trace_file_present).await,
+        deployment::in_process_resource_host_with_deployment(
+            model,
+            model_ref,
+            scenario_deployment(),
+            trace_file_present,
+        )
+        .await,
         None,
         lifecycle.clone(),
     )
@@ -670,7 +707,11 @@ pub async fn build_router_with_deployment(
 /// there is no deterministic fallback in this mode.
 async fn real_platform(trace_file_present: bool) -> deployment::ScenarioPlatform {
     let (executor, model_ref) = scenario_model(Arc::new(model_configuration::UnboundModel), "real");
-    runtime_resource_host_with_deployment(
+    // Its specs observe a freshly created Session as `idle`. That is the status
+    // law of a Coordinator-realized Session; a Worker-placed Session reports
+    // `rescheduling` until a Worker realizes it (w5-slices.md §16), so these
+    // Sessions stay on this executor's claim pool.
+    deployment::in_process_runtime_resource_host_with_deployment(
         executor,
         model_ref,
         scenario_deployment(),

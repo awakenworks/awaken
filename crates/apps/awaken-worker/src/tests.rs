@@ -2134,5 +2134,82 @@ fn resource_capability_follows_the_canonical_registered_remote_projection() {
     );
 }
 
+/// A Worker serving a selected ACP launch publishes the `acp:<cli>`
+/// execution capability of every CLI that launch serves, so the Coordinator
+/// places those Runs on it; without one it publishes none.
+///
+/// | Rule | C1 selected launch | E1 `acp:*` capabilities |
+/// |---|---|---|
+/// | A1 | none | none |
+/// | A2 | fixed launch | every catalog CLI |
+/// | A3 | registry with one route | exactly that route |
+#[test]
+fn selected_acp_launch_publishes_the_clis_it_serves() {
+    let builder = || {
+        WorkerNodeBuilder::new(
+            awaken_worker_transport_security::WorkerUpstream::new("http://control"),
+            awaken_time::system_clock(),
+        )
+        .with_standard_manifest(Default::default())
+    };
+    let acp = |worker: &super::WorkerNode| {
+        worker
+            .manifest()
+            .capabilities
+            .iter()
+            .filter(|capability| capability.starts_with("acp:"))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let without = builder().build().expect("A1 Worker without ACP launch");
+    assert!(acp(&without).is_empty(), "A1");
+    let fixed = builder()
+        .with_acp_launch(
+            awaken_execution_composition::LaunchSource::Fixed(Box::new(
+                awaken_run_executor_acp::AcpLaunch::custom(vec!["/bin/false".into()], vec![]),
+            )),
+            None,
+        )
+        .build()
+        .expect("A2 Worker with a fixed ACP launch");
+    assert_eq!(
+        acp(&fixed),
+        awaken_acp_catalog::known_acp_clis()
+            .iter()
+            .map(|cli| format!("acp:{}", cli.id))
+            .collect(),
+        "A2"
+    );
+    struct NoModel;
+    #[async_trait::async_trait]
+    impl awaken_run_executor_acp::LaunchResolver for NoModel {
+        async fn model(
+            &self,
+            _activation: &awaken_runtime_contract::activation::RunActivation,
+            _context: &awaken_runtime_contract::RuntimeRunContext,
+        ) -> Result<awaken_run_executor_acp::ResolvedModel, awaken_run_executor_acp::OpenError>
+        {
+            Err(awaken_run_executor_acp::OpenError("not launched".into()))
+        }
+    }
+    let projected = builder()
+        .with_acp_launch(
+            awaken_execution_composition::LaunchSource::Projected(
+                awaken_execution_composition::AcpLaunchRegistry::single(
+                    *awaken_acp_catalog::acp_cli("codex").expect("catalog CLI"),
+                    Arc::new(NoModel),
+                ),
+            ),
+            None,
+        )
+        .build()
+        .expect("A3 Worker with one projected ACP route");
+    assert_eq!(
+        acp(&projected),
+        std::collections::BTreeSet::from(["acp:codex".to_string()]),
+        "A3"
+    );
+}
+
 mod local_checkpoint;
 mod restore_capability;

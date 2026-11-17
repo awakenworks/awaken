@@ -42,7 +42,10 @@ pub async fn build_dream_runtime_router(
     let resolver = Arc::new(DreamScenarioModelResolver {
         model_ref: model_ref.clone(),
     });
-    let platform = crate::deployment::runtime_resource_host_with_deployment(
+    // Its Dream Session is never realized on a registered Worker: it stays
+    // `rescheduling` with no event (w5-slices.md §16), so Dreams run on this
+    // executor's claim pool.
+    let platform = crate::deployment::in_process_runtime_resource_host_with_deployment(
         model,
         model_ref,
         crate::scenario_deployment(),

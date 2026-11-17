@@ -137,6 +137,12 @@ async fn ai_sdk_input_and_client_answer_remain_one_managed_history_each() {
                         .as_str()
                         .is_some_and(|text| text.contains("42"))
             })
+                // The Session's own idle boundary closes the history: a
+                // registered Worker's settlement commits the Session-level
+                // usage and idle after the Thread's final events.
+                && events
+                    .last()
+                    .is_some_and(|event| event["type"] == "session.status_idle")
         },
     )
     .await;

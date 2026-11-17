@@ -145,6 +145,21 @@ pub enum LaunchSource {
 }
 
 impl LaunchSource {
+    /// The ACP CLIs whose `acp:<cli>` backends this source launches: a fixed
+    /// launch serves every `acp:*` thread, so every catalog CLI; a registry
+    /// exactly its routes. A Worker advertises these as its ACP execution
+    /// capabilities.
+    #[must_use]
+    pub fn served_cli_ids(&self) -> Vec<String> {
+        match self {
+            Self::Fixed(_) | Self::FixedAcp(_) => awaken_acp_catalog::known_acp_clis()
+                .iter()
+                .map(|cli| cli.id.to_string())
+                .collect(),
+            Self::Projected(registry) => registry.routes.keys().cloned().collect(),
+        }
+    }
+
     pub(super) fn check_tool_narrowing(
         &self,
         codec: awaken_run_executor_acp::Codec,

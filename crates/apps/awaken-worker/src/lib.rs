@@ -941,6 +941,15 @@ impl WorkerNodeBuilder {
                     application_capabilities
                         .insert(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY.to_string());
                 }
+                if let Some(launch) = &self.acp_launch {
+                    application_capabilities.extend(
+                        launch
+                            .source
+                            .served_cli_ids()
+                            .into_iter()
+                            .map(|cli| format!("acp:{cli}")),
+                    );
+                }
                 derive_standard_manifest(StandardManifestInputs {
                     deployment: &self.deployment,
                     inference_schemes: &dependency_capabilities.inference_schemes,

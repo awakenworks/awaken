@@ -28,6 +28,10 @@ pub fn scenario_model(
 struct RouteProvider;
 
 impl InferenceExecutorMaterializer for RouteProvider {
+    fn supported_access_schemes(&self) -> &'static [&'static str] {
+        &[awaken_dispatch::HOST_EXECUTOR_CAPABILITY]
+    }
+
     fn materialize_pinned(
         &self,
         candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
