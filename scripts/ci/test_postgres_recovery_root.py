@@ -3,6 +3,7 @@
 
 import os
 import json
+import re
 from pathlib import Path
 import shutil
 import shlex
@@ -10,12 +11,25 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import _strict_unittest as strict_unittest
 from _native_shell import bash_executable
 
 
 DRILL = Path(__file__).resolve().with_name("postgres_recovery_drill.sh")
 DEADLINE = DRILL.with_name("deadline.py")
+# pg_tests.sh honours these caller overrides (`${NAME:-default}`). Each fixture
+# run judges pg_tests.sh's own defaults and the values the test sets, never the
+# caller's: a land run exporting AWAKEN_CI_OBJECT_IMAGE skipped the image build
+# the startup table asserts. Derived from the script, so a new override is
+# isolated the day it is added.
+CALLER_OVERRIDES = frozenset(re.findall(r"\$\{([A-Z_][A-Z0-9_]*):-",
+                                        DRILL.with_name("pg_tests.sh").read_text(encoding="utf-8")))
+
+
+def caller_environment():
+    """The caller's environment without any pg_tests.sh override."""
+    return {name: value for name, value in os.environ.items() if name not in CALLER_OVERRIDES}
 
 
 def directory_alias(alias, target):
@@ -186,7 +200,7 @@ class RecoveryRootTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="awaken-pg-python-argv-") as tmp:
             binary = Path(tmp).resolve()
             write_startup_docker(binary / "docker")
-            environment = dict(os.environ, **fixture_environment(binary),
+            environment = dict(caller_environment(), **fixture_environment(binary),
                                PATH=f"{binary}{os.pathsep}{os.environ['PATH']}")
             arguments = ["space value", 'embedded "quote"', "trailing\\"]
             result = invoke_fixture(
@@ -222,7 +236,7 @@ class RecoveryRootTests(unittest.TestCase):
                     report.unlink(missing_ok=True)
                     result = invoke_fixture(
                         [bash_executable(), str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
-                        env=dict(os.environ, TMPDIR=str(selected),
+                        env=dict(caller_environment(), TMPDIR=str(selected),
                                  **fixture_values,
                                  PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
                                  CARGO_TARGET_DIR=str(fixture / "target"),
@@ -284,7 +298,7 @@ class RecoveryRootTests(unittest.TestCase):
                     state_path.write_text(json.dumps(foreign))
                     result = invoke_fixture(
                         [bash_executable(), str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
-                        env=dict(os.environ, TMPDIR=str(fixture),
+                        env=dict(caller_environment(), TMPDIR=str(fixture),
                                  **fixture_values,
                                  PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
                                  CARGO_TARGET_DIR=str(fixture / "target"),
@@ -346,7 +360,7 @@ class RecoveryRootTests(unittest.TestCase):
             calls.unlink(missing_ok=True)
             result = invoke_fixture(
                 [bash_executable(), str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
-                env=dict(os.environ, TMPDIR=str(fixture),
+                env=dict(caller_environment(), TMPDIR=str(fixture),
                          **fixture_values,
                          PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
                          CARGO_TARGET_DIR=str(fixture / "target"),
@@ -358,6 +372,16 @@ class RecoveryRootTests(unittest.TestCase):
             commands = [json.loads(line) for line in calls.read_text().splitlines()]
             self.assertFalse(any(command[0] in ("run", "rm", "exec") for command in commands))
             self.assertFalse(list(fixture.glob("awaken-pg-recovery.*")))
+
+    def test_caller_overrides_never_reach_a_fixture_gate(self):
+        # P20 a caller exporting every pg_tests.sh override (an object-image
+        # mirror, a port, a database URL, short budgets) leaves the startup
+        # table exactly as pg_tests.sh's own defaults decide it.
+        self.assertTrue({"AWAKEN_CI_OBJECT_IMAGE", "AWAKEN_CI_OBJECT_CLIENT_IMAGE",
+                         "AWAKEN_TEST_DATABASE_URL"} <= CALLER_OVERRIDES, CALLER_OVERRIDES)
+        with mock.patch.dict(os.environ, {name: "1" for name in CALLER_OVERRIDES}):
+            self.assertFalse(CALLER_OVERRIDES & caller_environment().keys())
+            self.test_startup_failures_report_phases_and_diagnose_before_cleanup()
 
     def test_cleanup_failure_retains_resources_and_original_failure(self):
         # C7 discovery fails or C8 removal fails after a real producer readiness
@@ -376,7 +400,7 @@ class RecoveryRootTests(unittest.TestCase):
                 allocation = fixture / "allocation.json"
                 result = invoke_fixture(
                     [bash_executable(), str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
-                    env=dict(os.environ, TMPDIR=str(fixture), **values,
+                    env=dict(caller_environment(), TMPDIR=str(fixture), **values,
                              PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
                              CARGO_TARGET_DIR=str(fixture / "target"), AWAKEN_ADMISSION_PROFILE="cargo",
                              AWAKEN_TEST_STARTUP_FAILURE=mode, AWAKEN_TEST_ALLOCATION=str(allocation),
