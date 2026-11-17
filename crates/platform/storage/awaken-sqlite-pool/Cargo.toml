@@ -24,9 +24,12 @@ sqlx = { workspace = true, default-features = false, features = ["runtime-tokio"
 sqlx-core = { workspace = true, default-features = false }
 # Own the minimum bundled SQLite even when the consumer does not embed IAM.
 libsqlite3-sys.workspace = true
-same-file = "1.0.6"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }
+
+# Unix identifies the database file with `stat` instead (see identity.rs).
+[target.'cfg(not(unix))'.dependencies]
+same-file = "1.0.6"
 
 [dev-dependencies]
 tempfile = "3"

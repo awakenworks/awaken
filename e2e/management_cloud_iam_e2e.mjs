@@ -49,7 +49,6 @@ import {
   waitForPort,
   waitForRetainedUnknownExecution,
   waitForSessionEventReceipt,
-  waitForValue,
   pass,
 } from './harness.mjs';
 
@@ -714,37 +713,6 @@ async function main() {
         betas,
       });
       const { retainedUnknown = false, ...waitOptions } = observationOptions;
-      if (retainedUnknown && ON_REGISTERED_WORKER) {
-        // The shared retained-unknown oracle also requires the occupied, bound
-        // physical slot. The co-located registered Worker uses the unbound
-        // (header-authenticated) transport, which freezes no physical binding,
-        // so on P1 the row keeps every other clause: the input stays accepted
-        // and unprocessed, the terminal unknown is public, the Thread is idle
-        // and the aggregate is not.
-        const inputId = receipt.data[0]?.id;
-        return (await waitForValue(
-          async () => {
-            const listed = [];
-            for await (const event of client.beta.sessions.events.list(isolated.id, { betas })) {
-              listed.push(event);
-            }
-            const current = await client.beta.sessions.retrieve(isolated.id, { betas });
-            return { session: current, events: listed };
-          },
-          ({ session: current, events }) => {
-            const inputIndex = events.findIndex((event) => event.id === inputId);
-            if (inputIndex < 0 || events[inputIndex].processed_at !== null) return false;
-            const suffix = events.slice(inputIndex + 1);
-            return current.status === 'running'
-              && suffix.some((event) => event.type === 'session.error'
-                && event.error?.retry_status?.type === 'terminal'
-                && /execution result is unknown/iu.test(event.error?.message ?? ''))
-              && suffix.some((event) => event.type === 'session.thread_status_idle')
-              && !suffix.some((event) => event.type === 'session.status_idle');
-          },
-          'brokered Cloud invalid response retains unknown execution on the registered Worker',
-        )).events;
-      }
       if (retainedUnknown) {
         // G2: complete HTTP response with invalid JSON has no proved model
         // result. The existing unknown-execution oracle owns the pending input,
@@ -968,14 +936,6 @@ async function main() {
         failedEvents.some((event) => event.type === 'session.error'),
         `${label}: ${JSON.stringify(failedEvents)}`,
       );
-      if (retainedUnknown && ON_REGISTERED_WORKER) {
-        assert.ok(
-          failedEvents.some((event) => event.type === 'session.error'
-            && event.error?.retry_status?.type === 'terminal'
-            && /execution result is unknown/iu.test(event.error?.message ?? '')),
-          `${label}: the unproved model result stays a public terminal unknown`,
-        );
-      }
       const createsAfter = iam.grantCalls.filter((entry) => entry.kind === 'create').length;
       const closesAfter = iam.grantCalls.filter((entry) => entry.kind === 'close').length;
       assert.equal(closesAfter - closeCount, createsAfter - createCount);
