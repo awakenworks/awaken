@@ -24,6 +24,28 @@ fn worker_placed(id: &str, self_hosted: bool) -> PersistedSession {
     session
 }
 
+/// A self-hosted Worker root Hibernated on a live checkpoint.
+fn hibernated_root(id: &str) -> PersistedSession {
+    let mut hibernated = worker_placed(id, true);
+    let generation = hibernated.environment.generation().cloned().unwrap();
+    hibernated.environment = awaken_session_contract::SessionEnvironmentState::Hibernated {
+        checkpoint: awaken_provisioning_contract::SandboxCheckpointRef {
+            id: "checkpoint".into(),
+            format: "awaken-fs-tar-v1".into(),
+            digest: "digest".into(),
+            size_bytes: 1,
+            created_at_unix_ms: 1,
+            expires_at_unix_ms: u64::MAX,
+            environment_fingerprint: generation.environment_fingerprint().to_owned(),
+            base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
+            excluded_mounts: Vec::new(),
+            suspend_effect_id: "suspend".into(),
+        },
+        generation,
+    };
+    hibernated
+}
+
 #[tokio::test]
 async fn a_self_hosted_worker_suspend_wakes_its_session_work_until_it_hibernates() {
     // Causes: C1 Worker placement with a self-hosted Environment (its Worker
@@ -40,6 +62,8 @@ async fn a_self_hosted_worker_suspend_wakes_its_session_work_until_it_hibernates
     // | S3 | yes | (Suspending) | yes | no | E4: the Run's admission woke it |
     // | S4 | yes | - | no | yes | E4 (live checkpoint: no effect is decided) |
     // | S5 | yes | yes | no | no | E1 + E2 despite a racing root commit |
+    // | S6 | yes | - | no | Suspending, Hibernated or Restoring | an accepted
+    //        MCP update wakes nothing; the restore picks up its generation |
     let repository: Arc<dyn crate::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -138,23 +162,7 @@ async fn a_self_hosted_worker_suspend_wakes_its_session_work_until_it_hibernates
     assert!(!driven.is_run_free_preparation_candidate(), "S3");
 
     // S4: a Hibernated root holds no Work; its restore rides the next Run.
-    let mut hibernated = worker_placed("hibernated", true);
-    let generation = hibernated.environment.generation().cloned().unwrap();
-    hibernated.environment = awaken_session_contract::SessionEnvironmentState::Hibernated {
-        checkpoint: awaken_provisioning_contract::SandboxCheckpointRef {
-            id: "checkpoint".into(),
-            format: "awaken-fs-tar-v1".into(),
-            digest: "digest".into(),
-            size_bytes: 1,
-            created_at_unix_ms: 1,
-            expires_at_unix_ms: u64::MAX,
-            environment_fingerprint: generation.environment_fingerprint().to_owned(),
-            base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
-            excluded_mounts: Vec::new(),
-            suspend_effect_id: "suspend".into(),
-        },
-        generation,
-    };
+    let hibernated = hibernated_root("hibernated");
     create(repository.as_ref(), hibernated.clone()).await;
     application
         .continuations
@@ -164,7 +172,7 @@ async fn a_self_hosted_worker_suspend_wakes_its_session_work_until_it_hibernates
     assert!(!awakened("hibernated"), "S4/E4");
     assert!(
         hibernated.is_run_free_preparation_candidate(),
-        "S4 the expiry hint stays indexed; the selection skips it while its Work is stopped"
+        "S4 the expiry hint stays indexed; preparation acquisition refuses its stopped Work"
     );
 
     // S5: a concurrent root commit races the suspend intent (here the intent
@@ -214,4 +222,36 @@ async fn a_self_hosted_worker_suspend_wakes_its_session_work_until_it_hibernates
             .contains("raced"),
         "S5 woken in the same pass"
     );
+
+    // S6: an MCP update accepted while the root is in a continuation step
+    // wakes no Work, although each root is still a Run-free candidate.
+    let mut quiescing = worker_placed("mcp-suspending", true);
+    let mut aggregate =
+        awaken_session_contract::SessionAggregate::try_from(quiescing.clone()).unwrap();
+    aggregate
+        .environment()
+        .begin_suspend_at("workspace", 2_000)
+        .unwrap();
+    quiescing = aggregate.into_snapshot();
+    let mut aggregate =
+        awaken_session_contract::SessionAggregate::try_from(hibernated_root("mcp-restoring"))
+            .unwrap();
+    aggregate
+        .environment()
+        .begin_restore("workspace", 2_000)
+        .unwrap();
+    let restoring = aggregate.into_snapshot();
+    create(repository.as_ref(), quiescing).await;
+    create(repository.as_ref(), restoring).await;
+    for id in ["mcp-suspending", "hibernated", "mcp-restoring"] {
+        let root = repository.get(&SessionId::from(id)).await.unwrap();
+        assert!(!root.environment.admits_realization_effects(), "S6 {id}");
+        assert!(root.is_run_free_preparation_candidate(), "S6 {id}");
+        application
+            .work_assignments
+            .wake_for_mcp_update(&root)
+            .await
+            .unwrap_or_else(|error| panic!("S6 {id} {error}"));
+        assert!(!awakened(id), "S6 {id} wakes nothing");
+    }
 }

@@ -83,7 +83,8 @@ impl SessionWorkAssignments {
 
     /// Project the still-current MCP demand after an accepted Session update.
     /// Replay may reconcile current desired truth, while a superseded observed
-    /// generation and a terminal root cannot wake another Work obligation.
+    /// generation, a terminal root and a root in a continuation step cannot
+    /// wake another Work obligation.
     pub(crate) async fn wake_for_mcp_update(
         &self,
         observed: &PersistedSession,
@@ -105,7 +106,13 @@ impl SessionWorkAssignments {
             .into_iter()
             .map(|attachment| &attachment.generation)
             .collect::<Vec<_>>();
+        // A Suspending, Restoring or Hibernated root's Work belongs to its
+        // continuation (`continuation_wakes_session_work`) and to the next
+        // admitted Run. The accepted desired MCP generation stays durable and
+        // the restore that re-realizes the Environment picks it up, so the
+        // update itself wakes nothing.
         if !current.is_run_free_preparation_candidate()
+            || !current.environment.admits_realization_effects()
             || current.revision < observed.revision
             || current.mcp.desired_fingerprint != observed.mcp.desired_fingerprint
             || current_generations != observed_generations

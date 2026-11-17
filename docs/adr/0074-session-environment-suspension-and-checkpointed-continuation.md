@@ -1173,7 +1173,10 @@ seconds away and grows with the failure backoff.
 
 The continuation arm of `is_run_free_preparation_candidate` now admits
 Suspending, Restoring and Hibernated roots for both cloud and self-hosted
-Environments. A self-hosted root whose Work is stopped is skipped by the
-preparation selection until its own continuation wakes the Work. The
-Environment's single active Work serializes a suspend with every other
-Session's Run in that Environment.
+Environments. ADR-0106's `acquire_for_preparation` refuses stopped Work and
+never revives it, so a self-hosted root whose Work is stopped stays unclaimed
+until its own continuation wakes the Work. The Environment's single active
+Work serializes a suspend with every other Session's Run in that Environment.
+An MCP update accepted while the root is Suspending, Restoring or Hibernated
+wakes no Work (`wake_for_mcp_update`): the desired MCP generation stays durable
+and the restore, which re-realizes the Environment, picks it up.
