@@ -577,28 +577,8 @@ pub(crate) async fn runtime_resource_host_with_deployment(
     deployment: awaken_deployment_config::DeploymentConfig,
     trace_file_present: bool,
 ) -> ScenarioPlatform {
-    with_session_environment_from_deployment(
-        resource_host_with_deployment(llm, model_ref, deployment, trace_file_present).await,
-    )
-    .await
-}
-
-/// [`runtime_resource_host_with_deployment`] for an executor whose Sessions
-/// run on its own claim pool (E3).
-pub(crate) async fn in_process_runtime_resource_host_with_deployment(
-    llm: Arc<dyn LlmExecutor>,
-    model_ref: impl Into<String>,
-    deployment: awaken_deployment_config::DeploymentConfig,
-    trace_file_present: bool,
-) -> ScenarioPlatform {
-    with_session_environment_from_deployment(
-        in_process_resource_host_with_deployment(llm, model_ref, deployment, trace_file_present)
-            .await,
-    )
-    .await
-}
-
-async fn with_session_environment_from_deployment(platform: ScenarioPlatform) -> ScenarioPlatform {
+    let platform =
+        resource_host_with_deployment(llm, model_ref, deployment, trace_file_present).await;
     let deployment = platform.deployment().clone();
     platform
         .map_dependencies_async(|dependencies| async move {

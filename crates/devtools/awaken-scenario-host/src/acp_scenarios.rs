@@ -202,15 +202,17 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
     // incompatible substrate decision after the process boundary had selected
     // Namespace/Container.
     let host_publication = publication.clone();
-    // ACP launch is not yet selectable on the co-located Worker: these
-    // Sessions stay on this executor's claim pool.
-    let platform = crate::deployment::in_process_resource_host_with_deployment(
+    let platform = resource_host_with_deployment(
         Arc::new(OversizedToolModel),
         "awaken",
         deployment.clone(),
         trace_file_present,
     )
     .await
+    .select_worker_backend({
+        let launch = launch.clone();
+        move |worker| worker.with_acp_launch(launch.clone(), None)
+    })
     .map_dependencies_async(|host| async move {
         awaken_execution_composition::with_acp_launch_source(
             host.with_agent_publications(host_publication),
@@ -354,10 +356,8 @@ pub async fn build_acp_tool_bridge_router(
         .build();
     let publication = fixed_agent_publication([snapshot]);
     let host_publication = publication.clone();
-    // ACP launch is not yet selectable on the co-located Worker: these
-    // Sessions stay on this executor's claim pool.
     let platform = bind_acp_session_environment(
-        crate::deployment::in_process_runtime_resource_host_with_deployment(
+        runtime_resource_host_with_deployment(
             Arc::new(EchoModel),
             "awaken",
             deployment,
@@ -539,28 +539,25 @@ impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
 pub async fn build_acp_managed_mcp_service(
     trace_file_present: bool,
 ) -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
-    let fixture_cli = fake_acp_mcp_cli();
-    let deployment = scenario_deployment();
-    let store_dir = deployment.storage_dir.clone();
-    let installed = deployment.clone();
-    awaken_cli::build_all_in_one_service_with_host_customizer(
+    let resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver> = Arc::new(FixedAcpModel);
+    let secret_broker = resolver.secret_broker();
+    let launch = awaken_execution_composition::LaunchSource::Projected(
+        awaken_execution_composition::AcpLaunchRegistry::single(
+            scenario_host_acp_cli(fake_acp_mcp_cli()),
+            resolver,
+        ),
+    );
+    awaken_cli::build_all_in_one_service_on_worker(
         Arc::new(McpToolModel),
         ModelBinding::new("scenario", "acp-managed-mcp", "acp:claude"),
-        deployment,
+        scenario_deployment(),
         None,
-        // The full managed process has already selected its one
-        // Deployment-owned SessionEnvironment. Override only the projected ACP
-        // launch facts; a static executor here would bypass that environment
-        // and reopen the process-placement decision.
-        move |host| {
-            awaken_execution_composition::with_projected_acp(
-                awaken_execution_composition::with_backend_owned_environment(host, &installed),
-                &installed,
-                scenario_host_acp_cli(fixture_cli),
-                Arc::new(FixedAcpModel),
-                store_dir,
-            )
-        },
+        // The co-located Worker keeps its one Deployment-owned
+        // SessionEnvironment and serves only these projected ACP launch facts;
+        // a static executor would bypass that environment.
+        Some(Arc::new(move |worker: awaken_worker::WorkerNodeBuilder| {
+            worker.with_acp_launch(launch.clone(), secret_broker.clone())
+        })),
         trace_file_present,
     )
     .await
@@ -583,15 +580,13 @@ pub async fn build_acp_real_mcp_service(
     trace_file_present: bool,
 ) -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
     let deployment = scenario_deployment();
-    let store_dir = deployment.storage_dir.clone();
-    let installed = deployment.clone();
     let cli_id = std::env::var("AWAKEN_ACP_CLI")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "claude".to_string());
     let cli = *awaken_acp_catalog::acp_cli(&cli_id)
         .unwrap_or_else(|| panic!("{cli_id} is not an ACP catalog row"));
-    let wrapper_root = store_dir.clone().unwrap_or_else(|| {
+    let wrapper_root = deployment.storage_dir.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
     });
     let launch_argv = awaken_run_executor_acp::host::AcpWrapperInstaller::resolved_argv(
@@ -612,21 +607,25 @@ pub async fn build_acp_real_mcp_service(
         .unwrap_or_else(|error| {
             panic!("ANTHROPIC_MODEL `{model_ref}` / AWAKEN_ACP_CLI `{cli_id}`: {error}")
         });
-    awaken_cli::build_all_in_one_service_with_host_customizer(
+    let resolver: Arc<dyn awaken_run_executor_acp::LaunchResolver> =
+        Arc::new(acp_gateway::ScenarioEnvAcpModel);
+    let secret_broker = resolver.secret_broker();
+    let launch = awaken_execution_composition::LaunchSource::Projected(
+        awaken_execution_composition::AcpLaunchRegistry::single_with_resolved_argv(
+            cli,
+            resolver,
+            launch_argv,
+        )
+        .unwrap_or_else(|error| panic!("configure projected ACP launch route: {error}")),
+    );
+    awaken_cli::build_all_in_one_service_on_worker(
         Arc::new(McpToolModel),
         binding,
         deployment,
         None,
-        move |host| {
-            awaken_execution_composition::with_projected_acp_argv(
-                awaken_execution_composition::with_backend_owned_environment(host, &installed),
-                &installed,
-                cli,
-                Arc::new(acp_gateway::ScenarioEnvAcpModel),
-                store_dir,
-                launch_argv,
-            )
-        },
+        Some(Arc::new(move |worker: awaken_worker::WorkerNodeBuilder| {
+            worker.with_acp_launch(launch.clone(), secret_broker.clone())
+        })),
         trace_file_present,
     )
     .await
@@ -776,10 +775,8 @@ async fn build_acp_session_environment_router(
     deployment
         .sandbox_dir
         .get_or_insert_with(|| storage_dir.join("sandboxes"));
-    // ACP launch is not yet selectable on the co-located Worker: these
-    // Sessions stay on this executor's claim pool.
     let platform = bind_acp_session_environment(
-        crate::deployment::in_process_resource_host_with_deployment(
+        resource_host_with_deployment(
             Arc::new(EchoModel),
             "awaken",
             deployment,
@@ -826,7 +823,14 @@ pub(crate) async fn bind_acp_session_environment(
     secret_broker: Option<Arc<dyn awaken_run_executor_acp::SecretBroker>>,
 ) -> crate::deployment::ScenarioPlatform {
     let deployment = platform.deployment().clone();
+    let worker_source = source.clone();
+    let worker_broker = secret_broker.clone();
     platform
+        // The registered Worker that runs the Session serves the same launch
+        // and secret broker through its own builder.
+        .select_worker_backend(move |worker| {
+            worker.with_acp_launch(worker_source.clone(), worker_broker.clone())
+        })
         .map_dependencies_async(|host| async move {
             let host = awaken_execution_composition::with_acp_launch_source(
                 host,
@@ -980,26 +984,24 @@ pub async fn build_acp_container_router(
         (publication, launch, Arc::new(EchoModel))
     };
     let host_publication = publication.clone();
-    // ACP launch is not yet selectable on the co-located Worker: these
-    // Sessions stay on this executor's claim pool.
-    let platform = crate::deployment::in_process_resource_host_with_deployment(
-        model,
-        "awaken",
-        deployment.clone(),
-        trace_file_present,
-    )
-    .await
-    .map_dependencies_async(|host| async move {
-        awaken_execution_composition::with_acp_launch_source(
-            host.with_agent_publications(host_publication),
-            &deployment,
-            awaken_tool_relay::relay_hand_executor_factory(),
-            launch,
-        )
-        .await
-        .expect("scenario Session environment must be available")
-    })
-    .await;
+    let platform =
+        resource_host_with_deployment(model, "awaken", deployment.clone(), trace_file_present)
+            .await
+            .select_worker_backend({
+                let launch = launch.clone();
+                move |worker| worker.with_acp_launch(launch.clone(), None)
+            })
+            .map_dependencies_async(|host| async move {
+                awaken_execution_composition::with_acp_launch_source(
+                    host.with_agent_publications(host_publication),
+                    &deployment,
+                    awaken_tool_relay::relay_hand_executor_factory(),
+                    launch,
+                )
+                .await
+                .expect("scenario Session environment must be available")
+            })
+            .await;
     // Use the same shared Resource Registry + Managed ACL assembly as every other
     // scenario, with the exact Environment Execution application mounted by the API.
     mount_with_environments_and_agent_source(platform, Some(publication), lifecycle.clone()).await

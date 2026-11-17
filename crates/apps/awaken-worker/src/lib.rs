@@ -123,6 +123,14 @@ impl WorkerProcessConfig {
     }
 }
 
+/// The ACP launch a Worker serves in place of its deployment profile's routes
+/// ([`WorkerNodeBuilder::with_acp_launch`]).
+#[derive(Clone)]
+struct WorkerAcpLaunch {
+    source: awaken_execution_composition::LaunchSource,
+    secret_broker: Option<Arc<dyn awaken_run_executor_acp::SecretBroker>>,
+}
+
 /// Invalid explicit Worker startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerNodeBuildError(String);
@@ -159,6 +167,7 @@ pub struct WorkerNodeBuilder {
         Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
     acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
+    acp_launch: Option<WorkerAcpLaunch>,
     enclosing_sandbox_boundary: Option<InstalledSandboxBoundary>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     #[cfg(feature = "container-k8s")]
@@ -268,6 +277,7 @@ impl WorkerNodeBuilder {
             hand_executor_factory: None,
             worker_local_credential_resolver: None,
             acp_capability_observation_source: None,
+            acp_launch: None,
             enclosing_sandbox_boundary: None,
             session_container_provider: None,
             #[cfg(feature = "container-k8s")]
@@ -584,6 +594,24 @@ impl WorkerNodeBuilder {
         source: Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>,
     ) -> Self {
         self.acp_capability_observation_source = Some(source);
+        self
+    }
+
+    /// Serve `source` instead of the ACP routes of the deployment's profile:
+    /// a fixed trusted test/dev launch, or an explicitly assembled launch
+    /// registry. `secret_broker` resolves that launch's Session secrets;
+    /// `None` keeps this Worker's credential materializer. Every incarnation
+    /// launches the same source.
+    #[must_use]
+    pub fn with_acp_launch(
+        mut self,
+        source: awaken_execution_composition::LaunchSource,
+        secret_broker: Option<Arc<dyn awaken_run_executor_acp::SecretBroker>>,
+    ) -> Self {
+        self.acp_launch = Some(WorkerAcpLaunch {
+            source,
+            secret_broker,
+        });
         self
     }
 
@@ -981,6 +1009,7 @@ impl WorkerNodeBuilder {
             hand_executor_factory: self.hand_executor_factory,
             credential_observation_resolver,
             acp_capability_observation_source: self.acp_capability_observation_source,
+            acp_launch: self.acp_launch,
             session_container_provider: self.session_container_provider,
             #[cfg(feature = "container-k8s")]
             k8s_create_client: self.k8s_create_client,
@@ -1081,6 +1110,7 @@ pub struct WorkerNode {
         Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
     acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
+    acp_launch: Option<WorkerAcpLaunch>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
     #[cfg(feature = "container-k8s")]
     k8s_create_client: Option<Arc<WorkerK8sCreateClient>>,
@@ -1643,12 +1673,28 @@ impl WorkerNode {
         )
         .await
         .map_err(std::io::Error::other)?;
-        deps = awaken_execution_composition::with_acp_from_deployment(
-            deps,
-            &deployment,
-            self.credential_materializer,
-            application.brokered_acp_model_access,
-        );
+        deps = match self.acp_launch {
+            Some(launch) => {
+                let deps = awaken_execution_composition::with_acp_launch_over_selected_environment(
+                    deps,
+                    &deployment,
+                    launch.source,
+                );
+                match (launch.secret_broker, self.credential_materializer) {
+                    (Some(broker), _) => deps.with_session_secret_broker(broker),
+                    (None, Some(credentials)) => {
+                        deps.with_session_secret_broker(Arc::new(credentials))
+                    }
+                    (None, None) => deps,
+                }
+            }
+            None => awaken_execution_composition::with_acp_from_deployment(
+                deps,
+                &deployment,
+                self.credential_materializer,
+                application.brokered_acp_model_access,
+            ),
+        };
         manifest::ensure_registered_local_provider(&self.prepared_local_sandbox, &self.manifest, &deps)?;
 
         let mut execution = awaken_session_executor::SessionExecutionDependencies::default()

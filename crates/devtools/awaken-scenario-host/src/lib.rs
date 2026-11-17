@@ -121,16 +121,8 @@ pub async fn build_outcome_matrix_router(
         .max_steps(2)
         .build();
     let publication = fixed_host_backend_publication("acp-agent", "acp:claude", Vec::new());
-    // ACP launch is not yet selectable on the co-located Worker: these
-    // Sessions stay on this executor's claim pool.
     let platform = acp_scenarios::bind_acp_session_environment(
-        deployment::in_process_resource_host_with_deployment(
-            model,
-            model_ref,
-            scenario_deployment(),
-            trace_file_present,
-        )
-        .await,
+        resource_host(model, model_ref, trace_file_present).await,
         awaken_execution_composition::LaunchSource::Fixed(Box::new(launch)),
         None,
     )

@@ -253,12 +253,28 @@ pub async fn with_acp_launch_source(
         &ContainerTierPolicy::default(),
     )
     .await?;
-    Ok(install_acp_source(
+    Ok(with_acp_launch_over_selected_environment(
+        host, deployment, source,
+    ))
+}
+
+/// Bind `source` as the ACP launch of a Host whose Session environment its
+/// deployment already selected, as a registered Worker's incarnation does.
+/// Unlike [`with_acp_launch_source`] it selects no environment: selecting
+/// TrustedHost twice is refused, since an installed backend cannot gain its
+/// Hand afterwards.
+#[must_use]
+pub fn with_acp_launch_over_selected_environment(
+    host: SessionExecutorBuilder,
+    deployment: &DeploymentConfig,
+    source: LaunchSource,
+) -> SessionExecutorBuilder {
+    install_acp_source(
         with_backend_owned_environment(host, deployment),
         deployment,
         source,
         None,
-    ))
+    )
 }
 
 fn install_acp_source(
