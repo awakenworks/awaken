@@ -775,6 +775,196 @@ async fn record_session_work(app: &Router, session: &str, point: &str) {
     .unwrap();
 }
 
+/// Serve one mock `calc` MCP server that counts its authorized `initialize`
+/// handshakes and `tools/call` requests separately, so a test can tell that a
+/// Run-free preparation connected to it before any Run called a tool.
+async fn handshake_counting_calc_mcp() -> (
+    String,
+    Arc<std::sync::atomic::AtomicUsize>,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let handshakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (counted_calls, counted_handshakes) = (calls.clone(), handshakes.clone());
+    let app = Router::new().route(
+        "/",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let (calls, handshakes) = (counted_calls.clone(), counted_handshakes.clone());
+            async move {
+                let counter = match body["method"].as_str() {
+                    Some("tools/call") => Some(&calls),
+                    Some("initialize") => Some(&handshakes),
+                    _ => None,
+                };
+                if let Some(counter) = counter {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                rpc(headers, Json(body)).await
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind handshake-counting mock mcp");
+    let addr = listener
+        .local_addr()
+        .expect("handshake-counting mock mcp addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve handshake-counting mock mcp");
+    });
+    (format!("http://{addr}/"), calls, handshakes)
+}
+
+/// The Session's committed root revision, as its execution evidence reports it.
+async fn session_revision(app: &Router, session: &str) -> u64 {
+    let (status, evidence) = call(
+        app,
+        "GET",
+        &format!("/v1/awaken/sessions/{session}/execution-evidence"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{evidence}");
+    evidence["session_revision"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("execution evidence has a revision: {evidence}"))
+}
+
+/// The state of `session`'s Work item in the builtin local Environment.
+async fn session_work_state(app: &Router, session: &str) -> String {
+    let environment = awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID;
+    let (status, work) = call(
+        app,
+        "GET",
+        &format!("/v1/environments/{environment}/work?limit=100"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{work}");
+    work["data"]
+        .as_array()
+        .expect("Work page")
+        .iter()
+        .find(|item| item["data"]["type"] == "session" && item["data"]["id"] == session)
+        .and_then(|item| item["state"].as_str())
+        .unwrap_or_else(|| panic!("{session} has one Work item: {work}"))
+        .to_string()
+}
+
+/// Replace the Session's Agent MCP server with `calc` at `url`.
+async fn update_session_mcp_server(app: &Router, session: &str, url: &str) {
+    let (status, updated) = call(
+        app,
+        "POST",
+        &format!("/v1/sessions/{session}"),
+        Some(json!({
+            "agent": {
+                "mcp_servers": [{ "name": "calc", "type": "url", "url": url }],
+                "tools": always_allow_mcp_tools("calc")
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+}
+
+/// Send `text` to `session` and return its settled events.
+async fn converse(app: &Router, session: &str, text: &str, expectation: &str) -> Vec<Value> {
+    let (status, receipt) = send_user_message(app, session, text).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    wait_for_session_events(app, session, &receipt, expectation).await
+}
+
+fn tool_result_is(events: &[Value], text: &str) -> bool {
+    events.iter().any(|event| {
+        event["type"] == "agent.mcp_tool_result" && event["content"][0]["text"] == text
+    })
+}
+
+/// A Run-free preparation under the Environment's single active Session Work
+/// (ADR-0106 run-free Work admission). Causes: C1 two Sessions share the
+/// builtin local Environment, whose WorkQueue admits one active Session Work
+/// at a time; C2 Session A's Run settles, which stops A's Work; C3 only A's MCP
+/// server is then updated: the accepted update wakes A's Work and the Worker's
+/// run-free preparation takes it and connects the new server; C4 no Run
+/// follows. Effects: E1 the finished preparation hands A's Work back exactly
+/// as a settled Run does, so A's Work is stopped again; E2 B's Run takes the
+/// Environment's Work and settles; E3 with nothing pending, A's root revision
+/// stays flat across several Worker polls; E4 A's next Run revives its Work
+/// and uses the updated server. Without E1 the finished preparation keeps
+/// renewing A's Work and B waits until A's next Run settles.
+/// Rules: P1=C1+C2+C3+C4=>E1+E2+E3; P2=P1+next Run=>E4.
+#[tokio::test(flavor = "multi_thread")]
+async fn registered_worker_finished_preparation_returns_the_environment_work() {
+    let (first_url, _first_calls) = counting_calc_mcp().await;
+    let (second_url, second_calls, second_handshakes) = handshake_counting_calc_mcp().await;
+    let process = build_all_in_one_router().await;
+    let app = process.public_router.clone();
+    let vault_id = vault_with_calc_credential(&app, &first_url).await;
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "mcp_oauth",
+            "mcp_server_url": second_url,
+            "access_token": CALC_TOKEN
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let a = create_mcp_session(&app, &vault_id, &first_url).await;
+    let b = create_mcp_session(&app, &vault_id, &first_url).await;
+
+    let events = converse(&app, &a, "add 2 3", "A's first Run").await;
+    assert!(tool_result_is(&events, "5"), "C2 {events:?}");
+    assert_eq!(session_work_state(&app, &a).await, "stopped", "C2");
+
+    update_session_mcp_server(&app, &a, &second_url).await;
+    // awaken-allow(wait): the Worker polls Run-free preparation on a one-second tick, and a finished preparation commits no Event to settle on
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    assert!(
+        second_handshakes.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        "C3 the preparation connected the updated server before any Run"
+    );
+    assert_eq!(
+        second_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "C4"
+    );
+    assert_eq!(session_work_state(&app, &a).await, "stopped", "P1/E1");
+
+    let settled = session_revision(&app, &a).await;
+    // awaken-allow(wait): three more one-second preparation polls, any of which would commit root revisions if A were still claimable
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert_eq!(
+        session_revision(&app, &a).await,
+        settled,
+        "P1/E3 the idle root stays flat"
+    );
+
+    let events = converse(
+        &app,
+        &b,
+        "add 1 1",
+        "B's Run beside A's finished preparation",
+    )
+    .await;
+    assert!(tool_result_is(&events, "2"), "P1/E2 {events:?}");
+
+    let events = converse(&app, &a, "add 40 2", "A's Run after its preparation").await;
+    assert!(tool_result_is(&events, "42"), "P2/E4 {events:?}");
+    assert_eq!(
+        second_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "P2/E4 the Run used the updated server"
+    );
+    assert_eq!(session_work_state(&app, &a).await, "stopped", "P2");
+    shut_down_registered_worker_process(process).await;
+}
+
 /// An inline Agent on the registered Worker. Causes: C1 a Session names the
 /// unpublished `assistant` with Session-level MCP and tool overrides; C2 its
 /// Agent is updated mid-Session (`agent.mcp_servers` moves to another server);
