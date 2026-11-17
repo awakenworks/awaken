@@ -87,6 +87,16 @@ operation id, because repair may complete the durable reservation. A rejection
 receipt is written only when the store is healthy; if it cannot be written the
 refusal is reported as pending, which repair still settles.
 
+A CAS lost only because the Session root advanced past the Runtime projection
+that admission recovered (a finished Run's settlement landing between the next
+send's projection read and its activity CAS) has applied nothing. The public
+admission that recovered the projection decides it again: it recovers the
+projection at the current root and retries the same operation, at most
+`SUPERSEDED_PROJECTION_ATTEMPTS` times, before it answers
+`session_run_admission_pending`. A prepared admission committing inside a
+Dispatch admission guard cannot recover its projection there and keeps the
+pending answer.
+
 Both SQL adapters now report the existing `NotApplied` class when a failed
 write has not invoked COMMIT. A COMMIT driver failure retains the existing
 `AuthorityUnavailable` class. This describes one attempt, never proves an

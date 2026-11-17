@@ -105,13 +105,14 @@ async fn raced_activity(
         fixture
             .app
             .activities
-            .begin_run_activity_at_revision(
+            .begin_projected_run_activity(
                 &command.session_id,
                 &operation,
                 revision,
                 (&thread, &command.run_id),
             )
             .await
+            .map_err(|error| crate::SessionActivities::activity_operation_error(&operation, error))
     } else {
         fixture
             .app

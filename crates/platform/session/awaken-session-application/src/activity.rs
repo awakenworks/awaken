@@ -47,6 +47,11 @@ pub enum SessionActivityError {
     EpochExhausted,
     #[error("Session revision conflict")]
     Conflict,
+    /// The Session root advanced past the revision whose Runtime projection
+    /// this fresh activity was admitted against; nothing was applied. Only the
+    /// admission that recovered that projection can recover it again.
+    #[error("Session root advanced past the recovered Runtime projection")]
+    ProjectionSuperseded,
     #[error("Session activity persistence is unavailable: {0}")]
     Unavailable(String),
     /// Persistence refused before applying the activity; nothing changed.
@@ -320,7 +325,9 @@ impl SessionActivityError {
                 "session_activity_epoch_exhausted",
                 "Session activity epoch is exhausted",
             ),
-            Self::Conflict => RunError::unavailable("Session activity changed concurrently"),
+            Self::Conflict | Self::ProjectionSuperseded => {
+                RunError::unavailable("Session activity changed concurrently")
+            }
             Self::Unavailable(message) | Self::NotApplied(message) => {
                 RunError::unavailable(message)
             }
@@ -619,29 +626,29 @@ impl SessionActivities {
     /// |---|---|---|
     /// | budget reached | rejection receipt | `budget_reached`, replayed by every later recovery |
     /// | proven write rollback | this attempt did not commit | `session_run_not_admitted` |
-    /// | unknown write, observation outage or CAS conflict | original identity stays repairable | `session_run_admission_pending` |
+    /// | unknown write, observation outage, CAS conflict or superseded projection | original identity stays repairable | `session_run_admission_pending` |
     /// | other | none | its own class |
-    pub(crate) async fn begin_run_activity_at_revision(
+    ///
+    /// The refusal stays typed; [`Self::activity_operation_error`] gives the
+    /// caller answer, so the Run admission that recovered `projected_revision`
+    /// can tell a superseded projection from every other refusal.
+    pub(crate) async fn begin_projected_run_activity(
         &self,
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         projected_revision: SessionRevision,
         source: (&ThreadId, &RunId),
-    ) -> Result<u64, RunError> {
-        let begun = self
-            .begin_activity_for_operation_with_policy(
-                session_id,
-                operation_id,
-                false,
-                None,
-                Some(projected_revision),
-                Some(source),
-            )
-            .await;
-        match begun {
-            Ok((_, epoch)) => Ok(epoch),
-            Err(error) => Err(Self::activity_operation_error(operation_id, error)),
-        }
+    ) -> Result<u64, SessionActivityError> {
+        self.begin_activity_for_operation_with_policy(
+            session_id,
+            operation_id,
+            false,
+            None,
+            Some(projected_revision),
+            Some(source),
+        )
+        .await
+        .map(|(_, epoch)| epoch)
     }
 
     /// The reservation is durable but its activity is not: the outcome is not
@@ -682,7 +689,9 @@ impl SessionActivities {
             {
                 Self::admission_not_applied(error)
             }
-            error @ (SessionActivityError::Unavailable(_) | SessionActivityError::Conflict)
+            error @ (SessionActivityError::Unavailable(_)
+            | SessionActivityError::Conflict
+            | SessionActivityError::ProjectionSuperseded)
                 if Self::is_run_activity_operation(operation_id) =>
             {
                 Self::admission_pending(error)
@@ -919,7 +928,7 @@ impl SessionActivities {
                     projected_root.revision.0,
                     Some(projected_revision.0),
                 ) {
-                    return Err(SessionActivityError::Conflict);
+                    return Err(SessionActivityError::ProjectionSuperseded);
                 }
                 !projected_root.environment.admits_realization_effects()
             }
@@ -1126,7 +1135,7 @@ impl SessionActivities {
                 session.revision.0,
                 projected_revision.map(|revision| revision.0),
             ) {
-                return Err(SessionActivityError::Conflict);
+                return Err(SessionActivityError::ProjectionSuperseded);
             }
             let epoch = session
                 .revision

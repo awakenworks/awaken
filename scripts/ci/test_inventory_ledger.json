@@ -93,6 +93,7 @@
     "continuation_topology_follows_the_frozen_placement_and_retention": "every_frozen_placement_decides_the_due_suspend_intent",
     "t9_frozen_topology_and_memory_evidence_guard_the_continuation": "t9_memory_evidence_guards_the_continuation",
     "worker_checkpoint_retention_is_rejected_before_durable_creation": "worker_checkpoint_retention_is_frozen_at_creation",
-    "quiesced_exact_incarnation_still_reports_its_entry_closure": "occupied_incarnation_cannot_quiesce_but_still_reports_its_entry_closure"
+    "quiesced_exact_incarnation_still_reports_its_entry_closure": "occupied_incarnation_cannot_quiesce_but_still_reports_its_entry_closure",
+    "user_run_activity_rejects_a_root_changed_after_projection_recovery": "user_run_activity_recovers_a_root_changed_after_projection_recovery"
   }
 }

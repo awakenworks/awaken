@@ -3227,7 +3227,7 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
             )
             .await
             .err(),
-        Some(SessionActivityError::Conflict),
+        Some(SessionActivityError::ProjectionSuperseded),
         "O5/E5 stale projection refuses fresh work"
     );
     let unchanged = repo.get(&joined_session).await.expect("O5 refused root");

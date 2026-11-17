@@ -5327,14 +5327,17 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
 }
 
 #[tokio::test]
-async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
+async fn user_run_activity_recovers_a_root_changed_after_projection_recovery() {
     // Cause/effect graph: C1 revision R and Environment binding A are recovered
     // into Runtime; C2 reservation pauses; C3 another owner commits binding B at
     // R+1; C4 reservation resumes. Effects: E1 no activity receipt/epoch is
-    // committed against R+1; E2 no Run is activated with projection A; E3 the
-    // caller gets a retryable admission failure and the durable Session remains
-    // Idle on binding B. Exact activity receipt replay is excluded because it is
-    // stronger committed recovery truth and is covered by A2 above.
+    // committed against the projection of R; E2 no Run is activated; E3 the
+    // admission recovers the projection again at the successor root and admits
+    // the same reserved Run there, on binding B, with exactly one epoch. The
+    // bounded exhaustion of that re-decision stays pending (no epoch) and is
+    // covered by `tests::run_admission::superseded_projection`. Exact activity
+    // receipt replay is excluded because it is stronger committed recovery
+    // truth and is covered by A2 above.
     //
     // | Rule | Projected revision | Root at activity CAS | Effect |
     // |---|---|---|---|
@@ -5377,6 +5380,7 @@ async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
     };
     entered.wait().await;
     let mut replacement = repository.get(&SessionId::from(session_id)).await.unwrap();
+    let projected = replacement.revision;
     replacement.environment.set_resident("binding-b");
     let _fixture = app
         .mutations
@@ -5389,21 +5393,34 @@ async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
         )
         .await
         .expect("C3 commits the successor root");
+    let successor = repository
+        .get(&SessionId::from(session_id))
+        .await
+        .unwrap()
+        .revision;
+    assert!(successor > projected, "C3 commits past the projected root");
     release.wait().await;
 
-    let error = admission
+    let admitted = admission
         .await
         .expect("P2 admission task")
-        .expect_err("P2 stale projection must retry");
-    assert_eq!(
-        error.kind,
-        awaken_runtime_contract::runs::RunErrorKind::Unavailable,
-        "P2/E3"
+        .expect("P2/E3 the admission decides again on the successor root");
+    let epoch = admitted
+        .delivery()
+        .expect("P2/E3 the reserved Run is admitted")
+        .session_activity_epoch;
+    assert!(
+        epoch > successor.0,
+        "P2/E1 the epoch follows the successor root, never the projection of R"
     );
     let durable = repository.get(&SessionId::from(session_id)).await.unwrap();
     assert_eq!(durable.environment.binding(), Some("binding-b"), "P2/E3");
-    assert_eq!(durable.execution, SessionExecutionState::Idle, "P2/E1");
-    assert!(durable.active_activity_epochs.is_empty(), "P2/E1");
+    assert_eq!(durable.revision.0, epoch, "P2/E1 one activity CAS");
+    assert_eq!(
+        durable.active_activity_epochs,
+        std::collections::BTreeSet::from([epoch]),
+        "P2/E1"
+    );
     assert!(runtime.activated.lock().unwrap().is_empty(), "P2/E2");
 }
 

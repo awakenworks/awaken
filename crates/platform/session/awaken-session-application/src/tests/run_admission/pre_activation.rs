@@ -23,7 +23,7 @@ use awaken_session_execution_contract::{
 
 const ACTIVITY_CAS: &str = "managed:session-activity:";
 
-fn admit_command(session: &str, operation: &str) -> AdmitSessionRun {
+pub(super) fn admit_command(session: &str, operation: &str) -> AdmitSessionRun {
     let session_id = SessionId::from(session);
     AdmitSessionRun {
         session_id: session_id.clone(),
@@ -44,7 +44,7 @@ fn admit_command(session: &str, operation: &str) -> AdmitSessionRun {
 }
 
 /// (operation id, epoch, run id) of every durable activity admission record.
-fn activity_records(session: &PersistedSession) -> Vec<(String, u64, String)> {
+pub(super) fn activity_records(session: &PersistedSession) -> Vec<(String, u64, String)> {
     session
         .run_activities()
         .map(|(records, _)| {
@@ -64,7 +64,7 @@ fn activity_records(session: &PersistedSession) -> Vec<(String, u64, String)> {
 
 /// The O0 checker. It deliberately ignores the admission return value and
 /// inspects only the counted Runtime effects.
-fn check_zero_execution(counts: &EffectCounts) -> Result<(), String> {
+pub(super) fn check_zero_execution(counts: &EffectCounts) -> Result<(), String> {
     if counts.model_calls != 0 || counts.tool_calls != 0 || counts.activations != 0 {
         return Err(format!("pre-activation execution leaked: {counts:?}"));
     }
@@ -95,14 +95,14 @@ fn fresh_session(id: &str) -> PersistedSession {
     session
 }
 
-struct Fixture {
-    durable: Arc<awaken_session_store::SqliteManagedSessionRepository>,
-    faulting: Arc<FaultingSessionRepository>,
-    runtime: Arc<EffectCountingRuntime>,
-    app: Arc<SessionApplication>,
+pub(super) struct Fixture {
+    pub(super) durable: Arc<awaken_session_store::SqliteManagedSessionRepository>,
+    pub(super) faulting: Arc<FaultingSessionRepository>,
+    pub(super) runtime: Arc<EffectCountingRuntime>,
+    pub(super) app: Arc<SessionApplication>,
 }
 
-async fn fixture(session: &str) -> Fixture {
+pub(super) async fn fixture(session: &str) -> Fixture {
     let durable = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await

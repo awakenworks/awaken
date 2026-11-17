@@ -13,6 +13,7 @@ use awaken_session_types::SessionId;
 mod pre_activation;
 pub(super) mod response_loss_store;
 mod retry_identity;
+mod superseded_projection;
 mod task_attention;
 
 #[tokio::test]

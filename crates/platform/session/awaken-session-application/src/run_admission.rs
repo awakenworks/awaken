@@ -127,8 +127,25 @@ struct RunActivityAdmission {
     run_id: awaken_agent_contract::agent::run::Id,
     projected_revision: SessionRevision,
     existing_activity_epoch: Option<u64>,
-    prepared: bool,
+    projection: RunActivityProjection,
 }
+
+/// Who recovered the Runtime projection a fresh Run activity is admitted
+/// against, and therefore who may recover it again.
+enum RunActivityProjection {
+    /// Prepared outside a Dispatch admission guard; the guarded commit may use
+    /// only the receipt/CAS loop, so a superseded projection stays pending.
+    Prepared,
+    /// Recovered by this admission under `owner_scope`; a superseded
+    /// projection is recovered again at the current root.
+    Recovered { owner_scope: String },
+}
+
+/// Attempts at one fresh Run activity while the Session root keeps advancing
+/// past its recovered projection. Each superseded attempt proves another root
+/// commit landed inside its own window, and the settlement tail of a finished
+/// Run is a handful of commits (activity close, usage, idle).
+pub(crate) const SUPERSEDED_PROJECTION_ATTEMPTS: usize = 8;
 
 impl SessionRunAdmissions {
     /// One borrowed admission role for new Outcome Worker/ACK acquisitions. It owns
@@ -380,13 +397,16 @@ impl SessionRunAdmissions {
                 .admit_run_session(owner_scope, session_id.as_str(), &agent_id)
                 .await?;
             let reservation = coordination_runtime.reserve_session_run(command).await?;
+            let projection = RunActivityProjection::Recovered {
+                owner_scope: owner_scope.to_owned(),
+            };
             self.finish_run_admission(
                 RunActivityAdmission {
                     session_id,
                     run_id,
                     projected_revision,
                     existing_activity_epoch,
-                    prepared: false,
+                    projection,
                 },
                 reservation,
                 false,
@@ -413,7 +433,7 @@ impl SessionRunAdmissions {
                 run_id,
                 projected_revision,
                 existing_activity_epoch,
-                prepared,
+                projection,
             } = admission;
             let thread_id = awaken_agent_contract::ThreadId(session_id.to_string());
             let operation = session_run_activity_operation_id(&session_id, &run_id);
@@ -432,25 +452,30 @@ impl SessionRunAdmissions {
                             "session_run_admission_pending",
                             "Run has no committed activity receipt",
                         ));
-                    } else if prepared {
-                        self.activities
-                            .commit_prepared_run_activity(
-                                &session_id,
-                                &operation,
-                                projected_revision,
-                                (&thread_id, &run_id),
-                                admitted_after_cursor,
-                            )
-                            .await?
                     } else {
-                        self.activities
-                            .begin_run_activity_at_revision(
-                                &session_id,
-                                &operation,
-                                projected_revision,
-                                (&thread_id, &run_id),
-                            )
-                            .await?
+                        match &projection {
+                            RunActivityProjection::Prepared => {
+                                self.activities
+                                    .commit_prepared_run_activity(
+                                        &session_id,
+                                        &operation,
+                                        projected_revision,
+                                        (&thread_id, &run_id),
+                                        admitted_after_cursor,
+                                    )
+                                    .await?
+                            }
+                            RunActivityProjection::Recovered { owner_scope } => {
+                                self.begin_run_activity_on_current_projection(
+                                    owner_scope,
+                                    &session_id,
+                                    &operation,
+                                    projected_revision,
+                                    (&thread_id, &run_id),
+                                )
+                                .await?
+                            }
+                        }
                     };
                     Ok(if reservation_replayed {
                         AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
@@ -480,6 +505,57 @@ impl SessionRunAdmissions {
                 SessionRunActivityReceiptPlan::RejectInvalidReceipt => Err(RunError::internal(
                     "reserved or activated Session Run has no activity epoch",
                 )),
+            }
+        })
+    }
+
+    /// Open the fresh activity of a reserved Run against the projection this
+    /// admission recovered. A root that advanced past that projection before
+    /// any effect ran is decided again here, once per public protocol: the
+    /// projection is recovered at the current root and the activity retried
+    /// under the same operation, exactly as a caller's same-operation retry.
+    ///
+    /// | Rule | Activity refusal | Effect |
+    /// |---|---|---|
+    /// | S1 | none | the committed (or replayed) epoch |
+    /// | S2 | projection superseded, attempts remain | recover the projection at the current root, retry |
+    /// | S3 | projection superseded on every attempt | `session_run_admission_pending` (ADR-0094 D3) |
+    /// | S4 | any other | its own class, never retried here |
+    fn begin_run_activity_on_current_projection<'a>(
+        &'a self,
+        owner_scope: &'a str,
+        session_id: &'a awaken_session_types::SessionId,
+        operation: &'a str,
+        projected_revision: SessionRevision,
+        source: (
+            &'a awaken_agent_contract::ThreadId,
+            &'a awaken_agent_contract::agent::run::Id,
+        ),
+    ) -> futures_util::future::BoxFuture<'a, Result<u64, RunError>> {
+        Box::pin(async move {
+            let mut projected_revision = projected_revision;
+            let mut attempt = 1;
+            loop {
+                match self
+                    .activities
+                    .begin_projected_run_activity(session_id, operation, projected_revision, source)
+                    .await
+                {
+                    Ok(epoch) => return Ok(epoch),
+                    Err(crate::SessionActivityError::ProjectionSuperseded)
+                        if attempt < SUPERSEDED_PROJECTION_ATTEMPTS =>
+                    {
+                        attempt += 1;
+                        projected_revision = self
+                            .recover_admitted_session(owner_scope, session_id.as_str())
+                            .await?;
+                    }
+                    Err(error) => {
+                        return Err(crate::SessionActivities::activity_operation_error(
+                            operation, error,
+                        ));
+                    }
+                }
             }
         })
     }
@@ -846,7 +922,7 @@ impl awaken_session_execution_contract::SessionRunActivityAdmitter for PreparedR
                     run_id: self.run_id.clone(),
                     projected_revision: self.projected_revision,
                     existing_activity_epoch: epoch,
-                    prepared: true,
+                    projection: RunActivityProjection::Prepared,
                 },
                 reservation,
                 recover_only,
