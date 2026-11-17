@@ -29,6 +29,7 @@ mod prefix_monotonicity;
 mod refresh_failure;
 mod replica_switch;
 mod reply_coordinates;
+mod sse_refresh;
 mod timeline_scenarios;
 mod tool_occurrences;
 mod warm_cold_equivalence;

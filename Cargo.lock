@@ -872,6 +872,7 @@ dependencies = [
  "awaken-session-execution-contract",
  "awaken-session-types",
  "awaken-store-inmem",
+ "awaken-sync",
  "awaken-time",
  "awaken-worker-contract",
  "awaken-worker-transport-security",

@@ -26,6 +26,8 @@ awaken-session-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-outbound-http = { workspace = true }
 awaken-observability.workspace = true
+awaken-sync.workspace = true
+awaken-time.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
@@ -44,7 +46,6 @@ awaken-store-inmem.workspace = true
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
-awaken-time.workspace = true
 awaken-lease-testkit.workspace = true
 awaken-lease-contract.workspace = true
 axum.workspace = true

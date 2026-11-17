@@ -78,6 +78,7 @@ pub struct ManagedState {
     pub(super) application: Arc<SessionApplication>,
     /// Disposable record→wire projection; durable truth lives in the application repository.
     pub(super) sessions: Arc<InvariantLock<HashMap<String, SessionRecord>>>,
+    pub(crate) sse_refreshes: super::sse_refresh::SseRefreshes,
     pub(super) session_seq: Arc<AtomicU64>,
     /// Per-Session committed wire-event channels. Runtime live observations use
     /// the ThreadEventHub subscription and never enter this map.

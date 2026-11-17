@@ -735,6 +735,69 @@ async fn exhausted_finish_transport_remains_retryable_for_the_physical_ack_loop(
 /// | T2 | 503 | yes, bounded | applied on the second response |
 /// | T3 | 400 | no | rejected immediately |
 #[tokio::test]
+async fn held_claim_response_does_not_block_another_logical_claim() {
+    for directed in [false, true] {
+        let (requests, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let app = Router::new().route(
+            "/v1/worker/dispatch/claim_for_request",
+            post({
+                let release = release.clone();
+                let calls = Arc::new(AtomicUsize::new(0));
+                move |Json(body): Json<Value>| {
+                    let requests = requests.clone();
+                    let release = release.clone();
+                    let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
+                    async move {
+                        requests.send(body).unwrap();
+                        if first {
+                            release.notified().await;
+                        }
+                        Json(json!({"claimed": null}))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let identity = WorkerIdentity::new("overlap-worker", "overlap-incarnation", 1);
+        let owner = identity.lease_owner();
+        let queue = HttpDispatchQueue::new(url, identity);
+        let capabilities = Default::default();
+        let mut first = Box::pin(queue.claim(&owner, 60_000, &capabilities));
+        let first_body = tokio::select! {
+            body = received.recv() => body.unwrap(),
+            result = &mut first => panic!("the response is held: {result:?}"),
+        };
+        let target = RunId("independent-target".into());
+        let second = async {
+            if directed {
+                queue
+                    .claim_run(&target, &owner, 60_000, &capabilities)
+                    .await
+            } else {
+                queue.claim(&owner, 60_000, &capabilities).await
+            }
+        };
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), second)
+                .await
+                .expect("another claim reaches the Coordinator")
+                .unwrap()
+                .is_none()
+        );
+        let second_body = received.try_recv().unwrap();
+        assert!(first_body["request_id"].is_string());
+        assert!(second_body["request_id"].is_string());
+        assert_ne!(first_body["request_id"], second_body["request_id"]);
+        release.notify_one();
+        assert!(first.await.unwrap().is_none());
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn ambiguous_claim_retains_its_request_and_does_not_use_legacy_endpoint() {
     use std::sync::atomic::AtomicBool;
 
@@ -989,6 +1052,75 @@ async fn legacy_checkpoint_payload_still_requires_a_live_claim() {
 }
 
 #[tokio::test]
+async fn worker_preview_burst_is_sent_in_order_in_bounded_batches() {
+    let (batches, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let app = Router::new().route(
+        "/v1/worker/dispatch/stream_batch",
+        post(move |Json(body): Json<Value>| {
+            batches.send(body).unwrap();
+            std::future::ready(Json(json!({"accepted": true})))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let identity = WorkerIdentity::new("preview-worker", "preview-incarnation", 1);
+    let claim = RunClaim {
+        run_id: RunId("preview-run".into()),
+        owner: identity.lease_owner(),
+        epoch: 3,
+    };
+    let queue = HttpDispatchQueue::new(url, identity);
+    for n in 0..19 {
+        queue
+            .publish_observation(
+                &claim,
+                StreamObservation::assistant_delta(
+                    claim.run_id.clone(),
+                    ThreadId("preview-thread".into()),
+                    2,
+                    1,
+                    AgentEvent::Delta(Delta::TextDelta {
+                        delta: n.to_string(),
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+    }
+    let mut observations = Vec::new();
+    while observations.len() < 19 {
+        let body = tokio::time::timeout(std::time::Duration::from_secs(2), received.recv())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "batch endpoint received only {} previews",
+                    observations.len()
+                )
+            })
+            .unwrap();
+        let batch: Vec<StreamObservation> =
+            serde_json::from_value(body["observations"].clone()).unwrap();
+        assert!(!batch.is_empty() && batch.len() <= 16);
+        assert_eq!(body["claim"]["epoch"], 3);
+        observations.extend(batch);
+    }
+    assert_eq!(observations.len(), 19);
+    for (n, observation) in observations.iter().enumerate() {
+        assert_eq!(
+            observation.event.kind,
+            AgentEvent::Delta(Delta::TextDelta {
+                delta: n.to_string()
+            })
+        );
+        let coordinate = observation.assistant_response.as_ref().unwrap();
+        assert_eq!(coordinate.step, 2);
+        assert_eq!(coordinate.response, 1);
+    }
+    server.abort();
+}
+
+#[tokio::test]
 async fn worker_stream_transport_posts_only_canonically_live_events() {
     let (base, _, _, stream_calls) = spawn_transport_server().await;
     let queue = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-A", "boot-A", 1));
@@ -1014,6 +1146,13 @@ async fn worker_stream_transport_posts_only_canonically_live_events() {
         )
         .await
         .expect("S1 live publication is best effort");
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while stream_calls.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("S1 a legacy peer still receives the live event");
     assert_eq!(stream_calls.load(Ordering::SeqCst), 1, "S1");
 
     queue

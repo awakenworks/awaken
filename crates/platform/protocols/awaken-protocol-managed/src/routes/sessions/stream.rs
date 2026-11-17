@@ -156,6 +156,7 @@ fn accept_preview_frame(
 /// cursor indexes published changes; it is neither durable truth nor a lease.
 pub(super) struct LiveSseSource {
     pub(super) state: Arc<ManagedState>,
+    pub(super) refresh: crate::state::SessionSseRefresh,
     pub(super) session_id: String,
     pub(super) owner_scope: String,
     pub(super) revision: u64,
@@ -200,9 +201,8 @@ where
                 Err(error) => { yield Err(error); return; },
             }
         }
-        let mut observation = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut observation = source.refresh.interval();
         observation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        observation.tick().await;
         let mut tail_due = true;
         let mut refresh_due = !current;
         // The HTTP body may remain unpolled after subscription while commits
@@ -212,8 +212,7 @@ where
         loop {
             if refresh_due {
                 refresh_due = false;
-                current = match source.state
-                    .refresh_committed_events_for_observation(&source.session_id, None).await
+                current = match source.refresh.periodic(&source.state).await
                 {
                     Ok(ProjectionObservationDecision::UseRefreshed) => true,
                     Ok(_) => false,

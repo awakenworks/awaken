@@ -36,8 +36,7 @@ use awaken_dispatch::{
     RecoveryRequest as RecoveryReq, RegisterWorkerRequest as RegisterWorkerReq,
     RenewRequest as RenewReq, RunClaim,
     SessionRunReservationResolutionRequest as ReservationResolutionReq, SettleRequest as SettleReq,
-    StreamObservationRequest as StreamEventReq, WorkerDirectory, WorkerIdentity,
-    WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
+    WorkerDirectory, WorkerIdentity, WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
 };
 
 use awaken_time::{WallClock, WallClockExt};
@@ -48,6 +47,7 @@ use awaken_worker_transport_security::{
 
 mod claimed_preparation;
 mod credential_grant;
+mod live_stream;
 pub use claimed_preparation::require_worker_claimed_preparation;
 pub use credential_grant::WorkerCredentialGrantIssuers;
 mod registry_endpoints;
@@ -586,7 +586,16 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             post(credential_grant::credential_grant),
         )
         .route("/v1/worker/dispatch/settle", post(settle))
-        .route("/v1/worker/dispatch/stream", post(stream_event))
+        .route(
+            "/v1/worker/dispatch/stream",
+            post(live_stream::stream_event),
+        )
+        .route(
+            awaken_dispatch_contract::STREAM_PREVIEW_BATCH_PATH,
+            post(live_stream::stream_preview_batch).layer(axum::extract::DefaultBodyLimit::max(
+                awaken_dispatch_contract::MAX_STREAM_PREVIEW_BODY_BYTES,
+            )),
+        )
         .route("/v1/worker/register", post(register_worker))
         .route("/v1/worker/heartbeat", post(heartbeat_worker))
         .route("/v1/worker/drain", post(drain_worker))
@@ -1455,60 +1464,6 @@ async fn settle(
     }
     .await;
     respond_realization(result)
-}
-
-async fn stream_event(
-    State(service): State<Arc<WorkerDispatchService>>,
-    Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<StreamEventReq>,
-) -> (StatusCode, Json<Value>) {
-    let result = async {
-        let stream_request = &request.request;
-        let authority =
-            claim_authority(&service, &worker, Some(&stream_request.identity), false).await?;
-        if stream_request.claim.owner != authority.owner
-            || stream_request.event.run_id != stream_request.claim.run_id
-        {
-            return Err(ApplicationError::invalid(
-                "live Worker event does not match its authenticated claim",
-            ));
-        }
-        if !awaken_agent_contract::event::classify(&stream_request.event.kind).live {
-            return Err(ApplicationError::invalid(
-                "Worker transport accepts only live-classified Agent events",
-            ));
-        }
-        let current = service
-            .dispatch
-            .lock_commit_epoch(&stream_request.claim)
-            .await
-            .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        let Some(guard) = current else {
-            return Ok(json!({ "accepted": false }));
-        };
-        let committed_thread = guard.request().thread_id();
-        let observed_thread = request
-            .assistant_response
-            .as_ref()
-            .map(|coordinate| &coordinate.thread_id);
-        let provided_thread_mismatch =
-            observed_thread.is_some_and(|thread_id| thread_id != committed_thread);
-        if provided_thread_mismatch {
-            return Err(ApplicationError::invalid(
-                "live Worker event does not match its claim's logical Thread",
-            ));
-        }
-        let _ = service
-            .stream_sink
-            .send_observation(awaken_agent_contract::stream::event::Observation {
-                event: request.request.event,
-                assistant_response: request.assistant_response,
-            })
-            .await;
-        Ok(json!({ "accepted": true }))
-    }
-    .await;
-    respond(result)
 }
 
 use awaken_dispatch_contract::{

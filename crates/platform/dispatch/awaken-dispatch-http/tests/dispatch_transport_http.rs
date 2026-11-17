@@ -31,6 +31,7 @@ use awaken_dispatch_testkit::worker_dispatch::{
     CommittedRunRecovery, worker_dispatch_dependencies,
 };
 use awaken_dispatch_testkit::worker_http::{fixed_identity, ready_workers};
+use awaken_lease_contract::fence::Epoch;
 use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -1998,6 +1999,108 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "R4");
 
+    use awaken_dispatch_contract::{
+        MAX_STREAM_PREVIEW_BATCH_ITEMS, STREAM_PREVIEW_BATCH_PATH, StreamPreviewBatchRequest,
+    };
+    let mut suffix = event.clone();
+    suffix.event.kind = AgentEvent::Delta(Delta::TextDelta { delta: "y".into() });
+    let batch = |claim, observations| {
+        serde_json::to_value(StreamPreviewBatchRequest {
+            identity: identity.clone(),
+            claim,
+            observations,
+        })
+        .unwrap()
+    };
+    let mut unknown = batch(claim.clone(), vec![event.clone()]);
+    unknown["unknown_field"] = json!(true);
+    let (status, _) = post(&router, "worker-live", STREAM_PREVIEW_BATCH_PATH, unknown).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        stream.events().len(),
+        1,
+        "unknown keys reject the entire batch"
+    );
+
+    let mut foreign = suffix.clone();
+    foreign.assistant_response.as_mut().unwrap().thread_id.0 = "foreign".into();
+    let mut fact = suffix.clone();
+    fact.event.kind = AgentEvent::Fact(Fact::RunStarted);
+    for invalid in [
+        vec![],
+        vec![event.clone(), foreign],
+        vec![event.clone(), fact],
+        vec![event.clone(); MAX_STREAM_PREVIEW_BATCH_ITEMS + 1],
+    ] {
+        let (status, _) = post(
+            &router,
+            "worker-live",
+            STREAM_PREVIEW_BATCH_PATH,
+            batch(claim.clone(), invalid),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(stream.events().len(), 1, "reject the entire invalid batch");
+    }
+    let mut oversized = event.clone();
+    oversized.event.kind = AgentEvent::Delta(Delta::TextDelta {
+        delta: "x".repeat(100_000),
+    });
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(STREAM_PREVIEW_BATCH_PATH)
+                .header("content-type", "application/json")
+                .header("x-awaken-worker-id", "worker-live")
+                .body(Body::from(
+                    batch(claim.clone(), vec![oversized]).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let different_epoch = Epoch::successor_of_granted(Some(claim.epoch))
+        .expect("the fixture claim has a successor")
+        .get();
+    let (status, value) = post(
+        &router,
+        "worker-live",
+        STREAM_PREVIEW_BATCH_PATH,
+        batch(
+            RunClaim {
+                epoch: different_epoch,
+                ..claim.clone()
+            },
+            vec![event.clone(), suffix.clone()],
+        ),
+    )
+    .await;
+    assert_eq!(
+        (status, value["accepted"].as_bool()),
+        (StatusCode::OK, Some(false))
+    );
+    assert_eq!(
+        stream.events().len(),
+        1,
+        "a stale epoch publishes no deltas"
+    );
+    let expected = vec![event.clone(), suffix];
+    let (status, value) = post(
+        &router,
+        "worker-live",
+        STREAM_PREVIEW_BATCH_PATH,
+        batch(claim.clone(), expected.clone()),
+    )
+    .await;
+    assert_eq!(
+        (status, value["accepted"].as_bool()),
+        (StatusCode::OK, Some(true))
+    );
+    assert_eq!(&stream.observations()[1..], expected.as_slice());
+
     let legacy = serde_json::to_value(StreamEventRequest {
         claim,
         identity,
@@ -2015,9 +2118,13 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
         (StatusCode::OK, Some(true)),
         "R6"
     );
-    assert_eq!(stream.events().len(), 2, "R2-R5 never forward; R6 does");
+    assert_eq!(
+        stream.events().len(),
+        4,
+        "two single events and two batched deltas"
+    );
     assert!(
-        stream.observations()[1].assistant_response.is_none(),
+        stream.observations()[3].assistant_response.is_none(),
         "R6/E4 legacy context stays absent"
     );
 }

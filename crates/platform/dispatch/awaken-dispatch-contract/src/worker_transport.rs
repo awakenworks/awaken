@@ -256,6 +256,20 @@ pub struct StreamObservationRequest {
         Option<awaken_agent_contract::stream::event::AssistantResponseCoordinate>,
 }
 
+/// Worker-only batch endpoint. The current claim covers all its preview deltas.
+pub const STREAM_PREVIEW_BATCH_PATH: &str = "/v1/worker/dispatch/stream_batch";
+pub const MAX_STREAM_PREVIEW_BATCH_ITEMS: usize = 16;
+pub const MAX_STREAM_PREVIEW_PAYLOAD_BYTES: usize = 64 * 1024;
+pub const MAX_STREAM_PREVIEW_BODY_BYTES: usize = 96 * 1024;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamPreviewBatchRequest {
+    pub claim: RunClaim,
+    pub identity: WorkerIdentity,
+    pub observations: Vec<awaken_agent_contract::stream::event::Observation>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

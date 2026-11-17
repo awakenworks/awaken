@@ -109,7 +109,6 @@ pub use run_dispatch::{
     DispatchAdmissionShape, DispatchIdentityScope, RunDispatch, SessionResourceEnvelope,
     SessionRuntimeEnvelope,
 };
-pub use worker_transport::ClaimWorkRequest;
 pub use worker_transport::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
     ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialRealizationRequest,
@@ -118,6 +117,10 @@ pub use worker_transport::{
     SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
     StreamObservationRequest, WorkerHeartbeatReceipt, WorkerIdentityRequest,
     WorkerRegistrationReceipt,
+};
+pub use worker_transport::{
+    ClaimWorkRequest, MAX_STREAM_PREVIEW_BATCH_ITEMS, MAX_STREAM_PREVIEW_BODY_BYTES,
+    MAX_STREAM_PREVIEW_PAYLOAD_BYTES, STREAM_PREVIEW_BATCH_PATH, StreamPreviewBatchRequest,
 };
 
 pub use dispatch::InboxRead;

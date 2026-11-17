@@ -58,6 +58,8 @@ mod session_mcp_projection;
 mod session_record;
 mod session_service;
 mod session_update;
+mod sse_refresh;
+pub(crate) use sse_refresh::SessionSseRefresh;
 mod sessions;
 #[cfg(test)]
 pub(crate) mod test_support;

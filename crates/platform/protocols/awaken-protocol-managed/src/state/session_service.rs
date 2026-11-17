@@ -112,6 +112,7 @@ impl ManagedState {
             #[cfg(any(test, feature = "test-support"))]
             application,
             sessions: Arc::new(InvariantLock::new(HashMap::new())),
+            sse_refreshes: Default::default(),
             session_seq: Arc::new(AtomicU64::new(0)),
             live: Arc::new(LeafLock::new(HashMap::new())),
             inference_geo_policy: None,
@@ -164,6 +165,7 @@ impl ManagedState {
             agent_definition_presentation,
             mut application,
             sessions,
+            sse_refreshes,
             session_seq,
             live,
             inference_geo_policy,
@@ -184,6 +186,7 @@ impl ManagedState {
             agent_definition_presentation,
             application,
             sessions,
+            sse_refreshes,
             session_seq,
             live,
             inference_geo_policy,

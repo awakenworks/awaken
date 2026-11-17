@@ -537,6 +537,8 @@
 /v1/worker/dispatch/settle @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/worker/dispatch/stream | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
 /v1/worker/dispatch/stream @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/stream_batch | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/stream_batch @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/worker/drain | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
 /v1/worker/drain @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
 /v1/worker/environment/warmups | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type

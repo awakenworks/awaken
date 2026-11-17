@@ -18,7 +18,6 @@
 
 use async_trait::async_trait;
 use serde::Serialize;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -45,6 +44,11 @@ use awaken_dispatch_contract::{
 };
 use awaken_worker_contract::{WorkerIdentity, WorkerSnapshot};
 use awaken_worker_transport_security::{WorkerRequestAuthorizer, WorkerUpstream};
+
+mod pending_claims;
+mod previews;
+use pending_claims::PendingClaims;
+use previews::{PreviewQueue, PreviewTransport};
 
 async fn dispatch_response_error(response: reqwest::Response) -> DispatchError {
     let status = response.status();
@@ -178,7 +182,8 @@ pub struct HttpDispatchQueue {
     worker_identity: WorkerIdentity,
     worker_manifest: Option<awaken_worker_contract::WorkerManifest>,
     request_authorizer: Option<std::sync::Arc<dyn WorkerRequestAuthorizer>>,
-    pending_claims: tokio::sync::Mutex<HashMap<Option<RunId>, String>>,
+    pending_claims: PendingClaims,
+    previews: PreviewQueue,
 }
 
 /// Build the Worker's single authenticated dispatch/live transport instance.
@@ -266,7 +271,8 @@ impl HttpDispatchQueue {
             worker_identity,
             worker_manifest: None,
             request_authorizer: None,
-            pending_claims: tokio::sync::Mutex::new(HashMap::new()),
+            pending_claims: PendingClaims::default(),
+            previews: PreviewQueue::default(),
         }
     }
 
@@ -295,19 +301,15 @@ impl HttpDispatchQueue {
         body: &T,
         worker_id: &str,
     ) -> Result<serde_json::Value, DispatchError> {
-        let request = self.client.post(format!("{}{}", self.base_url, path));
-        let request = if let Some(authorizer) = &self.request_authorizer {
-            authorizer
-                .authorize("POST", path, worker_id, request)
-                .map_err(DispatchError::Rejected)?
-        } else {
-            request.header("x-awaken-worker-id", worker_id)
-        };
-        let resp = request
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| DispatchError::Rejected(format!("dispatch transport: {e}")))?;
+        let resp = send_dispatch_request(
+            &self.client,
+            &self.base_url,
+            self.request_authorizer.as_deref(),
+            path,
+            worker_id,
+            body,
+        )
+        .await?;
         if !resp.status().is_success() {
             return Err(dispatch_response_error(resp).await);
         }
@@ -415,33 +417,28 @@ impl HttpDispatchQueue {
         &self,
         run_id: Option<&RunId>,
     ) -> Result<Option<Option<Claimed>>, DispatchError> {
-        // The pool cannot deliver the same logical acquisition to two local
-        // execution slots. Retain its request id when the outcome is unknown.
-        let mut pending = self.pending_claims.lock().await;
-        let target = run_id.cloned();
-        let fresh = !pending.contains_key(&target);
-        let request_id = pending
-            .entry(target.clone())
-            .or_insert_with(|| uuid::Uuid::now_v7().to_string());
+        // Keep uncertain request ids available for replay, without giving
+        // the same logical request to two local execution slots.
+        let mut attempt = self.pending_claims.begin(run_id).await;
         let response = self
             .post_replayable(
                 "/v1/worker/dispatch/claim_for_request",
                 &ClaimWorkRequest {
                     identity: Some(self.worker_identity.clone()),
                     claim: ClaimRequest {
-                        request_id: request_id.clone(),
-                        run_id: target.clone(),
+                        request_id: attempt.request_id().to_owned(),
+                        run_id: run_id.cloned(),
                     },
                 },
                 self.worker_id(),
-                Some(fresh),
+                Some(attempt.fresh()),
             )
             .await?;
         let claimed = response
             .as_ref()
             .map(|value| self.decode_claimed(value))
             .transpose()?;
-        pending.remove(&target);
+        attempt.complete();
         Ok(claimed)
     }
 
@@ -454,6 +451,19 @@ impl HttpDispatchQueue {
         // are committed through the durable path and must never be posted to the
         // Coordinator's live-only observation endpoint.
         if !awaken_agent_contract::event::classify(&observation.event.kind).live {
+            return Ok(());
+        }
+        if matches!(
+            observation.event.kind,
+            awaken_agent_contract::event::AgentEvent::Delta(_)
+        ) {
+            self.previews
+                .offer(claim, observation, || PreviewTransport {
+                    base_url: self.base_url.clone(),
+                    client: self.client.clone(),
+                    identity: self.worker_identity.clone(),
+                    authorizer: self.request_authorizer.clone(),
+                });
             return Ok(());
         }
         let result = self
@@ -475,6 +485,29 @@ impl HttpDispatchQueue {
         }
         Ok(())
     }
+}
+
+async fn send_dispatch_request<T: Serialize + ?Sized>(
+    client: &reqwest::Client,
+    base_url: &str,
+    authorizer: Option<&dyn WorkerRequestAuthorizer>,
+    path: &str,
+    worker_id: &str,
+    body: &T,
+) -> Result<reqwest::Response, DispatchError> {
+    let request = client.post(format!("{base_url}{path}"));
+    let request = if let Some(authorizer) = authorizer {
+        authorizer
+            .authorize("POST", path, worker_id, request)
+            .map_err(DispatchError::Rejected)?
+    } else {
+        request.header("x-awaken-worker-id", worker_id)
+    };
+    request
+        .json(body)
+        .send()
+        .await
+        .map_err(|error| DispatchError::Rejected(format!("dispatch transport: {error}")))
 }
 
 #[async_trait]

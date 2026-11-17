@@ -309,7 +309,11 @@ fn session_id_from_path(path: &str) -> Option<String> {
 /// is the status-keyed discriminator the SDK expects; the message is preserved so
 /// a caller sees *why* (e.g. a mismatched resume id), not a bare status code.
 pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse>) {
-    let code = match &err {
+    error_response_for(&err)
+}
+
+fn error_response_for(err: &StateError) -> (StatusCode, Json<ErrorResponse>) {
+    let code = match err {
         StateError::Run(error) => Some(error.code.clone()),
         _ => None,
     };
@@ -335,12 +339,26 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
             (StatusCode::NOT_FOUND, "not_found_error", err.to_string())
         }
         StateError::Run(e) => match e.kind {
-            RunErrorKind::BadRequest => {
-                (StatusCode::BAD_REQUEST, "invalid_request_error", e.message)
-            }
-            RunErrorKind::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "api_error", e.message),
-            RunErrorKind::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "api_error", e.message),
-            RunErrorKind::Conflict => (StatusCode::CONFLICT, "invalid_request_error", e.message),
+            RunErrorKind::BadRequest => (
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                e.message.clone(),
+            ),
+            RunErrorKind::Internal => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "api_error",
+                e.message.clone(),
+            ),
+            RunErrorKind::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "api_error",
+                e.message.clone(),
+            ),
+            RunErrorKind::Conflict => (
+                StatusCode::CONFLICT,
+                "invalid_request_error",
+                e.message.clone(),
+            ),
         },
         // No compatible route emits these errors. Keep the generic envelope for
         // internal exhaustive mapping; awaken-protocol-awaken owns the extension's
@@ -1144,10 +1162,11 @@ async fn stream_thread_events(
     // Runtime-owned live observer; Advisor consultations intentionally expose
     // only their documented lifecycle/cross-post wire.
     let previews = parse_event_deltas(raw.as_deref())?;
-    let observation = state
-        .refresh_committed_events_for_observation(&id, None)
+    let refresh = state.sse_refreshes.subscribe(&id);
+    let observation = refresh
+        .initial(&state)
         .await
-        .map_err(error_response)?;
+        .map_err(|error| error_response_for(&error))?;
     let thread = state.get_thread(&id, &tid).map_err(error_response)?;
     let (snapshot, rx, revision) = state
         .stream_projection_subscribe(&id)
@@ -1179,6 +1198,7 @@ async fn stream_thread_events(
     Ok(Sse::new(live_sse_stream(
         LiveSseSource {
             state: Arc::clone(&state),
+            refresh,
             session_id: id.clone(),
             owner_scope: state
                 .resolve_owner(&id)
@@ -1659,10 +1679,11 @@ async fn stream_events(
     let deadline = private_stream_deadline(state.as_ref());
     // Opt in to live previews (`event_start`/`event_delta`) via `event_deltas[]`.
     let previews = parse_event_deltas(raw.as_deref())?;
-    let observation = state
-        .refresh_committed_events_for_observation(&id, None)
+    let refresh = state.sse_refreshes.subscribe(&id);
+    let observation = refresh
+        .initial(&state)
         .await
-        .map_err(error_response)?;
+        .map_err(|error| error_response_for(&error))?;
     let (snapshot, rx, revision) = state
         .stream_projection_subscribe(&id)
         .map_err(error_response)?;
@@ -1688,6 +1709,7 @@ async fn stream_events(
     Ok(Sse::new(live_sse_stream(
         LiveSseSource {
             state: Arc::clone(&state),
+            refresh,
             session_id: id.clone(),
             owner_scope: state
                 .resolve_owner(&id)

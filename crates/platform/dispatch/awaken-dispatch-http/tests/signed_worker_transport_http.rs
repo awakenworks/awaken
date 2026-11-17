@@ -14,6 +14,8 @@ mod attempt_binding;
 mod cursor_protocol;
 #[path = "signed_worker_transport_http/error_classes.rs"]
 mod error_classes;
+#[path = "signed_worker_transport_http/live_preview.rs"]
+mod live_preview;
 #[path = "signed_worker_transport_http/preparation_work.rs"]
 mod preparation_work;
 #[path = "signed_worker_transport_http/realization_control.rs"]
@@ -29,8 +31,6 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::event::{AgentEvent, Delta};
-use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_coordinator_client::{WorkerControlClient, WorkerControlSessionClient};
 use awaken_dispatch::{
     AttemptAdmission, DispatchEnqueue as _, DispatchReads as _, MemoryDispatchStore,
@@ -1193,28 +1193,14 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // Worker's ownership produces a false critical alarm and obscures the true
     // lifecycle edge; the transport now preserves Retired so the Worker uses
     // its one quiet local-projection retirement path.
-    let live_event = |thread_id: &str| {
-        StreamObservation::assistant_delta(
-            claim.run_id.clone(),
-            ThreadId(thread_id.into()),
-            0,
-            0,
-            AgentEvent::Delta(Delta::TextDelta {
-                delta: "live".into(),
-            }),
-        )
-    };
-    live_publisher
-        .publish_observation(&claim, live_event("signed-thread"))
-        .await
-        .expect("T29 live publication remains best effort");
-    assert_eq!(live_stream.events().len(), 1, "T29");
-    live_publisher
-        .publish_observation(&claim, live_event("forged-thread"))
-        .await
-        .expect("T30 rejected transport remains best effort to the Worker");
-    assert_eq!(live_stream.events().len(), 1, "T30");
-
+    live_preview::verify_signed_preview(
+        live_publisher.as_ref(),
+        &upstream,
+        &registered.snapshot.identity,
+        &claim,
+        &live_stream,
+    )
+    .await;
     let client = WorkerControlClient::new(upstream.clone());
     let work_receipt = claimed
         .session_work_authority
