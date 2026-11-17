@@ -473,3 +473,193 @@ async fn cancelled_acp_probe_joins_cleanup_after_composition_release() {
     assert!(!base.path().join(scope).exists());
     assert!(installed_sessions.upgrade().is_none());
 }
+
+/// A real probe environment's lifecycle whose first `stalls` disposals never
+/// finish, as a container runtime wedged under load does; later disposals
+/// reach the real adapter.
+struct StallingDispose {
+    inner: Arc<dyn EnvironmentLifecycle>,
+    stalls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl EnvironmentLifecycle for StallingDispose {
+    fn handle(&self) -> pc::SandboxHandle {
+        self.inner.handle()
+    }
+
+    async fn stop_bound_processes(
+        &self,
+    ) -> Result<awaken_session_environment_contract::EnvironmentStopProof, pc::SandboxError> {
+        self.inner.stop_bound_processes().await
+    }
+
+    async fn quiesce(
+        &self,
+    ) -> Result<awaken_session_environment_contract::EnvironmentQuiescenceProof, pc::SandboxError>
+    {
+        self.inner.quiesce().await
+    }
+
+    async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        let stalled = self
+            .stalls
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |left| left.checked_sub(1),
+            )
+            .is_ok();
+        if stalled {
+            std::future::pending::<()>().await;
+        }
+        self.inner.dispose().await
+    }
+
+    async fn acknowledge_memory_reconciliation(
+        &self,
+        effect_fence: &pc::SandboxEffectFence,
+        complete_materializations: &[pc::MemoryMaterializationEvidence],
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError> {
+        self.inner
+            .acknowledge_memory_reconciliation(effect_fence, complete_materializations, authority)
+            .await
+    }
+
+    async fn prepare_disposal_for_effect(
+        &self,
+        effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<pc::SandboxEffectFence, pc::SandboxError> {
+        self.inner
+            .prepare_disposal_for_effect(effect_fence, authority)
+            .await
+    }
+
+    async fn dispose_for_effect(
+        &self,
+        authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError> {
+        self.inner
+            .dispose_for_effect(authorization, authority)
+            .await
+    }
+
+    async fn checkpoint_for_effect(
+        &self,
+        request: &pc::SandboxCheckpointCaptureRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+        effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
+        self.inner
+            .checkpoint_for_effect(request, store, effect_fence, authority)
+            .await
+    }
+
+    async fn cleanup_checkpoint_for_terminal(
+        &self,
+        request: &pc::SandboxCheckpointCaptureRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+        expected_effect_fence: &pc::SandboxEffectFence,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError> {
+        self.inner
+            .cleanup_checkpoint_for_terminal(
+                request,
+                store,
+                expected_effect_fence,
+                terminal_effect_fence,
+                authority,
+            )
+            .await
+    }
+}
+
+/// A probe whose disposal outlives its bound leaves a realization at the
+/// derived scope that the provider refuses to create over. Causes: C1 the
+/// disposal bound elapsed; C2 a later probe of the same CLI in this process;
+/// C3 the runtime now completes the retained disposal. Effects: E1 the probe
+/// answers with a timeout and the ledger retains the exact handle; E2 the
+/// leftover blocks a plain create at that scope; E3 the later probe reaps the
+/// handle first, then creates, negotiates and disposes its own environment;
+/// E4 a reap that still cannot finish refuses before any create, keeps the
+/// handle, and the following probe recovers.
+///
+/// | Rule | C1 | C2 | C3 | Effect |
+/// |---|---|---|---|---|
+/// | P1 | Y | N | - | E1 + E2 |
+/// | P2 | Y | Y | N | E4 (refused, handle kept) |
+/// | P3 | Y | Y | Y | E3 (verified capability, scope gone, strand settled) |
+#[tokio::test]
+async fn a_probe_whose_disposal_timed_out_is_reaped_by_the_next_probe_at_its_scope() {
+    let base = tempfile::tempdir().unwrap();
+    let mut negotiator = probe_negotiator(
+        base.path(),
+        "probe-dispose-timeout",
+        Arc::new(ReadyHandshake),
+    )
+    .await;
+    negotiator.probe.dispose_bound = Duration::from_secs(1);
+    let argv = probe_argv();
+    let scope = SessionAcpCapabilityNegotiator::probe_scope("probe-dispose-timeout", &argv, None);
+    let spec = crate::sandbox_layout::agent_run_sandbox_spec(&scope);
+    let stranded = Arc::clone(&negotiator.probe.stranded);
+
+    // P1: the probe environment exists and its disposal does not finish.
+    let environment = negotiator
+        .probe
+        .provider
+        .realizer()
+        .create_unattached(&spec)
+        .await
+        .expect("probe environment realized");
+    let error = stranded
+        .dispose_within(
+            &scope,
+            Arc::new(StallingDispose {
+                inner: environment.lifecycle().clone(),
+                stalls: 2.into(),
+            }),
+            negotiator.probe.dispose_bound,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"), "P1 E1 {error}");
+    assert!(stranded.contains(&scope), "P1 E1 strand recorded");
+    assert!(
+        base.path().join(&scope).exists(),
+        "P1 the realization still stands"
+    );
+    assert!(
+        negotiator
+            .probe
+            .provider
+            .realizer()
+            .create_unattached(&spec)
+            .await
+            .is_err(),
+        "P1 E2 the leftover realization blocks a create at its scope"
+    );
+
+    // P2: the retained disposal stalls again, so the probe refuses before create.
+    let refusal = AcpCapabilityNegotiator::negotiate(&negotiator, &argv, probe_cwd(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        refusal.contains("left its environment undisposed") && refusal.contains(&scope),
+        "P2 E4 {refusal}"
+    );
+    assert!(stranded.contains(&scope), "P2 E4 handle kept");
+    assert!(base.path().join(&scope).exists());
+
+    // P3: the runtime completes the retained disposal; the probe recovers.
+    AcpCapabilityNegotiator::negotiate(&negotiator, &argv, probe_cwd(), None)
+        .await
+        .expect("P3 E3 the later probe reaps the strand and verifies the capability");
+    assert!(!base.path().join(&scope).exists(), "P3 E3 scope disposed");
+    assert!(!stranded.contains(&scope), "P3 E3 strand settled");
+}

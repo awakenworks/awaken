@@ -16,6 +16,7 @@
 //! The Host task registry retains each live handle through caller cancellation;
 //! a later process still needs the provider’s durable effect and physical proof.
 
+use awaken_session_environment_contract::EnvironmentLifecycle;
 use awaken_session_realization::peers::EnvironmentPeer as _;
 use awaken_sync::InvariantLock;
 use std::path::Path;
@@ -39,6 +40,14 @@ use awaken_provisioning_contract as pc;
 /// is the function that recovers it from inputs that outlive any task.
 const PROBE_RECONCILER: &str = "SessionAcpCapabilityNegotiator::probe_scope";
 
+/// How long a probe waits for its environment's disposal before it answers.
+/// Disposal crosses the container runtime boundary; the bound keeps a wedged
+/// daemon from holding the capability refresh (and therefore a Worker
+/// heartbeat or lease) forever. It bounds the answer, not the cleanup: an
+/// environment whose disposal did not finish stays retained for the next
+/// probe at its scope to reap.
+const PROBE_DISPOSE_BOUND: Duration = Duration::from_secs(10);
+
 /// Probe scopes whose environment may still stand with nobody in this process
 /// left to dispose it.
 ///
@@ -46,7 +55,9 @@ const PROBE_RECONCILER: &str = "SessionAcpCapabilityNegotiator::probe_scope";
 /// resource itself, and the scope is recomputable from scratch, so losing this
 /// ledger to a restart costs a shortcut and nothing more. It mirrors
 /// `awaken_sandbox_local::AbandonedRealizations`, which stands in the same
-/// relation to the filesystem realization marker.
+/// relation to the filesystem realization marker. Within one process it also
+/// keeps the exact handle of an environment whose bounded disposal did not
+/// finish, which is the only authority this process has to finish it.
 ///
 /// Crate-visible, not public: nothing outside this crate consumes it yet, and
 /// widening the published surface ahead of a consumer is how a narrow API stops
@@ -54,7 +65,17 @@ const PROBE_RECONCILER: &str = "SessionAcpCapabilityNegotiator::probe_scope";
 /// wants to read the ledger.
 #[derive(Default)]
 pub(crate) struct StrandedProbeEnvironments {
-    scopes: InvariantLock<Vec<String>>,
+    scopes: InvariantLock<Vec<StrandedProbe>>,
+}
+
+/// One scope this process believes still has an environment standing.
+struct StrandedProbe {
+    scope: String,
+    /// The exact environment whose bounded disposal did not prove it gone.
+    /// Present when this process still holds the handle, so the next probe
+    /// at the same scope can finish that disposal; absent when only a
+    /// cancellation retention named the scope.
+    environment: Option<Arc<dyn EnvironmentLifecycle>>,
 }
 
 impl StrandedProbeEnvironments {
@@ -71,15 +92,41 @@ impl StrandedProbeEnvironments {
         let Some(mut scopes) = self.lock() else {
             return;
         };
-        if !scopes.contains(&scope) {
-            scopes.push(scope);
+        if !scopes.iter().any(|recorded| recorded.scope == scope) {
+            scopes.push(StrandedProbe {
+                scope,
+                environment: None,
+            });
         }
+    }
+
+    /// Retain the exact environment whose disposal at `scope` did not finish.
+    fn retain_environment(&self, scope: &str, environment: Arc<dyn EnvironmentLifecycle>) {
+        let Some(mut scopes) = self.lock() else {
+            return;
+        };
+        match scopes.iter_mut().find(|recorded| recorded.scope == scope) {
+            Some(recorded) => recorded.environment = Some(environment),
+            None => scopes.push(StrandedProbe {
+                scope: scope.to_string(),
+                environment: Some(environment),
+            }),
+        }
+    }
+
+    /// Take the retained environment at `scope`, leaving the strand recorded
+    /// until a disposal proves the environment gone.
+    fn take_environment(&self, scope: &str) -> Option<Arc<dyn EnvironmentLifecycle>> {
+        self.lock()?
+            .iter_mut()
+            .find(|recorded| recorded.scope == scope)
+            .and_then(|recorded| recorded.environment.take())
     }
 
     /// The environment at `scope` is provably gone, so the strand is over.
     fn settle(&self, scope: &str) {
         if let Some(mut scopes) = self.lock() {
-            scopes.retain(|recorded| recorded != scope);
+            scopes.retain(|recorded| recorded.scope != scope);
         }
     }
 
@@ -87,7 +134,65 @@ impl StrandedProbeEnvironments {
     #[must_use]
     fn contains(&self, scope: &str) -> bool {
         self.lock()
-            .is_some_and(|scopes| scopes.iter().any(|recorded| recorded == scope))
+            .is_some_and(|scopes| scopes.iter().any(|recorded| recorded.scope == scope))
+    }
+
+    /// Dispose one probe environment within `bound`. Success proves it gone
+    /// and settles the strand; a failure or an elapsed bound retains the exact
+    /// handle, because the scope is a pure function of the probe inputs and
+    /// every later probe of the same CLI lands on it again:
+    ///
+    /// | Rule | disposal within `bound` | ledger after | returned |
+    /// |---|---|---|---|
+    /// | D1 | proved gone | strand settled | `Ok` |
+    /// | D2 | failed | handle retained at `scope` | the failure |
+    /// | D3 | bound elapsed | handle retained at `scope` | timeout |
+    async fn dispose_within(
+        &self,
+        scope: &str,
+        environment: Arc<dyn EnvironmentLifecycle>,
+        bound: Duration,
+    ) -> Result<(), pc::SandboxError> {
+        let disposed = tokio::time::timeout(bound, environment.dispose())
+            .await
+            .map_err(|_| {
+                pc::SandboxError::timeout("dispose ACP capability probe environment timed out")
+            })
+            .and_then(|result| {
+                result.map_err(|error| {
+                    error.map_detail(|detail| {
+                        format!("dispose ACP capability probe environment: {detail}")
+                    })
+                })
+            });
+        if disposed.is_ok() {
+            self.settle(scope);
+        } else {
+            self.retain_environment(scope, environment);
+        }
+        disposed
+    }
+
+    /// Before a probe creates at `scope`, finish the disposal an earlier probe
+    /// in this process left unfinished there. Without this, the leftover
+    /// realization occupies the derived scope and every later create is
+    /// refused for want of a durable effect fence, so the capability is never
+    /// verified again in this process. A strand with no retained handle is
+    /// left to the provider's own create decision, which refuses it.
+    async fn reap(&self, scope: &str, bound: Duration) -> Result<(), pc::SandboxError> {
+        let Some(environment) = self.take_environment(scope) else {
+            return Ok(());
+        };
+        self.dispose_within(scope, environment, bound)
+            .await
+            .map_err(|error| {
+                error.map_detail(|detail| {
+                    format!(
+                        "an earlier probe at scope `{scope}` left its environment undisposed \
+                         and it is still not gone: {detail}"
+                    )
+                })
+            })
     }
 
     /// The ledger, unless its lock is poisoned. The ledger is an index whose
@@ -101,8 +206,9 @@ impl StrandedProbeEnvironments {
     /// | S2 | poisoned | no effect          | `false` (no strand hint in the create error) |
     ///
     /// S2 decides no lifecycle: reconciliation reads the stamped scope, never
-    /// this index, so no environment is disposed or kept because of it.
-    fn lock(&self) -> Option<std::sync::MutexGuard<'_, Vec<String>>> {
+    /// this index. A poisoned ledger also retains no handle, so a later probe
+    /// meets the provider's own refusal exactly as after a restart.
+    fn lock(&self) -> Option<std::sync::MutexGuard<'_, Vec<StrandedProbe>>> {
         self.scopes.lock().ok()
     }
 }
@@ -120,6 +226,7 @@ pub struct SessionAcpCapabilityNegotiator {
 struct AcpProbe {
     provider: crate::session_environment::SandboxProviderRoles,
     timeout: Duration,
+    dispose_bound: Duration,
     handshake: Arc<dyn AcpCapabilityHandshake>,
     stranded: Arc<StrandedProbeEnvironments>,
 }
@@ -141,6 +248,7 @@ impl SessionAcpCapabilityNegotiator {
                     .session_provider
                     .clone(),
                 timeout,
+                dispose_bound: PROBE_DISPOSE_BOUND,
                 handshake,
                 stranded: Arc::default(),
             },
@@ -192,6 +300,7 @@ impl AcpProbe {
         >,
     ) -> Result<NegotiatedAcpCapabilities, pc::SandboxError> {
         let spec = crate::sandbox_layout::agent_run_sandbox_spec(scope);
+        self.stranded.reap(scope, self.dispose_bound).await?;
         let environment = self
             .provider
             .realizer()
@@ -258,30 +367,13 @@ impl AcpProbe {
             negotiated
         }
         .await;
-        // Disposal itself crosses the container runtime boundary. Bound it so
-        // a wedged daemon cannot hold the capability refresh (and therefore a
-        // Worker heartbeat/lease) forever.
-        let dispose =
-            tokio::time::timeout(Duration::from_secs(10), environment.lifecycle().dispose())
-                .await
-                .map_err(|_| {
-                    pc::SandboxError::timeout("dispose ACP capability probe environment timed out")
-                })
-                .and_then(|result| {
-                    result.map_err(|error| {
-                        error.map_detail(|detail| {
-                            format!("dispose ACP capability probe environment: {detail}")
-                        })
-                    })
-                });
         // A disposal that did not prove the environment gone is a strand this
-        // process *observed*, not one a cancellation hid; record it directly
-        // rather than waiting for a claim that is about to settle.
-        if dispose.is_err() {
-            self.stranded.record(scope.to_string());
-        } else {
-            self.stranded.settle(scope);
-        }
+        // process *observed*, not one a cancellation hid; the ledger retains
+        // its exact handle rather than waiting for a claim about to settle.
+        let dispose = self
+            .stranded
+            .dispose_within(scope, environment.lifecycle().clone(), self.dispose_bound)
+            .await;
         match (result, dispose) {
             (Ok(negotiated), Ok(())) => Ok(negotiated),
             (Err(error), _) | (Ok(_), Err(error)) => Err(error),
