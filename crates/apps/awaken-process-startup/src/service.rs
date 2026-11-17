@@ -152,8 +152,7 @@ async fn run_service_with_adapters(
             role.binary()
         ));
     }
-    let installations =
-        crate::installation_binding::verify_deployment_installations(&deployment).await?;
+    let installations = admit_ordinary_start(&deployment).await?;
     installations.platform_workspace_before_write()?;
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
@@ -328,8 +327,7 @@ fn validate_prebuilt_control_deployment(deployment: &ResolvedDeployment) -> Resu
 pub async fn migrate_service(config_path: Option<std::path::PathBuf>) -> Result<(), String> {
     migrate_service_with_request(DatabaseMigrateArgs {
         config_path,
-        initialization_reference: None,
-        adoption_reference: None,
+        ..Default::default()
     })
     .await
 }
@@ -340,15 +338,41 @@ pub async fn migrate_service_with_request(args: DatabaseMigrateArgs) -> Result<(
         args.initialization_reference,
         args.adoption_reference,
     )?;
-    let deployment = load_migration_deployment(args.config_path)?;
+    let deployment = load_migration_deployment(args.config_path, args.data_dir)?;
     let prepared =
         crate::installation_binding::prepare_deployment_installations(&deployment, &authorization)
             .await?;
     warn_deprecations(&deployment);
+    apply_prepared_migration(&deployment, prepared).await
+}
+
+/// Ordinary start admission shared by the `awaken` launcher and the scenario
+/// host. A first start applies the exact migration explicit initialization
+/// applies, then admits like any later start; every other start only verifies.
+pub(crate) async fn admit_ordinary_start(
+    deployment: &ResolvedDeployment,
+) -> Result<crate::installation_binding::PreparedDeploymentInstallations, String> {
+    match crate::installation_binding::admit_ordinary_start(deployment).await? {
+        crate::installation_binding::OrdinaryAdmission::Verified(installations) => {
+            Ok(installations)
+        }
+        crate::installation_binding::OrdinaryAdmission::FirstStart(prepared) => {
+            apply_prepared_migration(deployment, prepared).await?;
+            crate::installation_binding::verify_deployment_installations(deployment).await
+        }
+    }
+}
+
+/// The one migration every installation proof goes through: explicit
+/// initialization, ordinary `database migrate`, and a Local first start.
+async fn apply_prepared_migration(
+    deployment: &ResolvedDeployment,
+    prepared: crate::installation_binding::PreparedDeploymentInstallations,
+) -> Result<(), String> {
     deployment.ensure_data_layout()?;
-    let seal_key = role_seal_key(&deployment)?;
+    let seal_key = role_seal_key(deployment)?;
     crate::deployment_process::migrate_deployment_schema_prepared(
-        &deployment,
+        deployment,
         seal_key.as_ref(),
         prepared,
     )
@@ -367,6 +391,7 @@ async fn migrate_service_for_role(
         ConfigOverrides {
             config_path: args.config_path,
             role: Some(role.deployment_role()),
+            data_dir: args.data_dir,
             ..Default::default()
         },
         awaken_time::system_clock(),
@@ -375,24 +400,19 @@ async fn migrate_service_for_role(
         crate::installation_binding::prepare_deployment_installations(&deployment, &authorization)
             .await?;
     warn_deprecations(&deployment);
-    deployment.ensure_data_layout()?;
-    let seal_key = role_seal_key(&deployment)?;
-    crate::deployment_process::migrate_deployment_schema_prepared(
-        &deployment,
-        seal_key.as_ref(),
-        prepared,
-    )
-    .await
+    apply_prepared_migration(&deployment, prepared).await
 }
 
 fn load_migration_deployment(
     config_path: Option<std::path::PathBuf>,
+    data_dir: Option<std::path::PathBuf>,
 ) -> Result<ResolvedDeployment, String> {
     // Migration selects storage adapters from the authored role. Overriding the
     // role would change its private-boundary validation and authority manifest.
     ResolvedDeployment::load(
         ConfigOverrides {
             config_path,
+            data_dir,
             ..Default::default()
         },
         awaken_time::system_clock(),
@@ -1177,8 +1197,7 @@ mod tests {
         let role_migration_error = migrate_service_for_role(
             DatabaseMigrateArgs {
                 config_path: Some(config.to_path_buf()),
-                initialization_reference: None,
-                adoption_reference: None,
+                ..Default::default()
             },
             ServiceRole::AllInOne,
         )
@@ -1409,20 +1428,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_migration_requires_explicit_initialization_and_publishes_identity_last() {
+    async fn local_first_start_initializes_through_the_startup_entry_before_service_effects() {
+        /* Cause/effect decision table over the real AllInOne startup entry:
+         * SF1 Local AllInOne, no expected Workspace, data dir missing => the
+         * first-start migration publishes a platform-workspace-id and the
+         * canonical Session store before co-located Worker preparation runs;
+         * SF2 the same entry on that bound dir admits ordinarily and keeps the
+         * identity; SF3 after the data dir is deleted, the entry initializes a
+         * new installation with a new identity. The co-located Worker refuses
+         * so the test observes the ordering without serving. */
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = root.path().join("data");
+        let config = root.path().join("config.toml");
+        std::fs::write(
+            &config,
+            format!("data_dir = {data_dir:?}\nidentity_mode = \"no-login\"\nacp_clis = []\n"),
+        )
+        .unwrap();
+        let start = || {
+            run_all_in_one(
+                ServiceArgs {
+                    config_path: Some(config.clone()),
+                    ..Default::default()
+                },
+                Arc::new(UnreachableColocatedWorker),
+            )
+        };
+        let marker = data_dir.join("platform-workspace-id");
+        let reached_worker = "the continuity fence did not precede co-located Worker preparation";
+
+        let error = start().await.expect_err("SF1 the Worker refuses");
+        assert_eq!(error, reached_worker, "SF1 startup reached the Worker");
+        let first = std::fs::read_to_string(&marker).expect("SF1 identity published");
+        awaken_session_store::SqliteManagedSessionRepository::verify_existing(
+            &data_dir.join("sessions.db").to_string_lossy(),
+        )
+        .await
+        .expect("SF1 canonical Session store");
+
+        let error = start().await.expect_err("SF2 the Worker refuses");
+        assert_eq!(error, reached_worker, "SF2 ordinary admission");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            first,
+            "SF2 same identity"
+        );
+
+        std::fs::remove_dir_all(&data_dir).unwrap();
+        let error = start().await.expect_err("SF3 the Worker refuses");
+        assert_eq!(error, reached_worker, "SF3 startup reached the Worker");
+        let second = std::fs::read_to_string(&marker).expect("SF3 identity published");
+        assert_ne!(second, first, "SF3 a reset data dir is a new installation");
+    }
+
+    #[tokio::test]
+    async fn local_migration_initializes_only_the_first_start_row_and_publishes_identity_last() {
         /* Cause/effect graph: C1 local state is fresh/bound; C2 migration carries
          * no authorization/a complete initialization reference; C3 every owned
-         * store opens or a late captured-content store fails after Session open.
-         * Effects: E1 ordinary fresh migration rejects with a byte-identical
-         * absent data root; E2 explicit fresh migration creates canonical stores
-         * and publishes the sole platform-workspace-id only after all succeed;
+         * store opens or a late captured-content store fails after Session open;
+         * C4 the configuration names an expected Workspace. Effects: E1 ordinary
+         * fresh migration of a Local AllInOne without C4 is the first-start row:
+         * it creates canonical stores and publishes a new platform-workspace-id;
+         * E1b with C4 it rejects with a byte-identical absent data root; E2
+         * explicit fresh migration creates canonical stores and publishes the
+         * sole platform-workspace-id only after all succeed;
          * E3 ordinary bound replay succeeds without changing identity; E4 a late
          * store failure may leave recoverable store-first files but never the
          * installation marker; E5 deleting Session blocks ordinary migration and
          * only another explicit initialization may intentionally recover it.
          * E6 explicit initialization with a configured expected identity publishes
-         * that exact value. Decision table: LM1 fresh+ordinary=>E1; LM2 fresh+initialize+all-open=>
-         * E2; LM3 bound+ordinary=>E3; LM4 fresh+initialize+late-failure=>E4;
+         * that exact value. Decision table: LM1 fresh+ordinary=>E1; LM1b
+         * fresh+C4+ordinary=>E1b; LM2 fresh+initialize+all-open=>E2; LM3
+         * bound+ordinary=>E3; LM4 fresh+initialize+late-failure=>E4;
          * LM5 marker+deleted Session+ordinary/initialize=>E5/E2; LM6 expected+
          * no marker+initialize=>E6. */
         fn write_local_config(
@@ -1446,21 +1523,49 @@ mod tests {
         }
 
         let root = tempfile::tempdir().unwrap();
+        let first_start_dir = root.path().join("first-start");
+        let first_start_config =
+            write_local_config(root.path(), "first-start", &first_start_dir, None);
+        migrate_service_with_request(DatabaseMigrateArgs {
+            config_path: Some(first_start_config),
+            ..Default::default()
+        })
+        .await
+        .expect("LM1 ordinary migration initializes a Local first start");
+        assert!(
+            !std::fs::read_to_string(first_start_dir.join("platform-workspace-id"))
+                .expect("LM1 identity published")
+                .trim()
+                .is_empty(),
+            "LM1/E1"
+        );
+        awaken_session_store::SqliteManagedSessionRepository::verify_existing(
+            &first_start_dir.join("sessions.db").to_string_lossy(),
+        )
+        .await
+        .expect("LM1/E1 canonical Session store");
+
+        let fenced_dir = root.path().join("fenced");
+        let fenced_config =
+            write_local_config(root.path(), "fenced", &fenced_dir, Some("workspace-fenced"));
+        let error = migrate_service_with_request(DatabaseMigrateArgs {
+            config_path: Some(fenced_config),
+            ..Default::default()
+        })
+        .await
+        .expect_err("LM1b a configured Workspace is never initialized implicitly");
+        assert!(
+            error.starts_with("platform_workspace_missing:"),
+            "LM1b: {error}"
+        );
+        assert!(!fenced_dir.exists(), "LM1b/E1b no data root");
+
         let data_dir = root.path().join("fresh");
         let config = write_local_config(root.path(), "fresh", &data_dir, None);
         let ordinary = DatabaseMigrateArgs {
             config_path: Some(config.clone()),
             ..Default::default()
         };
-        let error = migrate_service_with_request(ordinary.clone())
-            .await
-            .expect_err("LM1 ordinary migration cannot initialize local storage");
-        assert!(
-            error.starts_with("unbound_empty_local_storage:"),
-            "LM1: {error}"
-        );
-        assert!(!data_dir.exists(), "LM1/E1 no data root");
-
         migrate_service_with_request(DatabaseMigrateArgs {
             initialization_reference: Some("install-local-2048".into()),
             ..ordinary.clone()
@@ -1529,7 +1634,7 @@ mod tests {
         migrate_service_with_request(DatabaseMigrateArgs {
             config_path: Some(expected_config),
             initialization_reference: Some("install-local-expected-2048".into()),
-            adoption_reference: None,
+            ..Default::default()
         })
         .await
         .expect("LM6 explicit exact-identity initialization");
@@ -1545,7 +1650,7 @@ mod tests {
         let error = migrate_service_with_request(DatabaseMigrateArgs {
             config_path: Some(failed_config),
             initialization_reference: Some("install-local-failure-2048".into()),
-            adoption_reference: None,
+            ..Default::default()
         })
         .await
         .expect_err("LM4 late owned-store failure");
@@ -1922,7 +2027,9 @@ control_service_token_file = {token:?}
         )
         .unwrap();
         assert_eq!(
-            load_migration_deployment(Some(coordinator)).unwrap().role,
+            load_migration_deployment(Some(coordinator), None)
+                .unwrap()
+                .role,
             Role::Coordinator,
             "M1"
         );
@@ -1937,7 +2044,9 @@ control_service_token_file = {token:?}
         )
         .unwrap();
         assert_eq!(
-            load_migration_deployment(Some(all_in_one)).unwrap().role,
+            load_migration_deployment(Some(all_in_one), None)
+                .unwrap()
+                .role,
             Role::AllInOne,
             "M2"
         );

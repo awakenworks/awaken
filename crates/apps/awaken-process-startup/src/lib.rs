@@ -412,6 +412,11 @@ async fn prepare_all_in_one_process_with_model_supply(
         .seal_key
         .load_or_create()
         .unwrap_or_else(|error| panic!("control seal key: {error}"));
+    // Admit exactly as the `awaken` launcher does, so a Local first start
+    // initializes through the one migration before the process is assembled.
+    service::admit_ordinary_start(&deployment)
+        .await
+        .unwrap_or_else(|error| panic!("deployment installations: {error}"));
     prepare_runtime_process_with_coordinator_services(
         &deployment,
         Some(&key),
@@ -449,7 +454,7 @@ async fn prepare_all_in_one_process_with_model_supply_on_worker(
         .seal_key
         .load_or_create()
         .unwrap_or_else(|error| panic!("control seal key: {error}"));
-    let workspace = installation_binding::verify_deployment_installations(&deployment)
+    let workspace = service::admit_ordinary_start(&deployment)
         .await
         .and_then(|installations| installations.platform_workspace_before_write())
         .unwrap_or_else(|error| panic!("deployment installations: {error}"));

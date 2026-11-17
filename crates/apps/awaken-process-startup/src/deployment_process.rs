@@ -361,6 +361,9 @@ pub(crate) async fn migrate_deployment_schema_prepared(
 ) -> Result<(), String> {
     let publish_local_workspace = prepared.publishes_local_workspace();
     let platform_workspace = prepared.platform_workspace_before_write()?;
+    let first_start_root = prepared
+        .local_first_start_root()
+        .map(std::path::Path::to_path_buf);
     let manifest = migration_manifest(deployment.role);
     // The migration process's one wall clock.
     let clock = awaken_time::system_clock();
@@ -420,6 +423,32 @@ pub(crate) async fn migrate_deployment_schema_prepared(
             .await?;
         }
     }
+    if let Some(root) = first_start_root {
+        announce_local_first_start(&root)?;
+    }
+    Ok(())
+}
+
+/// Name the data directory and the Workspace a first start just created, so a
+/// mistyped or unexpected data directory is noticed instead of silently used.
+fn announce_local_first_start(root: &std::path::Path) -> Result<(), String> {
+    let workspace = awaken_installation_workspace::read_at(root)
+        .map_err(|error| {
+            format!(
+                "platform_workspace_unavailable: inspect identity under {}: {error}",
+                root.display()
+            )
+        })?
+        .ok_or_else(|| {
+            format!(
+                "local_installation_changed: first-start initialization under {} published no platform-workspace-id",
+                root.display()
+            )
+        })?;
+    eprintln!(
+        "\n  New local installation (first start)\n  Data       {}\n  Workspace  {workspace}\n  This data directory was empty, so Awaken initialized it. If you expected existing\n  data, stop Awaken and point data_dir or --data-dir at it; nothing else was changed.\n",
+        root.display()
+    );
     Ok(())
 }
 

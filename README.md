@@ -32,12 +32,13 @@ From the repository root:
 ```sh
 pnpm install --frozen-lockfile
 cargo build --locked -p awaken-cli --bin awaken -p awaken-sandbox --bin awaken-sandbox --features awaken-sandbox/hand
-./target/debug/awaken database migrate --config examples/application/awaken.toml --initialize-installation --initialization-reference application-example
 ./target/debug/awaken all-in-one --config examples/application/awaken.toml --no-browser
 ```
 
 The supplied configuration is for one developer on loopback, in explicit
-no-login mode. It retains data in `target/application-data`. Linux Namespace
+no-login mode. It retains data in `target/application-data`: the first start
+initializes that directory and prints its path and new Workspace ID, and
+deleting the directory starts over with a new installation. Linux Namespace
 execution requires usable `bwrap`; other execution tiers and shared deployment
 are covered by the [deployment guide](deploy/README.md#local-execution-tiers).
 The built executable contains Console and needs no Node.js at runtime.

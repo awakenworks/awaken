@@ -198,7 +198,9 @@ async fn local_installation_decision_table_requires_explicit_initialization() {
      * identity mismatch and an invalid Session DB are never bypassed. Explicit
      * initialization may publish a configured identity when no marker exists.
      *
-     * Decision table: L1 !marker+!Session+ordinary=>E3; L2 same+init=>E2;
+     * Decision table: L1 !marker+!Session+ordinary=>E2 through the Local
+     * first-start row (full table in first_start_decision_table_*); L2
+     * same+init=>E2;
      * L3 marker+!Session+ordinary=>E3; L4 same+init=>E2; L5 !marker+Session+
      * ordinary=>E3; L6 same+init=>E2; L7 marker+Session+ordinary=>E1;
      * L8 invalid or expected mismatch + any auth=>E3; L9 Control marker absent+
@@ -227,12 +229,13 @@ async fn local_installation_decision_table_requires_explicit_initialization() {
 
     let fresh = tempfile::tempdir().unwrap();
     let fresh_deployment = deployment(fresh.path());
-    assert!(
+    assert_eq!(
         classify_local_installation(&fresh_deployment, &ordinary)
             .await
-            .unwrap_err()
-            .starts_with("unbound_empty_local_storage:"),
-        "L1"
+            .expect("L1 Local first start")
+            .1,
+        InstallationAuthorization::local_first_start(),
+        "L1 the first-start row takes the explicit initialization authority"
     );
     classify_local_installation(&fresh_deployment, &initialize)
         .await
@@ -295,7 +298,7 @@ async fn local_installation_decision_table_requires_explicit_initialization() {
         "workspace-local",
     )
     .unwrap();
-    let admitted = classify_local_installation(&store_first_deployment, &ordinary)
+    let (admitted, _) = classify_local_installation(&store_first_deployment, &ordinary)
         .await
         .expect("L7");
     assert_eq!(
@@ -323,7 +326,7 @@ async fn local_installation_decision_table_requires_explicit_initialization() {
         "L11 fence precedes every Session write"
     );
 
-    let authorized_missing = classify_local_installation(&store_first_deployment, &initialize)
+    let (authorized_missing, _) = classify_local_installation(&store_first_deployment, &initialize)
         .await
         .expect("L12");
     assert_eq!(
@@ -341,7 +344,7 @@ async fn local_installation_decision_table_requires_explicit_initialization() {
         "workspace-local",
     )
     .unwrap();
-    let replaced = classify_local_installation(&store_first_deployment, &ordinary)
+    let (replaced, _) = classify_local_installation(&store_first_deployment, &ordinary)
         .await
         .expect("L11 A proof");
     std::fs::write(
@@ -364,7 +367,7 @@ async fn local_installation_decision_table_requires_explicit_initialization() {
     .unwrap();
     let mut expected_change = store_first_deployment.clone();
     expected_change.expected_platform_workspace_id = Some("workspace-expected".into());
-    let expected = classify_local_installation(&expected_change, &ordinary)
+    let (expected, _) = classify_local_installation(&expected_change, &ordinary)
         .await
         .expect("L11 E proof");
     std::fs::write(
@@ -656,4 +659,306 @@ async fn postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy() {
             .unwrap();
     }
     admin.close().await;
+}
+
+/// Every file under `root` with its bytes; a missing root is an empty tree.
+fn tree(root: &std::path::Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
+    fn walk(
+        root: &std::path::Path,
+        path: &std::path::Path,
+        out: &mut BTreeMap<std::path::PathBuf, Vec<u8>>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                out.insert(path.strip_prefix(root).unwrap().to_path_buf(), Vec::new());
+                walk(root, &path, out);
+            } else {
+                out.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(&path).unwrap(),
+                );
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(root, root, &mut out);
+    out
+}
+
+#[tokio::test]
+async fn first_start_decision_table_covers_startup_and_migrate_entries() {
+    /* Cause/effect graph: C1 operating mode Local/Server; C2 role AllInOne or
+     * another role; C3 any role-owned PostgreSQL target; C4 configured
+     * expected_platform_workspace_id; C5 platform-workspace-id marker
+     * absent/present; C6 canonical Session store absent/present/zero-byte/
+     * invalid; C7 requested authorization ordinary/explicit initialization/
+     * adoption only. Effects: E1 the one first-start row grants exactly the
+     * authorization `--initialize-installation --initialization-reference
+     * local-first-start` builds, and both the startup entry (FirstStart) and
+     * the flag-free `database migrate` entry carry a first-start proof; E2 a
+     * plain-language refusal naming the copy-pasteable recovery command; E3
+     * explicit flags keep their meaning in every mode and are never announced
+     * as a first start; E4 classification never writes a byte.
+     *
+     * Decision table (startup = admit_ordinary_start, migrate =
+     * prepare_deployment_installations with no flags):
+     * F1  Local AllInOne, empty dir                      => E1+E4
+     * F2  Local AllInOne, dir missing                    => E1+E4
+     * F3  Local AllInOne, dir holding only config.toml   => E1+E4
+     * F4  Local, marker without Session store            => session_storage_missing+E2+E4
+     * F5  Local, Session store without marker            => local_installation_incomplete+E2+E4
+     * F6  Local, zero-byte Session file                  => session_storage_empty+E2+E4
+     * F7  Local, invalid Session file                    => session_storage_invalid+E2+E4
+     * F8  Local AllInOne with a PostgreSQL target, empty => unbound_empty_local_storage+E2+E4
+     * F9  Server, empty, no expected Workspace           => unbound_empty_local_storage+E2+E4
+     * F10 Server, empty, expected Workspace              => platform_workspace_missing+E2+E4
+     * F11 Local, empty, expected Workspace               => platform_workspace_missing+E2+E4
+     * F12 Local Control role, empty                      => unbound_empty_local_storage+E2+E4
+     * F13 Local AllInOne, empty, adoption flags only     => unbound_empty_local_storage+E4 (migrate only)
+     * F14 Local AllInOne, empty, explicit initialization => E3+E4 (migrate only)
+     * Read-only consumers (verify_deployment_installations) report F1 as
+     * local_installation_not_initialized and never write. */
+    enum Fixture {
+        Empty,
+        Missing,
+        ConfigOnly,
+        MarkerOnly,
+        SessionOnly,
+        ZeroByteSession,
+        InvalidSession,
+    }
+    async fn materialize(root: &std::path::Path, fixture: &Fixture) {
+        match fixture {
+            Fixture::Missing => {}
+            Fixture::Empty => std::fs::create_dir_all(root).unwrap(),
+            Fixture::ConfigOnly => {
+                std::fs::create_dir_all(root).unwrap();
+                std::fs::write(root.join("config.toml"), "identity_mode = \"no-login\"\n").unwrap();
+            }
+            Fixture::MarkerOnly => {
+                std::fs::create_dir_all(root).unwrap();
+                awaken_installation_workspace::publish_at(root, "workspace-local").unwrap();
+            }
+            Fixture::SessionOnly => {
+                std::fs::create_dir_all(root).unwrap();
+                awaken_session_store::SqliteManagedSessionRepository::open(
+                    &root.join("sessions.db").to_string_lossy(),
+                )
+                .await
+                .unwrap()
+                .close()
+                .await;
+            }
+            Fixture::ZeroByteSession => {
+                std::fs::create_dir_all(root).unwrap();
+                std::fs::write(root.join("sessions.db"), []).unwrap();
+            }
+            Fixture::InvalidSession => {
+                std::fs::create_dir_all(root).unwrap();
+                std::fs::write(root.join("sessions.db"), b"not a database").unwrap();
+            }
+        }
+    }
+    let local = |root: &std::path::Path| crate::config::local_test_deployment(root.to_path_buf());
+    let with_postgres = |root: &std::path::Path| {
+        let mut deployment = local(root);
+        deployment.control.catalog =
+            awaken_control::StoreBackend::Postgres("postgres://127.0.0.1:9/never-connected".into());
+        deployment
+    };
+    let server = |root: &std::path::Path| {
+        let mut deployment = local(root);
+        deployment.mode = OperatingMode::Server;
+        deployment
+    };
+    let server_expected = |root: &std::path::Path| {
+        let mut deployment = server(root);
+        deployment.expected_platform_workspace_id = Some("workspace-expected".into());
+        deployment
+    };
+    let local_expected = |root: &std::path::Path| {
+        let mut deployment = local(root);
+        deployment.expected_platform_workspace_id = Some("workspace-expected".into());
+        deployment
+    };
+    let control = |root: &std::path::Path| {
+        let mut deployment = local(root);
+        deployment.role = Role::Control;
+        deployment
+    };
+    type Build<'a> = &'a dyn Fn(&std::path::Path) -> ResolvedDeployment;
+    // (rule, deployment, fixture, expected refusal code or None for E1, recovery hint)
+    let rows: [(&str, Build<'_>, Fixture, Option<&str>, &str); 12] = [
+        ("F1", &local, Fixture::Empty, None, ""),
+        ("F2", &local, Fixture::Missing, None, ""),
+        ("F3", &local, Fixture::ConfigOnly, None, ""),
+        (
+            "F4",
+            &local,
+            Fixture::MarkerOnly,
+            Some("session_storage_missing:"),
+            "--initialize-installation --initialization-reference local-recovery",
+        ),
+        (
+            "F5",
+            &local,
+            Fixture::SessionOnly,
+            Some("local_installation_incomplete:"),
+            "--initialize-installation --initialization-reference local-recovery",
+        ),
+        (
+            "F6",
+            &local,
+            Fixture::ZeroByteSession,
+            Some("session_storage_empty:"),
+            "\n  rm ",
+        ),
+        (
+            "F7",
+            &local,
+            Fixture::InvalidSession,
+            Some("session_storage_invalid:"),
+            "\n  mv ",
+        ),
+        (
+            "F8",
+            &with_postgres,
+            Fixture::Empty,
+            Some("unbound_empty_local_storage:"),
+            "--initialize-installation --initialization-reference local-recovery",
+        ),
+        (
+            "F9",
+            &server,
+            Fixture::Empty,
+            Some("unbound_empty_local_storage:"),
+            "--initialize-installation --initialization-reference local-recovery",
+        ),
+        (
+            "F10",
+            &server_expected,
+            Fixture::Empty,
+            Some("platform_workspace_missing:"),
+            "--initialize-installation --initialization-reference local-recovery",
+        ),
+        (
+            "F11",
+            &local_expected,
+            Fixture::Empty,
+            Some("platform_workspace_missing:"),
+            "--initialize-installation --initialization-reference local-recovery",
+        ),
+        (
+            "F12",
+            &control,
+            Fixture::Empty,
+            Some("unbound_empty_local_storage:"),
+            "awaken-control database migrate",
+        ),
+    ];
+    let ordinary = InstallationAuthorization::default();
+    for (rule, build, fixture, refusal, hint) in rows {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("data");
+        materialize(&root, &fixture).await;
+        let deployment = build(&root);
+        let before = tree(parent.path());
+        let startup = admit_ordinary_start(&deployment).await;
+        let migrate = prepare_deployment_installations(&deployment, &ordinary).await;
+        match refusal {
+            None => {
+                assert!(
+                    first_installation_is_automatic(&deployment),
+                    "{rule} static half"
+                );
+                let Ok(OrdinaryAdmission::FirstStart(startup)) = startup else {
+                    panic!("{rule}/startup must take the first-start row");
+                };
+                assert_eq!(
+                    startup.local_first_start_root(),
+                    Some(root.as_path()),
+                    "{rule}/startup E1"
+                );
+                let migrate = migrate.unwrap_or_else(|error| panic!("{rule}/migrate: {error}"));
+                assert_eq!(
+                    migrate.local_first_start_root(),
+                    Some(root.as_path()),
+                    "{rule}/migrate E1"
+                );
+                assert_eq!(
+                    migrate.platform_workspace_before_write().unwrap(),
+                    None,
+                    "{rule} new identity is minted by the store opener"
+                );
+                let read_only = verify_deployment_installations(&deployment)
+                    .await
+                    .err()
+                    .unwrap_or_else(|| panic!("{rule}/verify stays read-only"));
+                assert!(
+                    read_only.starts_with("local_installation_not_initialized:"),
+                    "{rule}/verify: {read_only}"
+                );
+            }
+            Some(code) => {
+                for (entry, error) in [
+                    (
+                        "startup",
+                        startup
+                            .err()
+                            .unwrap_or_else(|| panic!("{rule}/startup must refuse")),
+                    ),
+                    (
+                        "migrate",
+                        migrate
+                            .err()
+                            .unwrap_or_else(|| panic!("{rule}/migrate must refuse")),
+                    ),
+                ] {
+                    assert!(error.starts_with(code), "{rule}/{entry}: {error}");
+                    assert!(
+                        error.contains(hint),
+                        "{rule}/{entry} recovery command: {error}"
+                    );
+                    assert!(
+                        !error.contains("<REF>"),
+                        "{rule}/{entry} command is copy-pasteable: {error}"
+                    );
+                }
+            }
+        }
+        assert_eq!(tree(parent.path()), before, "{rule} E4 read-only");
+    }
+
+    assert_eq!(
+        admission_authorization(&local(std::path::Path::new("/unused")), &ordinary, true),
+        InstallationAuthorization::new(Some("local-first-start".into()), None).unwrap(),
+        "E1 the same authorization the explicit flags construct"
+    );
+
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("data");
+    let adoption = InstallationAuthorization::new(None, Some("adopt-2048".into())).unwrap();
+    let error = prepare_deployment_installations(&local(&root), &adoption)
+        .await
+        .err()
+        .expect("F13 adoption is never initialization");
+    assert!(
+        error.starts_with("unbound_empty_local_storage:"),
+        "F13: {error}"
+    );
+    let initialize = InstallationAuthorization::new(Some("install-2048".into()), None).unwrap();
+    let explicit = prepare_deployment_installations(&local(&root), &initialize)
+        .await
+        .expect("F14 explicit initialization stays valid");
+    assert_eq!(
+        explicit.local_first_start_root(),
+        None,
+        "F14 is not announced as a first start"
+    );
+    assert!(explicit.publishes_local_workspace(), "F14");
+    assert!(!root.exists(), "F13-F14 E4 read-only");
 }

@@ -1325,8 +1325,17 @@ mod tests {
         // Cause/effect decision table: R1 Local mode -> report automatic
         // startup migration; R2 Server mode -> report explicit migration and
         // verify-only startup; R3 either mode with credential-bearing URLs ->
-        // redact credentials and schemes. The report must not promise the Local
-        // lifecycle for a distributed deployment.
+        // redact credentials and schemes; R4 first installation is automatic
+        // only for Local without a PostgreSQL target and explicit otherwise.
+        // The report must not promise the Local lifecycle for a distributed
+        // deployment.
+        let local = resolve(FileConfig::default(), Default::default());
+        let local_json: serde_json::Value = serde_json::from_str(&local.report(true)).unwrap();
+        assert_eq!(
+            local_json["first_installation"],
+            "automatic on the first start of an empty data directory",
+            "R4 Local"
+        );
         let config = resolve(
             FileConfig {
                 runtime_database_url: Some("postgres://user:secret@db/awaken".to_owned()),
@@ -1338,6 +1347,10 @@ mod tests {
         );
         for report in [config.report(false), config.report(true)] {
             assert!(report.contains("automatic at startup"), "R1: {report}");
+            assert!(
+                report.contains("explicit `database migrate --initialize-installation`"),
+                "R4 Local with PostgreSQL: {report}"
+            );
             assert!(!report.contains("user:secret"), "{report}");
             assert!(!report.contains("postgres://"), "{report}");
         }
@@ -1360,6 +1373,10 @@ mod tests {
         for report in [server.report(false), server.report(true)] {
             assert!(report.contains("awaken database migrate"), "R2: {report}");
             assert!(report.contains("startup verifies"), "R2: {report}");
+            assert!(
+                report.contains("explicit `database migrate --initialize-installation`"),
+                "R4 Server: {report}"
+            );
             assert!(!report.contains("postgres://"), "R3: {report}");
         }
     }

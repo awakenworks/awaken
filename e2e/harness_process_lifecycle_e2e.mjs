@@ -355,22 +355,42 @@ async function main() {
     fs.rmSync(identityRoot, { recursive: true, force: true });
   }
 
-  // Explicit-installation cause/effect table:
-  // C1=unseen exact config; C2=same successful config; C3=the CLI rejects a
-  // config; C4=durable bytes become corrupt after success; C5=config bytes,
-  // path, cwd, or resolved binary identity changes. Effects: E1=C1 runs
-  // production initialization once; E2=C2 skips it;
-  // E3=C3 throws on every attempt and never caches; E4=C4 remains untouched so
-  // ordinary Serve can fail closed; E5=C5 is a new observation. Constraints:
-  // the cache identity is cwd+absolute config path+SHA-256(config bytes)+the
-  // resolved binary path+SHA-256(binary bytes), and no branch owns migration or
-  // legacy-adoption policy. Rules I1-I5 correspond to C1-C5.
+  // Installation cause/effect table:
+  // C0=the product reports an automatic first installation (Local, local
+  // storage only); C1=unseen exact config with an explicit first installation;
+  // C2=same successful config; C3=the CLI rejects a config; C4=durable bytes
+  // become corrupt after success; C5=config bytes, path, cwd, or resolved
+  // binary identity changes. Effects: E0=C0 runs no migration and writes
+  // nothing, leaving initialization to the child's first start; E1=C1 runs
+  // production initialization once; E2=C2 skips it; E3=C3 throws on every
+  // attempt and never caches; E4=C4 remains untouched so ordinary Serve can
+  // fail closed; E5=C5 is a new observation. Constraints: the cache identity
+  // is cwd+absolute config path+SHA-256(config bytes)+the resolved binary
+  // path+SHA-256(binary bytes), and no branch owns migration or legacy-adoption
+  // policy. Rules I0-I5 correspond to C0-C5.
   const installationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-harness-install-'));
   try {
+    const firstStartDir = path.join(installationRoot, 'first-start');
+    const firstStartEnvironment = {
+      ...process.env,
+      ...deploymentEnv(firstStartDir, { identityMode: 'no-login' }),
+    };
+    assert.equal(initializeE2EInstallation(firstStartEnvironment), 'automatic', 'I0');
+    assert.equal(initializeE2EInstallation(firstStartEnvironment), 'automatic', 'I0 cached');
+    assert.ok(
+      !fs.existsSync(path.join(firstStartDir, 'sessions.db'))
+        && !fs.existsSync(path.join(firstStartDir, 'platform-workspace-id')),
+      'I0 the harness writes no installation state',
+    );
+
+    // A configured expected Workspace keeps the explicit first installation.
     const dataDir = path.join(installationRoot, 'durable');
     const environment = {
       ...process.env,
-      ...deploymentEnv(dataDir, { identityMode: 'no-login' }),
+      ...deploymentEnv(dataDir, {
+        identityMode: 'no-login',
+        fields: { expected_platform_workspace_id: 'workspace-harness-explicit' },
+      }),
     };
     const configPath = path.join(environment.HOME, '.awaken', 'config.toml');
     const sessionsPath = path.join(dataDir, 'sessions.db');
@@ -378,7 +398,11 @@ async function main() {
 
     assert.equal(initializeE2EInstallation(environment), 'initialized', 'I1');
     assert.ok(fs.statSync(sessionsPath).size > 0, 'I1 canonical Session storage exists');
-    assert.ok(fs.statSync(markerPath).size > 0, 'I1 workspace identity exists');
+    assert.equal(
+      fs.readFileSync(markerPath, 'utf8'),
+      'workspace-harness-explicit',
+      'I1 workspace identity exists',
+    );
     assert.equal(initializeE2EInstallation(environment), 'cached', 'I2');
 
     fs.appendFileSync(configPath, '# exact config bytes changed\n');
@@ -428,7 +452,7 @@ async function main() {
     for (const rule of ['I3 first attempt', 'I3 retry']) {
       assert.throws(
         () => initializeE2EInstallation(invalidEnvironment),
-        /explicit E2E installation failed/u,
+        /E2E installation failed/u,
         rule,
       );
     }

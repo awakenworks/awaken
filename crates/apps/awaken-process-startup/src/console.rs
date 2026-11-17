@@ -18,6 +18,9 @@ pub struct ServiceArgs {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DatabaseMigrateArgs {
     pub config_path: Option<std::path::PathBuf>,
+    /// The same persistent data root override `awaken --data-dir` accepts, so a
+    /// migration addresses exactly the installation that process uses.
+    pub data_dir: Option<std::path::PathBuf>,
     pub initialization_reference: Option<String>,
     pub adoption_reference: Option<String>,
 }
@@ -207,6 +210,7 @@ fn parse_database_args(args: &[String]) -> Result<Command, String> {
         return Err("database requires the `migrate` subcommand".to_owned());
     }
     let mut config_path = None;
+    let mut data_dir = None;
     let mut initialize_installation = false;
     let mut initialization_reference = None;
     let mut adopt_unbound_existing = false;
@@ -220,6 +224,16 @@ fn parse_database_args(args: &[String]) -> Result<Command, String> {
             }
             value if value.starts_with("--config=") => {
                 config_path = Some(parse_path(Some(&value[9..]), "--config")?);
+            }
+            "--data-dir" => {
+                index += 1;
+                data_dir = Some(parse_path(
+                    args.get(index).map(String::as_str),
+                    "--data-dir",
+                )?);
+            }
+            value if value.starts_with("--data-dir=") => {
+                data_dir = Some(parse_path(Some(&value[11..]), "--data-dir")?);
             }
             "--initialize-installation" if !initialize_installation => {
                 initialize_installation = true;
@@ -286,6 +300,7 @@ fn parse_database_args(args: &[String]) -> Result<Command, String> {
     )?;
     Ok(Command::DatabaseMigrate(DatabaseMigrateArgs {
         config_path,
+        data_dir,
         initialization_reference,
         adoption_reference,
     }))
@@ -351,7 +366,7 @@ fn is_help(value: &str) -> bool {
 
 pub fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Workspace IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    control surface profile runtime Print the hosted Control-to-Coordinator route profile\n    database migrate                Verify installation identity, apply deployment schema migrations, and exit\n    doctor [--json]                 Check configuration, storage, and listener readiness\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH                  Read typed configuration from PATH\n    --port PORT                    Override the listen port\n    --data-dir PATH                Override the persistent data root (default ~/.awaken)\n    --no-browser                   Do not open the browser\n    --identity-mode MODE           no-login, self-managed, or awaken-cloud\n    --cloud-models MODE            disabled or enabled (requires awaken-cloud identity)\n    --initialize-installation      Database-migrate-only first-install switch\n    --initialization-reference REF Required operator reference authorizing initialization\n    --adopt-unbound-existing       Database-migrate-only legacy adoption switch\n    --adoption-reference REF       Required operator reference authorizing legacy adoption\n    -h, --help                     Print this help\n\nThe execution service is the separate `awaken-worker` binary."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Workspace IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    control surface profile runtime Print the hosted Control-to-Coordinator route profile\n    database migrate                Verify installation identity, apply deployment schema migrations, and exit\n                                    (a Local all-in-one with an empty data directory initializes itself)\n    doctor [--json]                 Check configuration, storage, and listener readiness\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH                  Read typed configuration from PATH\n    --port PORT                    Override the listen port\n    --data-dir PATH                Override the persistent data root (default ~/.awaken; also database migrate)\n    --no-browser                   Do not open the browser\n    --identity-mode MODE           no-login, self-managed, or awaken-cloud\n    --cloud-models MODE            disabled or enabled (requires awaken-cloud identity)\n    --initialize-installation      Database-migrate-only first-install switch\n    --initialization-reference REF Required operator reference authorizing initialization\n    --adopt-unbound-existing       Database-migrate-only legacy adoption switch\n    --adoption-reference REF       Required operator reference authorizing legacy adoption\n    -h, --help                     Print this help\n\nThe execution service is the separate `awaken-worker` binary."
     );
 }
 
@@ -375,7 +390,7 @@ pub fn parse_service_binary_command(
 
 pub fn print_service_help(binary: &str) {
     println!(
-        "{binary}\n\nUSAGE:\n    {binary} [OPTIONS]\n    {binary} database migrate [--config PATH] [INSTALLATION AUTHORIZATION]\n\nOPTIONS:\n    --config PATH                  Read typed configuration from PATH\n    --initialize-installation      Explicitly initialize local storage or a verified empty PostgreSQL target\n    --initialization-reference REF Required operator change/ticket reference for initialization\n    --adopt-unbound-existing       Explicitly adopt a verified legacy PostgreSQL target\n    --adoption-reference REF       Required operator change/ticket reference for legacy adoption\n    --port PORT                    Override the listen port\n    --data-dir PATH                Override the persistent data root\n    --identity-mode MODE           no-login, self-managed, or awaken-cloud\n    --cloud-models MODE            disabled or enabled\n    -h, --help                     Print this help"
+        "{binary}\n\nUSAGE:\n    {binary} [OPTIONS]\n    {binary} database migrate [--config PATH] [--data-dir PATH] [INSTALLATION AUTHORIZATION]\n\nOPTIONS:\n    --config PATH                  Read typed configuration from PATH\n    --initialize-installation      Explicitly initialize local storage or a verified empty PostgreSQL target\n    --initialization-reference REF Required operator change/ticket reference for initialization\n    --adopt-unbound-existing       Explicitly adopt a verified legacy PostgreSQL target\n    --adoption-reference REF       Required operator change/ticket reference for legacy adoption\n    --port PORT                    Override the listen port\n    --data-dir PATH                Override the persistent data root\n    --identity-mode MODE           no-login, self-managed, or awaken-cloud\n    --cloud-models MODE            disabled or enabled\n    -h, --help                     Print this help"
     );
 }
 
@@ -465,10 +480,28 @@ mod tests {
             .unwrap(),
             Command::DatabaseMigrate(DatabaseMigrateArgs {
                 config_path: Some("/etc/awaken/config.toml".into()),
-                initialization_reference: None,
-                adoption_reference: None,
+                ..Default::default()
             })
         );
+        // A migration addresses the same data root `awaken --data-dir` serves.
+        for data_dir in [
+            vec!["--data-dir".to_owned(), "/srv/awaken".to_owned()],
+            vec!["--data-dir=/srv/awaken".to_owned()],
+        ] {
+            assert_eq!(
+                parse_args(
+                    ["database".to_owned(), "migrate".to_owned()]
+                        .into_iter()
+                        .chain(data_dir)
+                )
+                .unwrap(),
+                Command::DatabaseMigrate(DatabaseMigrateArgs {
+                    data_dir: Some("/srv/awaken".into()),
+                    ..Default::default()
+                })
+            );
+        }
+        assert!(parse_args(["database".into(), "migrate".into(), "--data-dir".into()]).is_err());
         assert_eq!(parse_args(["--help".into()]).unwrap(), Command::Help);
         assert_eq!(
             parse_args(["all-in-one".into(), "--port".into(), "9123".into()]).unwrap(),
@@ -558,8 +591,7 @@ mod tests {
             .unwrap(),
             ServiceBinaryCommand::DatabaseMigrate(DatabaseMigrateArgs {
                 config_path: Some("/etc/awaken/control.toml".into()),
-                initialization_reference: None,
-                adoption_reference: None,
+                ..Default::default()
             }),
             "B4 migration remains inside the executable's fixed role"
         );
@@ -591,9 +623,9 @@ mod tests {
             ])
             .unwrap(),
             Command::DatabaseMigrate(DatabaseMigrateArgs {
-                config_path: None,
                 initialization_reference: Some("install-2048".into()),
                 adoption_reference: Some("change-2048".into()),
+                ..Default::default()
             }),
             "A2"
         );

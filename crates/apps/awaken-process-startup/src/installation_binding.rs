@@ -2,9 +2,11 @@
 // @formal reason: Static owner: CLI-private admission reuses the sole local platform-workspace-id plus
 // @formal reason: canonical Session schema and binds each role-owned PostgreSQL target to the deployment's
 // @formal reason: exact platform Workspace without another identity store. Dynamic path: Serve and Doctor
-// @formal reason: verify read-only; ordinary migration is exact-only, while explicit referenced
-// @formal reason: initialization or legacy adoption preflights local and remote targets before store
-// @formal reason: opening or component DDL. Evidence: assembly.binary_roles.role_assembly and adjacent
+// @formal reason: verify read-only; ordinary migration is exact-only except the one Local first-start
+// @formal reason: row (Local AllInOne, no PostgreSQL target, no expected Workspace, no marker and no
+// @formal reason: Session store), which takes the explicit initialization authority under a fixed
+// @formal reason: reference; explicit referenced initialization or legacy adoption preflights local and
+// @formal reason: remote targets before store opening or component DDL. Evidence: assembly.binary_roles.role_assembly and adjacent
 // @formal reason: cause-effect tests; this is a product-requirement classification, not a direct
 // @formal reason: formal-proof claim.
 //! Deployment-owned local and PostgreSQL installation identity fencing.
@@ -21,7 +23,7 @@ use awaken_scoped_migration::postgres::PostgresMigrationRunner;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use sqlx::{PgPool, Row};
 
-use crate::config::{OperatingMode, ResolvedDeployment, ResourceStoreBackend};
+use crate::config::{OperatingMode, ResolvedDeployment, ResourceStoreBackend, Role};
 use crate::process_stores::{role_owns_control_component, role_owns_managed_execution};
 
 const BUNDLE_ID: &str = "awaken.installation_binding";
@@ -30,6 +32,11 @@ const BINDING_TABLE: &str = "awaken_installation_binding";
 const LEDGER_TABLE: &str = "awaken_installation_schema_migrations";
 const LEDGER_META_TABLE: &str = "awaken_installation_schema_migrations_meta";
 const BINDING_LOCK: &str = "installation-binding-v1";
+/// The operator reference ordinary Local admission supplies when the one
+/// first-start decision selects initialization.
+pub(crate) const LOCAL_FIRST_START_REFERENCE: &str = "local-first-start";
+/// The reference the recovery commands in local refusals suggest.
+const LOCAL_RECOVERY_REFERENCE: &str = "local-recovery";
 
 fn installation_binding_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
@@ -74,6 +81,80 @@ impl InstallationAuthorization {
 
     fn permits_initialization(&self) -> bool {
         self.initialization_reference.is_some()
+    }
+
+    /// The authorization `--initialize-installation --initialization-reference
+    /// local-first-start` would construct; the first-start row reuses it.
+    fn local_first_start() -> Self {
+        Self::new(Some(LOCAL_FIRST_START_REFERENCE.to_owned()), None)
+            .expect("the fixed first-start reference is exact")
+    }
+}
+
+/// Whether this deployment's first installation happens on its first ordinary
+/// start (`awaken all-in-one` or flag-free `database migrate`) instead of an
+/// explicit `--initialize-installation`. This is the static half of
+/// [`admission_authorization`]; the configuration report renders it.
+pub(crate) fn first_installation_is_automatic(deployment: &ResolvedDeployment) -> bool {
+    deployment.mode == OperatingMode::Local
+        && deployment.role == Role::AllInOne
+        && deployment.expected_platform_workspace_id.is_none()
+        && postgres_targets(deployment).is_empty()
+}
+
+/// The single first-start decision. Ordinary admission of a Local AllInOne
+/// deployment with only local storage and no configured Workspace, whose data
+/// directory holds neither a platform-workspace-id marker nor a Session store,
+/// receives exactly the authorization the explicit initialization flags build.
+/// Every other observation keeps the requested authorization, so partial local
+/// state, Server mode, PostgreSQL targets, a configured expected Workspace and
+/// explicit adoption requests stay on their existing explicit paths.
+fn admission_authorization(
+    deployment: &ResolvedDeployment,
+    requested: &InstallationAuthorization,
+    local_storage_empty: bool,
+) -> InstallationAuthorization {
+    if *requested == InstallationAuthorization::default()
+        && local_storage_empty
+        && first_installation_is_automatic(deployment)
+    {
+        InstallationAuthorization::local_first_start()
+    } else {
+        requested.clone()
+    }
+}
+
+/// The exact command an operator can paste to initialize or recover this
+/// deployment's local installation explicitly.
+fn explicit_initialization_command(deployment: &ResolvedDeployment) -> String {
+    let binary = match deployment.role {
+        Role::Control => "awaken-control",
+        Role::Coordinator => "awaken-coordinator",
+        Role::AllInOne | Role::Worker => "awaken",
+    };
+    let mut command = format!("{binary} database migrate");
+    if deployment.config_file_exists {
+        command.push_str(" --config ");
+        command.push_str(&shell_word(&deployment.config_path.to_string_lossy()));
+    }
+    if deployment.origins.get("data_dir").map(String::as_str) == Some("command line") {
+        command.push_str(" --data-dir ");
+        command.push_str(&shell_word(&deployment.data_dir.to_string_lossy()));
+    }
+    command.push_str(" --initialize-installation --initialization-reference ");
+    command.push_str(LOCAL_RECOVERY_REFERENCE);
+    command
+}
+
+fn shell_word(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+=:,@".contains(c))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 
@@ -151,6 +232,7 @@ impl PreparedPostgresInstallations {
 pub struct PreparedDeploymentInstallations {
     local: PreparedLocalInstallation,
     postgres: PreparedPostgresInstallations,
+    local_first_start: bool,
 }
 
 impl PreparedDeploymentInstallations {
@@ -160,6 +242,15 @@ impl PreparedDeploymentInstallations {
 
     pub(crate) fn publishes_local_workspace(&self) -> bool {
         self.local.owns_local_persistence()
+    }
+
+    /// The data directory this proof initializes because the first-start
+    /// decision selected it, so the migration can announce the new installation.
+    pub(crate) fn local_first_start_root(&self) -> Option<&std::path::Path> {
+        match (&self.local, self.local_first_start) {
+            (PreparedLocalInstallation::AuthorizedMissing { root, .. }, true) => Some(root),
+            _ => None,
+        }
     }
 
     /// Exact process coordinate after the final local fence and before the first
@@ -177,15 +268,52 @@ impl PreparedDeploymentInstallations {
     }
 }
 
-/// Read-only Serve/Doctor admission. Both consumers receive the same typed
-/// proof; only Serve invokes its before-write fence.
+/// Ordinary flag-free admission of a starting process.
+pub(crate) enum OrdinaryAdmission {
+    /// Every installation target already exists and matches; nothing was written.
+    Verified(PreparedDeploymentInstallations),
+    /// The first-start decision selected initialization. The proof is the one
+    /// explicit `--initialize-installation` produces; the caller must apply it
+    /// through the deployment migration before serving.
+    FirstStart(PreparedDeploymentInstallations),
+}
+
+/// Serve and Doctor admission. Without the first-start row it is read-only
+/// and identical to [`verify_deployment_installations`]; with it, the returned
+/// proof is prepared exactly as `database migrate` prepares it.
+pub(crate) async fn admit_ordinary_start(
+    deployment: &ResolvedDeployment,
+) -> Result<OrdinaryAdmission, String> {
+    let ordinary = InstallationAuthorization::default();
+    let (local, authorization) = classify_local_installation(deployment, &ordinary).await?;
+    if authorization != ordinary {
+        return prepare_classified_installations(deployment, local, &ordinary, &authorization)
+            .await
+            .map(OrdinaryAdmission::FirstStart);
+    }
+    let postgres = verify_deployment_postgres_installations(deployment).await?;
+    Ok(OrdinaryAdmission::Verified(
+        PreparedDeploymentInstallations {
+            local,
+            postgres,
+            local_first_start: false,
+        },
+    ))
+}
+
+/// Read-only admission for consumers that never initialize (Control and
+/// Coordinator role services, Worker preparation). A first-start data directory
+/// is reported as not yet initialized instead of being written.
 pub async fn verify_deployment_installations(
     deployment: &ResolvedDeployment,
 ) -> Result<PreparedDeploymentInstallations, String> {
-    let local =
-        classify_local_installation(deployment, &InstallationAuthorization::default()).await?;
-    let postgres = verify_deployment_postgres_installations(deployment).await?;
-    Ok(PreparedDeploymentInstallations { local, postgres })
+    match admit_ordinary_start(deployment).await? {
+        OrdinaryAdmission::Verified(prepared) => Ok(prepared),
+        OrdinaryAdmission::FirstStart(_) => Err(format!(
+            "local_installation_not_initialized: {} holds no Awaken installation yet; the first `awaken all-in-one` start or `awaken database migrate` initializes it",
+            deployment.data_dir.display()
+        )),
+    }
 }
 
 /// Preflight every local and PostgreSQL installation target under one explicit
@@ -193,41 +321,60 @@ pub async fn verify_deployment_installations(
 /// binder, so an invalid local authority cannot leave a new remote binding.
 pub(crate) async fn prepare_deployment_installations(
     deployment: &ResolvedDeployment,
-    authorization: &InstallationAuthorization,
+    requested: &InstallationAuthorization,
 ) -> Result<PreparedDeploymentInstallations, String> {
-    let local = classify_local_installation(deployment, authorization).await?;
-    local.workspace_before_write()?;
-    let postgres = prepare_deployment_postgres_installations(deployment, authorization).await?;
-    Ok(PreparedDeploymentInstallations { local, postgres })
+    let (local, authorization) = classify_local_installation(deployment, requested).await?;
+    prepare_classified_installations(deployment, local, requested, &authorization).await
 }
 
+async fn prepare_classified_installations(
+    deployment: &ResolvedDeployment,
+    local: PreparedLocalInstallation,
+    requested: &InstallationAuthorization,
+    authorization: &InstallationAuthorization,
+) -> Result<PreparedDeploymentInstallations, String> {
+    local.workspace_before_write()?;
+    let postgres = prepare_deployment_postgres_installations(deployment, authorization).await?;
+    Ok(PreparedDeploymentInstallations {
+        local,
+        postgres,
+        local_first_start: authorization != requested,
+    })
+}
+
+/// Classify the local installation and return the effective authorization the
+/// one first-start decision ([`admission_authorization`]) selected for it.
 async fn classify_local_installation(
     deployment: &ResolvedDeployment,
-    authorization: &InstallationAuthorization,
-) -> Result<PreparedLocalInstallation, String> {
+    requested: &InstallationAuthorization,
+) -> Result<(PreparedLocalInstallation, InstallationAuthorization), String> {
     if !has_role_owned_local_persistence(deployment) {
-        return Ok(PreparedLocalInstallation::NotOwned);
+        return Ok((PreparedLocalInstallation::NotOwned, requested.clone()));
     }
 
-    let marker = awaken_installation_workspace::read_at(&deployment.data_dir).map_err(|error| {
+    let root = &deployment.data_dir;
+    let marker = awaken_installation_workspace::read_at(root).map_err(|error| {
         format!(
             "platform_workspace_unavailable: inspect identity under {}: {error}",
-            deployment.data_dir.display()
+            root.display()
         )
     })?;
+    // A configured expected Workspace never takes the first-start row, so the
+    // requested authorization is the effective one for this check.
     if let Some(expected) = deployment.expected_platform_workspace_id.as_deref() {
         match marker.as_deref() {
-            None if authorization.permits_initialization() => {}
+            None if requested.permits_initialization() => {}
             None => {
                 return Err(format!(
-                    "platform_workspace_missing: expected {expected:?} under {}",
-                    deployment.data_dir.display()
+                    "platform_workspace_missing: the configuration expects platform Workspace {expected:?}, but {} has no platform-workspace-id, so Awaken will not create a new installation there implicitly. If this is the right data directory for a new installation, initialize it with:\n  {}",
+                    root.display(),
+                    explicit_initialization_command(deployment)
                 ));
             }
             Some(actual) if actual != expected => {
                 return Err(format!(
                     "platform_workspace_mismatch: expected {expected:?}, found {actual:?} under {}",
-                    deployment.data_dir.display()
+                    root.display()
                 ));
             }
             Some(_) => {}
@@ -235,43 +382,75 @@ async fn classify_local_installation(
     }
 
     let session_path = match (deployment.role, &deployment.coordinator.sessions) {
-        (
-            crate::config::Role::AllInOne | crate::config::Role::Coordinator,
-            awaken_control::StoreBackend::Sqlite(path),
-        ) => Some(path),
+        (Role::AllInOne | Role::Coordinator, awaken_control::StoreBackend::Sqlite(path)) => {
+            Some(path)
+        }
         _ => None,
     };
-    let Some(session_path) = session_path else {
-        return match marker {
-            Some(workspace_id) => Ok(PreparedLocalInstallation::Existing {
-                root: deployment.data_dir.clone(),
-                workspace_id,
-            }),
-            None if authorization.permits_initialization() => {
-                Ok(PreparedLocalInstallation::AuthorizedMissing {
-                    root: deployment.data_dir.clone(),
-                    expected_workspace_id: deployment.expected_platform_workspace_id.clone(),
-                })
-            }
-            None => Err(format!(
-                "unbound_empty_local_storage: ordinary startup and database migrate are exact-only; first installation requires explicit database migrate --initialize-installation --initialization-reference <REF> under {}",
-                deployment.data_dir.display()
-            )),
-        };
+    let session_exists = match session_path {
+        Some(session_path) => observe_session_store(session_path).await?,
+        None => false,
     };
-    let session_exists = match std::fs::metadata(session_path) {
-        Ok(metadata) if !metadata.is_file() => {
+    let authorization =
+        admission_authorization(deployment, requested, marker.is_none() && !session_exists);
+    let existing = |workspace_id: &String| PreparedLocalInstallation::Existing {
+        root: root.clone(),
+        workspace_id: workspace_id.clone(),
+    };
+    let authorized_missing = || PreparedLocalInstallation::AuthorizedMissing {
+        root: root.clone(),
+        expected_workspace_id: deployment.expected_platform_workspace_id.clone(),
+    };
+    let unbound_empty = || {
+        format!(
+            "unbound_empty_local_storage: {} holds no Awaken installation yet. Awaken creates one automatically only on the ordinary first start of a Local all-in-one deployment that uses local storage and configures no expected_platform_workspace_id; initialize this one explicitly with:\n  {}",
+            root.display(),
+            explicit_initialization_command(deployment)
+        )
+    };
+    let installation = match (session_path, marker.as_ref(), session_exists) {
+        (None, Some(workspace_id), _) | (Some(_), Some(workspace_id), true) => {
+            existing(workspace_id)
+        }
+        (Some(_), Some(workspace_id), false) if authorization.permits_initialization() => {
+            existing(workspace_id)
+        }
+        (Some(session_path), Some(workspace_id), false) => {
             return Err(format!(
-                "session_storage_invalid: {} is not a regular file",
-                session_path.display()
+                "session_storage_missing: {} belongs to installation {workspace_id:?} (platform-workspace-id), but its Session database {} is missing, so Awaken will not start it as if it were empty. If the Session data was removed on purpose, recreate it for this installation with:\n  {}",
+                root.display(),
+                session_path.display(),
+                explicit_initialization_command(deployment)
             ));
         }
-        Ok(metadata) if metadata.len() == 0 => {
+        (_, None, _) if authorization.permits_initialization() => authorized_missing(),
+        (Some(session_path), None, true) => {
             return Err(format!(
-                "session_storage_empty: {} is zero bytes",
-                session_path.display()
+                "local_installation_incomplete: the Session database {} exists, but {} has no platform-workspace-id, usually because an earlier first start stopped before it finished. To keep this data and finish the installation, run:\n  {}",
+                session_path.display(),
+                root.display(),
+                explicit_initialization_command(deployment)
             ));
         }
+        (_, None, _) => return Err(unbound_empty()),
+    };
+    Ok((installation, authorization))
+}
+
+/// Whether a canonical Session store exists. Damaged stores refuse with the
+/// command that moves them aside; they are never treated as absent.
+async fn observe_session_store(session_path: &std::path::Path) -> Result<bool, String> {
+    let quoted = shell_word(&session_path.to_string_lossy());
+    let aside = shell_word(&format!("{}.invalid", session_path.to_string_lossy()));
+    match std::fs::metadata(session_path) {
+        Ok(metadata) if !metadata.is_file() => Err(format!(
+            "session_storage_invalid: the Session database path {} exists but is not a regular file. Move it aside and start again:\n  mv {quoted} {aside}",
+            session_path.display()
+        )),
+        Ok(metadata) if metadata.len() == 0 => Err(format!(
+            "session_storage_empty: the Session database {} is an empty file, usually left by an interrupted first start. Remove it and start again:\n  rm {quoted}",
+            session_path.display()
+        )),
         Ok(_) => {
             awaken_session_store::SqliteManagedSessionRepository::verify_existing(
                 &session_path.to_string_lossy(),
@@ -279,56 +458,16 @@ async fn classify_local_installation(
             .await
             .map_err(|error| {
                 format!(
-                    "session_storage_invalid: verify {}: {error}",
+                    "session_storage_invalid: {} is not a readable Awaken Session database ({error}). Move it aside and start again:\n  mv {quoted} {aside}",
                     session_path.display()
                 )
             })?;
-            true
+            Ok(true)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => {
-            return Err(format!(
-                "session_storage_unavailable: inspect {}: {error}",
-                session_path.display()
-            ));
-        }
-    };
-
-    match (marker.as_ref(), session_exists) {
-        (Some(workspace_id), true) => Ok(PreparedLocalInstallation::Existing {
-            root: deployment.data_dir.clone(),
-            workspace_id: workspace_id.clone(),
-        }),
-        (Some(workspace_id), false) if authorization.permits_initialization() => {
-            Ok(PreparedLocalInstallation::Existing {
-                root: deployment.data_dir.clone(),
-                workspace_id: workspace_id.clone(),
-            })
-        }
-        (Some(_), false) => Err(format!(
-            "session_storage_missing: installation under {} is missing {}; explicit --initialize-installation --initialization-reference <REF> is required for role-first completion or intentional recovery",
-            deployment.data_dir.display(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "session_storage_unavailable: inspect {}: {error}",
             session_path.display()
-        )),
-        (None, true) if authorization.permits_initialization() => {
-            Ok(PreparedLocalInstallation::AuthorizedMissing {
-                root: deployment.data_dir.clone(),
-                expected_workspace_id: deployment.expected_platform_workspace_id.clone(),
-            })
-        }
-        (None, true) => Err(format!(
-            "local_installation_incomplete: canonical Session storage exists under {}, but platform-workspace-id is missing; retry only with explicit --initialize-installation --initialization-reference <REF>",
-            deployment.data_dir.display()
-        )),
-        (None, false) if authorization.permits_initialization() => {
-            Ok(PreparedLocalInstallation::AuthorizedMissing {
-                root: deployment.data_dir.clone(),
-                expected_workspace_id: deployment.expected_platform_workspace_id.clone(),
-            })
-        }
-        (None, false) => Err(format!(
-            "unbound_empty_local_storage: ordinary startup and database migrate are exact-only; first installation requires explicit database migrate --initialize-installation --initialization-reference <REF> under {}",
-            deployment.data_dir.display()
         )),
     }
 }

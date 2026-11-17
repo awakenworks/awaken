@@ -88,6 +88,7 @@
     "only_a_root_run_behind_an_occupied_slot_parks_its_session_work": "only_a_closed_model_only_root_attempt_parks_its_session_work",
     "claim_refresh_requires_complete_control_delivery_and_transport": "provider_redelivery_requires_complete_control_delivery",
     "registered_worker_realizes_brokered_candidates_through_the_process_cloud_identity": "registered_worker_obtains_brokered_grants_under_its_claim",
-    "native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_input": "native_run_reply_rejects_foreign_owner_and_nonprimary_or_unfenced_input"
+    "native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_input": "native_run_reply_rejects_foreign_owner_and_nonprimary_or_unfenced_input",
+    "local_migration_requires_explicit_initialization_and_publishes_identity_last": "local_migration_initializes_only_the_first_start_row_and_publishes_identity_last"
   }
 }

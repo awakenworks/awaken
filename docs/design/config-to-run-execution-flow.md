@@ -165,6 +165,8 @@ database migrate
   -> exact binding: continue, including ordinary rollout migration retries
   -> empty schema: fail with zero DDL unless the operator supplied both explicit
      first-initialization flags and an audit reference; then bind as fresh_initialization
+     (a Local all-in-one with only local storage and an empty data directory
+     supplies them itself; see E35)
   -> existing unbound schema: fail unless the operator supplied both explicit
      legacy-adoption flags and an audit reference, then bind as legacy_adoption
   -> select the role's immutable component migration manifest
@@ -741,6 +743,7 @@ cite the rule they cover.
 | E32 | Serve or Doctor observes a missing, mismatched, partial, drifted, or rowless installation binding | fail read-only with the affected role-owned target labels; never infer identity from Session, Control, IAM, tenant, component-ledger, or local-marker state |
 | E33 | every empty target has explicit `--initialize-installation --initialization-reference <REF>`, and every legacy target has its separate explicit adoption pair | after all-target preflight, record `fresh_initialization` or `legacy_adoption` plus the exact operator reference in the single installation-binding row, then run component manifests |
 | E34 | a later ordinary migration sees the exact Workspace binding | verify the row and scoped ledger, apply only pending component versions idempotently, and never require or retain first-install authority |
+| E35 | Local all-in-one with only local storage and no `expected_platform_workspace_id`, whose data directory holds neither a `platform-workspace-id` marker nor a Session store (missing or empty directory) | ordinary startup and flag-free `database migrate` take exactly the authorization `--initialize-installation --initialization-reference local-first-start` builds and run the same migration, then print the data directory and the new Workspace ID. This is the one exception to E30: with no PostgreSQL target and no configured Workspace, an empty directory can only become a new, separately identified installation, never a rebuild of an existing Workspace, and a wrong path leaves the old data where it was. A marker without a Session store, a Session store without a marker, or a zero-byte or invalid Session file still refuses, with the exact command that recovers it |
 
 The concrete multi-process topology, cluster lifecycle, and fault-injection
 entry points are owned by the

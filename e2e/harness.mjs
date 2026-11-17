@@ -216,7 +216,7 @@ export function managedFileUploadForm(content, filename) {
 // orphaned and keep Node alive past the test.
 let serverBin = null;
 let productionBin = null;
-const initializedInstallationConfigurations = new Set();
+const initializedInstallationConfigurations = new Map();
 const spawnedServersByPort = new Map();
 const spawnedServerStates = new WeakMap();
 
@@ -317,13 +317,17 @@ export function ensureProductionBuilt() {
 
 // The production installation state machine remains the only authority for
 // first-use storage. This E2E adapter owns only when a positive fixture invokes
-// that existing CLI boundary. Cause/effect decision table:
+// that existing CLI boundary. A Local all-in-one with only local storage
+// initializes itself on its first ordinary start; the product's own
+// `config --json` report (`first_installation`) says which rule applies, so the
+// harness never re-derives it. Cause/effect decision table:
 //
 // | Rule | exact config observation | prior successful observation | effect |
 // |---|---|---|---|
-// | I1 | valid | no | run explicit initialization before child spawn |
+// | I0 | valid, first installation automatic | either | no migration; the child's first start initializes |
+// | I1 | valid, first installation explicit | no | run explicit initialization before child spawn |
 // | I2 | unchanged | yes | skip migration so restart uses ordinary Serve |
-// | I3 | initialization fails | no | throw, do not cache, do not spawn child |
+// | I3 | config report or initialization fails | no | throw, do not cache, do not spawn child |
 // | I4 | unchanged but durable bytes later corrupt | yes | skip migration; Serve detects damage |
 // | I5 | path, cwd, config bytes, or resolved binary identity changes | either | independently initialize/verify |
 //
@@ -355,15 +359,32 @@ export function initializeE2EInstallation(environment, options = {}) {
   const configBytes = fs.readFileSync(configPath);
   const configDigest = createHash('sha256').update(configBytes).digest('hex');
   const cacheKey = `${cwd}\0${configPath}\0${configDigest}\0${resolvedBinary}\0${binaryDigest}`;
-  if (initializedInstallationConfigurations.has(cacheKey)) return 'cached';
-  const reference = createHash('sha256')
-    .update(`${cwd}\0${configPath}`)
-    .digest('hex')
-    .slice(0, 24);
-
-  const result = spawnSync(
-    resolvedBinary,
-    [
+  const cached = initializedInstallationConfigurations.get(cacheKey);
+  if (cached) return cached === 'automatic' ? 'automatic' : 'cached';
+  const run = (args) => {
+    const result = spawnSync(resolvedBinary, args, { cwd, env: environment, encoding: 'utf8' });
+    if (result.error || result.status !== 0) {
+      const detail = [result.error?.message, result.stdout, result.stderr]
+        .filter(Boolean)
+        .join('\n')
+        .slice(-8_000);
+      throw new Error(
+        `E2E installation failed for ${configPath} `
+        + `(${args.slice(0, 2).join(' ')}: status=${result.status}, signal=${result.signal}): ${detail}`,
+      );
+    }
+    return result.stdout;
+  };
+  const report = JSON.parse(run(['config', '--json', '--config', configPath]));
+  let outcome;
+  if (String(report.first_installation).startsWith('automatic')) {
+    outcome = 'automatic';
+  } else {
+    const reference = createHash('sha256')
+      .update(`${cwd}\0${configPath}`)
+      .digest('hex')
+      .slice(0, 24);
+    run([
       'database',
       'migrate',
       '--config',
@@ -371,29 +392,15 @@ export function initializeE2EInstallation(environment, options = {}) {
       '--initialize-installation',
       '--initialization-reference',
       `e2e-harness-${reference}`,
-    ],
-    {
-      cwd,
-      env: environment,
-      encoding: 'utf8',
-    },
-  );
-  if (result.error || result.status !== 0) {
-    const detail = [result.error?.message, result.stdout, result.stderr]
-      .filter(Boolean)
-      .join('\n')
-      .slice(-8_000);
-    throw new Error(
-      `explicit E2E installation failed for ${configPath} `
-      + `(status=${result.status}, signal=${result.signal}): ${detail}`,
-    );
+    ]);
+    outcome = 'initialized';
   }
   const finalDigest = createHash('sha256').update(fs.readFileSync(configPath)).digest('hex');
   if (finalDigest !== configDigest) {
     throw new Error(`E2E installation config changed during migration: ${configPath}`);
   }
-  initializedInstallationConfigurations.add(cacheKey);
-  return 'initialized';
+  initializedInstallationConfigurations.set(cacheKey, outcome);
+  return outcome;
 }
 
 function preparedServerProcessEnv(addr, configured = {}, inheritedEnvironment = process.env) {

@@ -66,6 +66,12 @@ impl ResolvedDeployment {
         } else {
             BTreeMap::new()
         };
+        let first_installation =
+            if crate::installation_binding::first_installation_is_automatic(self) {
+                "automatic on the first start of an empty data directory"
+            } else {
+                "explicit `database migrate --initialize-installation`"
+            };
         let database_migrations = match self.mode {
             super::OperatingMode::Local => "automatic at startup",
             super::OperatingMode::Server => {
@@ -109,6 +115,7 @@ impl ResolvedDeployment {
                 "control_databases": control_databases,
                 "coordinator_databases": coordinator_databases,
                 "database_migrations": database_migrations,
+                "first_installation": first_installation,
                 "seal_key": self.seal_key.description(),
                 "origins": self.origins,
                 "deprecations": self.deprecations,
@@ -116,7 +123,7 @@ impl ResolvedDeployment {
             .expect("configuration report is serializable");
         }
         let mut report = format!(
-            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  internal bind        {internal_bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  AI SDK browser CORS  {browser_cors}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  Cloud issuer         {cloud_issuer}\n  OAuth client         {oauth_client}\n  OAuth callback       {oauth_callback}\n  credential source    {credential_source}\n  runtime dispatch     {runtime}\n  Resources backend    {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
+            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  internal bind        {internal_bind}\n  data directory       {data}\n  first installation   {first_installation}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  AI SDK browser CORS  {browser_cors}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  Cloud issuer         {cloud_issuer}\n  OAuth client         {oauth_client}\n  OAuth callback       {oauth_callback}\n  credential source    {credential_source}\n  runtime dispatch     {runtime}\n  Resources backend    {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
             role = self.role.as_str(),
             mode = self.mode.as_str(),
             bind = self.bind,
@@ -170,14 +177,24 @@ impl ResolvedDeployment {
     pub async fn doctor_report(&self, json: bool) -> String {
         let mut data_directory = data_directory_readiness(&self.data_dir);
         let postgres_installation = if data_directory.ready {
-            match crate::installation_binding::verify_deployment_installations(self).await {
-                Ok(prepared) if prepared.postgres_target_count() == 0 => {
+            match crate::installation_binding::admit_ordinary_start(self).await {
+                Ok(crate::installation_binding::OrdinaryAdmission::FirstStart(_)) => {
+                    data_directory.detail.push_str(
+                        "; it holds no installation yet, so the first start initializes a new local installation there",
+                    );
                     Readiness::ready("not applicable".to_owned())
                 }
-                Ok(prepared) => Readiness::ready(format!(
-                    "{} role-owned PostgreSQL target(s) match expected_platform_workspace_id",
-                    prepared.postgres_target_count()
-                )),
+                Ok(crate::installation_binding::OrdinaryAdmission::Verified(prepared))
+                    if prepared.postgres_target_count() == 0 =>
+                {
+                    Readiness::ready("not applicable".to_owned())
+                }
+                Ok(crate::installation_binding::OrdinaryAdmission::Verified(prepared)) => {
+                    Readiness::ready(format!(
+                        "{} role-owned PostgreSQL target(s) match expected_platform_workspace_id",
+                        prepared.postgres_target_count()
+                    ))
+                }
                 Err(error) => {
                     data_directory = Readiness::blocked(error.clone());
                     Readiness::blocked(error)
@@ -317,7 +334,8 @@ mod tests {
         // bind result -> independent readiness details -> one overall result.
         // Constraints: diagnostics never initialize an absent directory and do
         // not retain the test-bound listener. Decision table: R1 bound storage +
-        // free listener=>ready; R2 absent/unbound child=>blocked and zero writes;
+        // free listener=>ready; R2 absent Local first-start child=>ready to
+        // create, naming the first-start initialization, and zero writes;
         // R3 non-directory path=>blocked; R4 bound storage+occupied listener=>
         // listener blocked.
         let directory = tempfile::tempdir().unwrap();
@@ -347,13 +365,16 @@ mod tests {
             awaken_control::StoreBackend::Sqlite(absent.join("sessions.db"));
         let creatable: serde_json::Value =
             serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
-        assert_eq!(creatable["ready"], false, "R2");
-        assert_eq!(creatable["data_directory"]["status"], "blocked", "R2");
+        assert_eq!(creatable["ready"], true, "R2");
+        assert_eq!(
+            creatable["data_directory"]["status"], "ready_to_create",
+            "R2"
+        );
         assert!(
             creatable["data_directory"]["detail"]
                 .as_str()
                 .unwrap()
-                .starts_with("unbound_empty_local_storage:"),
+                .ends_with("the first start initializes a new local installation there"),
             "R2: {creatable}"
         );
         assert!(!absent.exists(), "doctor remains read-only");
