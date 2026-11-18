@@ -5,6 +5,7 @@ use awaken_agent_contract::stream::event::Observation;
 use awaken_lease_contract::fence::Epoch;
 use awaken_session_execution_contract::ThreadLiveObservation;
 use awaken_sync::LeafLock;
+use awaken_time::mono::MonoDeadline;
 use futures_lite::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
@@ -14,6 +15,12 @@ use uuid::Uuid;
 const BACKLOG: usize = 128;
 const MAX_IDENTITIES: usize = 4096;
 const MAX_BYTES: usize = 96 * 1024;
+const MAX_AGE: std::time::Duration = std::time::Duration::from_millis(500);
+
+struct Outgoing {
+    packet: Packet,
+    deadline: MonoDeadline,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct Packet {
@@ -48,7 +55,7 @@ impl Packet {
 
 pub(super) struct Relay {
     source: Uuid,
-    outgoing: mpsc::Sender<Packet>,
+    outgoing: mpsc::Sender<Outgoing>,
     sequences: LeafLock<HashMap<Response, (Uuid, u64)>>,
     sending: JoinHandle<()>,
     receiving: JoinHandle<()>,
@@ -86,7 +93,10 @@ impl Relay {
         packet.stream = *stream;
         packet.sequence = *sequence;
         *sequence = sequence.checked_add(1)?;
-        let _ = self.outgoing.try_send(packet.clone());
+        let _ = self.outgoing.try_send(Outgoing {
+            packet: packet.clone(),
+            deadline: MonoDeadline::after(MAX_AGE),
+        });
         Some(packet)
     }
 }
@@ -135,7 +145,10 @@ impl ThreadEventHub {
         let source = Uuid::new_v4();
         let (client, mut messages) =
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                let client = async_nats::connect(url)
+                let client = async_nats::ConnectOptions::new()
+                    .subscription_capacity(BACKLOG)
+                    .client_capacity(BACKLOG)
+                    .connect(url)
                     .await
                     .map_err(|_| "preview relay could not connect to NATS")?;
                 let mut messages = client
@@ -170,15 +183,20 @@ impl ThreadEventHub {
                 }
             }
         });
-        let (outgoing, mut pending) = mpsc::channel::<Packet>(BACKLOG);
+        let (outgoing, mut pending) = mpsc::channel::<Outgoing>(BACKLOG);
         let subject = subject.to_owned();
         let sending = tokio::spawn(async move {
-            while let Some(packet) = pending.recv().await {
-                if let Ok(body) = serde_json::to_vec(&packet)
+            while let Some(Outgoing { packet, deadline }) = pending.recv().await {
+                if !deadline.has_passed()
+                    && let Ok(body) = serde_json::to_vec(&packet)
                     && body.len() <= MAX_BYTES
                     && client.connection_state() == async_nats::connection::State::Connected
                 {
-                    let _ = client.publish(subject.clone(), body.into()).await;
+                    let _ = tokio::time::timeout_at(
+                        deadline.instant(),
+                        client.publish(subject.clone(), body.into()),
+                    )
+                    .await;
                 }
             }
         });
@@ -205,12 +223,15 @@ impl ThreadEventHub {
         // section so a concurrent local or relayed frame cannot overtake it.
         if let Ok(channels) = self.channels.lock()
             && let Some(channel) = channels.get(&response.thread)
+            && channel.observe_preview_epoch(&response.run, epoch)
             && channel.previews.lock().accept(response, &packet)
         {
-            channel.send(ThreadEvent::ClaimedLive(ThreadLiveObservation {
-                observation: packet.observation,
-                epoch: Some(epoch),
-            }));
+            let _ = channel
+                .sender
+                .send(ThreadEvent::ClaimedLive(ThreadLiveObservation {
+                    observation: packet.observation,
+                    epoch: Some(epoch),
+                }));
         }
     }
 }
@@ -263,6 +284,9 @@ mod tests {
         let live = subscription.recv().await.unwrap().unwrap();
         assert_eq!(live.observation, text("thread", "replacement"));
         assert_eq!(live.epoch, Epoch::from_persisted(4));
+        hub.receive_preview(packet(5, 1, "replacement prefix lost"));
+        hub.receive_preview(packet(4, 1, "old trailing frame"));
+
         assert!(
             tokio::time::timeout(Duration::from_millis(25), subscription.recv())
                 .await

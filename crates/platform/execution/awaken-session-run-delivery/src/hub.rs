@@ -75,17 +75,24 @@ struct Channel {
 }
 
 impl Channel {
+    fn observe_preview_epoch(&self, run: &str, epoch: awaken_lease_contract::fence::Epoch) -> bool {
+        let mut claim = self.claim.lock();
+        if claim
+            .as_ref()
+            .is_some_and(|(current, latest)| current == run && epoch.get() < *latest)
+        {
+            return false;
+        }
+        *claim = Some((run.to_owned(), epoch.get()));
+        true
+    }
+
     fn send(&self, event: ThreadEvent) {
         if let ThreadEvent::ClaimedLive(live) = &event
             && let Some(epoch) = live.epoch
+            && !self.observe_preview_epoch(&live.observation.event.run_id.0, epoch)
         {
-            let mut claim = self.claim.lock();
-            if claim.as_ref().is_some_and(|(run, latest)| {
-                run == &live.observation.event.run_id.0 && epoch.get() < *latest
-            }) {
-                return;
-            }
-            *claim = Some((live.observation.event.run_id.0.clone(), epoch.get()));
+            return;
         }
         let _ = self.sender.send(event);
     }
