@@ -4,23 +4,26 @@
     "source_locations": [
       {
         "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 77,
         "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b",
-        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs:77"
+        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs:77",
+        "function": "ghost_and_archived_child_interrupt_targets_have_zero_effect"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 96
+        "assertion_sha256": "145aa607356147499efac87a69b7aa8af0d02e41341657a8ea5b6089005bd4ed",
+        "function": "ghost_and_archived_child_interrupt_targets_have_zero_effect",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 101
+        "assertion_sha256": "ca62597c27da6709297516fc96fbcb4e703f3d4c0fa0e77f0094b89b7c652e83",
+        "function": "ghost_and_archived_child_interrupt_targets_have_zero_effect",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 111
+        "assertion_sha256": "a3baa8afcdc2f3d4f531a4fa86e1baf01846eb7965a0e60dd2730db21aada48b",
+        "function": "ghost_and_archived_child_interrupt_targets_have_zero_effect",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       }
     ],
     "execution_witnesses": [
@@ -55,23 +58,26 @@
     "source_locations": [
       {
         "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 205,
         "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b",
-        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs:205"
+        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs:205",
+        "function": "ordinary_batch_of_51_entries_is_one_batch_and_file_documents_cap_at_100"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 215
+        "assertion_sha256": "e7a5dc33d4b272ae587fce71b824cccc4e5c00fcde87cc3ddf978c825fee5d94",
+        "function": "ordinary_batch_of_51_entries_is_one_batch_and_file_documents_cap_at_100",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 216
+        "assertion_sha256": "46f74c1dfb97e56fec2c92e211e5814f6e3b4dedc772cf71703fd26b59084c11",
+        "function": "ordinary_batch_of_51_entries_is_one_batch_and_file_documents_cap_at_100",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 218
+        "assertion_sha256": "3f4ba0f9243ea5c6821f871086257dfee31bef85fe4a8c320fca07f1c941de3f",
+        "function": "ordinary_batch_of_51_entries_is_one_batch_and_file_documents_cap_at_100",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       }
     ],
     "execution_witnesses": [
@@ -107,23 +113,26 @@
     "source_locations": [
       {
         "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 283,
         "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b",
-        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs:283"
+        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs:283",
+        "function": "budget_paused_interrupt_only_batch_is_a_legal_no_op"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 291
+        "assertion_sha256": "fec834c5b055cf50a245661210ca5b6b4a6ead6a53f4c581a38664aa56fe6484",
+        "function": "budget_paused_interrupt_only_batch_is_a_legal_no_op",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 316
+        "assertion_sha256": "26247b5357f66d8721dcddd7cc11b74ce8cbe7ed228da171582e056d51ef9b51",
+        "function": "budget_paused_interrupt_only_batch_is_a_legal_no_op",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 317
+        "assertion_sha256": "001c25abe82abdf65c93e486ac7970fc73cb812bbd4c6d5f018c11c3a8844b39",
+        "function": "budget_paused_interrupt_only_batch_is_a_legal_no_op",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       }
     ],
     "execution_witnesses": [
@@ -157,23 +166,26 @@
     "source_locations": [
       {
         "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 348,
         "file_sha256": "9b68f73f9419eba5b49fdd04fa7ef05a96506ed88d14146fdb7ba97356d5f04b",
-        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs:348"
+        "relocated_from": "crates/server/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs:348",
+        "function": "admission_error_precedence_follows_the_entry_table"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 366
+        "assertion_sha256": "a76937df837e383f507cdeebd91eeadc258b6132bf9e9f1fa1ac9384426a9a94",
+        "function": "admission_error_precedence_follows_the_entry_table",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 388
+        "assertion_sha256": "2e520235a0849267742140be92315013c1278c83559d0f2e53950428a3eb518c",
+        "function": "admission_error_precedence_follows_the_entry_table",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs",
-        "line": 406
+        "assertion_sha256": "3487599381f433f0f79bcbcec2e0be750476011fece48379cd48e7e87b5bc279",
+        "function": "admission_error_precedence_follows_the_entry_table",
+        "path": "crates/platform/protocols/awaken-protocol-managed/src/state/events/tests/admission_boundaries.rs"
       }
     ],
     "execution_witnesses": [
@@ -207,9 +219,9 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 365,
         "file_sha256": "09e3d0d39fad4f610293e25a93d42782ae95b9aba4cd091e6cdfa3503891ce59",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs:365"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs:365",
+        "function": "compile_rejections_carry_distinct_stable_codes"
       }
     ],
     "execution_witnesses": [
@@ -239,12 +251,14 @@
     "id": "B135",
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 384
+        "assertion_sha256": "1f124ec08366b7992dc6de93617e635f0f0d6803ab093b7d9b7f7991943229d4",
+        "function": "compile_rejections_carry_distinct_stable_codes",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 389
+        "assertion_sha256": "6563acb491cbe1c8058a1be73bbae2601e02ea719d34ac45b5c44a62f488453b",
+        "function": "compile_rejections_carry_distinct_stable_codes",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs"
       }
     ]
   },
@@ -253,9 +267,9 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 396,
         "file_sha256": "09e3d0d39fad4f610293e25a93d42782ae95b9aba4cd091e6cdfa3503891ce59",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs:396"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/admission_boundaries.rs:396",
+        "function": "interrupt_of_unknown_child_target_is_rejected_without_effect"
       }
     ],
     "execution_witnesses": [
@@ -285,12 +299,14 @@
     "id": "B136",
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 418
+        "assertion_sha256": "a209f7f6b3a085f3c435db3ca370221377134dd2cd1bd1e81e94078c4d37c8d3",
+        "function": "interrupt_of_unknown_child_target_is_rejected_without_effect",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs",
-        "line": 422
+        "assertion_sha256": "5fcc101dbfc7c53f94797bb18a0a4a92409b057d01c4f71a37cba486a475c956",
+        "function": "interrupt_of_unknown_child_target_is_rejected_without_effect",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/admission_boundaries.rs"
       }
     ]
   },
@@ -299,23 +315,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 160,
         "file_sha256": "4d23d4dd68d155c0997208473837a8011a0e6b907034b52ac4d37e006e3b5214",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs:160"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs:160",
+        "function": "raised_budget_resumes_only_the_original_run_once_with_stable_identity"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 171
+        "assertion_sha256": "e2cf3ca24a86223cfd61cc2020170d49c594bfdaca15a1a90a10af945c59c39f",
+        "function": "raised_budget_resumes_only_the_original_run_once_with_stable_identity",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 181
+        "assertion_sha256": "cc9b1f615c401cecba8086ccebe53aa479cf6a50c1b812e8d83774db6fae8c54",
+        "function": "raised_budget_resumes_only_the_original_run_once_with_stable_identity",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 185
+        "assertion_sha256": "73b8c4b07961c55c6c16a5add4b5a8b6d2967d8278f7c32fb8c8711db2bdd512",
+        "function": "raised_budget_resumes_only_the_original_run_once_with_stable_identity",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       }
     ],
     "execution_witnesses": [
@@ -351,23 +370,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 322,
         "file_sha256": "4d23d4dd68d155c0997208473837a8011a0e6b907034b52ac4d37e006e3b5214",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs:322"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs:322",
+        "function": "new_run_cannot_bypass_the_budget_wait"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 345
+        "assertion_sha256": "02bb6b538c7f21c7203d11fe2aed2518b93150b3eb76f60e6e680a0e664c8bc2",
+        "function": "new_run_cannot_bypass_the_budget_wait",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 350
+        "assertion_sha256": "06d8fb8f3e72c77ee94e57155401012949a731a0f5fc917027dcc28f4c4f2fd6",
+        "function": "new_run_cannot_bypass_the_budget_wait",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 351
+        "assertion_sha256": "2ec6b6ab506b304bea1baec7208dac72fc3c5cf937efb54af52543748dfdf985",
+        "function": "new_run_cannot_bypass_the_budget_wait",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       }
     ],
     "execution_witnesses": [
@@ -401,9 +423,9 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 369,
         "file_sha256": "829bf259a89df842c720387b89039e36ccde69932c4cc4619f333933da0fc559",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs:369"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs:369",
+        "function": "raised_budget_resumes_only_budget_reached_tickets"
       }
     ],
     "execution_witnesses": [
@@ -433,12 +455,14 @@
     "id": "B139",
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 390
+        "assertion_sha256": "2144610f9f74fff83812efec8d2bd04f6aebbe3eaca05e993da243ee6ba21af9",
+        "function": "raised_budget_resumes_only_budget_reached_tickets",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 398
+        "assertion_sha256": "2a3d51e8af0cec9509e27d2c352d39089e860421628241de71f981948d241c45",
+        "function": "raised_budget_resumes_only_budget_reached_tickets",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       }
     ]
   },
@@ -447,9 +471,9 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 406,
         "file_sha256": "a1bfa02b3bf0088adb9a36052ce3fd85217704f66541ba9b4f13fd8e5c73b09e",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs:406"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_resume.rs:406",
+        "function": "budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise"
       }
     ],
     "execution_witnesses": [
@@ -479,16 +503,19 @@
     "id": "B140",
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 430
+        "assertion_sha256": "67ddd19b2721b48c05d5265ab5c866ab8e5e58e43918c94932038ead17a2333f",
+        "function": "budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 440
+        "assertion_sha256": "27a9b1218100a6da24fbeb233b33177d49fbd88eb38c53f92da49c441f58eeba",
+        "function": "budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs",
-        "line": 445
+        "assertion_sha256": "4b5305b5659c36f5d1556cffb8f8f3f1e9773bef6eed6fef59ebdfb54ee51aef",
+        "function": "budget_rejected_bypass_run_is_not_admitted_by_repair_after_raise",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_resume.rs"
       }
     ]
   },
@@ -497,23 +524,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs",
-        "line": 136,
         "file_sha256": "89bbdfec2c65123e0d6cef7bf218bcd4f9a5e61004fcb54d88a9943b6c4e2806",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs:136"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs:136",
+        "function": "failed_second_input_or_stale_version_keeps_the_original_manifest"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs",
-        "line": 140
+        "assertion_sha256": "a01c4763c434244039bf6aebf24d0d1a312f57358be0c6d72e0bf5f548110b88",
+        "function": "failed_second_input_or_stale_version_keeps_the_original_manifest",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs",
-        "line": 151
+        "assertion_sha256": "93869517b91bdee3cedb3923048710bf3a400ee88a5395e9782f7b2a200298ad",
+        "function": "failed_second_input_or_stale_version_keeps_the_original_manifest",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs",
-        "line": 155
+        "assertion_sha256": "38ea75104da195284401605273f9a681a857e7f4a93c20282bdae31ea4edde46",
+        "function": "failed_second_input_or_stale_version_keeps_the_original_manifest",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs"
       }
     ],
     "execution_witnesses": [
@@ -549,23 +579,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs",
-        "line": 235,
         "file_sha256": "89bbdfec2c65123e0d6cef7bf218bcd4f9a5e61004fcb54d88a9943b6c4e2806",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs:235"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/realization/partial_preparation.rs:235",
+        "function": "error_only_oracle_cannot_accept_partial_or_forgotten_preparation"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs",
-        "line": 246
+        "assertion_sha256": "87db5ffd5de2faf9572160bfc128c0df6431616b6f413222894be7f45f96869c",
+        "function": "error_only_oracle_cannot_accept_partial_or_forgotten_preparation",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs",
-        "line": 248
+        "assertion_sha256": "dedfa9a706cbb0836477429b0fd74c31c5709f8a6365d031da552129b28ffe43",
+        "function": "error_only_oracle_cannot_accept_partial_or_forgotten_preparation",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs",
-        "line": 261
+        "assertion_sha256": "c0b350759637474d94cbf8ba911b52843e590c4391ca2816ffd7c4ccc64e5be0",
+        "function": "error_only_oracle_cannot_accept_partial_or_forgotten_preparation",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/partial_preparation.rs"
       }
     ],
     "execution_witnesses": [
@@ -601,23 +634,26 @@
     "source_locations": [
       {
         "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs",
-        "line": 360,
         "file_sha256": "211ee5fa3624ab84fb8693c0296c9c43e3039648d79a7a6e7c280d1e574153ee",
-        "relocated_from": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs:360"
+        "relocated_from": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs:360",
+        "function": "binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs",
-        "line": 367
+        "assertion_sha256": "10a7047fbe3d023d541cb8ded2c0b129dd70fe7633a648d1719beefee5caee41",
+        "function": "binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs"
       },
       {
-        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs",
-        "line": 368
+        "assertion_sha256": "48a419dfcbdca848137a44a3bfd9b7f4b0a936f783b0492ac36d76df243513bb",
+        "function": "binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs"
       },
       {
-        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs",
-        "line": 373
+        "assertion_sha256": "4b080fff2828ab8257178e3c4789c27e5dda31aafc8cee25fc9d1063eaace6a4",
+        "function": "binding_matrix_rejects_each_dimension_before_plaintext_with_stable_class",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs"
       }
     ],
     "execution_witnesses": [
@@ -653,9 +689,9 @@
     "source_locations": [
       {
         "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs",
-        "line": 483,
         "file_sha256": "b8aeafba5c0cd566f57b6b8e7416f376b0f821c356087e9794335a92b24e9cb4",
-        "relocated_from": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs:483"
+        "relocated_from": "crates/server/awaken-credential-materializer/src/tests/binding_matrix.rs:483",
+        "function": "binding_matrix_holder_dimension_has_its_recipient_classification"
       }
     ],
     "execution_witnesses": [
@@ -685,16 +721,19 @@
     "id": "B144",
     "assertion_locations": [
       {
-        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs",
-        "line": 489
+        "assertion_sha256": "90fe328399edd23b4db9a5bc04238d63004046d7e2e4af1fcc57d0149d9fe8dd",
+        "function": "binding_matrix_holder_dimension_has_its_recipient_classification",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs"
       },
       {
-        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs",
-        "line": 492
+        "assertion_sha256": "a43e1fed6874257e9599119d3a7d854cc1fd1cd3acaf1dc5fd2633db3194c8a7",
+        "function": "binding_matrix_holder_dimension_has_its_recipient_classification",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs"
       },
       {
-        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs",
-        "line": 493
+        "assertion_sha256": "6e2a2b696ca027397a7f2996f9afa43eb785e75b7678a000e787a039100ca475",
+        "function": "binding_matrix_holder_dimension_has_its_recipient_classification",
+        "path": "crates/platform/execution/awaken-credential-materializer/src/tests/binding_matrix.rs"
       }
     ]
   },
@@ -703,23 +742,26 @@
     "source_locations": [
       {
         "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
-        "line": 253,
         "file_sha256": "4ec7aa0a6e32d157e346678ed12c72c636b5b7da985a3bf0248e77c696ebaa45",
-        "relocated_from": "crates/bin/awaken-worker/src/tests/restore_capability.rs:253"
+        "relocated_from": "crates/bin/awaken-worker/src/tests/restore_capability.rs:253",
+        "function": "restore_capability_pairing_and_ordinary_mode_hold_and_late_option_discovery_is_detected"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
-        "line": 258
+        "assertion_sha256": "24a5e4e398a459b4dea51a9c265e37b718bf4665a51750a7c44fd0ef7c372fde",
+        "function": "restore_capability_pairing_and_ordinary_mode_hold_and_late_option_discovery_is_detected",
+        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs"
       },
       {
-        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
-        "line": 259
+        "assertion_sha256": "d9b3c33c7720d8df251a08f97fb182c71a2095389d6c9862af3300f271df2c6b",
+        "function": "restore_capability_pairing_and_ordinary_mode_hold_and_late_option_discovery_is_detected",
+        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs"
       },
       {
-        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
-        "line": 266
+        "assertion_sha256": "d43812ace4243fb0b56e418dd4134316fa248eb9f23c6694f5a577410bc7f3c1",
+        "function": "restore_capability_pairing_and_ordinary_mode_hold_and_late_option_discovery_is_detected",
+        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs"
       }
     ],
     "execution_witnesses": [

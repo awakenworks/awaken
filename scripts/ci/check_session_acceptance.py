@@ -8,10 +8,12 @@ whose source identity was rewritten, or a suite total. This checker decides
 those questions from the ledger and the source it cites; it does not run any
 test and it is not a second runner.
 
-New bindings identify a function within its file and fingerprint the cited
-assertion's syntax. Line numbers are navigation hints, not proof identity.
-Legacy line-only bindings and their explicit --fix migration remain supported;
-historical execution receipts are never rewritten by source relocation.
+The symbols-v1 catalog identifies functions, named JavaScript statements and
+assertion syntax, never source line numbers. Identical assertions cited together
+carry their explicit multiplicity; Python control context distinguishes copies
+in different branches. Source relocation never rewrites execution receipts.
+Legacy catalogs retain --fix compatibility, but cannot introduce line-based
+locations into the migrated catalog.
 
 Decision table (each rule refuses with its code; ``--self-test`` executes every
 refusal against a mutated copy of a minimal ledger):
@@ -21,7 +23,7 @@ refusal against a mutated copy of a minimal ledger):
 | L01  | counts disagree with the cases they summarize              | refuse  |
 | L02  | a binding, group entrypoint or cited source path is absent | refuse  |
 | L03  | a clause binding names a function its file does not define | refuse  |
-| L04  | a clause binding cites no assertion, or a line without one | refuse  |
+| L04  | a cited assertion is absent, changed or ambiguous          | refuse  |
 | L05  | a clause witness is skipped, compile-only or not passed    | refuse  |
 | L06  | a witness disagrees with its receipt's source identity     | refuse  |
 | L07  | a clause-complete case leaves an oracle or control unbound | refuse  |
@@ -32,6 +34,7 @@ refusal against a mutated copy of a minimal ledger):
 | L12  | a product gap has no reason, follow-up or ignored reproducer | refuse |
 | L13  | group, binding or evidence identities collide               | refuse |
 | L14  | not-applicable without a reason or an executed refusal proof | refuse |
+| L15  | a symbols-v1 catalog contains legacy or unknown locations | refuse  |
 
 Evidence is produced by two subcommands, never by hand:
 
@@ -89,6 +92,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -166,15 +170,48 @@ def _defines(lines: list[str], path: str, name: str) -> bool:
     return not path.endswith((".rs", ".py")) and any(name in line for line in lines)
 
 
-def _rust_function_bodies(text: str, name: str) -> list[tuple[int, int, int]]:
+@lru_cache(maxsize=32)
+def _rust_functions(text: str) -> list[tuple[str, int, int, int]]:
     syntax = rust_source.rust_syntax(text)
     bodies = []
-    for match in re.finditer(DEFINITION.format(name=re.escape(name)), syntax):
+    for match in re.finditer(r"\bfn\s+(\w+)\s*[<(]", syntax):
         end = rust_source._rust_item_end(syntax, match.start())
         opening = None if end is None else rust_source._rust_body_start(syntax, match.end(), end)
         if opening is not None:
-            bodies.append((match.start(), opening, end))
+            bodies.append((match[1], match.start(), opening, end))
     return bodies
+
+
+def _rust_function_bodies(text: str, name: str) -> list[tuple[int, int, int]]:
+    return [(start, opening, end) for function, start, opening, end in _rust_functions(text) if function == name]
+
+
+@lru_cache(maxsize=32)
+def _python_functions(text: str) -> list[tuple[str, ast.AST]]:
+    result = []
+    def visit(node, prefix):
+        named = isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        name = ".".join((*prefix, node.name)) if named else ""
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            result.append((name, node))
+        for child in ast.iter_child_nodes(node):
+            visit(child, (*prefix, node.name) if named else prefix)
+    visit(ast.parse(text), ())
+    return result
+
+
+@lru_cache(maxsize=32)
+def _javascript_index(text: str) -> dict:
+    # Reuse the repository's pinned TypeScript parser; quoted code and comments
+    # must never become assertions. Parse only, without running the cited E2E.
+    try:
+        result = subprocess.run(["node", str(ROOT / "scripts/ci/session_acceptance_source.mjs")],
+                                input=text, text=True, encoding="utf-8", capture_output=True, timeout=30)
+        if result.returncode:
+            raise ValueError(result.stderr.strip())
+        return json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise Refused(f"L02 JavaScript source could not be parsed with the pinned repository tools: {error}") from error
 
 
 def _function_spans(lines: list[str], path: str, name: str) -> list[tuple[int, int]]:
@@ -184,11 +221,14 @@ def _function_spans(lines: list[str], path: str, name: str) -> list[tuple[int, i
     text = "\n".join(lines)
     if path.endswith(".py"):
         try:
-            tree = ast.parse(text)
+            functions = _python_functions(text)
         except SyntaxError:
             return []
-        return [(node.lineno, node.end_lineno) for node in ast.walk(tree)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name]
+        return [(node.lineno, node.end_lineno) for qualified, node in functions
+                if qualified == name or "." not in name and node.name == name]
+    if path.endswith((".mjs", ".js")):
+        return [(node["line"], node["end_line"]) for node in _javascript_index(text)["functions"]
+                if node["function"] == name]
     if not path.endswith(".rs"):
         return []
     return [(text.count("\n", 0, start) + 1, text.count("\n", 0, end) + 1)
@@ -220,22 +260,97 @@ def _rust_assertion_digest(text: str) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _rust_declaration_prefix(syntax: str) -> bool:
+    syntax = syntax.strip()
+    while syntax.startswith("#"):
+        end = rust_source._outer_attribute_end(syntax, 0)
+        if end is None:
+            return False
+        syntax = syntax[end:].strip()
+    return re.fullmatch(r"(?:(?:pub(?:\s*\([^)]*\))?|async|const|unsafe)\s*)*", syntax) is not None
+
+
+def _rust_test_identity(text: str, function: str) -> tuple[str, list[str]]:
+    """The current test's body and attached attributes, independent of file layout."""
+    bodies = _rust_function_bodies(text, function)
+    if len(bodies) != 1:
+        return "", []
+    start, _opening, end = bodies[0]
+    syntax = rust_source.rust_syntax(text)
+    modifiers = re.search(r"(?:(?:pub(?:\s*\([^)]*\))?|async|const|unsafe)\s+)+$", syntax[:start])
+    declaration = modifiers.start() if modifiers else start
+    attributes = []
+    for match in re.finditer(r"#\s*\[", syntax[:start]):
+        through = rust_source._outer_attribute_end(syntax, match.start())
+        if through is not None and _rust_declaration_prefix(syntax[through:start]):
+            attributes.append(syntax[match.start():through])
+    return _rust_assertion_digest(text[declaration:end]), attributes
+
+
+def _rust_doc_assertions(text: str, function: str) -> list[dict]:
+    bodies = _rust_function_bodies(text, function)
+    if len(bodies) != 1:
+        return []
+    start = bodies[0][0]
+    groups = list(re.finditer(r"(?m)(?:^[ \t]*///[^\n]*(?:\n|$))+", text[:start]))
+    if not groups:
+        return []
+    group = groups[-1]
+    if not _rust_declaration_prefix(rust_source.rust_syntax(text[group.end():start])):
+        return []
+    doc = re.sub(r"(?m)^[ \t]*/// ?", "", group[0])
+    anchors = []
+    for block in re.finditer(r"(?m)^```(compile_fail[^\n]*)\n(.*?)^```", doc, re.DOTALL):
+        digest = hashlib.sha256((block[1].strip() + ":" + _rust_assertion_digest(block[2])).encode()).hexdigest()
+        anchors.append({"line": text.count("\n", 0, group.start()) + doc.count("\n", 0, block.start()) + 1,
+                        "function": function, "assertion_sha256": digest})
+    return anchors
+
+
 def _assertion_anchors(lines: list[str], path: str, function: str) -> list[dict]:
+    text = "\n".join(lines)
+    if path.endswith((".mjs", ".js")):
+        parsed = _javascript_index(text)
+        if function != "<module>" and len(_function_spans(lines, path, function)) != 1:
+            return []
+        return [node for node in parsed["assertions"] if node["function"] == function]
     spans = _function_spans(lines, path, function)
     if len(spans) != 1:
         return []
     first, last = spans[0]
-    text = "\n".join(lines)
     anchors = []
     if path.endswith(".py"):
         tree = ast.parse(text)
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        target = next(node for node in ast.walk(tree)
+                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno == first)
         for node in ast.walk(tree):
             if not (first <= getattr(node, "lineno", 0) <= last):
                 continue
-            is_call = isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-            if isinstance(node, ast.Assert) or is_call and ASSERTION.search(ast.unparse(node.value.func) + "("):
-                digest = hashlib.sha256(ast.dump(node, include_attributes=False).encode("utf-8")).hexdigest()
-                anchors.append({"line": node.lineno, "function": function, "assertion_sha256": digest})
+            if isinstance(node, ast.Call) and ASSERTION.search(ast.unparse(node.func) + "("):
+                assertion = parents[node] if isinstance(parents.get(node), ast.Expr) else node
+            elif isinstance(node, ast.Assert):
+                assertion = node
+            else:
+                continue
+            current = parents.get(node)
+            while current is not None and not isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                current = parents.get(current)
+            if current is not target:
+                continue
+            digest = hashlib.sha256(ast.dump(assertion, include_attributes=False).encode("utf-8")).hexdigest()
+            context, current = [], parents.get(assertion)
+            while current is not None and not isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(current, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.ExceptHandler)):
+                    header = copy.copy(current)
+                    for field in ("body", "orelse", "finalbody"):
+                        if hasattr(header, field):
+                            setattr(header, field, [])
+                    context.append(ast.dump(header, include_attributes=False))
+                current = parents.get(current)
+            anchors.append({"line": assertion.lineno, "end_line": assertion.end_lineno,
+                            "function": function, "assertion_sha256": digest,
+                            "context_sha256": hashlib.sha256(json.dumps(context).encode()).hexdigest()})
     else:
         syntax = rust_source.rust_syntax(text)
         _start, offset, through = _rust_function_bodies(text, function)[0]
@@ -251,6 +366,7 @@ def _assertion_anchors(lines: list[str], path: str, function: str) -> list[dict]
                 anchors.append({"line": syntax.count("\n", 0, match.start()) + 1,
                                 "function": function,
                                 "assertion_sha256": _rust_assertion_digest(text[match.start():end])})
+        anchors += _rust_doc_assertions(text, function)
     return anchors
 
 
@@ -290,51 +406,67 @@ def _witness_errors(binding: dict, registry: dict, root: Path) -> list[str]:
     return errors
 
 
-def _binding_errors(binding: dict, registry: dict, root: Path, cache: dict) -> list[str]:
+def _binding_errors(binding: dict, registry: dict, root: Path, cache: dict, symbols: bool = False) -> list[str]:
     errors = []
     for location in binding["source_locations"]:
         lines = _source_lines(root, location["path"], cache)
         if lines is None:
             errors.append(f"L02 {binding['id']} source {location['path']} is absent")
+        elif location.get("statement_sha256") and location["path"].endswith((".mjs", ".js")):
+            statements = _javascript_index("\n".join(lines))["statements"]
+            matches = [node for node in statements if node["statement_sha256"] == location["statement_sha256"]
+                       and any(binding["name"] in literal for literal in node["literals"])]
+            if len(matches) != 1:
+                errors.append(f"L03 {binding['id']} {location['path']} does not uniquely define {binding['name']}")
         elif not _defines(lines, location["path"], binding["name"]):
             errors.append(f"L03 {binding['id']} {location['path']} does not define {binding['name']}")
-        elif binding["relation"] == CLAUSE_RELATION:
+        elif location.get("function") or binding["relation"] == CLAUSE_RELATION:
             function = location.get("function")
             if function is not None:
-                if function != binding["name"] or len(_function_spans(lines, location["path"], function)) != 1:
+                if (not isinstance(function, str) or function.rsplit(".", 1)[-1] != binding["name"]
+                        or len(_function_spans(lines, location["path"], function)) != 1):
                     errors.append(f"L03 {binding['id']} {location['path']} does not uniquely define {binding['name']}")
             else:
                 line = location.get("line", 0)
                 if not (0 < line <= len(lines)) or binding["name"] not in lines[line - 1]:
                     errors.append(f"L03 {binding['id']} {location['path']}:{line} is not {binding['name']}")
+        if symbols and ("line" in location or not (location.get("function") or location.get("statement_sha256"))):
+            errors.append(f"L15 {binding['id']} source must use a symbol or statement anchor, without a line number")
+        if symbols and "statement_sha256" in location and (location.get("function") or not location["path"].endswith((".mjs", ".js"))):
+            errors.append(f"L15 {binding['id']} statement anchors are only valid for named JavaScript cases")
     if binding["relation"] == GAP_RELATION:
         for location in binding["source_locations"]:
             lines = _source_lines(root, location["path"], cache) or []
-            line = location.get("line", 0)
+            spans = _function_spans(lines, location["path"], location.get("function", ""))
+            line = spans[0][0] if len(spans) == 1 else location.get("line", 0)
             window = lines[max(0, line - 4):line]
             if not any(IGNORED.search(text) for text in window):
                 errors.append(f"L12 {binding['id']} reproducer is not ignored as a product gap")
         if binding["execution_witnesses"]:
             errors.append(f"L12 {binding['id']} counts a gap reproducer as execution evidence")
-    if binding["relation"] == CLAUSE_RELATION:
-        sites = binding.get("assertion_locations", [])
-        if not sites:
+    sites = binding.get("assertion_locations", [])
+    if binding["relation"] == CLAUSE_RELATION or symbols:
+        if not sites and binding["relation"] == CLAUSE_RELATION:
             errors.append(f"L04 {binding['id']} cites no assertion")
         for site in sites:
             lines = _source_lines(root, site["path"], cache)
+            if symbols and ("line" in site or not site.get("function") or not site.get("assertion_sha256")):
+                errors.append(f"L15 {binding['id']} assertion must use a function and syntax digest, without a line number")
             if "function" in site or "assertion_sha256" in site:
                 key = (site["path"], site.get("function"))
                 if key not in cache:
                     cache[key] = _assertion_anchors(lines or [], site["path"], site.get("function", ""))
                 matches = [anchor for anchor in cache[key]
-                           if anchor["assertion_sha256"] == site.get("assertion_sha256")]
-                if len(matches) != 1:
+                           if anchor["assertion_sha256"] == site.get("assertion_sha256")
+                           and ("context_sha256" not in site or anchor.get("context_sha256") == site["context_sha256"])]
+                expected = site.get("occurrences", 1)
+                if type(expected) is not int or expected < 1 or len(matches) != expected:
                     errors.append(f"L04 {binding['id']} {site['path']}::{site.get('function')} does not uniquely contain the cited assertion")
                 continue
             line = site.get("line", 0)
             if lines is None or not (0 < line <= len(lines)) or not ASSERTION.search(lines[line - 1]):
                 errors.append(f"L04 {binding['id']} {site['path']}:{line} is not an assertion")
-        if not binding["execution_witnesses"]:
+        if binding["relation"] == CLAUSE_RELATION and not binding["execution_witnesses"]:
             errors.append(f"L05 {binding['id']} has no execution witness")
     return errors + _witness_errors(binding, registry, root)
 
@@ -396,6 +528,8 @@ def ledger_errors(data: dict, root: Path = ROOT, frozen: dict | None = None) -> 
     registry = {e["id"]: e for e in data["evidence_registry"]}
     cache: dict = {}
     errors = []
+    if data["catalog"].get("binding_format") not in (None, "symbols-v1"):
+        errors.append("L15 catalog has an unknown binding format")
     tally = Counter(case["evidence_state"] for _group, case in _cases(data))
     counts = data["catalog"]["counts"]
     if dict(tally) != {k: v for k, v in counts["case_evidence_states"].items() if v}:
@@ -412,7 +546,11 @@ def ledger_errors(data: dict, root: Path = ROOT, frozen: dict | None = None) -> 
             errors.append(f"L02 {group['id']} entrypoint {group['entrypoint']} is absent")
         errors += _case_errors(case, bindings, gates_closed)
     for binding in data["bindings"]:
-        errors += _binding_errors(binding, registry, root, cache)
+        try:
+            errors += _binding_errors(binding, registry, root, cache,
+                                      data["catalog"].get("binding_format") == "symbols-v1")
+        except Refused as refusal:
+            errors.append(f"{refusal} ({binding['id']})")
     for entry in data["evidence_registry"]:
         recorded = entry.get("entry_sha256")
         if recorded is not None and recorded != entry_digest(entry):
@@ -737,7 +875,7 @@ def bind_test(root: Path, binding_id: str, name: str, source: str, evidence_id: 
         "name": name,
         "source_locations": [{"path": source, "function": name,
                               "file_sha256": hashlib.sha256(file.read_bytes()).hexdigest()}],
-        "assertion_locations": [{"path": source, **{key: value for key, value in anchor.items() if key != "line"}}
+        "assertion_locations": [{"path": source, **{key: value for key, value in anchor.items() if key not in ("line", "end_line")}}
                                 for anchor in anchors],
         "execution_witnesses": [{
             "evidence": evidence_id, "case": case, "package": package, "target": target,
@@ -837,6 +975,8 @@ def remedy(error: str, root: Path = ROOT) -> str:
                     "still lacks, or record the reason the decision table asks for")
         if code == "L13":
             return "give the duplicated row a new id"
+        if code == "L15":
+            return "use the catalog's symbols-v1 function/statement and assertion digests; line-number repair cannot establish proof identity"
     except (OSError, ValueError, KeyError):
         pass
     return "see the decision table in scripts/ci/check_session_acceptance.py"

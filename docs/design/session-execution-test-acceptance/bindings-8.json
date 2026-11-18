@@ -4,23 +4,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 705,
         "file_sha256": "0da9d07ed53363251ee5a121e1f174913093021276403fb15629a88e5bea7be5",
-        "relocated_from": "crates/stores/awaken-session-store/tests/pause_transaction.rs:701"
+        "relocated_from": "crates/stores/awaken-session-store/tests/pause_transaction.rs:701",
+        "function": "postgres_mid_write_failure_rolls_back_the_whole_batch_transaction"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 714
+        "assertion_sha256": "4899a2abddae69b11d8d8e450c94c7a492461637a63f6c3eac3e4fd4140c8cf4",
+        "function": "postgres_mid_write_failure_rolls_back_the_whole_batch_transaction",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 720
+        "assertion_sha256": "577c282c528e4d3eba76f731ef5c77b8332023eb4e74a379537e9f9baa285c43",
+        "function": "postgres_mid_write_failure_rolls_back_the_whole_batch_transaction",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 741
+        "assertion_sha256": "23bc005ae6fc37c3d8655b083491820de8a85dee9a90e32488ebafadf5fddcd5",
+        "function": "postgres_mid_write_failure_rolls_back_the_whole_batch_transaction",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs"
       }
     ],
     "execution_witnesses": [
@@ -54,23 +57,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 398,
         "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs:398"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs:398",
+        "function": "sqlite_archive_races_admission_replacement_and_recovery_through_root_cas"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 389
+        "assertion_sha256": "fce45d60d045a7c3e571dd6daf355b706f4a1757b77b925e07485bd276014413",
+        "function": "on_large_stacks",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 392
+        "assertion_sha256": "ab274961266890156439a7836925fd6a760513dd0d87a34f61a353c2df90627b",
+        "function": "on_large_stacks",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 394
+        "assertion_sha256": "8fcd7069ccdd9de103a4a940ab8996902aafababb491fa8e7cf53b604fd55118",
+        "function": "on_large_stacks",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs"
       }
     ],
     "execution_witnesses": [
@@ -106,23 +112,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 420,
         "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs:420"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs:420",
+        "function": "postgres_archive_races_admission_replacement_and_recovery_through_root_cas"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 389
+        "assertion_sha256": "fce45d60d045a7c3e571dd6daf355b706f4a1757b77b925e07485bd276014413",
+        "function": "on_large_stacks",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 392
+        "assertion_sha256": "ab274961266890156439a7836925fd6a760513dd0d87a34f61a353c2df90627b",
+        "function": "on_large_stacks",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 394
+        "assertion_sha256": "8fcd7069ccdd9de103a4a940ab8996902aafababb491fa8e7cf53b604fd55118",
+        "function": "on_large_stacks",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs"
       }
     ],
     "execution_witnesses": [
@@ -158,23 +167,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 449,
         "file_sha256": "1935fb15cfe50feba17447ee7dc300e66199c9e74bca7329f68594122814d492",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs:449"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/archive_race.rs:449",
+        "function": "sequential_archive_then_admission_has_no_race_witness"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 453
+        "assertion_sha256": "e0f721dc8d84f3396c7302c632394638925364802dadb5dfee94654584befb85",
+        "function": "sequential_archive_then_admission_has_no_race_witness",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 467
+        "assertion_sha256": "f99fcb8ede3eb1f3d9598b633bc6e6ef4018ca6802270b28b4e13c7bc43ddd7c",
+        "function": "sequential_archive_then_admission_has_no_race_witness",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs",
-        "line": 490
+        "assertion_sha256": "c6d3b49eb8d783b0532e527399a72e72976a32fec6efd65a99d07db0089ba250",
+        "function": "sequential_archive_then_admission_has_no_race_witness",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/archive_race.rs"
       }
     ],
     "execution_witnesses": [
@@ -206,15 +218,16 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 438,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:438"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:438",
+        "function": "sqlite_prepared_participant_survives_root_failure_and_rebuild"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 439
+        "assertion_sha256": "c33c04070b3ec863ae97dbb819a9052daefdcc113fa52e7a0fecf54c8150bb70",
+        "function": "sqlite_prepared_participant_survives_root_failure_and_rebuild",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       }
     ],
     "execution_witnesses": [
@@ -249,15 +262,16 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 450,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:450"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:450",
+        "function": "postgres_prepared_participant_survives_root_failure_and_rebuild"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 460
+        "assertion_sha256": "56d7f83a2e621401f295325803b92844cf1aa5b69014a74fa8ab0bd2e985b794",
+        "function": "postgres_prepared_participant_survives_root_failure_and_rebuild",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       }
     ],
     "execution_witnesses": [
@@ -292,23 +306,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 552,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:552"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:552",
+        "function": "crash_before_or_after_prepare_keeps_identity_for_the_original_intent"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 558
+        "assertion_sha256": "9799054636f76c97c32af68b84e95a29e757ffb2ed6fc566799c21cfd3cfbe57",
+        "function": "crash_before_or_after_prepare_keeps_identity_for_the_original_intent",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 569
+        "assertion_sha256": "ea579426fb45c8f954bb17687ee06393e8c7598109b44151e8d62f872e6d7e26",
+        "function": "crash_before_or_after_prepare_keeps_identity_for_the_original_intent",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 571
+        "assertion_sha256": "3051b78473927151b6ebf97100bbe6d9fa7ec661a73bcf5faf3a57365db88492",
+        "function": "crash_before_or_after_prepare_keeps_identity_for_the_original_intent",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       }
     ],
     "execution_witnesses": [
@@ -343,23 +360,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 650,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:650"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:650",
+        "function": "compensation_failure_hang_or_lost_response_never_reports_completion"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 652
+        "assertion_sha256": "5b1ef0b977bccf37403c448d5369e6f028ef9a8b2c6ff583f379c51d84a52196",
+        "function": "compensation_failure_hang_or_lost_response_never_reports_completion",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 671
+        "assertion_sha256": "90a0d87a8e10ad2efc53edbe6df8cfe553b11434e292125904f21a233b4f0c97",
+        "function": "compensation_failure_hang_or_lost_response_never_reports_completion",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 676
+        "assertion_sha256": "7a286db56606fa37e45b6e9aaeb3351166cff0e19552d8ac014744062451cf07",
+        "function": "compensation_failure_hang_or_lost_response_never_reports_completion",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       }
     ],
     "execution_witnesses": [
@@ -395,23 +415,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 712,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:712"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:712",
+        "function": "failing_compensation_reports_incompleteness_to_its_caller"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 716
+        "assertion_sha256": "ca1f8358225c712c1269ae597ef597106fcddb261a93e7552c3cc8ee871d4e3a",
+        "function": "failing_compensation_reports_incompleteness_to_its_caller",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 726
+        "assertion_sha256": "0b2507c1c792593887a9859e9f5f5fea39784764f93d88a015bdbe60d9940775",
+        "function": "failing_compensation_reports_incompleteness_to_its_caller",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 730
+        "assertion_sha256": "aba7c57f5c5c31c312d36a9c276332a9cc192ecfdce35a0858b75c20b0a3cab5",
+        "function": "failing_compensation_reports_incompleteness_to_its_caller",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       }
     ],
     "execution_witnesses": [
@@ -445,23 +468,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 768,
         "file_sha256": "023e54db0a891ce299e9f863a02d0a39d0d23301e0180e48a40ae73696df1450",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:768"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/creation/prepared_participants.rs:768",
+        "function": "concurrent_continuations_share_one_external_object"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 771
+        "assertion_sha256": "1a664408aa9b15516d1ad7165b6eedb5a241a75d95ae033fbe07c42d3e835be2",
+        "function": "concurrent_continuations_share_one_external_object",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 780
+        "assertion_sha256": "b813ed55110e9c5d357358d0a831a349a98a073ffba8a030c9dd9e76a79b6b5e",
+        "function": "concurrent_continuations_share_one_external_object",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs",
-        "line": 788
+        "assertion_sha256": "8196337d6aacffab00608ea3074fb2605615be7ba7df01221ac9d1ffa37a3261",
+        "function": "concurrent_continuations_share_one_external_object",
+        "path": "crates/platform/session/awaken-session-application/src/tests/creation/prepared_participants.rs"
       }
     ],
     "execution_witnesses": [
@@ -497,23 +523,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 162,
         "file_sha256": "538f18a144f267a9afea5ee6ff0537caf55bf851d0dc6c2c88ba4671b1fe3098",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs:162"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs:162",
+        "function": "retries_keep_the_original_admission_identity"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 168
+        "assertion_sha256": "8253366e8959bbc08ef79699f47fbc826cd579f45f8bed37cee359acb5b205e2",
+        "function": "retries_keep_the_original_admission_identity",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 169
+        "assertion_sha256": "b176be104fcd34a11d19a658aa8cc1ddae39d7265cfbc5ab7c366245f04f04ce",
+        "function": "retries_keep_the_original_admission_identity",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 180
+        "assertion_sha256": "d17aa03d60dde17b5fb4ee2cbfde3573e998b53800672dfc51325c8981fd0c23",
+        "function": "retries_keep_the_original_admission_identity",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs"
       }
     ],
     "execution_witnesses": [
@@ -549,23 +578,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 240,
         "file_sha256": "538f18a144f267a9afea5ee6ff0537caf55bf851d0dc6c2c88ba4671b1fe3098",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs:240"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/run_admission/retry_identity.rs:240",
+        "function": "minting_a_new_operation_on_unavailable_is_detected"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 245
+        "assertion_sha256": "c8d76627cc5829f6675326088487f6fe21a9c0b3f2d8b33c3ad2acf8018f7138",
+        "function": "minting_a_new_operation_on_unavailable_is_detected",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 249
+        "assertion_sha256": "b994e295abbcef4ebbe994530ad9ea609903dddaf6025b3aa61a1219e4d90f0a",
+        "function": "minting_a_new_operation_on_unavailable_is_detected",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs",
-        "line": 252
+        "assertion_sha256": "f7820d956529d6bedbec54b0d77f5e4ffdad79850fc001c246ab266c74f9acbe",
+        "function": "minting_a_new_operation_on_unavailable_is_detected",
+        "path": "crates/platform/session/awaken-session-application/src/tests/run_admission/retry_identity.rs"
       }
     ],
     "execution_witnesses": [
@@ -597,15 +629,16 @@
     "source_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 222,
         "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc",
-        "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:222"
+        "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:222",
+        "function": "volatile_purge_removes_exactly_one_store_and_heads_only_purge_is_detected"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 231
+        "assertion_sha256": "291af1b51fc95e0c54604dfde93bf954504fcbe60730245e84bbf6fc740b79d4",
+        "function": "volatile_purge_removes_exactly_one_store_and_heads_only_purge_is_detected",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs"
       }
     ],
     "execution_witnesses": [
@@ -640,23 +673,26 @@
     "source_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 264,
         "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc",
-        "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:262"
+        "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:262",
+        "function": "sqlite_file_purge_removes_exactly_one_store_across_handles_and_reopen"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 278
+        "assertion_sha256": "ed902f51341afe909b961a962b817dd75988170da4136af0a932e6d12e45da9d",
+        "function": "sqlite_file_purge_removes_exactly_one_store_across_handles_and_reopen",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs"
       },
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 279
+        "assertion_sha256": "01f6facd6ddef206a8d000f1bd798ba1e876ea42e2d53d7cd40216e519c2fdf7",
+        "function": "sqlite_file_purge_removes_exactly_one_store_across_handles_and_reopen",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs"
       },
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 283
+        "assertion_sha256": "9c2b5ec0699cbe020538b9bcfda045bfc9a837de3b79f9aa06fe63b91da79cf8",
+        "function": "sqlite_file_purge_removes_exactly_one_store_across_handles_and_reopen",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs"
       }
     ],
     "execution_witnesses": [
@@ -691,23 +727,26 @@
     "source_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 360,
         "file_sha256": "a2ebdf83b526437f4c5781840256c0d1b6c4381c7b43b885ccbbefe7877679fc",
-        "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:355"
+        "relocated_from": "crates/resources/awaken-memory-store/tests/purge_isolation.rs:355",
+        "function": "postgres_purge_removes_exactly_one_store_across_pools_and_reopen"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 371
+        "assertion_sha256": "a4c58da65d577004e0d7fbc52fd9b52181b4992c6e605802d5ab5f74ef794115",
+        "function": "postgres_purge_removes_exactly_one_store_across_pools_and_reopen",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs"
       },
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 372
+        "assertion_sha256": "a0ee5469c73b12f13409ee93c881530474648b90c65bb01a98cdf03f2b5a15f6",
+        "function": "postgres_purge_removes_exactly_one_store_across_pools_and_reopen",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs"
       },
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs",
-        "line": 383
+        "assertion_sha256": "9c2b5ec0699cbe020538b9bcfda045bfc9a837de3b79f9aa06fe63b91da79cf8",
+        "function": "postgres_purge_removes_exactly_one_store_across_pools_and_reopen",
+        "path": "crates/platform/resources/awaken-memory-store/tests/purge_isolation.rs"
       }
     ],
     "execution_witnesses": [

@@ -298,7 +298,7 @@ commit-checks:
                 # counter-examples; a change to what they read re-proves the refusals.
                 - name: session-acceptance-gates
                   # >>> generated glob from test_session_acceptance.py INPUT_GLOBS — do not edit
-                  glob: "{.cargo/**,.gitattributes,Cargo.lock,Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,docs/design/session-execution-test-acceptance/**,e2e/**,examples/**,packages/managed-sdk-oracle/package.json,rust-toolchain.toml,scripts/ci/*.json,scripts/ci/*.py,scripts/ci/*.sh}"
+                  glob: "{.cargo/**,.gitattributes,Cargo.lock,Cargo.toml,crates/**/*.rs,crates/**/Cargo.toml,docs/design/session-execution-test-acceptance/**,e2e/**,examples/**,package.json,packages/managed-sdk-oracle/package.json,pnpm-lock.yaml,rust-toolchain.toml,scripts/ci/*.json,scripts/ci/*.mjs,scripts/ci/*.py,scripts/ci/*.sh}"
                   # <<< generated glob
                   tags: [read-only]
                   run: python3 scripts/ci/parallel_check.py --hook-label session-acceptance-gates --timeout 600 --read-only --shell 'python3 scripts/ci/test_session_acceptance.py' --

@@ -40,7 +40,8 @@ ROOT = Path(__file__).resolve().parents[2]
 INPUT_GLOBS: tuple[str, ...] = (
     ".gitattributes",
     "Cargo.toml", "Cargo.lock", "crates/**/*.rs", "crates/**/Cargo.toml",
-    "docs/design/session-execution-test-acceptance/**", "scripts/ci/*.py", "scripts/ci/*.json",
+    "docs/design/session-execution-test-acceptance/**", "scripts/ci/*.py", "scripts/ci/*.json", "scripts/ci/*.mjs",
+    "package.json", "pnpm-lock.yaml",
     "examples/**", "e2e/**", "rust-toolchain.toml", ".cargo/**", "scripts/ci/*.sh", "packages/managed-sdk-oracle/package.json",
 )
 SHARED_CONTRACT = "crates/platform/environment/awaken-provisioning-contract/src/lib.rs"
@@ -790,6 +791,181 @@ class EvidenceArtifactByteTests(unittest.TestCase):
                     indexed = formal_sources.git_output(ROOT, "show", ":" + relative)
                     self.assertEqual(hashlib.sha256(indexed).hexdigest(), digest)
                     self.assertEqual(indexed, (ROOT / relative).read_bytes())
+
+
+class CompleteSymbolMigrationTests(unittest.TestCase):
+    """Every live location uses syntax identity; historical evidence stays historical."""
+
+    def test_catalog_has_no_line_based_source_or_assertion_locations(self):
+        data = check_session_acceptance._load(ROOT)
+        self.assertEqual(data["catalog"].get("binding_format"), "symbols-v1")
+        for binding in data["bindings"]:
+            for location in binding["source_locations"]:
+                with self.subTest(binding=binding["id"], source=location["path"]):
+                    self.assertNotIn("line", location)
+                    self.assertTrue(location.get("function") or location.get("statement_sha256"))
+            for location in binding.get("assertion_locations", []):
+                with self.subTest(binding=binding["id"], assertion=location["path"]):
+                    self.assertNotIn("line", location)
+                    self.assertTrue(location.get("assertion_sha256"))
+        self.assertEqual(check_session_acceptance.ledger_errors(data, ROOT,
+                         check_session_acceptance.committed_registry(ROOT)), [])
+
+    def test_symbol_catalog_refuses_reintroduced_legacy_locations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = check_session_acceptance._fixture(root)
+            data["catalog"]["binding_format"] = "symbols-v1"
+            errors = check_session_acceptance.ledger_errors(data, root)
+            self.assertTrue(any(error.startswith("L15") for error in errors), errors)
+
+    def test_every_migrated_binding_survives_unrelated_source_motion(self):
+        from unittest import mock
+        data = check_session_acceptance._load(ROOT)
+        read = check_session_acceptance._source_lines
+        def moved(root, path, cache):
+            value = read(root, path, cache)
+            return ["", "", *value] if value is not None else None
+        with mock.patch.object(check_session_acceptance, "_source_lines", side_effect=moved):
+            self.assertEqual(check_session_acceptance.ledger_errors(data, ROOT), [])
+
+    def test_unknown_catalog_format_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = check_session_acceptance._fixture(root)
+            data["catalog"]["binding_format"] = "future-format"
+            self.assertTrue(any(e.startswith("L15") for e in check_session_acceptance.ledger_errors(data, root)))
+
+    def test_javascript_parser_and_pinned_dependencies_trigger_the_same_gate(self):
+        import generate_hooks
+        from _input_closure import Confinement
+        from generate_hooks import glob_matches
+        patterns = generate_hooks.trigger_patterns("test_session_acceptance.py",
+                   generate_hooks.declared_input_globs(ROOT / "scripts/ci"))
+        for path in ("scripts/ci/session_acceptance_source.mjs", "package.json", "pnpm-lock.yaml"):
+            self.assertTrue(any(glob_matches(pattern, path) for pattern in patterns), path)
+        guard = Confinement(ROOT, patterns)
+        guard.tools.add("node")
+        self.assertEqual(guard.escapes(), [])
+        for missing in ("package.json", "pnpm-lock.yaml"):
+            narrowed = tuple(pattern for pattern in patterns if not glob_matches(pattern, missing))
+            guard = Confinement(ROOT, narrowed)
+            guard.tools.add("node")
+            self.assertTrue(any(missing in error for error in guard.escapes()))
+
+    def test_qualified_python_helper_and_assertion_context_manager_are_anchored(self):
+        text = ('class One:\n'
+                '    def refused(self):\n'
+                '        with self.assertRaisesRegex(ValueError, "bad input"):\n'
+                '            fail()\n'
+                '        self.assertEqual(1, 1)\n'
+                'class Two:\n'
+                '    def refused(self):\n'
+                '        self.assertTrue(False)\n')
+        anchors = check_session_acceptance._assertion_anchors(text.splitlines(), "probe.py", "One.refused")
+        self.assertEqual(len(anchors), 2)
+        self.assertEqual(check_session_acceptance._assertion_anchors(text.splitlines(), "probe.py", "refused"), [])
+        moved = check_session_acceptance._assertion_anchors(
+            ("# inserted\n" + text.replace('self.assertRaisesRegex(ValueError, "bad input")',
+              'self.assertRaisesRegex(\n            ValueError, "bad input",\n        )')).splitlines(),
+            "probe.py", "One.refused")
+        self.assertEqual([a["assertion_sha256"] for a in anchors], [a["assertion_sha256"] for a in moved])
+
+    def test_repeated_assertion_is_distinguished_by_its_python_control_context(self):
+        text = ('def probe():\n    assert actual == wanted\n'
+                '    with fixture():\n        assert actual == wanted\n')
+        anchors = check_session_acceptance._assertion_anchors(text.splitlines(), "probe.py", "probe")
+        self.assertEqual(anchors[0]["assertion_sha256"], anchors[1]["assertion_sha256"])
+        self.assertNotEqual(anchors[0]["context_sha256"], anchors[1]["context_sha256"])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = check_session_acceptance._fixture(root)
+            (root / "probe.py").write_text(text, encoding="utf-8")
+            binding = data["bindings"][0]
+            binding.update(name="probe", source_locations=[{"path": "probe.py", "function": "probe"}],
+                           assertion_locations=[{"path": "probe.py", **{k: v for k, v in anchors[0].items()
+                                                if k not in ("line", "end_line")}}])
+            self.assertEqual(check_session_acceptance.ledger_errors(data, root), [])
+            (root / "probe.py").write_text(text.replace('    assert actual == wanted\n', '', 1), encoding="utf-8")
+            self.assertTrue(any(e.startswith("L04") for e in check_session_acceptance.ledger_errors(data, root)))
+
+    def test_explicit_repeated_assertion_count_refuses_added_or_removed_copies(self):
+        text = 'fn real_case() { assert!(ok); assert!(ok); }'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = check_session_acceptance._fixture(root)
+            file = root / "src/lib.rs"
+            file.write_text(text, encoding="utf-8")
+            anchor = check_session_acceptance._assertion_anchors(text.splitlines(), "src/lib.rs", "real_case")[0]
+            binding = data["bindings"][0]
+            binding["source_locations"] = [{"path": "src/lib.rs", "function": "real_case"}]
+            binding["assertion_locations"] = [{"path": "src/lib.rs", "function": "real_case",
+                                               "assertion_sha256": anchor["assertion_sha256"], "occurrences": 2}]
+            self.assertEqual(check_session_acceptance.ledger_errors(data, root), [])
+            for count in (1, 3):
+                file.write_text('fn real_case() {' + 'assert!(ok);' * count + '}', encoding="utf-8")
+                self.assertTrue(any(e.startswith("L04") for e in check_session_acceptance.ledger_errors(data, root)))
+            file.write_text(text, encoding="utf-8")
+            binding["assertion_locations"][0]["occurrences"] = True
+            self.assertTrue(any(e.startswith("L04") for e in check_session_acceptance.ledger_errors(data, root)))
+
+    def test_compile_fail_doctest_is_attached_to_its_function_and_content(self):
+        text = ('/// ```compile_fail,E0599\n'
+                '/// fn forbidden() { writer.purge(); }\n'
+                '/// ```\n#[must_use]\nfn writer() {}\n')
+        anchors = check_session_acceptance._assertion_anchors(text.splitlines(), "probe.rs", "writer")
+        self.assertEqual(len(anchors), 1)
+        moved = check_session_acceptance._assertion_anchors(
+            ("// unrelated\n" + text.replace('writer.purge();', 'writer . purge ( ) ;')).splitlines(), "probe.rs", "writer")
+        self.assertEqual(anchors[0]["assertion_sha256"], moved[0]["assertion_sha256"])
+        for changed in (text.replace('compile_fail,E0599', 'rust'),
+                        text.replace('writer.purge()', 'writer.read()'),
+                        text.replace('#[must_use]', 'fn other() {}\n#[must_use]')):
+            other = check_session_acceptance._assertion_anchors(changed.splitlines(), "probe.rs", "writer")
+            self.assertNotIn(anchors[0]["assertion_sha256"], [a["assertion_sha256"] for a in other])
+
+    def test_javascript_ast_distinguishes_markers_assertions_and_quoted_impostors(self):
+        text = ('async function main() {\n'
+                '  assert.equal(actual, 1, "oracle");\n'
+                '  pass("case: durable output");\n}\n'
+                'console.log("assert.equal(fake, 1)");\n')
+        parsed = check_session_acceptance._javascript_index(text)
+        self.assertEqual(len(parsed["assertions"]), 1)
+        self.assertEqual(parsed["assertions"][0]["function"], "main")
+        marker = next(s for s in parsed["statements"] if "case: durable output" in s["literals"])
+        changed = check_session_acceptance._javascript_index(
+            "// assert.equal(fake, 1);\n" + text.replace('actual, 1', 'actual, /* formatting */\n    1')
+            .replace('"oracle"', "'oracle'"))
+        self.assertEqual(parsed["assertions"][0]["assertion_sha256"], changed["assertions"][0]["assertion_sha256"])
+        self.assertIn(marker["statement_sha256"], [s["statement_sha256"] for s in changed["statements"]])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = check_session_acceptance._fixture(root)
+            file = root / "probe.mjs"
+            file.write_text(text, encoding="utf-8")
+            binding = data["bindings"][0]
+            binding.update(name="case: durable output",
+                           source_locations=[{"path": "probe.mjs", "statement_sha256": marker["statement_sha256"]}],
+                           assertion_locations=[{"path": "probe.mjs", **{k: v for k, v in parsed["assertions"][0].items()
+                                                if k not in ("line", "end_line")}}])
+            self.assertEqual(check_session_acceptance.ledger_errors(data, root), [])
+            for mutation, code in ((text.replace('actual, 1', 'actual, 2'), "L04"),
+                                   (text.replace('assert.equal(actual, 1, "oracle");', 'console.log("assert.equal(actual, 1)");'), "L04"),
+                                   (text.replace('case: durable output', 'different case'), "L03"),
+                                   (text + '\npass("case: durable output");\n', "L03")):
+                file.write_text(mutation, encoding="utf-8")
+                errors = check_session_acceptance.ledger_errors(data, root)
+                self.assertTrue(any(e.startswith(code) for e in errors), errors)
+
+    def test_javascript_parser_failure_is_not_a_success_or_a_regex_fallback(self):
+        from unittest import mock
+        with mock.patch.object(check_session_acceptance.subprocess, "run", side_effect=FileNotFoundError("node")):
+            with self.assertRaisesRegex(check_session_acceptance.Refused, "L02 JavaScript source"):
+                check_session_acceptance._javascript_index('// unavailable parser fixture\nassert.ok(true);')
+        with self.assertRaisesRegex(check_session_acceptance.Refused, "L02 JavaScript source"):
+            check_session_acceptance._javascript_index('function broken( {')
+        parsed = check_session_acceptance._javascript_index('throw new Error("must not execute"); assert.ok(true);')
+        self.assertEqual(len(parsed["assertions"]), 1)
 
 
 if __name__ == "__main__":

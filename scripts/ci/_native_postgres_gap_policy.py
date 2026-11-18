@@ -47,8 +47,8 @@ RETIRED_PROCESS_ORACLE = 'stale_same_owner_claimer_is_refused_after_reclaim'
 
 
 def validate_work_calibration(data, root):
-    import hashlib
     import re
+    from check_session_acceptance import _rust_test_identity
 
     cases = [case for group in data['groups'] for case in group['cases'] if case['id'] == 'T09-C02']
     if len(cases) != 1:
@@ -63,8 +63,7 @@ def validate_work_calibration(data, root):
             or 'E17' not in case.get('calibration_note', '')
             or 'does not claim' not in case.get('calibration_note', '')):
         raise ValueError('Work calibration must retain the unaccepted legacy process boundary')
-    body = (root / WORK_SOURCE).read_text(encoding='utf-8').encode('utf-8')
-    lines = body.decode('utf-8').splitlines()
+    body = (root / WORK_SOURCE).read_text(encoding='utf-8')
     for binding_id, name, oracles in WORK_CALIBRATION_BINDINGS:
         matches = [binding for binding in data['bindings'] if binding['id'] == binding_id]
         if len(matches) != 1:
@@ -78,12 +77,11 @@ def validate_work_calibration(data, root):
                 or len(locations) != 1 or locations[0].get('path') != WORK_SOURCE):
             raise ValueError('Work calibration identity changed: ' + binding_id)
         location = locations[0]
-        line = location.get('line')
-        if (not isinstance(line, int) or isinstance(line, bool) or not 0 < line <= len(lines)
-                or 'async fn ' + name + '(' not in lines[line - 1]
-                or not any(re.search(r'#\[tokio::test(?:\(|\])', text) for text in lines[max(0, line - 4):line])
-                or any(re.search(r'#\[\s*ignore\b', text) for text in lines[max(0, line - 4):line])
-                or location.get('file_sha256') != hashlib.sha256(body).hexdigest()):
+        digest, attributes = _rust_test_identity(body, name)
+        if (location.get('function') != name or 'line' in location or not digest
+                or not any(re.search(r'#\[\s*tokio\s*::\s*test\b', text) for text in attributes)
+                or any(re.search(r'\bignore\b', text) for text in attributes)
+                or location.get('function_sha256') != digest):
             raise ValueError('Work calibration must bind the current ordinary test: ' + binding_id)
     retired = json.loads((root / 'scripts/ci/test_inventory_ledger.json').read_text(encoding='utf-8'))['removed']
     reason = retired.get(RETIRED_PROCESS_ORACLE, '')

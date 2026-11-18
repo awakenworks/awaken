@@ -11,14 +11,14 @@
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
+        "assertion_sha256": "7067cb6d02cbd385b7d07a7f2112979a74cc6b557d15aed485b47a66b59a7d99",
         "function": "divergent_backend_fails_the_shared_behaviour_table",
-        "assertion_sha256": "7067cb6d02cbd385b7d07a7f2112979a74cc6b557d15aed485b47a66b59a7d99"
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
+        "assertion_sha256": "917a3f28d7367fd0968d4f7992c32de6896f64e6fead1ba8a455c018975f2693",
         "function": "divergent_backend_fails_the_shared_behaviour_table",
-        "assertion_sha256": "917a3f28d7367fd0968d4f7992c32de6896f64e6fead1ba8a455c018975f2693"
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs"
       }
     ],
     "execution_witnesses": [
@@ -59,19 +59,19 @@
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs",
+        "assertion_sha256": "ab202bd994db333cc1a952c47161df65c33b1cae335278012f7139fce4bcad40",
         "function": "reopen_preserves_authority",
-        "assertion_sha256": "ab202bd994db333cc1a952c47161df65c33b1cae335278012f7139fce4bcad40"
+        "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs"
       },
       {
-        "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs",
+        "assertion_sha256": "4dc3611b2e6eba94efa339f63b24d2191481cb75dcc17acdc37573153711be6b",
         "function": "reopen_preserves_authority",
-        "assertion_sha256": "4dc3611b2e6eba94efa339f63b24d2191481cb75dcc17acdc37573153711be6b"
+        "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs"
       },
       {
-        "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs",
+        "assertion_sha256": "80de203a688f73ba3df0e641aa748e46a7f19a8e7da1b41e65630d8b9cf54f1c",
         "function": "reopen_preserves_authority",
-        "assertion_sha256": "80de203a688f73ba3df0e641aa748e46a7f19a8e7da1b41e65630d8b9cf54f1c"
+        "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs"
       }
     ],
     "execution_witnesses": [
@@ -105,23 +105,26 @@
     "source_locations": [
       {
         "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 240,
         "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878",
-        "relocated_from": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs:240"
+        "relocated_from": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs:240",
+        "function": "interrupted_snapshot_clone_rebuilds_one_complete_snapshot_and_keeps_protected_output"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 254
+        "assertion_sha256": "a4d092f4bdb498eed2fc67fbc658b6d07070c25f0dcf4a1d9fd901342851f02d",
+        "function": "interrupted_snapshot_clone_rebuilds_one_complete_snapshot_and_keeps_protected_output",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 263
+        "assertion_sha256": "c187525652478b8a7b2707b300331e40033d33b04b97fab756afc9e48a04692d",
+        "function": "interrupted_snapshot_clone_rebuilds_one_complete_snapshot_and_keeps_protected_output",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 279
+        "assertion_sha256": "6c56161807c403f0361dba35624e702cbcf50db067ced3bf45db93ba637797e5",
+        "function": "interrupted_snapshot_clone_rebuilds_one_complete_snapshot_and_keeps_protected_output",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs"
       }
     ],
     "execution_witnesses": [
@@ -156,23 +159,26 @@
     "source_locations": [
       {
         "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 370,
         "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878",
-        "relocated_from": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs:370"
+        "relocated_from": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs:370",
+        "function": "crashed_snapshot_clone_rebuilds_from_durable_state_in_a_new_application"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 385
+        "assertion_sha256": "1c9aa3d6fa17a4bbaf80cadd24487194e5235b88b66b542893f2324effa22d85",
+        "function": "crashed_snapshot_clone_rebuilds_from_durable_state_in_a_new_application",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 409
+        "assertion_sha256": "76846135a713e2e159f94b67f79b34248d7325904ed54338c8ea855366f2eee1",
+        "function": "crashed_snapshot_clone_rebuilds_from_durable_state_in_a_new_application",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 410
+        "assertion_sha256": "191735e026f04117b8decb01f79d45081a122462a1ca5e3d76a6816a5ad3d38f",
+        "function": "crashed_snapshot_clone_rebuilds_from_durable_state_in_a_new_application",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs"
       }
     ],
     "execution_witnesses": [
@@ -207,23 +213,26 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 139,
         "file_sha256": "1f59154a28ad8325d45885d53859bb8491fcc0a2c0d7c406192cd0786d3ca035",
-        "relocated_from": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs:131"
+        "relocated_from": "crates/server/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs:131",
+        "function": "terminal_run_work_ack_loss_retries_only_the_original_identity"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 172
+        "assertion_sha256": "4f61d80c5729537d130496640edad4681ba3c3b8c280bc2c40a33fe2385eebed",
+        "function": "terminal_run_work_ack_loss_retries_only_the_original_identity",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 177
+        "assertion_sha256": "7a0b4398521267d63fa01b288763a89b8f5f5fca2a17505425adba5e9466c05d",
+        "function": "terminal_run_work_ack_loss_retries_only_the_original_identity",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs",
-        "line": 182
+        "assertion_sha256": "41a9274efff64d0c40d82aba070f108673d8e9a3c115b263aae3cd55c63484d8",
+        "function": "terminal_run_work_ack_loss_retries_only_the_original_identity",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/dispatch_transport_http/terminal_work_ack.rs"
       }
     ],
     "execution_witnesses": [
@@ -259,23 +268,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 609,
         "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2",
-        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:609"
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:609",
+        "function": "terminal_ack_retries_only_the_original_identity"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 547
+        "assertion_sha256": "f42251d0b81a8396ea4a6f2cbe19f115614d4352cb49ae0617eaec4c982eb2f5",
+        "function": "terminal_ack_retry",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 548
+        "assertion_sha256": "c64f56948b353388181dd5db51961a280862e718e36a1f07b663f2c0c00346a4",
+        "function": "terminal_ack_retry",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 579
+        "assertion_sha256": "33a933c38da4358f1ede26cfe97c0e98a8d78ce0971ee3e7ff9dd70f09cfa8d5",
+        "function": "terminal_ack_retry",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -309,27 +321,31 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 604,
         "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2",
-        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:604"
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:604",
+        "function": "session_and_healthcheck_leases_are_taken_over_independently"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 448
+        "assertion_sha256": "689e96d219363fcea48ed38268b05a7e787ce3a24e53114b1153a2387e6ca6d8",
+        "function": "session_and_healthcheck_takeover",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 449
+        "assertion_sha256": "22202e69b70ea1a47d040d075a65ddb33abdb1f888b877dc511ad39fc17ee9ba",
+        "function": "session_and_healthcheck_takeover",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 486
+        "assertion_sha256": "a8345e79d1f386cfa64617ced12c127d3db8e3498b91c61a176a16de0d6537f7",
+        "function": "session_and_healthcheck_takeover",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 512
+        "assertion_sha256": "da10d1361d453dd57420d26e380b35eab4071425a460fcb0185a71643e6bc92b",
+        "function": "session_and_healthcheck_takeover",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -364,15 +380,16 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
-        "line": 375,
         "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb",
-        "relocated_from": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs:375"
+        "relocated_from": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs:375",
+        "function": "dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
-        "line": 381
+        "assertion_sha256": "736ae0228097b01d98b0467b12debe6e6aa1eeed3c29b6666fb30bc571db551f",
+        "function": "dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs"
       }
     ],
     "execution_witnesses": [
@@ -406,23 +423,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 598,
         "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2",
-        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:598"
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:598",
+        "function": "concurrent_takeover_admits_only_the_current_owner_on_volatile_and_file_sqlite"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 281
+        "assertion_sha256": "7133c93acd79d5abb0ff4ec084874242bea9f2fe54b2c92feaa413dab6aa0cd6",
+        "function": "concurrent_takeover",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 285
+        "assertion_sha256": "dd626587f2abc010421b84fe965759296f895b941e6392d44a9ee3351a15063d",
+        "function": "concurrent_takeover",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 418
+        "assertion_sha256": "b4e48ab55a7374fcb6e6fd6598dabf8b13ba1d058f2d653747d05e9235c91b95",
+        "function": "serialized_harness_is_detected",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -458,27 +478,31 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 614,
         "file_sha256": "7b81d633a290b04b8f094bec0e144693c24fc009b630bd319ca46b28c237c2d2",
-        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:614"
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs:614",
+        "function": "postgres_work_lease_acceptance"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 281
+        "assertion_sha256": "7133c93acd79d5abb0ff4ec084874242bea9f2fe54b2c92feaa413dab6aa0cd6",
+        "function": "concurrent_takeover",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 285
+        "assertion_sha256": "dd626587f2abc010421b84fe965759296f895b941e6392d44a9ee3351a15063d",
+        "function": "concurrent_takeover",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 448
+        "assertion_sha256": "689e96d219363fcea48ed38268b05a7e787ce3a24e53114b1153a2387e6ca6d8",
+        "function": "session_and_healthcheck_takeover",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs",
-        "line": 548
+        "assertion_sha256": "c64f56948b353388181dd5db51961a280862e718e36a1f07b663f2c0c00346a4",
+        "function": "terminal_ack_retry",
+        "path": "crates/platform/environment/awaken-work-store/tests/work_queue_conformance/lease_acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -514,15 +538,16 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
-        "line": 375,
         "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb",
-        "relocated_from": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs:375"
+        "relocated_from": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs:375",
+        "function": "dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
-        "line": 381
+        "assertion_sha256": "736ae0228097b01d98b0467b12debe6e6aa1eeed3c29b6666fb30bc571db551f",
+        "function": "dispatch_takeover_admits_only_the_current_claim_on_volatile_and_file_sqlite",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs"
       }
     ],
     "execution_witnesses": [
@@ -557,19 +582,21 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
-        "line": 387,
         "file_sha256": "7b3a2df46f9541128b053391c987d9444ce8c4a9aa263f4301e6585a0eb24efb",
-        "relocated_from": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs:387"
+        "relocated_from": "crates/server/awaken-dispatch/tests/dispatch_lease_takeover.rs:387",
+        "function": "postgres_dispatch_takeover_admits_only_the_current_claim"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
-        "line": 141
+        "assertion_sha256": "55c71f0423f10d43b6865945a64728657141b2eff800424f828e11d2a3eb1254",
+        "function": "postgres",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs",
-        "line": 146
+        "assertion_sha256": "b70145bff3fdd44e5b2da45193c809bc74cc25093772f973952f8e0267b5f467",
+        "function": "postgres",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/dispatch_lease_takeover.rs"
       }
     ],
     "execution_witnesses": [
@@ -604,23 +631,26 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 332,
         "file_sha256": "b0e85611db0a4ea22f13d9678ebc565c8eb4adf00c98df5d910da4141e8badce",
-        "relocated_from": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs:326"
+        "relocated_from": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs:326",
+        "function": "crash_after_commit_before_effect_recovers_without_replay"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 316
+        "assertion_sha256": "570cafe53200c41501b57ae32263e42a84f1120b30fbc08b1a927542b164c412",
+        "function": "child_or_parent",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 320
+        "assertion_sha256": "965fee91c91481f2e77e149e79efd7641c205c26a131e8493af33fd3e9267ab8",
+        "function": "child_or_parent",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 324
+        "assertion_sha256": "aa5edb328b3a175852b8c432ab340948e8994e3fa4a4b3f12e53cc54ac1a50c2",
+        "function": "child_or_parent",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs"
       }
     ],
     "execution_witnesses": [
@@ -655,23 +685,26 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 341,
         "file_sha256": "b0e85611db0a4ea22f13d9678ebc565c8eb4adf00c98df5d910da4141e8badce",
-        "relocated_from": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs:335"
+        "relocated_from": "crates/server/awaken-dispatch/tests/crash_effect_recovery.rs:335",
+        "function": "crash_after_effect_before_receipt_keeps_uncertainty_without_replay"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 316
+        "assertion_sha256": "570cafe53200c41501b57ae32263e42a84f1120b30fbc08b1a927542b164c412",
+        "function": "child_or_parent",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 320
+        "assertion_sha256": "965fee91c91481f2e77e149e79efd7641c205c26a131e8493af33fd3e9267ab8",
+        "function": "child_or_parent",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs",
-        "line": 324
+        "assertion_sha256": "aa5edb328b3a175852b8c432ab340948e8994e3fa4a4b3f12e53cc54ac1a50c2",
+        "function": "child_or_parent",
+        "path": "crates/platform/dispatch/awaken-dispatch/tests/crash_effect_recovery.rs"
       }
     ],
     "execution_witnesses": [
@@ -706,23 +739,26 @@
     "source_locations": [
       {
         "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
-        "line": 71,
         "file_sha256": "a43abbca8c432fd4ef685e1b329d80fd8c6dfe0295527517c18dd48e89010c8e",
-        "relocated_from": "crates/server/awaken-run-executor-a2a/src/tests/reattach_identity.rs:71"
+        "relocated_from": "crates/server/awaken-run-executor-a2a/src/tests/reattach_identity.rs:71",
+        "function": "rebuilt_executor_reattaches_the_original_operation_only_with_committed_evidence"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
-        "line": 80
+        "assertion_sha256": "bd71750d5b1b65ea08037f699af0fd1aa32b7b96f483b2614e4f2d46b5bc7380",
+        "function": "rebuilt_executor_reattaches_the_original_operation_only_with_committed_evidence",
+        "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs"
       },
       {
-        "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
-        "line": 89
+        "assertion_sha256": "9be86962ac9210793618798afe89acc7071d3a30781c0e4f729b4b4f32737e54",
+        "function": "rebuilt_executor_reattaches_the_original_operation_only_with_committed_evidence",
+        "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs"
       },
       {
-        "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs",
-        "line": 90
+        "assertion_sha256": "237163145d29997cac6e2f74423b5f255aff8e30e9d43f71b6b4226ac1091555",
+        "function": "rebuilt_executor_reattaches_the_original_operation_only_with_committed_evidence",
+        "path": "crates/platform/execution/awaken-run-executor-a2a/src/tests/reattach_identity.rs"
       }
     ],
     "execution_witnesses": [

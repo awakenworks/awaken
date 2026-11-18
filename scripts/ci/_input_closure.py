@@ -83,6 +83,9 @@ TOOL_INPUTS: dict[str, tuple[str, ...]] = {
     # Committed objects only (HEAD, ls-tree, cat-file): a staged change is not
     # what git reports until it is committed, so it adds no trigger input.
     "git": (),
+    # Node source checks resolve the repository's pinned parser through these
+    # inputs; each checker also declares its specific JavaScript entrypoint.
+    "node": ("package.json", "pnpm-lock.yaml"),
 }
 
 SKIPPED_PARTS = frozenset({"__pycache__", ".git"})

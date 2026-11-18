@@ -4,23 +4,26 @@
     "source_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 138,
         "file_sha256": "443b90386704a53a82cb106d85ef4040541f80b7c516124c429aeb92d4eb61e2",
-        "relocated_from": "crates/resources/awaken-memory-store/tests/redaction_retry.rs:138"
+        "relocated_from": "crates/resources/awaken-memory-store/tests/redaction_retry.rs:138",
+        "function": "sqlite_file_redaction_survives_trigger_failure_and_lost_response"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 163
+        "assertion_sha256": "1aeb6f5c8b7dd846fa30b1f0c2be210756580f026539e2c94d99e26bc95a33c4",
+        "function": "sqlite_file_redaction_survives_trigger_failure_and_lost_response",
+        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs"
       },
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 167
+        "assertion_sha256": "45664d7f254d9e6d742ca78e01c1b02eb310070404b357ba3ec0c55136a3067e",
+        "function": "sqlite_file_redaction_survives_trigger_failure_and_lost_response",
+        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs"
       },
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 177
+        "assertion_sha256": "815a253fe52ce064ea8946a438fd42228bebf9da49381230a6a10cc5a035e647",
+        "function": "sqlite_file_redaction_survives_trigger_failure_and_lost_response",
+        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs"
       }
     ],
     "execution_witnesses": [
@@ -55,23 +58,26 @@
     "source_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 210,
         "file_sha256": "443b90386704a53a82cb106d85ef4040541f80b7c516124c429aeb92d4eb61e2",
-        "relocated_from": "crates/resources/awaken-memory-store/tests/redaction_retry.rs:210"
+        "relocated_from": "crates/resources/awaken-memory-store/tests/redaction_retry.rs:210",
+        "function": "postgres_redaction_survives_trigger_failure_and_lost_response"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 219
+        "assertion_sha256": "60be7d142d47ddb6332770b599b2841b7e6523cf89f8b7374cee242c6a8dd7ff",
+        "function": "postgres_redaction_survives_trigger_failure_and_lost_response",
+        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs"
       },
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 256
+        "assertion_sha256": "1aeb6f5c8b7dd846fa30b1f0c2be210756580f026539e2c94d99e26bc95a33c4",
+        "function": "postgres_redaction_survives_trigger_failure_and_lost_response",
+        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs"
       },
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs",
-        "line": 260
+        "assertion_sha256": "45664d7f254d9e6d742ca78e01c1b02eb310070404b357ba3ec0c55136a3067e",
+        "function": "postgres_redaction_survives_trigger_failure_and_lost_response",
+        "path": "crates/platform/resources/awaken-memory-store/tests/redaction_retry.rs"
       }
     ],
     "execution_witnesses": [
@@ -106,15 +112,16 @@
     "source_locations": [
       {
         "path": "crates/platform/committed-truth/awaken-store-sqlite/tests/capacity_exhaustion.rs",
-        "line": 126,
         "file_sha256": "dda4a866373916a043e26d10c2b3469b3bd53801d9f3f070f6ab93a584871840",
-        "relocated_from": "crates/stores/awaken-store-sqlite/tests/capacity_exhaustion.rs:126"
+        "relocated_from": "crates/stores/awaken-store-sqlite/tests/capacity_exhaustion.rs:126",
+        "function": "exhausted_capacity_rejects_atomically_and_retry_commits_once_with_original_receipt"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/committed-truth/awaken-store-sqlite/tests/capacity_exhaustion.rs",
-        "line": 129
+        "assertion_sha256": "70c270b831f43c7c96590f8679c8ec82c57ad5adfeb1da6fd85b6ad8cc76a3da",
+        "function": "exhausted_capacity_rejects_atomically_and_retry_commits_once_with_original_receipt",
+        "path": "crates/platform/committed-truth/awaken-store-sqlite/tests/capacity_exhaustion.rs"
       }
     ],
     "execution_witnesses": [
@@ -150,23 +157,26 @@
     "source_locations": [
       {
         "path": "crates/platform/resources/awaken-memory-store/tests/capacity_quota.rs",
-        "line": 96,
         "file_sha256": "cf62581440082e8303a5901d5d73dbdbc0cae8707e24c8660c32112cd0706506",
-        "relocated_from": "crates/resources/awaken-memory-store/tests/capacity_quota.rs:96"
+        "relocated_from": "crates/resources/awaken-memory-store/tests/capacity_quota.rs:96",
+        "function": "sqlite_file_memory_quota_rejects_atomically_and_retry_commits_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/capacity_quota.rs",
-        "line": 38
+        "assertion_sha256": "c65c7ced2cdd9824f663a46b7b56720175d19e0cff8a9eb0c2cb50f0dcd2d388",
+        "function": "quota_conformance",
+        "path": "crates/platform/resources/awaken-memory-store/tests/capacity_quota.rs"
       },
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/capacity_quota.rs",
-        "line": 41
+        "assertion_sha256": "6b3ba3162ac6796092e4e972f8161ed7d4c8ab55db3faedc53d38c6194edeac9",
+        "function": "quota_conformance",
+        "path": "crates/platform/resources/awaken-memory-store/tests/capacity_quota.rs"
       },
       {
-        "path": "crates/platform/resources/awaken-memory-store/tests/capacity_quota.rs",
-        "line": 45
+        "assertion_sha256": "2fff16add1abf257de6fb4a4b85618109b501eda6919712e7dda8ae500273430",
+        "function": "quota_conformance",
+        "path": "crates/platform/resources/awaken-memory-store/tests/capacity_quota.rs"
       }
     ],
     "execution_witnesses": [
@@ -201,23 +211,26 @@
     "source_locations": [
       {
         "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 494,
         "file_sha256": "a9ce5cfe03f488110d312a27177682d1d33cc22985a3d11d0e3c0714a3d6e878",
-        "relocated_from": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs:494"
+        "relocated_from": "crates/server/awaken-coordinator/src/dream/rebuild_interruption_tests.rs:494",
+        "function": "capacity_exhausted_snapshot_clone_keeps_protected_output_and_retry_rebuilds_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 499
+        "assertion_sha256": "d72478a1ecf569e203230fbc409f6da576ed556279f396a3625689c4941723a1",
+        "function": "capacity_exhausted_snapshot_clone_keeps_protected_output_and_retry_rebuilds_once",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 511
+        "assertion_sha256": "70af996b2c03abb728690f6f4f8c5daa4c7a0d91d6efa4c8fa36b1c91c4f9efb",
+        "function": "capacity_exhausted_snapshot_clone_keeps_protected_output_and_retry_rebuilds_once",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs",
-        "line": 517
+        "assertion_sha256": "cae69cac4407f643ac2b71d902a7f7dd4b657a099203722571f8c8adedaaa54b",
+        "function": "capacity_exhausted_snapshot_clone_keeps_protected_output_and_retry_rebuilds_once",
+        "path": "crates/apps/awaken-coordinator/src/dream/rebuild_interruption_tests.rs"
       }
     ],
     "execution_witnesses": [
@@ -253,23 +266,26 @@
     "source_locations": [
       {
         "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1178,
         "file_sha256": "ccfe5a0af3a898f8a08a25d1edbc7f26b31071c77deb7a20ea74ee71304faae6",
-        "relocated_from": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs:1178"
+        "relocated_from": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs:1178",
+        "function": "lost_conflict_preservation_response_retries_with_the_original_proposal_identity"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1185
+        "assertion_sha256": "5d6e044c8f6b9d6b88e2c476ab84c08e7acd0306e68e676e276a334ec8d87ea2",
+        "function": "lost_conflict_preservation_response_retries_with_the_original_proposal_identity",
+        "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1186
+        "assertion_sha256": "1e5a7884cfed8f3ba77488455c8918dd16010046be691a1e2ed09e864108e551",
+        "function": "lost_conflict_preservation_response_retries_with_the_original_proposal_identity",
+        "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1191
+        "assertion_sha256": "8b1946b779136db768571de1bc1427cc53cf9320a5da987f4bd04d45a4bbc7d5",
+        "function": "lost_conflict_preservation_response_retries_with_the_original_proposal_identity",
+        "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs"
       }
     ],
     "execution_witnesses": [
@@ -304,19 +320,21 @@
     "source_locations": [
       {
         "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1222,
         "file_sha256": "ccfe5a0af3a898f8a08a25d1edbc7f26b31071c77deb7a20ea74ee71304faae6",
-        "relocated_from": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs:1222"
+        "relocated_from": "crates/worker/awaken-sandbox-memoryd/tests/writeback_faults.rs:1222",
+        "function": "nc_projection_removed_before_conflict_preservation_is_detected"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1227
+        "assertion_sha256": "1f39d9d78b3facd70ccde2733d2ce2f5f6e5dd7c5d72c7191e1151d8b854c90d",
+        "function": "nc_projection_removed_before_conflict_preservation_is_detected",
+        "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs",
-        "line": 1231
+        "assertion_sha256": "81f974512700bbe28cebc79356de97ef1ba6e940e493af6a99f74d0f9ad75ccc",
+        "function": "nc_projection_removed_before_conflict_preservation_is_detected",
+        "path": "crates/platform/sandbox/awaken-sandbox-memoryd/tests/writeback_faults.rs"
       }
     ],
     "execution_witnesses": [
@@ -350,19 +368,21 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 248,
         "file_sha256": "b1a81ee31fb5a8e7f8d59cf15ed1575c55c658cd1493a2a13e72107e6a2f656f",
-        "relocated_from": "crates/stores/awaken-env-store/tests/update_archive_faults.rs:248"
+        "relocated_from": "crates/stores/awaken-env-store/tests/update_archive_faults.rs:248",
+        "function": "sqlite_file_update_archive_race_faults_and_reopen_keep_one_legal_history"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 312
+        "assertion_sha256": "3a77ba8467391401100a860391f74d15484de5e570fa422261fbc702b4e96dc0",
+        "function": "sqlite_file_update_archive_race_faults_and_reopen_keep_one_legal_history",
+        "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 313
+        "assertion_sha256": "cdde3dab37810e4da9cd0928bb67cfba33dd7e4310e716140e3798baec4c0009",
+        "function": "sqlite_file_update_archive_race_faults_and_reopen_keep_one_legal_history",
+        "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs"
       }
     ],
     "execution_witnesses": [
@@ -399,23 +419,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 335,
         "file_sha256": "b1a81ee31fb5a8e7f8d59cf15ed1575c55c658cd1493a2a13e72107e6a2f656f",
-        "relocated_from": "crates/stores/awaken-env-store/tests/update_archive_faults.rs:332"
+        "relocated_from": "crates/stores/awaken-env-store/tests/update_archive_faults.rs:332",
+        "function": "postgres_update_archive_race_faults_and_reopen_keep_one_legal_history"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 344
+        "assertion_sha256": "e3f8ab1f03be41d6642c78d7395926b83091234c6e33248097c1fe435a8f6e11",
+        "function": "postgres_update_archive_race_faults_and_reopen_keep_one_legal_history",
+        "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 427
+        "assertion_sha256": "3a77ba8467391401100a860391f74d15484de5e570fa422261fbc702b4e96dc0",
+        "function": "postgres_update_archive_race_faults_and_reopen_keep_one_legal_history",
+        "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs",
-        "line": 428
+        "assertion_sha256": "cdde3dab37810e4da9cd0928bb67cfba33dd7e4310e716140e3798baec4c0009",
+        "function": "postgres_update_archive_race_faults_and_reopen_keep_one_legal_history",
+        "path": "crates/platform/environment/awaken-env-store/tests/update_archive_faults.rs"
       }
     ],
     "execution_witnesses": [
@@ -452,23 +475,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 597,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
-        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:594"
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:594",
+        "function": "sqlite_file_update_child_killed_inside_its_transaction_rolls_back_and_retries_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 527
+        "assertion_sha256": "76e82047bddf3a76708ff6fd8b28d04511387d4e5224e69ecc5b30706d16cc6c",
+        "function": "sqlite_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 539
+        "assertion_sha256": "39511b895e22a9049b835944d4e9644ca244adf6ed9ff34fb9385ba584677509",
+        "function": "sqlite_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 544
+        "assertion_sha256": "3777d9c3d08124cd119c7e60be16eda0a3073865db8f15120cc84ea7790efc2f",
+        "function": "sqlite_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       }
     ],
     "execution_witnesses": [
@@ -503,23 +529,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 606,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
-        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:603"
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:603",
+        "function": "sqlite_file_archive_child_killed_inside_its_transaction_rolls_back_and_retries_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 527
+        "assertion_sha256": "76e82047bddf3a76708ff6fd8b28d04511387d4e5224e69ecc5b30706d16cc6c",
+        "function": "sqlite_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 539
+        "assertion_sha256": "39511b895e22a9049b835944d4e9644ca244adf6ed9ff34fb9385ba584677509",
+        "function": "sqlite_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 544
+        "assertion_sha256": "3777d9c3d08124cd119c7e60be16eda0a3073865db8f15120cc84ea7790efc2f",
+        "function": "sqlite_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       }
     ],
     "execution_witnesses": [
@@ -555,23 +584,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 440,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
-        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:437"
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:437",
+        "function": "postgres_archive_child_killed_inside_its_transaction_rolls_back_and_retries_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 337
+        "assertion_sha256": "533536d79b5da67683af276530dad3523eb4927f8ada567133fa17b1ff3088b8",
+        "function": "postgres_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 342
+        "assertion_sha256": "3777d9c3d08124cd119c7e60be16eda0a3073865db8f15120cc84ea7790efc2f",
+        "function": "postgres_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 368
+        "assertion_sha256": "609ec22c4c05e237c130c41782c57b3f38f719fc333aa65238bbb890024f126c",
+        "function": "postgres_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       }
     ],
     "execution_witnesses": [
@@ -607,23 +639,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 264,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
-        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:261"
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:261",
+        "function": "postgres_update_aborted_inside_its_transaction_rolls_back_and_retries_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 293
+        "assertion_sha256": "0ce5c2a14c8e3d70c060735de348ca7acc79e31a630f003b65f2a227231051f1",
+        "function": "postgres_update_aborted_inside_its_transaction_rolls_back_and_retries_once",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 304
+        "assertion_sha256": "c7469472ff9230dfa4a813a3f0ca71b067d125174140e85a23ab06d657344306",
+        "function": "postgres_update_aborted_inside_its_transaction_rolls_back_and_retries_once",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 310
+        "assertion_sha256": "30819902ac809f574e79da6400bf57ac336f5a7771e10e8c7810c1b5ad002afb",
+        "function": "postgres_update_aborted_inside_its_transaction_rolls_back_and_retries_once",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       }
     ],
     "execution_witnesses": [
@@ -657,23 +692,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 431,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
-        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:428"
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:428",
+        "function": "postgres_update_child_killed_inside_its_transaction_rolls_back_and_retries_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 337
+        "assertion_sha256": "533536d79b5da67683af276530dad3523eb4927f8ada567133fa17b1ff3088b8",
+        "function": "postgres_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 342
+        "assertion_sha256": "3777d9c3d08124cd119c7e60be16eda0a3073865db8f15120cc84ea7790efc2f",
+        "function": "postgres_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 368
+        "assertion_sha256": "609ec22c4c05e237c130c41782c57b3f38f719fc333aa65238bbb890024f126c",
+        "function": "postgres_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       }
     ],
     "execution_witnesses": [
@@ -707,23 +745,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 440,
         "file_sha256": "0260f7eaf6f6e8f96e93c567f625b2fab37961c4bb209717524dbb635d8a5b93",
-        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:437"
+        "relocated_from": "crates/stores/awaken-env-store/tests/cancellation.rs:437",
+        "function": "postgres_archive_child_killed_inside_its_transaction_rolls_back_and_retries_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 337
+        "assertion_sha256": "533536d79b5da67683af276530dad3523eb4927f8ada567133fa17b1ff3088b8",
+        "function": "postgres_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 342
+        "assertion_sha256": "3777d9c3d08124cd119c7e60be16eda0a3073865db8f15120cc84ea7790efc2f",
+        "function": "postgres_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs",
-        "line": 368
+        "assertion_sha256": "609ec22c4c05e237c130c41782c57b3f38f719fc333aa65238bbb890024f126c",
+        "function": "postgres_child_kill",
+        "path": "crates/platform/environment/awaken-env-store/tests/cancellation.rs"
       }
     ],
     "execution_witnesses": [

@@ -5,27 +5,31 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs",
-        "line": 160,
         "file_sha256": "f8f3b7377fd8eac02748193ca1ddae810082bffed6d23aa6c40bfa2341a5cd97",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs:160"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_tightening.rs:160",
+        "function": "tightened_budget_governs_the_next_model_request_and_keeps_frozen_pins"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs",
-        "line": 170
+        "assertion_sha256": "087f88847f961c4df787c5e45e1c9155da7e33f7e564889f7999c30870645ff3",
+        "function": "tightened_budget_governs_the_next_model_request_and_keeps_frozen_pins",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs",
-        "line": 171
+        "assertion_sha256": "4330ffb07e6a4239de434677d5ff99dd58399a4fed4783ab6d3de133dafcdc09",
+        "function": "tightened_budget_governs_the_next_model_request_and_keeps_frozen_pins",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs",
-        "line": 178
+        "assertion_sha256": "ab96bd7dfca70fb63272a73b0183f9f2bbc11b2f0d845fd9b390b7d967e37628",
+        "function": "tightened_budget_governs_the_next_model_request_and_keeps_frozen_pins",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs",
-        "line": 179
+        "assertion_sha256": "b3a89932f284623232b8e0d3b96f64df7f56c153b741ba9a3cfbaa0f7acf9045",
+        "function": "tightened_budget_governs_the_next_model_request_and_keeps_frozen_pins",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening.rs"
       }
     ],
     "execution_witnesses": [
@@ -60,27 +64,31 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
-        "line": 61,
         "file_sha256": "a9c814702c77fc0be421a1367283cb16a063e078cd313f98881f4a14cfedbe00",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs:61"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs:61",
+        "function": "frozen_pins_survive_a_moved_price_catalog_through_later_commands"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
-        "line": 71
+        "assertion_sha256": "d2919b8636e05089e47db9e101f9bb020c17fa1d3a60a3ac27b29d6afc761b3b",
+        "function": "frozen_pins_survive_a_moved_price_catalog_through_later_commands",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
-        "line": 76
+        "assertion_sha256": "007bf190ec3c2d551d2ca9f992796df6f2bdd33cc582b17612628d578ffdef63",
+        "function": "frozen_pins_survive_a_moved_price_catalog_through_later_commands",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
-        "line": 83
+        "assertion_sha256": "a2aa5d1d781e6d3c51ff64fd4780c521d8cbf27b377e3a5a4a76a0bc3bf9a105",
+        "function": "frozen_pins_survive_a_moved_price_catalog_through_later_commands",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs",
-        "line": 91
+        "assertion_sha256": "b5f1ab013350fef160c0737449ac92b8de2a440bc67b4dd0d28c27206a34d708",
+        "function": "frozen_pins_survive_a_moved_price_catalog_through_later_commands",
+        "path": "crates/platform/session/awaken-session-application/src/tests/authority/budget_tightening/frozen_versus_current.rs"
       }
     ],
     "execution_witnesses": [
@@ -114,35 +122,41 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 355,
         "file_sha256": "c3cbd93053d7e2d4d6c0363a29db68fcbe51b986b0bee50687c7fcf415f81f67",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs:355"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs:355",
+        "function": "t14_c03_sqlite_replacement_replay_after_projection_crash"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 260
+        "assertion_sha256": "cbb462b138c0d0702899cd214a725718a73227437a28766db8539c09be17deb3",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 270
+        "assertion_sha256": "21e12a8d82a0f4e2c496a8ff4069edbe0ed4cab2eed4bc0d715e3e80615ac2e5",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 287
+        "assertion_sha256": "fefb1bb875c233130165e1784c4570eb4cebf6abaa1e2cebe8a0ce7a0aedd7cb",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 291
+        "assertion_sha256": "925fada9bd379a8c758c0590a8a60d312291d71ca1b28f82bf53943e1b1a2055",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 306
+        "assertion_sha256": "4e572f376d877468841d034c9abb1d14cdcf4bcabf512d1a46ebd9063c4b4736",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 307
+        "assertion_sha256": "0b6e3ca1c195bb3ad5b21b9216b558fd96c0e9df77d56f52ccbc6f1f82996bcd",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       }
     ],
     "execution_witnesses": [
@@ -178,35 +192,41 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 372,
         "file_sha256": "c3cbd93053d7e2d4d6c0363a29db68fcbe51b986b0bee50687c7fcf415f81f67",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs:372"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/realization/replacement_crash.rs:372",
+        "function": "t14_c03_postgres_replacement_replay_after_projection_crash"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 260
+        "assertion_sha256": "cbb462b138c0d0702899cd214a725718a73227437a28766db8539c09be17deb3",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 270
+        "assertion_sha256": "21e12a8d82a0f4e2c496a8ff4069edbe0ed4cab2eed4bc0d715e3e80615ac2e5",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 287
+        "assertion_sha256": "fefb1bb875c233130165e1784c4570eb4cebf6abaa1e2cebe8a0ce7a0aedd7cb",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 291
+        "assertion_sha256": "925fada9bd379a8c758c0590a8a60d312291d71ca1b28f82bf53943e1b1a2055",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 306
+        "assertion_sha256": "4e572f376d877468841d034c9abb1d14cdcf4bcabf512d1a46ebd9063c4b4736",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs",
-        "line": 307
+        "assertion_sha256": "0b6e3ca1c195bb3ad5b21b9216b558fd96c0e9df77d56f52ccbc6f1f82996bcd",
+        "function": "replacement_replay_table",
+        "path": "crates/platform/session/awaken-session-application/src/tests/realization/replacement_crash.rs"
       }
     ],
     "execution_witnesses": [
@@ -242,26 +262,30 @@
     "source_locations": [
       {
         "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
-        "line": 336,
-        "file_sha256": "3f179a63b5069aa04a9486068f42340c45ee073a749d4f09e6cdbbfcd39ec82b"
+        "file_sha256": "3f179a63b5069aa04a9486068f42340c45ee073a749d4f09e6cdbbfcd39ec82b",
+        "statement_sha256": "b3c60e963eb7bea10c85cc8a3fcbc40b41fa1080226829fc4a73bc4376662212"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
-        "line": 274
+        "assertion_sha256": "553220130abba0f040633fa8ab8c427524209283b9965f381ee28f3cba6367d7",
+        "function": "main",
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs"
       },
       {
-        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
-        "line": 291
+        "assertion_sha256": "e4492e353443c6df8de666ea115eb10bad41eefaaf2344e8b3464d090d2a96b8",
+        "function": "main",
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs"
       },
       {
-        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
-        "line": 306
+        "assertion_sha256": "a2320b546ec56e3b3659eead5ae6406fe2980c3fe98911684837e19d642851ac",
+        "function": "main",
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs"
       },
       {
-        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
-        "line": 308
+        "assertion_sha256": "575215a393663ea0228a0f6e106dcecff3be7b47fabae961fa7e3106eaa852af",
+        "function": "main",
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs"
       }
     ],
     "execution_witnesses": [
@@ -297,14 +321,15 @@
     "source_locations": [
       {
         "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
-        "line": 331,
-        "file_sha256": "3f179a63b5069aa04a9486068f42340c45ee073a749d4f09e6cdbbfcd39ec82b"
+        "file_sha256": "3f179a63b5069aa04a9486068f42340c45ee073a749d4f09e6cdbbfcd39ec82b",
+        "statement_sha256": "ce5bf22abc5d4f7da1e5c2a85651118e96a625c15bbeb9b11657ab89567ad8d6"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs",
-        "line": 329
+        "assertion_sha256": "d5d3871b1ba7456d5708841fdb48fc4fe8d56f4583bc426addc8817e771b9b06",
+        "function": "main",
+        "path": "e2e/control_coordinator_disconnect_postgres_e2e.mjs"
       }
     ],
     "execution_witnesses": [
@@ -336,27 +361,31 @@
     "source_locations": [
       {
         "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
-        "line": 253,
         "file_sha256": "5294b1582fd24e6220212530bb8c8abc2364ef18b497b7ce7a757be7ffe4dd96",
-        "relocated_from": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs:253"
+        "relocated_from": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs:253",
+        "function": "foreign_version_ids_are_inert_and_indistinguishable_from_absent_ones"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
-        "line": 258
+        "assertion_sha256": "132dcdc1f1d14aa533310fdff87f092572011b38800880bfd56158d277bb9210",
+        "function": "foreign_version_ids_are_inert_and_indistinguishable_from_absent_ones",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
-        "line": 274
+        "assertion_sha256": "e578d66dafb388efe2d0ca60ab5a70cab739829034c9fecdc802c48bbebbc7c0",
+        "function": "foreign_version_ids_are_inert_and_indistinguishable_from_absent_ones",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
-        "line": 279
+        "assertion_sha256": "e9f766844b2c2077b49b37ba9ab7d0f9f2ff41093543f1c91ec4d2b35634c178",
+        "function": "foreign_version_ids_are_inert_and_indistinguishable_from_absent_ones",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
-        "line": 280
+        "assertion_sha256": "beb8b95789e5b82bfc9e549fe5f64d34c9e520708491f282a4900f4aa9af969c",
+        "function": "foreign_version_ids_are_inert_and_indistinguishable_from_absent_ones",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs"
       }
     ],
     "execution_witnesses": [
@@ -392,27 +421,31 @@
     "source_locations": [
       {
         "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
-        "line": 380,
         "file_sha256": "5294b1582fd24e6220212530bb8c8abc2364ef18b497b7ce7a757be7ffe4dd96",
-        "relocated_from": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs:380"
+        "relocated_from": "crates/server/awaken-protocol-managed/tests/memory_version_ownership.rs:380",
+        "function": "store_unscoped_version_lookup_is_detected"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
-        "line": 410
+        "assertion_sha256": "132dcdc1f1d14aa533310fdff87f092572011b38800880bfd56158d277bb9210",
+        "function": "store_unscoped_version_lookup_is_detected",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
-        "line": 413
+        "assertion_sha256": "cfe62a9e1dd9c973d6c52ead7ae32ac278532d4dacdf5d5492d12874f36ab45d",
+        "function": "store_unscoped_version_lookup_is_detected",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
-        "line": 416
+        "assertion_sha256": "580c1ab26fe76fbf54c9696a579d0c942bdb7ce47e759d9479a240df3d54d708",
+        "function": "store_unscoped_version_lookup_is_detected",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs"
       },
       {
-        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs",
-        "line": 423
+        "assertion_sha256": "bd6bf0adc865aaa808d6273da2deb29b4f0fb6f52c5dfe786faed5eddd3e9954",
+        "function": "store_unscoped_version_lookup_is_detected",
+        "path": "crates/platform/protocols/awaken-protocol-managed/tests/memory_version_ownership.rs"
       }
     ],
     "execution_witnesses": [
@@ -446,30 +479,35 @@
     "source_locations": [
       {
         "path": "e2e/managed_memory_version_ownership_e2e.mjs",
-        "line": 176,
-        "file_sha256": "65fafade3b8ed1aa2ad7b6eeda821bc01e4eb5945d528eeef149565abbcb3161"
+        "file_sha256": "65fafade3b8ed1aa2ad7b6eeda821bc01e4eb5945d528eeef149565abbcb3161",
+        "statement_sha256": "0425151e5f8e3a7f2aefbea2e69db580d5556894b2a493d0eaf0eb7c04346105"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
-        "line": 145
+        "assertion_sha256": "5539579b0b4a5fc3c326814a7c719cfb30f8bb425ca0f383424e940ac6f2ed02",
+        "function": "<module>",
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs"
       },
       {
-        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
-        "line": 147
+        "assertion_sha256": "2a83e326c88e3ca268368e960e1f26b82607fe07092460f6cd919ec808c61615",
+        "function": "<module>",
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs"
       },
       {
-        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
-        "line": 158
+        "assertion_sha256": "44c9ebf667747f04b8363cedda6368ef75bbb90243c36937042453cd0d648bc5",
+        "function": "<module>",
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs"
       },
       {
-        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
-        "line": 168
+        "assertion_sha256": "a64f7af9af0340378fe5d4966fad3d6cf986e22157e758c887b95b2530069283",
+        "function": "<module>",
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs"
       },
       {
-        "path": "e2e/managed_memory_version_ownership_e2e.mjs",
-        "line": 169
+        "assertion_sha256": "cf11245acd4f43816e90b11a4c587e44c1de4b35bd27c56516a7bc9f428cf6af",
+        "function": "<module>",
+        "path": "e2e/managed_memory_version_ownership_e2e.mjs"
       }
     ],
     "execution_witnesses": [
@@ -505,43 +543,51 @@
     "source_locations": [
       {
         "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
-        "line": 198,
         "file_sha256": "1a66dd8f16059f41e9640e46364553a9966c51f71c06aed31bd20aaeb2da9d38",
-        "relocated_from": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs:198"
+        "relocated_from": "crates/worker/awaken-sandbox-local/tests/create_response_loss.rs:198",
+        "function": "t27_c03_create_response_loss_recovers_the_original_instance"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
-        "line": 203
+        "assertion_sha256": "4cc84263780461db36bdba078998f9bb10649ddaf5aa66fc3356869136044c27",
+        "function": "t27_c03_create_response_loss_recovers_the_original_instance",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
-        "line": 212
+        "assertion_sha256": "f4cd3c07eb4006ef37e3218f2b552879d6698d6303338e9476c6bc51dff87022",
+        "function": "t27_c03_create_response_loss_recovers_the_original_instance",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
-        "line": 214
+        "assertion_sha256": "031d0c2c8d4559f0ddeecab4ae3af99d49aa3584216a436edfd5ccc28817c169",
+        "function": "t27_c03_create_response_loss_recovers_the_original_instance",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
-        "line": 218
+        "assertion_sha256": "2e1737fffabc98f58eb7d0014dd34f669a4166df610384cb2873eca53139d161",
+        "function": "t27_c03_create_response_loss_recovers_the_original_instance",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
-        "line": 234
+        "assertion_sha256": "239ab675935497dbfc56bca9e871ccd0dff445af0cf1260375a118508b91ed9a",
+        "function": "t27_c03_create_response_loss_recovers_the_original_instance",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
-        "line": 235
+        "assertion_sha256": "8faea6ab1d4cbd04c5f66b533739769160056bd9af40f9a42f3cc87854e85211",
+        "function": "t27_c03_create_response_loss_recovers_the_original_instance",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
-        "line": 240
+        "assertion_sha256": "ee1e6f7765c354e02e6bf6785c73b59736a061bd5eb3a120c74c13664c055d62",
+        "function": "t27_c03_create_response_loss_recovers_the_original_instance",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs",
-        "line": 242
+        "assertion_sha256": "dc82041369831240c0864ab410775285ba71f7dbb36589c7cf057be2cd1a3a0a",
+        "function": "t27_c03_create_response_loss_recovers_the_original_instance",
+        "path": "crates/platform/sandbox/awaken-sandbox-local/tests/create_response_loss.rs"
       }
     ],
     "execution_witnesses": [
@@ -577,34 +623,40 @@
     "source_locations": [
       {
         "path": "e2e/sdk_differential_e2e.mjs",
-        "line": 260,
-        "file_sha256": "fdc4825d197356c2cd5eb48e57144fc86bf751b54e7b3c8d300e7dbc6c87a524"
+        "file_sha256": "fdc4825d197356c2cd5eb48e57144fc86bf751b54e7b3c8d300e7dbc6c87a524",
+        "statement_sha256": "75feae5f3d8ce15a567d01c23252156c90b1cbb7f90cd25eb1ff99367881f1ff"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/sdk_differential_e2e.mjs",
-        "line": 215
+        "assertion_sha256": "6c20d6cfc6bb7ab84b02106c30ee286c0fae2eb21345b1cf6bbf0bef2f32ae49",
+        "function": "main",
+        "path": "e2e/sdk_differential_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_differential_e2e.mjs",
-        "line": 216
+        "assertion_sha256": "3a4bd18d6f8f34cfc717dfc95159f77534cf5ac21be6007a69d3fb0a79e443d0",
+        "function": "main",
+        "path": "e2e/sdk_differential_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_differential_e2e.mjs",
-        "line": 220
+        "assertion_sha256": "b2ee1b621cf9837fd69d4b60a5b279d9bf895456b1286e3f4d5dd0458a8a3a8c",
+        "function": "main",
+        "path": "e2e/sdk_differential_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_differential_e2e.mjs",
-        "line": 221
+        "assertion_sha256": "bf53d67e52cea85c0c5347b106a48c6bce2e657d945dd81d1842df34840a7035",
+        "function": "main",
+        "path": "e2e/sdk_differential_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_differential_e2e.mjs",
-        "line": 230
+        "assertion_sha256": "d75e335c044d3f491000be9d938cc91b9c0a637245e674624154972b52e3f8e1",
+        "function": "main",
+        "path": "e2e/sdk_differential_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_differential_e2e.mjs",
-        "line": 231
+        "assertion_sha256": "1f8024ba93205c8090ae16dc643d02d244d80563431853db4b40ed5eb4614513",
+        "function": "main",
+        "path": "e2e/sdk_differential_e2e.mjs"
       }
     ],
     "execution_witnesses": [
@@ -640,18 +692,20 @@
     "source_locations": [
       {
         "path": "e2e/sdk_differential_e2e.mjs",
-        "line": 255,
-        "file_sha256": "fdc4825d197356c2cd5eb48e57144fc86bf751b54e7b3c8d300e7dbc6c87a524"
+        "file_sha256": "fdc4825d197356c2cd5eb48e57144fc86bf751b54e7b3c8d300e7dbc6c87a524",
+        "statement_sha256": "0e4a4f4cf86cac96ee1b0b4c1639c4781e18d82df6f470f3e3d35c7a08f580dc"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/sdk_differential_e2e.mjs",
-        "line": 253
+        "assertion_sha256": "e79cb070fd86f48526ca34e434c87581b29f6dfe6b08833cfbb59ef2c769cedb",
+        "function": "main",
+        "path": "e2e/sdk_differential_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_differential_e2e.mjs",
-        "line": 254
+        "assertion_sha256": "5e1be49e43a6026b2291a0984112d1061231056608827e8c162f5ca8b8d92ca4",
+        "function": "main",
+        "path": "e2e/sdk_differential_e2e.mjs"
       }
     ],
     "execution_witnesses": [
@@ -685,38 +739,45 @@
     "source_locations": [
       {
         "path": "e2e/sdk_interruption_recovery_e2e.mjs",
-        "line": 223,
-        "file_sha256": "853bba7611b5eef0403338de5abf349c960b37332285ff1fdb898183cdbf0362"
+        "file_sha256": "853bba7611b5eef0403338de5abf349c960b37332285ff1fdb898183cdbf0362",
+        "statement_sha256": "a1f3774cb00a84f6e956db8243d84f42e01894c1717f5603260b7b31564b7f84"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
-        "line": 143
+        "assertion_sha256": "f9b5080c5b47ddbd1ec2e12016091350db73baaa123ce74c58bc454ac80aa9db",
+        "function": "main",
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
-        "line": 155
+        "assertion_sha256": "cb0f8e1427112a7be9bea940b5c7de1294d6dce5615f9aa597a5f2e7fa2f0fe7",
+        "function": "main",
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
-        "line": 177
+        "assertion_sha256": "80ccf05f0b0f7ba43fd5f1436d1a2703630ce1c38ed0799059068ef24c1db422",
+        "function": "main",
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
-        "line": 181
+        "assertion_sha256": "9022b694135ef288812c2ee1e9fa02e3f6abae4ba7a9b4b7d68c94710f797d50",
+        "function": "main",
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
-        "line": 193
+        "assertion_sha256": "802118fb88544a7e722a6e6e554fd8ddfa90d01d60dcbc10d9ec044b387cc6d5",
+        "function": "main",
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
-        "line": 195
+        "assertion_sha256": "ceb7e5c81704850f9d2a49e26086d7ff9373306f63be174542c8a1d21238dfdf",
+        "function": "main",
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs"
       },
       {
-        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
-        "line": 197
+        "assertion_sha256": "8d8e69bd02841e12117591b9fc9a04a2498aed69680c0cb6a304782923b6f03a",
+        "function": "main",
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs"
       }
     ],
     "execution_witnesses": [
@@ -752,14 +813,15 @@
     "source_locations": [
       {
         "path": "e2e/sdk_interruption_recovery_e2e.mjs",
-        "line": 218,
-        "file_sha256": "853bba7611b5eef0403338de5abf349c960b37332285ff1fdb898183cdbf0362"
+        "file_sha256": "853bba7611b5eef0403338de5abf349c960b37332285ff1fdb898183cdbf0362",
+        "statement_sha256": "6388a3375552a2a79685c9f55855eb99d2ad769dce8b3ac6036893bf0b772503"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/sdk_interruption_recovery_e2e.mjs",
-        "line": 141
+        "assertion_sha256": "322730f74a9fe0bf3b172647f0ee278915de826676ebbcd0aa0c762c97293d45",
+        "function": "main",
+        "path": "e2e/sdk_interruption_recovery_e2e.mjs"
       }
     ],
     "execution_witnesses": [
@@ -791,30 +853,35 @@
     "source_locations": [
       {
         "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
-        "line": 583,
-        "file_sha256": "94145ca86eb45ea2a0e2fa1c844f16bf937063a1e6dea2e1bbe2c10f1faf3bbc"
+        "file_sha256": "94145ca86eb45ea2a0e2fa1c844f16bf937063a1e6dea2e1bbe2c10f1faf3bbc",
+        "statement_sha256": "c04c9bb8b27c6b48dfe61613b32b7a65c36ad76bc72d4eea401f59810c2ea23b"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
-        "line": 134
+        "assertion_sha256": "e415dd2b5b92a11aa2918d458f4e5afc41291ba1c007a4bf0c9e69892c25925f",
+        "function": "assertMultiProcessQualification",
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs"
       },
       {
-        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
-        "line": 145
+        "assertion_sha256": "45117a64661376d33abfaa77ee9de847b3742b726b020ce92aba0bc7ee565a08",
+        "function": "assertEventPreserved",
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs"
       },
       {
-        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
-        "line": 149
+        "assertion_sha256": "90b1c696f8946b39330cf35b17b91acd0653c962170def337175e898ee15bad4",
+        "function": "assertEventPreserved",
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs"
       },
       {
-        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
-        "line": 164
+        "assertion_sha256": "fe16dcff0bc0a391893d2517bab3722601a40806aecf14a8a54dab6321273bf1",
+        "function": "assertCursorPagesPreserved",
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs"
       },
       {
-        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs",
-        "line": 202
+        "assertion_sha256": "d209856b8b268ef99d8b67981c4fb0eff3ededbe01da797cd447e5c3dd0f7cf2",
+        "function": "assertTerminalsExactlyOnce",
+        "path": "e2e/multi_process_projection_recovery_postgres_e2e.mjs"
       }
     ],
     "execution_witnesses": [

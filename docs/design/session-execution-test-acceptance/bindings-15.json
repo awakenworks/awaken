@@ -5,26 +5,30 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 67,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t02_c01_single_turn_commits_a_run_that_is_read_back_from_the_store"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 79
+        "assertion_sha256": "fbc28eb40d53bb707040b35a6d174150fad1844d52649e414df9320fa1841390",
+        "function": "t02_c01_single_turn_commits_a_run_that_is_read_back_from_the_store",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 84
+        "assertion_sha256": "9a40fc8a8a0544ce9f86ae77e70bcebc19b368f3f36b9957cea14817407c618b",
+        "function": "t02_c01_single_turn_commits_a_run_that_is_read_back_from_the_store",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 85
+        "assertion_sha256": "4e1ce2a2e40218b41e265649581aa19dc57960a329035aa4e35d6092ab500ed4",
+        "function": "t02_c01_single_turn_commits_a_run_that_is_read_back_from_the_store",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 88
+        "assertion_sha256": "6501e0393938d37fffab0d9c47c27cb63f4d163a5ae3d3efd4bd6b4c12e8e6c3",
+        "function": "t02_c01_single_turn_commits_a_run_that_is_read_back_from_the_store",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -58,26 +62,30 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 100,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t02_c01_multi_turn_runs_share_the_thread_and_each_is_read_back"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 111
+        "assertion_sha256": "f7d066b481537b81f551c16b6c41cd0adb2d9a7429ceb1803f85cdc585292e62",
+        "function": "t02_c01_multi_turn_runs_share_the_thread_and_each_is_read_back",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 112
+        "assertion_sha256": "7f5a83ebef10fa0e71044963a0a6d0ec352d7840f9a8f79c9453b085112aed76",
+        "function": "t02_c01_multi_turn_runs_share_the_thread_and_each_is_read_back",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 116
+        "assertion_sha256": "338749bf1baa3d7c4417123c208b94a60381848829f50b1ceb3191c7203e5a29",
+        "function": "t02_c01_multi_turn_runs_share_the_thread_and_each_is_read_back",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 117
+        "assertion_sha256": "a45fd7a7ef04696e6399b4fcd31ae1af2aa0b583160137add5ba9047087bb915",
+        "function": "t02_c01_multi_turn_runs_share_the_thread_and_each_is_read_back",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -111,22 +119,25 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 242,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t02_c01_normal_dependency_closure_holds_only_sdk_crates"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 245
+        "assertion_sha256": "6d2eb637c60e96421f7e749bfc0520422a6f6f70c1d3ea33cc0ac3dfc4719a0f",
+        "function": "t02_c01_normal_dependency_closure_holds_only_sdk_crates",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 259
+        "assertion_sha256": "ad51e7019ff36c1e98e59d17f92c2d70366e0b6f0946d28403360197c1f48609",
+        "function": "t02_c01_normal_dependency_closure_holds_only_sdk_crates",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 264
+        "assertion_sha256": "a997d074aeed8f433bd67fd54ccf1a7dc0d6a39012afe86ebd7738415df8f2e3",
+        "function": "t02_c01_normal_dependency_closure_holds_only_sdk_crates",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -161,18 +172,20 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 304,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t02_c01_nc_a_copy_with_a_server_session_dependency_fails_the_closure_check"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 307
+        "assertion_sha256": "c63118fa70712b2b777aace17d1a9f6ad19bee196f1187a94aff25ae2a3ed37c",
+        "function": "t02_c01_nc_a_copy_with_a_server_session_dependency_fails_the_closure_check",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 320
+        "assertion_sha256": "0b2467257fb9e0015cb2cfe7197aea412471e86a6efc0d2913ec5f6dff1e0e82",
+        "function": "t02_c01_nc_a_copy_with_a_server_session_dependency_fails_the_closure_check",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -207,22 +220,28 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 66,
-        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
+        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac",
+        "function": "TaskEvidenceTests.test_e1_compile_only_output_is_refused_by_the_task_validator"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 69
+        "assertion_sha256": "5da8209752579c2c49fa20b17679f00901dabb871757f6235f2dec2f1bf1f6a4",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "TaskEvidenceTests.test_e1_compile_only_output_is_refused_by_the_task_validator",
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py"
       },
       {
-        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 71
+        "assertion_sha256": "4447eae8a73340c3b70ecdb307c7777a3702ebfd6c37f125c4789d426bf00c55",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "TaskEvidenceTests.test_e1_compile_only_output_is_refused_by_the_task_validator",
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py"
       },
       {
-        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 72
+        "assertion_sha256": "9b0ce720bea7712d6cd1750c185a1f36ba33c29e12e0859339aa859296126e23",
+        "context_sha256": "bed49a2bc87c55f893ad58962145a133132c9c115cfac50adbb0086ccf6f6894",
+        "function": "TaskEvidenceTests.test_e1_compile_only_output_is_refused_by_the_task_validator",
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py"
       }
     ],
     "execution_witnesses": [
@@ -254,26 +273,34 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 211,
-        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
+        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac",
+        "function": "PublicApiSnapshotTests.test_a1_a2_removing_one_reexport_is_reported_as_drift"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 212
+        "assertion_sha256": "3f40b14095654903ffc456e0ee7497e473081068cf0bad0f631356e2d5414c6e",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "PublicApiSnapshotTests.test_a1_a2_removing_one_reexport_is_reported_as_drift",
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py"
       },
       {
-        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 221
+        "assertion_sha256": "ad117e3f3edd416dde232472dfec972655743ff7c66dcf1b2d05275ab4878f20",
+        "context_sha256": "e1a5bfc1f9602c91b85b2deb712297f6cb590c87cbfec844e7733e2f0440c778",
+        "function": "PublicApiSnapshotTests.test_a1_a2_removing_one_reexport_is_reported_as_drift",
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py"
       },
       {
-        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 224
+        "assertion_sha256": "e616edc0b9e78644214344b0cef480dd083d677859cb9119098178db1ff4a341",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "PublicApiSnapshotTests.test_a1_a2_removing_one_reexport_is_reported_as_drift",
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py"
       },
       {
-        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 225
+        "assertion_sha256": "8033f80da14d8d9fe027b9d57e8cc1f03c5ab11cd5e117dba4030fa6daa8d68d",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "PublicApiSnapshotTests.test_a1_a2_removing_one_reexport_is_reported_as_drift",
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py"
       }
     ],
     "execution_witnesses": [
@@ -308,22 +335,28 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 165,
-        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac"
+        "file_sha256": "154407eb0e470f9a7dd922710929d7e9dd407896724d729a22cb31fef16292ac",
+        "function": "CompileFailPinTests.test_d1_pinned_codes_detect_unrelated_import_mutants_with_code_checking"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 168
+        "assertion_sha256": "acc2b3fb6c0013113937603ce7c00f8103286a1e3e94b77a2a794d052f663b9f",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "CompileFailPinTests.test_d1_pinned_codes_detect_unrelated_import_mutants_with_code_checking",
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py"
       },
       {
-        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 170
+        "assertion_sha256": "4ef9d7a167bc09992c41b4425606c72091bacc6d1b631f9dd6d691452b5b1aa5",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "CompileFailPinTests.test_d1_pinned_codes_detect_unrelated_import_mutants_with_code_checking",
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py"
       },
       {
-        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py",
-        "line": 171
+        "assertion_sha256": "f41e5b68f5b9c0d292bacf69e286b2c38dd116dacb05b990d17551a33c58e514",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "CompileFailPinTests.test_d1_pinned_codes_detect_unrelated_import_mutants_with_code_checking",
+        "path": "examples/sdk-consumer/tests/sdk_acceptance_test.py"
       }
     ],
     "execution_witnesses": [
@@ -357,26 +390,30 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 524,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t03_c01_first_awaiting_return_keeps_the_original_run_and_an_unconsumed_ticket"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 526
+        "assertion_sha256": "d605f3da52aea1cc395143561e764f2ebc9fc7701679753dafaf59cd6607c735",
+        "function": "t03_c01_first_awaiting_return_keeps_the_original_run_and_an_unconsumed_ticket",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 528
+        "assertion_sha256": "59073955b9afc04d122b362f571a38ccb1f7b3d74202636bb8baa1173469549e",
+        "function": "t03_c01_first_awaiting_return_keeps_the_original_run_and_an_unconsumed_ticket",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 529
+        "assertion_sha256": "f3fa5b7d5c10cd8ffe2b246c4190816a21cfb9eb53c7fd991e76829a23ae90d8",
+        "function": "t03_c01_first_awaiting_return_keeps_the_original_run_and_an_unconsumed_ticket",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 531
+        "assertion_sha256": "0692677d860b416ca0aa2d076119a6b43436f0c60eadc3f79fb732176857c02b",
+        "function": "t03_c01_first_awaiting_return_keeps_the_original_run_and_an_unconsumed_ticket",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -411,26 +448,30 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 544,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t03_c01_nc_an_auto_allowing_gate_fails_the_first_return_oracle"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 546
+        "assertion_sha256": "39c3a05a98b96b314c78e60eb6d7c47a53181e1a44c86973a6a0650fec64be95",
+        "function": "t03_c01_nc_an_auto_allowing_gate_fails_the_first_return_oracle",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 548
+        "assertion_sha256": "619ec3ecd61c3cac5302cff56ff03c3f80e2a1d86244818ad3051e9e63522053",
+        "function": "t03_c01_nc_an_auto_allowing_gate_fails_the_first_return_oracle",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 549
+        "assertion_sha256": "d2c3747b3564044897f604f513af5d3d88a5fd6f35d8c5d743b8285493913249",
+        "function": "t03_c01_nc_an_auto_allowing_gate_fails_the_first_return_oracle",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 550
+        "assertion_sha256": "4ac24a6ea1f2569a80a9428c554e05fa9d0288bf973c2e023c749277046c0e97",
+        "function": "t03_c01_nc_an_auto_allowing_gate_fails_the_first_return_oracle",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -464,18 +505,20 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 554,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t03_c01_nc_a_call_that_blocks_for_the_decision_fails_the_first_return_oracle"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 556
+        "assertion_sha256": "8159af4df3944511c470ac42f0b985774fdbc5dc1dcbe721952364b2379574e8",
+        "function": "t03_c01_nc_a_call_that_blocks_for_the_decision_fails_the_first_return_oracle",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 560
+        "assertion_sha256": "db2fb7e55e319176eb9be984a6452e3e1c65c1bd5dea7d2f11921c5b7d8d11fd",
+        "function": "t03_c01_nc_a_call_that_blocks_for_the_decision_fails_the_first_return_oracle",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -509,26 +552,30 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 566,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t03_c03_cancel_before_admission_persists_cancelled_with_zero_model_calls"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 582
+        "assertion_sha256": "e6603160e93ea7ee1960c7d8a3e75ebce62cbf00c4c2f43fe24f02e3902ad24f",
+        "function": "t03_c03_cancel_before_admission_persists_cancelled_with_zero_model_calls",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 585
+        "assertion_sha256": "1fc5483d07f1bd558e9733d4fe768159fd96b99bb3078225ce40df2583adfb20",
+        "function": "t03_c03_cancel_before_admission_persists_cancelled_with_zero_model_calls",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 586
+        "assertion_sha256": "9e70ac15027872058469a4850bf2213d14aa0226a454f3f6eae52b68e4db236c",
+        "function": "t03_c03_cancel_before_admission_persists_cancelled_with_zero_model_calls",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 587
+        "assertion_sha256": "dbff1dc075a5470a128b5c20423b37d928848599f2618857514104043926a4b2",
+        "function": "t03_c03_cancel_before_admission_persists_cancelled_with_zero_model_calls",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -562,26 +609,30 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 602,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t03_c03_cancel_while_awaiting_persists_cancelled_without_running_the_tool"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 627
+        "assertion_sha256": "dbff1dc075a5470a128b5c20423b37d928848599f2618857514104043926a4b2",
+        "function": "t03_c03_cancel_while_awaiting_persists_cancelled_without_running_the_tool",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 632
+        "assertion_sha256": "238913ac923ab0c902d2596dcc95257a794f4f9e518019a7e86aba3ac33a343e",
+        "function": "t03_c03_cancel_while_awaiting_persists_cancelled_without_running_the_tool",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 633
+        "assertion_sha256": "8497a4139324ccd1a2f82bd1e94f11e37e2b89336697fb9fdab75ed87571f3c9",
+        "function": "t03_c03_cancel_while_awaiting_persists_cancelled_without_running_the_tool",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 638
+        "assertion_sha256": "d1bc55c3c2c7ac16b7f41273b6361d1c65c42de2779bd6022d03471a7e14f1da",
+        "function": "t03_c03_cancel_while_awaiting_persists_cancelled_without_running_the_tool",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -616,26 +667,30 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 646,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t03_c03_failed_callback_keeps_the_ticket_and_the_same_run_resumes_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 665
+        "assertion_sha256": "fcc4bc42951e2a614862ac7db8a4de77da2b8b2a66b5368a95299a24c5e6d378",
+        "function": "t03_c03_failed_callback_keeps_the_ticket_and_the_same_run_resumes_once",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 668
+        "assertion_sha256": "3b1becfa1ac98b7f875a39a11958c8621d86b71959e7290d2f3ed6658bf77170",
+        "function": "t03_c03_failed_callback_keeps_the_ticket_and_the_same_run_resumes_once",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 671
+        "assertion_sha256": "bc65ddb0c0e04d7b737229e80533ac0f86d6e1bf8eaf031c017bd423d5282abf",
+        "function": "t03_c03_failed_callback_keeps_the_ticket_and_the_same_run_resumes_once",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 672
+        "assertion_sha256": "fb647e1d5907e99a2d491f2100933db4c06d2f72204c84540385e08cbf41c93c",
+        "function": "t03_c03_failed_callback_keeps_the_ticket_and_the_same_run_resumes_once",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -670,26 +725,30 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 816,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t03_c03_commit_n_failure_is_an_error_and_never_a_natural_end"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 819
+        "assertion_sha256": "f3000f1f0ff6233e4672dc5306e6f70ee9470ce44b03c30b19e89be69a9f7b71",
+        "function": "t03_c03_commit_n_failure_is_an_error_and_never_a_natural_end",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 820
+        "assertion_sha256": "bf2e485652909d7f748e0260c3bf40ce946227a57fac0632a3542a78faa20079",
+        "function": "t03_c03_commit_n_failure_is_an_error_and_never_a_natural_end",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 824
+        "assertion_sha256": "4d6ac55467ffa1c4083d7aab1f3dec50a854bf15f62b4b07c02186ecdaaf889f",
+        "function": "t03_c03_commit_n_failure_is_an_error_and_never_a_natural_end",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 826
+        "assertion_sha256": "54bbf214946ca3cf8dc9141a407e6caef72798916b1a8dd105944335fe829718",
+        "function": "t03_c03_commit_n_failure_is_an_error_and_never_a_natural_end",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [
@@ -723,26 +782,30 @@
     "source_locations": [
       {
         "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 849,
-        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f"
+        "file_sha256": "f778bf7023a7e2f157941eedd25f906ac60da7f23491fe93b44d6f06f7be905f",
+        "function": "t03_c03_nc_is_err_only_accepts_a_mutant_that_still_invokes_the_model"
       }
     ],
     "assertion_locations": [
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 852
+        "assertion_sha256": "187aac858172c4a94c797971f9401157fa10c28e38d5a4514df49f8b6cb9bd4a",
+        "function": "t03_c03_nc_is_err_only_accepts_a_mutant_that_still_invokes_the_model",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 856
+        "assertion_sha256": "043b5a41db33ca85dd4b1875dc872d1e06f5904cd934bea1f23d4ec459a7d783",
+        "function": "t03_c03_nc_is_err_only_accepts_a_mutant_that_still_invokes_the_model",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 861
+        "assertion_sha256": "ced115644a85a968077bdad79805dc331ca99a9d15336b0ba25b110cb8d86a20",
+        "function": "t03_c03_nc_is_err_only_accepts_a_mutant_that_still_invokes_the_model",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       },
       {
-        "path": "examples/sdk-consumer/tests/acceptance.rs",
-        "line": 865
+        "assertion_sha256": "b7cac3d246094745c610214b048b74c32693d7ee6c55cf63466bdba5324cf80b",
+        "function": "t03_c03_nc_is_err_only_accepts_a_mutant_that_still_invokes_the_model",
+        "path": "examples/sdk-consumer/tests/acceptance.rs"
       }
     ],
     "execution_witnesses": [

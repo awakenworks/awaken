@@ -5,9 +5,9 @@
     "source_locations": [
       {
         "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 324,
         "file_sha256": "76165ad6adb720ad958d06c401ec654d58995533510ef62d29e97600eb322c23",
-        "relocated_from": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs:324"
+        "relocated_from": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs:324",
+        "function": "mcp_http_wire_distinguishes_certain_from_uncertain_tool_faults"
       }
     ],
     "execution_witnesses": [],
@@ -29,9 +29,9 @@
     "source_locations": [
       {
         "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 336,
         "file_sha256": "211cdf298fe13ebdced1efc6f25365ec8e6a8f4d9a9272d70bb2c99692e82ad1",
-        "relocated_from": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs:336"
+        "relocated_from": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs:336",
+        "function": "acp_executor_keeps_the_retryable_class_of_the_injected_overloaded_upstream"
       }
     ],
     "execution_witnesses": [],
@@ -53,9 +53,9 @@
     "source_locations": [
       {
         "path": "crates/platform/execution/awaken-run-executor-acp/src/tests/failure_projection.rs",
-        "line": 109,
         "file_sha256": "95eb49cf1020b0d33a375455c96de5cb9c0948ff176fe08972ae980fb517e052",
-        "relocated_from": "crates/server/awaken-run-executor-acp/src/tests/failure_projection.rs:109"
+        "relocated_from": "crates/server/awaken-run-executor-acp/src/tests/failure_projection.rs:109",
+        "function": "acp_projection_keeps_the_native_authority_uncertainty_and_retry_hint"
       }
     ],
     "execution_witnesses": [],
@@ -77,9 +77,9 @@
     "source_locations": [
       {
         "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
-        "line": 262,
         "file_sha256": "60a086c77df11c9de933b5c1a784a87b115c5923cd9dbbbec136523d159ac8b8",
-        "relocated_from": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs:262"
+        "relocated_from": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs:262",
+        "function": "hand_relay_keeps_the_retry_safe_classification_of_an_undispatched_fault"
       }
     ],
     "execution_witnesses": [],
@@ -100,26 +100,34 @@
     "source_locations": [
       {
         "path": "scripts/ci/nextest_execution.py",
-        "line": 398,
-        "file_sha256": "efe56c8e75f3d08fc00d4484716597e0187f28cea51fc802e37f10bd8a5ce010"
+        "file_sha256": "efe56c8e75f3d08fc00d4484716597e0187f28cea51fc802e37f10bd8a5ce010",
+        "function": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept"
       }
     ],
     "assertion_locations": [
       {
-        "path": "scripts/ci/nextest_execution.py",
-        "line": 399
+        "assertion_sha256": "8a4a81584698965ba280bbf0b7bbafca938cb0e2b0b237fddaa5cb3f621c5603",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
+        "path": "scripts/ci/nextest_execution.py"
       },
       {
-        "path": "scripts/ci/nextest_execution.py",
-        "line": 401
+        "assertion_sha256": "2dd40806af5c835e9607f048b0d9ea4cb689c4dc343da5f72fe813572cace031",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
+        "path": "scripts/ci/nextest_execution.py"
       },
       {
-        "path": "scripts/ci/nextest_execution.py",
-        "line": 402
+        "assertion_sha256": "7833a7ec1aa7df096d5f7cacb369a66557e428a0acc658a9f22b374a34dc1d88",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
+        "path": "scripts/ci/nextest_execution.py"
       },
       {
-        "path": "scripts/ci/nextest_execution.py",
-        "line": 403
+        "assertion_sha256": "b9a74f37cee0b7f493784cad06047c89f114b086a32519bbba59e918d9e04700",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
+        "path": "scripts/ci/nextest_execution.py"
       }
     ],
     "execution_witnesses": [
@@ -153,26 +161,34 @@
     "source_locations": [
       {
         "path": "scripts/ci/nextest_execution.py",
-        "line": 398,
-        "file_sha256": "efe56c8e75f3d08fc00d4484716597e0187f28cea51fc802e37f10bd8a5ce010"
+        "file_sha256": "efe56c8e75f3d08fc00d4484716597e0187f28cea51fc802e37f10bd8a5ce010",
+        "function": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept"
       }
     ],
     "assertion_locations": [
       {
-        "path": "scripts/ci/nextest_execution.py",
-        "line": 399
+        "assertion_sha256": "8a4a81584698965ba280bbf0b7bbafca938cb0e2b0b237fddaa5cb3f621c5603",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
+        "path": "scripts/ci/nextest_execution.py"
       },
       {
-        "path": "scripts/ci/nextest_execution.py",
-        "line": 401
+        "assertion_sha256": "2dd40806af5c835e9607f048b0d9ea4cb689c4dc343da5f72fe813572cace031",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
+        "path": "scripts/ci/nextest_execution.py"
       },
       {
-        "path": "scripts/ci/nextest_execution.py",
-        "line": 402
+        "assertion_sha256": "7833a7ec1aa7df096d5f7cacb369a66557e428a0acc658a9f22b374a34dc1d88",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
+        "path": "scripts/ci/nextest_execution.py"
       },
       {
-        "path": "scripts/ci/nextest_execution.py",
-        "line": 403
+        "assertion_sha256": "b9a74f37cee0b7f493784cad06047c89f114b086a32519bbba59e918d9e04700",
+        "context_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "function": "QualifyTests.test_a_source_change_during_the_run_is_rejected_and_nextest_status_is_kept",
+        "path": "scripts/ci/nextest_execution.py"
       }
     ],
     "execution_witnesses": [

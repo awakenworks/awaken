@@ -4,9 +4,9 @@
     "source_locations": [
       {
         "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
-        "line": 313,
         "file_sha256": "237ef0cca83e41c1a685489662e1a6fbb0b9ab1fa7aeba5474cd5c58cc9f8c12",
-        "relocated_from": "crates/bin/awaken-worker/src/tests/restore_capability.rs:313"
+        "relocated_from": "crates/bin/awaken-worker/src/tests/restore_capability.rs:313",
+        "function": "restore_enabled_worker_with_unsupported_restoration_is_refused_at_construction"
       }
     ],
     "execution_witnesses": [
@@ -36,16 +36,19 @@
     "id": "B146",
     "assertion_locations": [
       {
-        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
-        "line": 324
+        "assertion_sha256": "f2a382cfc4e202e90b35739a3ed3bec59de356b77e4ad1c8511649373f2fce6a",
+        "function": "restore_enabled_worker_with_unsupported_restoration_is_refused_at_construction",
+        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs"
       },
       {
-        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
-        "line": 334
+        "assertion_sha256": "1d37212bc1cb2885524bb47001f6cd88617731ae4afa31d896e73a692864dd86",
+        "function": "restore_enabled_worker_with_unsupported_restoration_is_refused_at_construction",
+        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs"
       },
       {
-        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs",
-        "line": 335
+        "assertion_sha256": "6a83ef711a0930e4a674e246ba71e25b32dcf8d298e4944b249201c355b7ca6f",
+        "function": "restore_enabled_worker_with_unsupported_restoration_is_refused_at_construction",
+        "path": "crates/apps/awaken-worker/src/tests/restore_capability.rs"
       }
     ]
   },
@@ -54,23 +57,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 42,
         "file_sha256": "bcba856be485cafff578214713ec64ac2fc781a2ec2aa11b933c4f0bbc298837",
-        "relocated_from": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs:42"
+        "relocated_from": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs:42",
+        "function": "foreign_instance_with_differing_identity_is_refused_and_logical_id_check_is_insufficient"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 62
+        "assertion_sha256": "f6c006293a2e4fe944a8628e868f810ce0c1d42c8dd649502680859dbd618d24",
+        "function": "foreign_instance_with_differing_identity_is_refused_and_logical_id_check_is_insufficient",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 63
+        "assertion_sha256": "bf783060d0bc78b0b06113639b642dd6426d3c7bbf7c01b75613444181a02132",
+        "function": "foreign_instance_with_differing_identity_is_refused_and_logical_id_check_is_insufficient",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 69
+        "assertion_sha256": "744f0f47a3e02325185d6c3e831ff1ba4d4f43d2e0f64b6332c402b480ea5392",
+        "function": "foreign_instance_with_differing_identity_is_refused_and_logical_id_check_is_insufficient",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs"
       }
     ],
     "execution_witnesses": [
@@ -104,9 +110,9 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 118,
         "file_sha256": "f0f599c0302c0fa976dee6942eb1959b8a4be6c3ba4a6255ad405150da3eb462",
-        "relocated_from": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs:118"
+        "relocated_from": "crates/worker/awaken-session-environment/src/tests/foreign_instance.rs:118",
+        "function": "foreign_instance_with_equal_handle_cannot_rebind_another_providers_environment"
       }
     ],
     "execution_witnesses": [
@@ -136,16 +142,19 @@
     "id": "B148",
     "assertion_locations": [
       {
-        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 134
+        "assertion_sha256": "29c1423e2321d172751db1f50b9a961322d77762d56d732776caf4d321e07791",
+        "function": "foreign_instance_with_equal_handle_cannot_rebind_another_providers_environment",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 139
+        "assertion_sha256": "f5d0018b5e9fb545ec483be8c43e4cb89997de3b1b8a6794416b473f64bb5fb4",
+        "function": "foreign_instance_with_equal_handle_cannot_rebind_another_providers_environment",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs"
       },
       {
-        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs",
-        "line": 156
+        "assertion_sha256": "411b6dc7ac23cdf2f5d1eec7a87232ae3f23300e0593d8560cb04f3c9f3c3330",
+        "function": "foreign_instance_with_equal_handle_cannot_rebind_another_providers_environment",
+        "path": "crates/platform/environment/awaken-session-environment/src/tests/foreign_instance.rs"
       }
     ]
   },
@@ -154,23 +163,26 @@
     "source_locations": [
       {
         "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 227,
         "file_sha256": "9b59a782188a03b20ff91ec53a3dc6a9fda9c2dac4dbddc35d3d77fb76d2f809",
-        "relocated_from": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs:227"
+        "relocated_from": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs:227",
+        "function": "degraded_registration_health_is_observable_secret_free_and_leaks_are_detected"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 230
+        "assertion_sha256": "b639f194c063725f43d2c2515f3e0498048ec825db72ff685117ff08ef157acc",
+        "function": "degraded_registration_health_is_observable_secret_free_and_leaks_are_detected",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 231
+        "assertion_sha256": "af4a23ba2b79c56288ebb2dae464d3f6eba20112448f76d26b35caf6bab02f25",
+        "function": "degraded_registration_health_is_observable_secret_free_and_leaks_are_detected",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 232
+        "assertion_sha256": "88645c4abc29ed50bf532571225272229c7afb781c0ce0fdfdc3170d95df5524",
+        "function": "degraded_registration_health_is_observable_secret_free_and_leaks_are_detected",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs"
       }
     ],
     "execution_witnesses": [
@@ -204,9 +216,9 @@
     "source_locations": [
       {
         "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 287,
         "file_sha256": "39d6a6f6ec58704f4376d32a5010f1b33c511ade383a1e6695fc915cde4e9e55",
-        "relocated_from": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs:287"
+        "relocated_from": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs:287",
+        "function": "degraded_registration_diagnostics_never_contain_the_secret_canary"
       }
     ],
     "execution_witnesses": [
@@ -236,12 +248,14 @@
     "id": "B150",
     "assertion_locations": [
       {
-        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 289
+        "assertion_sha256": "806498bdd1c378067beb4ffbe48ee2dc082480e70ff027c29202720cb668c1f7",
+        "function": "degraded_registration_diagnostics_never_contain_the_secret_canary",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 290
+        "assertion_sha256": "5c36dff8dde01cdf52731687e00b0fc4058be8f87acb4e00b3329d89a28d4ed2",
+        "function": "degraded_registration_diagnostics_never_contain_the_secret_canary",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs"
       }
     ]
   },
@@ -250,9 +264,9 @@
     "source_locations": [
       {
         "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 294,
         "file_sha256": "39d6a6f6ec58704f4376d32a5010f1b33c511ade383a1e6695fc915cde4e9e55",
-        "relocated_from": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs:294"
+        "relocated_from": "crates/control/awaken-control/src/registration_supervisor/diagnostics_tests.rs:294",
+        "function": "degraded_registration_diagnostics_carry_stable_code_identity_and_recovery"
       }
     ],
     "execution_witnesses": [
@@ -282,16 +296,19 @@
     "id": "B151",
     "assertion_locations": [
       {
-        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 296
+        "assertion_sha256": "806498bdd1c378067beb4ffbe48ee2dc082480e70ff027c29202720cb668c1f7",
+        "function": "degraded_registration_diagnostics_carry_stable_code_identity_and_recovery",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 297
+        "assertion_sha256": "fed2c32cc6b89d0aafc05d3cd62487d9078d91318d8f17a9f10ea6ada97cd376",
+        "function": "degraded_registration_diagnostics_carry_stable_code_identity_and_recovery",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs"
       },
       {
-        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs",
-        "line": 302
+        "assertion_sha256": "667ec9eefbfe5f16c1d904fea7d82ff8f96b1f813cea894522e90d1890d1a433",
+        "function": "degraded_registration_diagnostics_carry_stable_code_identity_and_recovery",
+        "path": "crates/apps/awaken-control/src/registration_supervisor/diagnostics_tests.rs"
       }
     ]
   },
@@ -300,23 +317,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 80,
         "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
-        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:80"
+        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:80",
+        "function": "sqlite_independent_file_clients_have_one_cas_winner"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 81
+        "assertion_sha256": "31e525c563a9ac264950407203d999401785eb736f292f42dee056a68805c71e",
+        "function": "sqlite_independent_file_clients_have_one_cas_winner",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 83
+        "assertion_sha256": "965e7d6a8a39a49b2da14ced35cd62265a3e621d521b00478d7c66ababaa6347",
+        "function": "sqlite_independent_file_clients_have_one_cas_winner",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 87
+        "assertion_sha256": "f6f098c92a8b714d80a3e720d7975f27269f20975dcc1e2e5ba3423064a71cae",
+        "function": "sqlite_independent_file_clients_have_one_cas_winner",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       }
     ],
     "execution_witnesses": [
@@ -352,23 +372,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 136,
         "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
-        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:136"
+        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:136",
+        "function": "sqlite_shared_handle_serialises_before_the_database"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 140
+        "assertion_sha256": "47d169887491068b87df73f765e6f560a511dcb5b701d37db4a684b1f0691d1a",
+        "function": "sqlite_shared_handle_serialises_before_the_database",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 145
+        "assertion_sha256": "dd528c8e76200e9a7848dc99a171526663812ea19d63af00c27f70fed5b4c3c9",
+        "function": "sqlite_shared_handle_serialises_before_the_database",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 153
+        "assertion_sha256": "09fbb926eec92771b4039337a3905baaa50e092038d3763dadea9768b48939c6",
+        "function": "sqlite_shared_handle_serialises_before_the_database",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       }
     ],
     "execution_witnesses": [
@@ -404,23 +427,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 168,
         "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
-        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:168"
+        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:168",
+        "function": "volatile_session_store_has_no_independent_clients"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 175
+        "assertion_sha256": "26e4b51db7d956c11dccaf1bd7147aa78750dc87e250597f9580d45174a1530e",
+        "function": "volatile_session_store_has_no_independent_clients",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 178
+        "assertion_sha256": "b6dfd989b15c2654405adb589e251f8454bb84d58f4f10bf297c3009f8c5542f",
+        "function": "volatile_session_store_has_no_independent_clients",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 181
+        "assertion_sha256": "5288c12baf592800ce637b04e60d738f8ee303b8bc434449443b9088d90d0ac2",
+        "function": "volatile_session_store_has_no_independent_clients",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       }
     ],
     "execution_witnesses": [
@@ -456,19 +482,21 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 374,
         "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
-        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:367"
+        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:367",
+        "function": "postgres_independent_pools_have_one_cas_winner"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 381
+        "assertion_sha256": "fb4e41f3b3a7ca0ab088bfa45700356680cdf131058d780770fc50bbcb580f2d",
+        "function": "postgres_independent_pools_have_one_cas_winner",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 385
+        "assertion_sha256": "83427244d786aea89fe9f9c248b7fa82501842f62d0b2ebaa877bb425cf0c696",
+        "function": "postgres_independent_pools_have_one_cas_winner",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       }
     ],
     "execution_witnesses": [
@@ -504,19 +532,21 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 396,
         "file_sha256": "8c71758e21bbd7b6f21c8567dbe39bab3bb5cc668f72a6ec5dc3b6d5c8427729",
-        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:389"
+        "relocated_from": "crates/stores/awaken-session-store/tests/independent_clients.rs:389",
+        "function": "postgres_test_lock_serialisation_hides_database_contention"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 407
+        "assertion_sha256": "81c7ff3d72e0dc20b4ad61497faf7e8bb8b24913373ff38c0b6678eda769cabb",
+        "function": "postgres_test_lock_serialisation_hides_database_contention",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs",
-        "line": 411
+        "assertion_sha256": "83427244d786aea89fe9f9c248b7fa82501842f62d0b2ebaa877bb425cf0c696",
+        "function": "postgres_test_lock_serialisation_hides_database_contention",
+        "path": "crates/platform/session/awaken-session-store/tests/independent_clients.rs"
       }
     ],
     "execution_witnesses": [
@@ -552,15 +582,16 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 280,
         "file_sha256": "a25008dfc7aa12faa5cc6d44f24e919cf5ff8dc07e867f07285a87ca849fd10b",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs:280"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs:280",
+        "function": "sqlite_independent_clients_consume_one_tool_ticket_at_most_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 282
+        "assertion_sha256": "61c92b14ed1b5c7629bb0a0bbecaef5adf6bf545f55741f476d43b863b672689",
+        "function": "sqlite_independent_clients_consume_one_tool_ticket_at_most_once",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs"
       }
     ],
     "execution_witnesses": [
@@ -595,23 +626,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 286,
         "file_sha256": "a25008dfc7aa12faa5cc6d44f24e919cf5ff8dc07e867f07285a87ca849fd10b",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs:286"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs:286",
+        "function": "postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 293
+        "assertion_sha256": "bd89e0717606ba428dd03a1c8591607fc38e9117221838118656351fd5c93c70",
+        "function": "postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 298
+        "assertion_sha256": "19f1cc7c76ad9eb4dde2b9239cd8082a79840506249425a79d99b60c3997a507",
+        "function": "postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs",
-        "line": 302
+        "assertion_sha256": "c45d2baeaf90243c25482a1f898e81572a758a0d96f75a876070f9d95676eeff",
+        "function": "postgres_independent_clients_consume_one_tool_ticket_identically_to_sqlite",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/concurrent_consumption.rs"
       }
     ],
     "execution_witnesses": [
@@ -647,23 +681,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
-        "line": 160,
         "file_sha256": "59adaa1fb04d4f1299ee9ac7233b5ee850b7cb60cd118e5f0021350430f43fa6",
-        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs:160"
+        "relocated_from": "crates/server/awaken-session-application/src/tests/event_batches/pause_transaction.rs:160",
+        "function": "budget_paused_session_retains_ordinary_batches_without_execution"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
-        "line": 168
+        "assertion_sha256": "e3ca3f9789b3ae2c4608498e33e4cefbb266d2eeb05f47b6c693de426e74ef71",
+        "function": "budget_paused_session_retains_ordinary_batches_without_execution",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
-        "line": 175
+        "assertion_sha256": "e426321f6d01a54efae482048d70710e048bfc87e673b5e7434294091f76af14",
+        "function": "budget_paused_session_retains_ordinary_batches_without_execution",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs",
-        "line": 183
+        "assertion_sha256": "c850dfdc2996536506b23cd34ea8216685052fc8ac2046709c8779fd9e255ccf",
+        "function": "budget_paused_session_retains_ordinary_batches_without_execution",
+        "path": "crates/platform/session/awaken-session-application/src/tests/event_batches/pause_transaction.rs"
       }
     ],
     "execution_witnesses": [
@@ -697,23 +734,26 @@
     "source_locations": [
       {
         "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 598,
         "file_sha256": "0da9d07ed53363251ee5a121e1f174913093021276403fb15629a88e5bea7be5",
-        "relocated_from": "crates/stores/awaken-session-store/tests/pause_transaction.rs:596"
+        "relocated_from": "crates/stores/awaken-session-store/tests/pause_transaction.rs:596",
+        "function": "sqlite_mid_write_failure_rolls_back_the_whole_batch_transaction"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 599
+        "assertion_sha256": "52749bb081d5acf2a2b49bd7326d73300dd745caa4c60fb0b2b63784e9bd6550",
+        "function": "sqlite_mid_write_failure_rolls_back_the_whole_batch_transaction",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 604
+        "assertion_sha256": "da85a0fc4de5de5e9549834369814427b014f055325383885705336d8a07f4da",
+        "function": "sqlite_mid_write_failure_rolls_back_the_whole_batch_transaction",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs"
       },
       {
-        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs",
-        "line": 613
+        "assertion_sha256": "1506c898399c0944dfe78e380e0c592f8d354a85dfa0833b2303231afef1b2af",
+        "function": "sqlite_mid_write_failure_rolls_back_the_whole_batch_transaction",
+        "path": "crates/platform/session/awaken-session-store/tests/pause_transaction.rs"
       }
     ],
     "execution_witnesses": [

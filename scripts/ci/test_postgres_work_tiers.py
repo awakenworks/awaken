@@ -140,11 +140,14 @@ class WorkCalibrationAdmissionTests(unittest.TestCase):
             bindings.append({'id': binding_id, 'name': name, 'relation': 'supports_subset_only',
                 'execution_witnesses': [], 'review': 'Supported credential and generation boundary',
                 'limitation': 'No physical incarnation claim',
-                'source_locations': [{'path': WORK_SOURCE, 'line': len(lines) - 1}],
+                'source_locations': [{'path': WORK_SOURCE, 'function': name}],
                 'covers': {'T09-C02': {'oracles': oracles, 'negative_control': False}}})
         self.path.write_bytes(('\n'.join(lines) + '\n').encode())
         for binding in bindings:
             binding['source_locations'][0]['file_sha256'] = hashlib.sha256(self.path.read_bytes()).hexdigest()
+            from check_session_acceptance import _rust_test_identity
+            binding['source_locations'][0]['function_sha256'] = _rust_test_identity(
+                self.path.read_text(encoding='utf-8'), binding['name'])[0]
         self.old_source = self.path.parent.parent / 'lease_acceptance.rs'
         self.old_source.write_bytes(b'mod credential_generation;\n')
         case = {'id': 'T09-C02', 'evidence_state': 'current_subset', 'acceptance_state': 'pending',
@@ -212,25 +215,44 @@ class WorkCalibrationAdmissionTests(unittest.TestCase):
 
     def test_ignored_changed_or_relocated_test_is_refused_even_with_updated_hash(self):
         original = self.path.read_bytes()
-        for change in ('ignored', 'renamed', 'moved', 'body'):
+        for change in ('ignored', 'renamed', 'moved', 'body', 'signature'):
             data = copy.deepcopy(self.data)
             body = original
             if change == 'ignored':
                 body = body.replace(b'#[tokio::test(', b'#[ignore]\n#[tokio::test(', 1)
-                for binding in data['bindings']:
-                    binding['source_locations'][0]['line'] += 1
             elif change == 'renamed':
                 body = body.replace(CALIBRATED[0][1].encode(), b'another_test', 1)
             elif change == 'moved':
                 data['bindings'][0]['source_locations'][0]['path'] = 'other.rs'
+            elif change == 'signature':
+                body = body.replace(b'async fn ', b'fn ', 1)
             else:
-                body += b'// changed source\n'
+                body = body.replace(b'assert!(true)', b'assert!(false)', 1)
             self.path.write_bytes(body)
             if change != 'body':
                 for binding in data['bindings']:
                     binding['source_locations'][0]['file_sha256'] = hashlib.sha256(body).hexdigest()
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.verify(data)
+        self.path.write_bytes(original)
+
+    def test_source_motion_comments_and_formatting_preserve_the_calibrated_function(self):
+        original = self.path.read_bytes()
+        for body in (b'// inserted before the tests\n\n' + original,
+                     original + b'// unrelated source after the tests\n',
+                     original.replace(b'assert!(true)', b'assert!( /* format only */ true )')):
+            with self.subTest(body=body[:32]):
+                self.path.write_bytes(body)
+                self.assertEqual(self.verify()[0]['historical_evidence'], 'E17')
+        self.path.write_bytes(original)
+
+    def test_ignore_attributes_remain_rejected_across_comments_and_attribute_layout(self):
+        original = self.path.read_bytes()
+        for attribute in (b'#[ignore]', b'#[cfg_attr(test, ignore)]'):
+            body = attribute + b'\n' + b'// unrelated\n' * 12 + original
+            self.path.write_bytes(body)
+            with self.subTest(attribute=attribute), self.assertRaises(ValueError):
+                self.verify()
         self.path.write_bytes(original)
 
     def test_windows_crlf_checkout_preserves_the_canonical_source_binding(self):

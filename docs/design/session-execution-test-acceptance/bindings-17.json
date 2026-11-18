@@ -5,27 +5,31 @@
     "source_locations": [
       {
         "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 324,
         "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b",
-        "relocated_from": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs:326"
+        "relocated_from": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs:326",
+        "function": "t32_c01_owner_scoped_stream_close_detaches_and_explicit_stop_is_separate"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 329
+        "assertion_sha256": "b2c220ed16f38f8c8623e7118b8dad42082668fe51820ac007f9951cca82bb3d",
+        "function": "t32_c01_owner_scoped_stream_close_detaches_and_explicit_stop_is_separate",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs"
       },
       {
-        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 334
+        "assertion_sha256": "6c4aebe54fdd103d6a0868907a27b81f3de0c43926ba7863842b90a02d9fd0ee",
+        "function": "t32_c01_owner_scoped_stream_close_detaches_and_explicit_stop_is_separate",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs"
       },
       {
-        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 335
+        "assertion_sha256": "244c6a77568b8227a1aff28b096984a30e3eb9e521284072fe1668bbd92dcefb",
+        "function": "t32_c01_owner_scoped_stream_close_detaches_and_explicit_stop_is_separate",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs"
       },
       {
-        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 340
+        "assertion_sha256": "b3b327f3c164a5f540266b2adb9789d051f58abe8539623d29ccb8ef73ed2e69",
+        "function": "t32_c01_owner_scoped_stream_close_detaches_and_explicit_stop_is_separate",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs"
       }
     ],
     "execution_witnesses": [
@@ -60,27 +64,31 @@
     "source_locations": [
       {
         "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 365,
         "file_sha256": "9c4a44d78ce1567a3759856e33278c2c7a9d87a4640c3c752cd9b6a6e3e7f06b",
-        "relocated_from": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs:367"
+        "relocated_from": "crates/server/awaken-protocol-ai-sdk/tests/disconnect_policy.rs:367",
+        "function": "t32_c01_negative_control_socket_close_as_terminal_is_detected"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 372
+        "assertion_sha256": "8f823c04e82d78abfda3ad8d4e27f6eb85ae14e1e30816b8aca06671db559d2b",
+        "function": "t32_c01_negative_control_socket_close_as_terminal_is_detected",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs"
       },
       {
-        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 377
+        "assertion_sha256": "b71c58ff39a22b26bfa888e2f3ab9748ea2fe3a921e5307cdaf74f2ad5940a58",
+        "function": "t32_c01_negative_control_socket_close_as_terminal_is_detected",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs"
       },
       {
-        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 382
+        "assertion_sha256": "7d120858d9a6f403914fdff00e0318deb15a568a3becf7019d9c9f17205c6c8f",
+        "function": "t32_c01_negative_control_socket_close_as_terminal_is_detected",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs"
       },
       {
-        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs",
-        "line": 388
+        "assertion_sha256": "458dbb87605e36df3efb600b9b556732ad5c9fa4cf78405dd1fff1714149f99e",
+        "function": "t32_c01_negative_control_socket_close_as_terminal_is_detected",
+        "path": "crates/sdk/protocols/awaken-protocol-ai-sdk/tests/disconnect_policy.rs"
       }
     ],
     "execution_witnesses": [
@@ -114,19 +122,21 @@
     "source_locations": [
       {
         "path": "crates/sdk/protocols/awaken-protocol-ag-ui/tests/stop_receipt.rs",
-        "line": 119,
         "file_sha256": "dc73013b422632866a32a7095ceffe0866678b01232eeedcf5507b6e486ced54",
-        "relocated_from": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs:120"
+        "relocated_from": "crates/server/awaken-protocol-ag-ui/tests/stop_receipt.rs:120",
+        "function": "explicit_stop_reaches_the_runs_interrupt_port_exactly_once"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/sdk/protocols/awaken-protocol-ag-ui/tests/stop_receipt.rs",
-        "line": 122
+        "assertion_sha256": "ceba2f777a92bad0dfb109f4705500d1a3ade17280ddbbf11e1f5dff077edb17",
+        "function": "explicit_stop_reaches_the_runs_interrupt_port_exactly_once",
+        "path": "crates/sdk/protocols/awaken-protocol-ag-ui/tests/stop_receipt.rs"
       },
       {
-        "path": "crates/sdk/protocols/awaken-protocol-ag-ui/tests/stop_receipt.rs",
-        "line": 123
+        "assertion_sha256": "16cfc58a16f1a06ec6701b95e920e4a41eeb0678659eee9e61d87e3ba06379c1",
+        "function": "explicit_stop_reaches_the_runs_interrupt_port_exactly_once",
+        "path": "crates/sdk/protocols/awaken-protocol-ag-ui/tests/stop_receipt.rs"
       }
     ],
     "execution_witnesses": [
@@ -160,30 +170,35 @@
     "source_locations": [
       {
         "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
-        "line": 256,
-        "file_sha256": "65311eb425834ed88e475c36b80470e88795f18c3c1ac3afc189f1a17a78f749"
+        "file_sha256": "65311eb425834ed88e475c36b80470e88795f18c3c1ac3afc189f1a17a78f749",
+        "statement_sha256": "8c1955faa4232d6c4f051a55237448629713f80b8c73e0eaaa734f9ae7fbc4c0"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
-        "line": 204
+        "assertion_sha256": "f5f359de475b4dec2e9f930b59c7102b67328f9850f946a5b4c583c91fd92ce0",
+        "function": "main",
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs"
       },
       {
-        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
-        "line": 217
+        "assertion_sha256": "a5a387c9298b351d179fd0b7dbc4de68baf6df8f53489fe07a9f5289aea0cc16",
+        "function": "main",
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs"
       },
       {
-        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
-        "line": 245
+        "assertion_sha256": "62411c9e8e5963acdceb5991b82b6183a72605061b97da1de4b814c582aa021d",
+        "function": "main",
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs"
       },
       {
-        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
-        "line": 249
+        "assertion_sha256": "439fc9546e8696f0d46005c56dfc9dcd4d168428e31e76c69b0661a93f6e31e0",
+        "function": "main",
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs"
       },
       {
-        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs",
-        "line": 250
+        "assertion_sha256": "e7eec2b770fe17f6bb98157ab58b04822c166c3417737be8cc5861daa9efc796",
+        "function": "main",
+        "path": "e2e/managed_stream_disconnect_policy_e2e.mjs"
       }
     ],
     "execution_witnesses": [
@@ -219,34 +234,40 @@
     "source_locations": [
       {
         "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 346,
-        "file_sha256": "2a6b5a59eb18eda01ec990e6e42fa994cfd1fbb68568259db5f34cc5f5e884ba"
+        "file_sha256": "2a6b5a59eb18eda01ec990e6e42fa994cfd1fbb68568259db5f34cc5f5e884ba",
+        "statement_sha256": "b89622ab1ad2f19c5d09c7d7483f9ec85fc09c199040ed30b75691ad1bfe32d0"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 281
+        "assertion_sha256": "036e2c3e0fd3ba23e77316b664be8f20b63e3be82053171b15bf4fc83505d3c0",
+        "function": "main",
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs"
       },
       {
-        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 289
+        "assertion_sha256": "3af4742836c3186332bdb630f2e7e15c52ee741e6fe1b1dfd8c1290007a5b848",
+        "function": "main",
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs"
       },
       {
-        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 290
+        "assertion_sha256": "22ce35f95116697db8ae77ec76bf058386963b19eb0115e5fc67b89af676b384",
+        "function": "main",
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs"
       },
       {
-        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 301
+        "assertion_sha256": "db61fa1ec7e5370fec392b1800cf652bdba6686e1dd9ac21bcead3ff1aa81281",
+        "function": "main",
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs"
       },
       {
-        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 302
+        "assertion_sha256": "02dd3ac7056033daf727897623b8a306a821cb12147b6ddcefe73d3f4c1161fd",
+        "function": "main",
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs"
       },
       {
-        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 306
+        "assertion_sha256": "f1a50a8e8d6dd655189354612cacfc8a1bd54d2dd651aa423b09a683ea139de1",
+        "function": "main",
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs"
       }
     ],
     "execution_witnesses": [
@@ -281,22 +302,25 @@
     "source_locations": [
       {
         "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 341,
-        "file_sha256": "2a6b5a59eb18eda01ec990e6e42fa994cfd1fbb68568259db5f34cc5f5e884ba"
+        "file_sha256": "2a6b5a59eb18eda01ec990e6e42fa994cfd1fbb68568259db5f34cc5f5e884ba",
+        "statement_sha256": "1c80da30c0e1f7301ba33697a4467aa185a9eb8e53e980bdce950fe02bd84851"
       }
     ],
     "assertion_locations": [
       {
-        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 333
+        "assertion_sha256": "b6b10e029df45a379aebeae2495455a13ea7d4deaf6a9f9206aa518f5eab437d",
+        "function": "main",
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs"
       },
       {
-        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 338
+        "assertion_sha256": "bf4506f2f0106a1aea2361267e41a30790bc3c6aba7e770c2e15a9fc3b93e6b0",
+        "function": "main",
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs"
       },
       {
-        "path": "e2e/managed_history_pagination_interleave_e2e.mjs",
-        "line": 340
+        "assertion_sha256": "74322938661f155a06de4eaf45345028a281562bc582fbd7eefaf8039c8c7dbd",
+        "function": "main",
+        "path": "e2e/managed_history_pagination_interleave_e2e.mjs"
       }
     ],
     "execution_witnesses": [
@@ -331,27 +355,31 @@
     "source_locations": [
       {
         "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
-        "line": 238,
         "file_sha256": "cdac0aa7305b292d6dbae74a465ae13c52417176445b763b568ded942ec946f1",
-        "relocated_from": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs:238"
+        "relocated_from": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs:238",
+        "function": "local_runtime_commits_each_injected_upstream_fault_with_its_original_classification"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
-        "line": 241
+        "assertion_sha256": "fa862e13f07d680fa52420065f9b295cd4fb3d7e4dbe537eeb1f117859ec6be5",
+        "function": "local_runtime_commits_each_injected_upstream_fault_with_its_original_classification",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs"
       },
       {
-        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
-        "line": 246
+        "assertion_sha256": "77720ef1b9b2946e613d9c3f1d1ea7f29cf1b387cc3d80dc2aebe8862d3f5a47",
+        "function": "local_runtime_commits_each_injected_upstream_fault_with_its_original_classification",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs"
       },
       {
-        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
-        "line": 247
+        "assertion_sha256": "e69152065f0a2fc97e483111da458b85bcb42a308d44ead4c1b5f9fa84576174",
+        "function": "local_runtime_commits_each_injected_upstream_fault_with_its_original_classification",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs"
       },
       {
-        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
-        "line": 249
+        "assertion_sha256": "652fa65ca1af63c7d3392e37150c384e5bca21cf750e05224222d6d743120be2",
+        "function": "local_runtime_commits_each_injected_upstream_fault_with_its_original_classification",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs"
       }
     ],
     "execution_witnesses": [
@@ -386,27 +414,31 @@
     "source_locations": [
       {
         "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
-        "line": 289,
         "file_sha256": "cdac0aa7305b292d6dbae74a465ae13c52417176445b763b568ded942ec946f1",
-        "relocated_from": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs:289"
+        "relocated_from": "crates/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs:289",
+        "function": "local_fault_checker_rejects_adapter_mutants_of_the_real_committed_terminal"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
-        "line": 297
+        "assertion_sha256": "6da09f9b6c3726e3924a90187550b4583aaa54ab70d2a55513941837ff6daac8",
+        "function": "local_fault_checker_rejects_adapter_mutants_of_the_real_committed_terminal",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs"
       },
       {
-        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
-        "line": 303
+        "assertion_sha256": "8d6c177d89a2a5ef4d357298cc85a4bc18eedfaed97d001638412e2a3d35c040",
+        "function": "local_fault_checker_rejects_adapter_mutants_of_the_real_committed_terminal",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs"
       },
       {
-        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
-        "line": 308
+        "assertion_sha256": "ab0d8327e5ae9854b6747b8cf284b660f3093135caceea2330a065f53ff8b893",
+        "function": "local_fault_checker_rejects_adapter_mutants_of_the_real_committed_terminal",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs"
       },
       {
-        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs",
-        "line": 319
+        "assertion_sha256": "c9a79d91de5d09c84902725c56a307df52b7f224d6bd21dd81c65c61b4dc7c3c",
+        "function": "local_fault_checker_rejects_adapter_mutants_of_the_real_committed_terminal",
+        "path": "crates/sdk/runtime/awaken-runtime/tests/cross_adapter_fault_local.rs"
       }
     ],
     "execution_witnesses": [
@@ -438,27 +470,31 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 481,
         "file_sha256": "633a8f54279be950feeb65da15c647613be306434f2a727785d64a70bfec820b",
-        "relocated_from": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs:480"
+        "relocated_from": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs:480",
+        "function": "http_worker_commit_keeps_the_injected_upstream_fault_authority_on_the_control_side"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 484
+        "assertion_sha256": "f13d314717fa84fb66743097ebf4ab1b5f5ddc80ed1186035465680a3ffbe7e8",
+        "function": "http_worker_commit_keeps_the_injected_upstream_fault_authority_on_the_control_side",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 488
+        "assertion_sha256": "9fc34554179fcbdc27a04933b3bf212f1e69ace38114a745ebadf2033783919a",
+        "function": "http_worker_commit_keeps_the_injected_upstream_fault_authority_on_the_control_side",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 497
+        "assertion_sha256": "77720ef1b9b2946e613d9c3f1d1ea7f29cf1b387cc3d80dc2aebe8862d3f5a47",
+        "function": "http_worker_commit_keeps_the_injected_upstream_fault_authority_on_the_control_side",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 498
+        "assertion_sha256": "8ec6431ef7c6c8683b9c91f463a2aff14bcdd41131098ffb0403f8a331534807",
+        "function": "http_worker_commit_keeps_the_injected_upstream_fault_authority_on_the_control_side",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs"
       }
     ],
     "execution_witnesses": [
@@ -493,23 +529,26 @@
     "source_locations": [
       {
         "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 513,
         "file_sha256": "633a8f54279be950feeb65da15c647613be306434f2a727785d64a70bfec820b",
-        "relocated_from": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs:512"
+        "relocated_from": "crates/server/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs:512",
+        "function": "http_worker_fault_checker_detects_a_transport_that_silently_reports_success"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 518
+        "assertion_sha256": "b894e696dbd287ceb62bc584729dc19c979482446a6f6370a7d861089c5daba6",
+        "function": "http_worker_fault_checker_detects_a_transport_that_silently_reports_success",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 527
+        "assertion_sha256": "04499061ae0bc9412010722c4eac18487e27104bfe1a68787b573c15b7c16f0e",
+        "function": "http_worker_fault_checker_detects_a_transport_that_silently_reports_success",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs"
       },
       {
-        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs",
-        "line": 538
+        "assertion_sha256": "c9a79d91de5d09c84902725c56a307df52b7f224d6bd21dd81c65c61b4dc7c3c",
+        "function": "http_worker_fault_checker_detects_a_transport_that_silently_reports_success",
+        "path": "crates/platform/dispatch/awaken-dispatch-http/tests/cross_adapter_fault_http_worker.rs"
       }
     ],
     "execution_witnesses": [
@@ -543,27 +582,31 @@
     "source_locations": [
       {
         "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 247,
         "file_sha256": "984234ce011e393028e751eb7988f0823a77ceec36f7a6d11ddb7025150a2171",
-        "relocated_from": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs:247"
+        "relocated_from": "crates/server/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs:247",
+        "function": "mcp_http_chain_never_reports_an_injected_tool_fault_as_success"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 253
+        "assertion_sha256": "77720ef1b9b2946e613d9c3f1d1ea7f29cf1b387cc3d80dc2aebe8862d3f5a47",
+        "function": "mcp_http_chain_never_reports_an_injected_tool_fault_as_success",
+        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs"
       },
       {
-        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 254
+        "assertion_sha256": "cb6b8c5c17c06ea7e2258d4ecab9f4eb8f89e16c9866f7fcc1edf594b6e22a90",
+        "function": "mcp_http_chain_never_reports_an_injected_tool_fault_as_success",
+        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs"
       },
       {
-        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 258
+        "assertion_sha256": "f562cb4b8ea2d5e3336ff34addf7dae7390d95ed16da731207dd5df5e7aca4e7",
+        "function": "mcp_http_chain_never_reports_an_injected_tool_fault_as_success",
+        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs"
       },
       {
-        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs",
-        "line": 265
+        "assertion_sha256": "0034f5a607f06d602d3cf40001f50b9996c6588c22a3f654fd3bb349b975032f",
+        "function": "mcp_http_chain_never_reports_an_injected_tool_fault_as_success",
+        "path": "crates/sdk/protocols/awaken-protocol-mcp/tests/cross_adapter_fault_mcp_http.rs"
       }
     ],
     "execution_witnesses": [
@@ -597,27 +640,31 @@
     "source_locations": [
       {
         "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 275,
         "file_sha256": "1be2c6f75607a822026880cd6de226ccf4e43a68027e9bd14361da23d482db9a",
-        "relocated_from": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs:275"
+        "relocated_from": "crates/server/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs:275",
+        "function": "acp_executor_never_reports_the_injected_upstream_fault_as_success"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 278
+        "assertion_sha256": "cbd7b4659da233dde1fdb8b84d0381957dae4f164e4f6c583ef781bf0df5f495",
+        "function": "acp_executor_never_reports_the_injected_upstream_fault_as_success",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs"
       },
       {
-        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 284
+        "assertion_sha256": "286eb9cd71b5bc69286b010e61119daa3ac9859627e752c2126c735a56b47fb1",
+        "function": "acp_executor_never_reports_the_injected_upstream_fault_as_success",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs"
       },
       {
-        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 286
+        "assertion_sha256": "03362031a6c1e1ca6c9c395f8a12e426a256fdf3a2610c7035cac4a25ca43393",
+        "function": "acp_executor_never_reports_the_injected_upstream_fault_as_success",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs"
       },
       {
-        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs",
-        "line": 288
+        "assertion_sha256": "aa14b1e48a6165ea76a282bb5f45a6088e052b31283f2adb0da9a37da729ecc7",
+        "function": "acp_executor_never_reports_the_injected_upstream_fault_as_success",
+        "path": "crates/platform/execution/awaken-run-executor-acp/tests/cross_adapter_fault_acp.rs"
       }
     ],
     "execution_witnesses": [
@@ -651,27 +698,27 @@
     "source_locations": [
       {
         "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
-        "line": 221,
         "file_sha256": "1674dcee914a63db664c52447f3596d7f36386776ace88dd96db0c783f6e70d0",
-        "relocated_from": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs:221"
+        "relocated_from": "crates/worker/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs:221",
+        "function": "hand_relay_never_reports_an_injected_tool_fault_as_success"
       }
     ],
     "assertion_locations": [
       {
+        "assertion_sha256": "77720ef1b9b2946e613d9c3f1d1ea7f29cf1b387cc3d80dc2aebe8862d3f5a47",
+        "function": "hand_relay_never_reports_an_injected_tool_fault_as_success",
         "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
-        "line": 225
+        "occurrences": 2
       },
       {
-        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
-        "line": 226
+        "assertion_sha256": "0651135819f28622e9cea0201f1af58cee34bc3b2804461718272ccd94c37efc",
+        "function": "hand_relay_never_reports_an_injected_tool_fault_as_success",
+        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs"
       },
       {
-        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
-        "line": 234
-      },
-      {
-        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs",
-        "line": 238
+        "assertion_sha256": "775edf903f687c552d1daa1c6254d2ee39f70fccc4e690e3c5655640bd11f641",
+        "function": "hand_relay_never_reports_an_injected_tool_fault_as_success",
+        "path": "crates/platform/sandbox/awaken-tool-relay/tests/cross_adapter_fault_hand_relay.rs"
       }
     ],
     "execution_witnesses": [
@@ -705,27 +752,31 @@
     "source_locations": [
       {
         "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs",
-        "line": 5,
         "file_sha256": "02484203793e34c70f18604ddd3c3f27b963dfdf53a6e82afba3c173ec881b67",
-        "relocated_from": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs:5"
+        "relocated_from": "crates/shared/awaken-fs-durability/src/native/lib_tests.rs:5",
+        "function": "windows_ntfs_identity_and_lock_refuse_contention_and_aliases"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs",
-        "line": 16
+        "assertion_sha256": "1d7e7f6c1e15750c5f3efd069de383343a9efe10ce805eefde9b1ebe40e0514e",
+        "function": "windows_ntfs_identity_and_lock_refuse_contention_and_aliases",
+        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs"
       },
       {
-        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs",
-        "line": 18
+        "assertion_sha256": "d0b86f75955d092952f83e662e9b1fc03eddd6f00ba066cd611a46a784a85fb2",
+        "function": "windows_ntfs_identity_and_lock_refuse_contention_and_aliases",
+        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs"
       },
       {
-        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs",
-        "line": 20
+        "assertion_sha256": "d7afc970f641ef5159bfed8f6bfa4cd3d3ca7fd8fb169844afb5bdbd9bbb45cf",
+        "function": "windows_ntfs_identity_and_lock_refuse_contention_and_aliases",
+        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs"
       },
       {
-        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs",
-        "line": 22
+        "assertion_sha256": "fb6f003f86999106f36bd1b43088ac247db9f1084405185719d5fd6aa89dc7fe",
+        "function": "windows_ntfs_identity_and_lock_refuse_contention_and_aliases",
+        "path": "crates/platform/storage/awaken-fs-durability/src/native/lib_tests.rs"
       }
     ],
     "execution_witnesses": [
@@ -759,27 +810,31 @@
     "source_locations": [
       {
         "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs",
-        "line": 9,
         "file_sha256": "36571e88ecbed1f25347022be1f1c750866f8d13588bbafbe16e21f5e52c5e0e",
-        "relocated_from": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs:9"
+        "relocated_from": "crates/shared/awaken-fs-durability/tests/windows_long_paths.rs:9",
+        "function": "windows_long_sibling_publication_keeps_exact_identity_and_noreplace"
       }
     ],
     "assertion_locations": [
       {
-        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs",
-        "line": 46
+        "assertion_sha256": "998c91e39db5525a82e6010cd9d5ce657abfd5b6c0967ee12091b3da58d1366b",
+        "function": "windows_long_sibling_publication_keeps_exact_identity_and_noreplace",
+        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs"
       },
       {
-        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs",
-        "line": 47
+        "assertion_sha256": "4321a826f3498dbaa6367ea50ac2188afb800ef2b24c2c05f91a6186a16fa894",
+        "function": "windows_long_sibling_publication_keeps_exact_identity_and_noreplace",
+        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs"
       },
       {
-        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs",
-        "line": 51
+        "assertion_sha256": "1f37c0376768041e6677991085c5883eadc6a4813fb6c3d56ba77672234d6ac9",
+        "function": "windows_long_sibling_publication_keeps_exact_identity_and_noreplace",
+        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs"
       },
       {
-        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs",
-        "line": 55
+        "assertion_sha256": "5134d350075d733ec77be99c4b64def76ffb470541b6f7fccc9e650d01e0a82f",
+        "function": "windows_long_sibling_publication_keeps_exact_identity_and_noreplace",
+        "path": "crates/platform/storage/awaken-fs-durability/tests/windows_long_paths.rs"
       }
     ],
     "execution_witnesses": [
