@@ -452,6 +452,22 @@ impl Default for ContentCaptureSettings {
     }
 }
 
+/// Broker and private subject for cross-Coordinator live previews.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PreviewRelayConfig {
+    pub url: String,
+    pub subject: String,
+}
+
+impl std::fmt::Debug for PreviewRelayConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreviewRelayConfig")
+            .field("subject", &self.subject)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The deployment axes a single binary configures from — parsed once, injected into
 /// the runtime rather than re-read from the environment at each call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -471,6 +487,8 @@ pub struct DeploymentConfig {
     pub wake_channel: String,
     /// The NATS broker URL for `Wake::Nats`.
     pub nats_url: Option<String>,
+    /// Private Core NATS relay for registered-Worker previews.
+    pub preview_relay: Option<PreviewRelayConfig>,
     /// The shared database url for Postgres backends (`DeploymentConfig::database_url`).
     pub database_url: Option<String>,
     /// Exact maximum size of each runtime Postgres pool. Resolved once by the
@@ -745,6 +763,7 @@ impl DeploymentConfig {
             wake: Wake::None,
             wake_channel: DEFAULT_WAKE_CHANNEL.to_string(),
             nats_url: None,
+            preview_relay: None,
             database_url: None,
             postgres_max_connections: default_postgres_max_connections(),
             postgres_min_connections: 0,

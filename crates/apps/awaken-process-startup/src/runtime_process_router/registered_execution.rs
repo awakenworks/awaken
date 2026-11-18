@@ -45,7 +45,7 @@ pub(super) struct RegisteredExecution {
 }
 
 impl RegisteredExecution {
-    pub(super) fn prepare(
+    pub(super) async fn prepare(
         base: &ProcessBase,
         resources: &DeploymentAndResources,
         control: &ControlSurface,
@@ -73,6 +73,17 @@ impl RegisteredExecution {
         let commits = Arc::new(AuthorityCommits::new(authority));
         let reads = Arc::new(CommittedReads::new(commits.clone(), projections.clone()));
         let hub = Arc::new(ThreadEventHub::new());
+        if let Some(relay) = &deployment.preview_relay {
+            #[cfg(feature = "nats")]
+            hub.attach_nats_preview(&relay.url, &relay.subject).await?;
+            #[cfg(not(feature = "nats"))]
+            {
+                let _ = relay;
+                return Err(
+                    "preview relay requires a Coordinator built with the nats feature".into(),
+                );
+            }
+        }
         let completion = Arc::new(CompletionRegistry::new(hub.clone()));
         let extractions = Arc::new(MemoryExtractions::new(
             execution.memory_extractions.clone(),

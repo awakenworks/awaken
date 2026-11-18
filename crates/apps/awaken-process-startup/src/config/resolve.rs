@@ -318,6 +318,20 @@ impl ResolvedDeployment {
                 .filter(|_| owns_local_dispatch)
                 .unwrap_or_else(|| DEFAULT_WAKE_CHANNEL.to_owned()),
             nats_url: file.nats_url.clone().filter(|_| owns_local_dispatch),
+            preview_relay: match (&file.preview_nats_url, &file.preview_nats_subject) {
+                (None, None) => None,
+                (Some(url), Some(subject)) if !url.is_empty() && !subject.is_empty() => {
+                    Some(awaken_deployment_config::PreviewRelayConfig {
+                        url: url.clone(),
+                        subject: subject.clone(),
+                    })
+                }
+                _ => {
+                    return Err(
+                        "preview_nats_url and preview_nats_subject must both be supplied".into(),
+                    );
+                }
+            },
             database_url: dispatch_url.clone(),
             postgres_max_connections,
             postgres_min_connections,

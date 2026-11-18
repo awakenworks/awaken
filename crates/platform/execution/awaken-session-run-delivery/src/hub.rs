@@ -24,6 +24,9 @@ use awaken_sync::InvariantLock;
 use awaken_agent_contract::agent::message::Message;
 use tokio::sync::broadcast;
 
+#[cfg(feature = "nats")]
+mod preview_relay;
+
 /// Backlog per active Thread. A receiver that lags past this loses volatile events.
 const HUB_CAPACITY: usize = 256;
 
@@ -57,6 +60,8 @@ pub enum ThreadEvent {
 #[derive(Default)]
 pub struct ThreadEventHub {
     channels: Arc<Channels>,
+    #[cfg(feature = "nats")]
+    relay: std::sync::OnceLock<preview_relay::Relay>,
 }
 
 type Channels = InvariantLock<HashMap<String, Channel>>;
@@ -65,6 +70,25 @@ type PreviewClaim = awaken_sync::LeafLock<Option<(String, u64)>>;
 struct Channel {
     sender: broadcast::Sender<ThreadEvent>,
     claim: Arc<PreviewClaim>,
+    #[cfg(feature = "nats")]
+    previews: awaken_sync::LeafLock<preview_relay::OrderedPreviews>,
+}
+
+impl Channel {
+    fn send(&self, event: ThreadEvent) {
+        if let ThreadEvent::ClaimedLive(live) = &event
+            && let Some(epoch) = live.epoch
+        {
+            let mut claim = self.claim.lock();
+            if claim.as_ref().is_some_and(|(run, latest)| {
+                run == &live.observation.event.run_id.0 && epoch.get() < *latest
+            }) {
+                return;
+            }
+            *claim = Some((live.observation.event.run_id.0.clone(), epoch.get()));
+        }
+        let _ = self.sender.send(event);
+    }
 }
 
 /// Owns a receiver and removes its channel when the last observer leaves.
@@ -126,6 +150,8 @@ impl ThreadEventHub {
             .or_insert_with(|| Channel {
                 sender: broadcast::channel(HUB_CAPACITY).0,
                 claim: Arc::default(),
+                #[cfg(feature = "nats")]
+                previews: Default::default(),
             });
         let receiver = channel.sender.subscribe();
         let claim = channel.claim.clone();
@@ -137,32 +163,32 @@ impl ThreadEventHub {
         })
     }
 
-    /// Publish one event to a thread's observers (a no-op if none are attached).
+    /// Publish a live observation locally and, when configured, to peers.
     pub fn publish(&self, thread_key: &str, event: ThreadEvent) {
+        let event = match (event, awaken_dispatch_contract::preview_claim_epoch()) {
+            (ThreadEvent::Live(observation), Some(epoch)) => {
+                ThreadEvent::ClaimedLive(awaken_session_execution_contract::ThreadLiveObservation {
+                    observation,
+                    epoch: Some(epoch),
+                })
+            }
+            (event, _) => event,
+        };
+        #[cfg(feature = "nats")]
+        if let (Some(relay), ThreadEvent::ClaimedLive(live)) = (self.relay.get(), &event)
+            && let Some(packet) = relay.offer(thread_key, live)
+        {
+            self.receive_preview(packet);
+            return;
+        }
+        self.publish_local(thread_key, event);
+    }
+
+    fn publish_local(&self, thread_key: &str, event: ThreadEvent) {
         match self.channels.lock() {
             Ok(channels) => {
                 if let Some(channel) = channels.get(thread_key) {
-                    let event = match (event, awaken_dispatch_contract::preview_claim_epoch()) {
-                        (ThreadEvent::Live(observation), Some(epoch)) => ThreadEvent::ClaimedLive(
-                            awaken_session_execution_contract::ThreadLiveObservation {
-                                observation,
-                                epoch: Some(epoch),
-                            },
-                        ),
-                        (event, _) => event,
-                    };
-                    if let ThreadEvent::ClaimedLive(live) = &event
-                        && let Some(epoch) = live.epoch
-                    {
-                        let mut claim = channel.claim.lock();
-                        if claim.as_ref().is_some_and(|(run, latest)| {
-                            run == &live.observation.event.run_id.0 && epoch.get() < *latest
-                        }) {
-                            return;
-                        }
-                        *claim = Some((live.observation.event.run_id.0.clone(), epoch.get()));
-                    }
-                    let _ = channel.sender.send(event);
+                    channel.send(event);
                 }
             }
             Err(_) => tracing::error!(

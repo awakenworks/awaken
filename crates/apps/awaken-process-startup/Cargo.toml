@@ -183,7 +183,7 @@ test-support = [
 container-docker = ["awaken-package-image/docker"]
 container-podman = ["awaken-package-image/podman"]
 container-k8s = ["awaken-coordinator/container-k8s", "awaken-package-image/k8s", "awaken-worker-transport-security/kubernetes", "dep:awaken-worker-fleet-kubernetes", "dep:kube"]
-nats = ["awaken-coordinator/nats"]
+nats = ["awaken-coordinator/nats", "awaken-session-run-delivery/nats"]
 
 [build-dependencies]
 awaken-ui-artifact.workspace = true

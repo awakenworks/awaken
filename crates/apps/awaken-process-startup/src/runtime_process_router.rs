@@ -602,13 +602,17 @@ async fn assemble_execution_host(
             &deployment,
             runtime_authority.clone(),
             cloud.model_selection.default_model_ref().to_owned(),
-        )?;
+        )
+        .await?;
         return Ok(ExecutionHost {
             runtime_authority,
             committed_store: deployment.store,
             selected: SelectedExecution::Registered(selected),
             session_persistence,
         });
+    }
+    if deployment.preview_relay.is_some() {
+        return Err("preview relay requires registered-Worker execution".into());
     }
     let constructor = base.process.colocated_execution.take().ok_or_else(|| {
         "a local claim pool runs Sessions on this process and needs the composition \

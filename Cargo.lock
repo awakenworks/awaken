@@ -3681,6 +3681,7 @@ dependencies = [
 name = "awaken-session-run-delivery"
 version = "1.0.0"
 dependencies = [
+ "async-nats",
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
@@ -3695,6 +3696,7 @@ dependencies = [
  "awaken-ext-goal",
  "awaken-ext-memory",
  "awaken-ext-skills",
+ "awaken-lease-contract",
  "awaken-memory-store",
  "awaken-observability",
  "awaken-resource-contract",
@@ -3711,12 +3713,15 @@ dependencies = [
  "awaken-time",
  "awaken-tool-contract",
  "awaken-worker-contract",
+ "futures-lite",
+ "serde",
  "serde_json",
  "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -9506,6 +9511,7 @@ checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 
