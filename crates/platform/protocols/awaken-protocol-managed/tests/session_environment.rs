@@ -684,10 +684,41 @@ async fn archived_environment_keeps_existing_session_bearer_http_scope() {
             "existing Session lease {operation}"
         );
     }
+    // A stop without `force` is graceful: the Work enters stopping and keeps its
+    // owner, so the Session bearer it issued still authorizes this Session.
+    assert_eq!(
+        bearer_call(&app, "GET", &format!("/v1/sessions/{sid}"), token).await,
+        StatusCode::OK,
+        "graceful stop retains proof"
+    );
+    let forced = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/v1/environments/{}/work/{wid}/stop",
+                    environment.id
+                ))
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({"force": true})).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(
+        forced,
+        StatusCode::OK,
+        "forced stop of the existing Session lease"
+    );
     assert_eq!(
         bearer_call(&app, "GET", &format!("/v1/sessions/{sid}"), token).await,
         StatusCode::UNAUTHORIZED,
-        "stop still clears proof"
+        "forced stop clears proof"
     );
     call(
         &app,
