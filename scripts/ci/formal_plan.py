@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import formal_anchors
+from _affected_replay import replayed_paths
 from _crate_boundary_workspace import _balanced_end, rust_syntax
 from formal_kani_options import serialize
 from formal_sources import SourceError, detached_git_environment, repository_environment, source_text
@@ -533,11 +534,16 @@ def affected_packages(root: Path, base: str) -> set[str] | None:
     )
     if listed.returncode != 0:
         raise PlanError(f"cannot list the changes since {base!r}: {listed.stderr.strip()}")
-    untracked = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"], cwd=root,
-        capture_output=True, text=True, check=True, env=environment,
-    )
-    changed = set(listed.stdout.split()) | set(untracked.stdout.split())
+    replay = replayed_paths()
+    if replay is not None:
+        # land.py re-checking main: select what its failing run changed.
+        changed = set(replay)
+    else:
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"], cwd=root,
+            capture_output=True, text=True, check=True, env=environment,
+        )
+        changed = set(listed.stdout.split()) | set(untracked.stdout.split())
     runner = script_closure(root, (FORMAL_RUNNER,))
     manifests = {
         str(PurePosixPath(relative).parent): tomllib.loads(text)
@@ -777,6 +783,30 @@ def self_test() -> None:
             (root / edited).write_text(original + "// changed\n")
             assert affected_packages(root, "HEAD") == expected, (edited, affected_packages(root, "HEAD"))
             (root / edited).write_text(original)
+        # A6 land.py's re-check of main replays the failing run's paths on a
+        # clean tree: they select as the diff did; A7 an unreadable replay
+        # file is refused, never read as "nothing changed".
+        import os
+        from _affected_replay import VARIABLE
+        replay = root / "replayed.paths"
+        for paths, expected in ((b"crates/b/src/lib.rs\0", {"a", "b"}), (b"docs/x.md\0", set()),
+                                (b"Cargo.lock\0crates/c/src/lib.rs\0", None)):
+            replay.write_bytes(paths)
+            os.environ[VARIABLE] = str(replay)
+            try:
+                assert affected_packages(root, "HEAD") == expected, ("A6", paths, affected_packages(root, "HEAD"))
+            finally:
+                del os.environ[VARIABLE]
+        os.environ[VARIABLE] = str(root / "absent.paths")
+        try:
+            affected_packages(root, "HEAD")
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("A7 an unreadable replay must be refused")
+        finally:
+            del os.environ[VARIABLE]
+        replay.unlink()
         (root / "crates/b/src/lib.rs").write_text(harness("b_proof") + "// changed\n")
         planned = {tuple(batch.argv()) for batch in batches(root, "pr", affected_packages(root, "HEAD"))}
         assert planned == {("a", "--exact", "--harness", "a_proof"), ("b", "--exact", "--harness", "b_proof")}, planned

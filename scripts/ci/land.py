@@ -22,7 +22,7 @@ Decision table (``--self-test`` exercises each row in a throwaway repository):
 | V2   | a group exits 75 (host or resource refusal)            | nothing lands, nothing is ejected, exit 75: rerun later |
 | V3   | a group fails otherwise                                | later groups are skipped; bisect batch prefixes with the failed group; eject the first failing prefix's last lane; rebuild and verify again |
 | V5   | the bisection reaches lane 1 and main itself fails     | nothing ejected or landed, exit 1 (main or the host is broken) |
-| V7   | the main-itself run of V5                              | runs the group un-narrowed: narrowed to main it selects no suite and passes vacuously |
+| V7   | the main-itself run of V5                              | replays lane 1's changed paths (``AWAKEN_AFFECTED_REPLAY_PATHS``) with both bases set to main, so it runs the failing run's selection; a service group the replay reaches nowhere runs whole, never passing vacuously |
 | V4   | main moved since the batch was built                   | re-sync, rebuild on the new main, verify again |
 | V6   | ``--max-rounds`` verifications without a landing       | nothing lands, exit 1 |
 | V8   | no session owner in the environment (a detached launch) | every gate run carries ``AWAKEN_ADMISSION_OWNER=land:<log dir>``, so host admission's fair share counts the run as one owner, not ``unattributed`` |
@@ -55,9 +55,13 @@ with ``AWAKEN_FORMAL_TIER=pr AWAKEN_FORMAL_AFFECTED_BASE``, all set to the main
 commit the batch was built on, so each narrows itself to what the batch reaches.
 The one exception is V7: main measured against itself reaches nothing, starts no
 substrate and would pass whatever the host's state, which would eject lane 1 for
-a fault main shares (an unpullable image, a dead daemon). That run leaves both
-bases empty so the group runs whole. A gate that finds its substrate unavailable
-exits 75 (V2) and ejects nothing either way.
+a fault main shares (an unpullable image, a dead daemon). Running it whole was
+correct but the costliest run of the pipeline (formal: 7802 s). That run instead
+writes the paths lane 1 changed to a file named by ``AWAKEN_AFFECTED_REPLAY_PATHS``
+and keeps both bases on main: the planners (``_affected_replay.py``) select from
+those paths, so main runs what the failing run ran, and a service group the
+replay selects no suite of runs whole. A gate that finds its substrate
+unavailable exits 75 (V2) and ejects nothing either way.
 kubernetes, k3d, sandbox and the e2e group are selected only by their own
 runners and directories; request them with ``--group`` (listing every group).
 
@@ -327,19 +331,28 @@ def plan_groups(ctx: Context, batch: Batch) -> list[tuple[str, str]]:
 
 # --- verification ------------------------------------------------------------------------------------
 
-def run_group(ctx: Context, group: str, tip: str, base: str, label: str) -> dict:
+def run_group(ctx: Context, group: str, tip: str, base: str, label: str, replay: str = "") -> dict:
     """Run one group on ``tip`` (checked out) with the affected bases set to ``base``.
 
     ``tip == base`` is main measured against itself (V7): narrowed, it would
-    select nothing and pass vacuously, so both bases are left empty and the
-    group runs whole.
+    select nothing and pass vacuously. With ``replay`` (the failing run's tip)
+    the gate selects from the paths ``base..replay`` changed; without one both
+    bases are left empty and the group runs whole.
     """
     ctx.git.reset(tip)
     log = ctx.log_dir / f"{label}-{group}.log"
-    affected = "" if tip == base else base
+    affected, replayed, scope = base, "", ""
+    if tip == base and replay:
+        paths = ctx.log_dir / f"{label}-{group}.replay"
+        paths.write_text(ctx.git.run("diff", "-z", "--name-only", "--no-renames", base, replay).stdout,
+                         encoding="utf-8")
+        replayed = str(paths)
+        scope = f" replaying {replay[:10]}'s paths"
+    elif tip == base:
+        affected, scope = "", " un-narrowed"
     env = environment({"AWAKEN_SERVICE_AFFECTED_BASE": affected, "AWAKEN_FORMAL_TIER": "pr",
-                       "AWAKEN_FORMAL_AFFECTED_BASE": affected, **ctx.owner})
-    scope = "" if affected else " un-narrowed"
+                       "AWAKEN_FORMAL_AFFECTED_BASE": affected, "AWAKEN_AFFECTED_REPLAY_PATHS": replayed,
+                       **ctx.owner})
     print(f"→ {label} {group}{scope} on {tip[:10]} (log {log})", flush=True)
     started = time.monotonic()
     with log.open("w", encoding="utf-8") as out:
@@ -358,10 +371,10 @@ def run_group(ctx: Context, group: str, tip: str, base: str, label: str) -> dict
     return record
 
 
-def verify(ctx: Context, groups: list[str], tip: str, base: str, label: str) -> dict | None:
+def verify(ctx: Context, groups: list[str], tip: str, base: str, label: str, replay: str = "") -> dict | None:
     """Run ``groups`` in order; the first failing run (V3), None when all pass. Raises on 75 (V2)."""
     for group in groups:
-        record = run_group(ctx, group, tip, base, label)
+        record = run_group(ctx, group, tip, base, label, replay)
         if record["exit"] == HOST_REFUSAL:
             raise HostRefused(record)
         if record["exit"]:
@@ -377,7 +390,9 @@ def bisect(ctx: Context, batch: Batch, failure: dict, label: str) -> tuple[Lane,
 
     def fails(size: int) -> bool:
         tip = batch.lanes[size - 1].end if size else batch.base
-        record = verify(ctx, groups, tip, batch.base, f"{label}-prefix{size}")
+        # Main itself (V7) replays the selection of lane 1's failing run.
+        replay = "" if size else failures[1]["tip"]
+        record = verify(ctx, groups, tip, batch.base, f"{label}-prefix{size}", replay)
         if record:
             failures[size] = record
         return record is not None
@@ -585,11 +600,16 @@ with open(root / "gate.jsonl", "a") as log:
     log.write(json.dumps({"group": group, "head": head, "service": os.environ.get("AWAKEN_SERVICE_AFFECTED_BASE"),
                           "tier": os.environ.get("AWAKEN_FORMAL_TIER"),
                           "formal": os.environ.get("AWAKEN_FORMAL_AFFECTED_BASE"),
-                          "owner": os.environ.get("AWAKEN_ADMISSION_OWNER")}) + "\n")
+                          "owner": os.environ.get("AWAKEN_ADMISSION_OWNER"),
+                          "replay": sorted(p for p in pathlib.Path(os.environ["AWAKEN_AFFECTED_REPLAY_PATHS"])
+                                           .read_text().split("\0") if p)
+                          if os.environ.get("AWAKEN_AFFECTED_REPLAY_PATHS") else None}) + "\n")
 if os.environ.get("FAKE_REFUSE") == group:
     sys.exit(75)
-if os.environ.get("FAKE_HOST_FAULT") == group and os.environ.get("AWAKEN_SERVICE_AFFECTED_BASE") != head:
-    # A host fault shows only once a suite runs; narrowed to itself, a tip runs none.
+if os.environ.get("FAKE_HOST_FAULT") == group and (os.environ.get("AWAKEN_SERVICE_AFFECTED_BASE") != head
+                                                    or os.environ.get("AWAKEN_AFFECTED_REPLAY_PATHS")):
+    # A host fault shows only once a suite runs; narrowed to itself, a tip runs
+    # none unless it replays the failing run's change.
     print(f"{group}: the host's substrate is broken")
     sys.exit(1)
 if os.path.exists(f"breaks-{group}"):
@@ -784,10 +804,11 @@ def case_shared_host_fault(fx: Fixture) -> None:
     fx.ready()
     result = fx.land("--group", "postgres", "lane-a", FAKE_HOST_FAULT="postgres")
     assert result.returncode == 1 and fx.summary()["status"] == "main-fails", explain(result)
-    assert not fx.summary()["ejected"], "V7: lane 1 kept when main fails the same group un-narrowed"
+    assert not fx.summary()["ejected"], "V7: lane 1 kept when main fails the same group it replays"
     runs = fx.runs()
-    assert [run["service"] for run in runs] == [fx.base, ""], f"V7: main ran un-narrowed: {runs}"
-    assert runs[-1]["head"] == fx.base and runs[-1]["formal"] == "", runs[-1]
+    assert [run["service"] for run in runs] == [fx.base, fx.base], f"V7: both runs narrowed to main: {runs}"
+    assert [run["replay"] for run in runs] == [None, ["a.txt"]], f"V7: main replays lane 1's paths: {runs}"
+    assert runs[-1]["head"] == fx.base and runs[-1]["formal"] == fx.base, runs[-1]
     fx.settled()
 
 

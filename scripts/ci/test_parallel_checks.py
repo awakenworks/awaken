@@ -145,7 +145,7 @@ test -s results || exit 55
                              '_build_observation.sh', 'ci_performance.py',
                              '_stage_record.py', '_atomic_record.py',
                              'formal_run_evidence.py', 'formal_sources.py', 'formal_plan.py',
-                             'formal_anchors.py', 'formal_kani_options.py',
+                             'formal_anchors.py', 'formal_kani_options.py', '_affected_replay.py',
                              '_crate_boundary_workspace.py', '_crate_dependency_fitness.py'):
                     shutil.copyfile(ROOT / 'scripts/ci' / name, scripts / name)
                 (scripts / 'check-rust.sh').chmod(0o755)

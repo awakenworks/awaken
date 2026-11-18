@@ -41,6 +41,8 @@ import sys
 import tempfile
 import tomllib
 
+from _affected_replay import replayed_paths
+
 ROOT = Path(__file__).resolve().parents[2]
 TABLE = "scripts/ci/service_suites.toml"
 INPUT_GLOBS = ("crates/**/Cargo.toml", "fuzz/Cargo.toml", "scripts/ci/service_suites.toml", "scripts/ci/*.py", "scripts/ci/*.sh",
@@ -230,6 +232,22 @@ def decide(rows: list[Row], whole: str, affected: list[str], edited: set[str]) -
     return decisions
 
 
+REPLAY_WHOLE = "a replayed change that reaches no suite on main -> whole group"
+
+
+def replay_plan(rows: list[Row], whole: str, affected: list[str], edited: set[str], reason: str, replay: bool):
+    """``(whole, reason, decisions)``; M1 a replay that selects no suite runs the whole group.
+
+    Narrowed to nothing, a service group starts no substrate and passes whatever
+    the host's state. land.py's re-check of main (``_affected_replay.py``) must
+    never pass that way; an ordinary affected run that reaches nothing still skips.
+    """
+    decisions = decide(rows, whole, affected, edited)
+    if replay and not any(run for _, run, _ in decisions):
+        return REPLAY_WHOLE, REPLAY_WHOLE, decide(rows, REPLAY_WHOLE, affected, edited)
+    return whole, reason, decisions
+
+
 def render(whole: str, reason: str, decisions) -> list[str]:
     selected = sum(run for _, run, _ in decisions)
     scope = "whole" if whole else "packages" if selected else "none"
@@ -409,6 +427,18 @@ def self_test() -> int:
         # T1 a doc-only (or unrelated-script) change selects nothing.
         whole, runs, _ = plan(["docs/design/a.md", "web/src/x.ts", "scripts/ci/unrelated.py", "scripts/ci/unrelated.json"])
         expect(not whole and not any(runs.values()), f"T1 doc-only selects nothing: {runs}")
+        # M1 land.py re-checking main replays the failing run's paths: a replay that
+        # reaches no suite runs the whole group (never a vacuous pass); M2 one
+        # that reaches suites keeps exactly that selection.
+        def replayed(changed: list[str]):
+            whole, affected, edited, reason, _ = classify("postgres", changed, loader, lambda: table, root)
+            whole, reason, decisions = replay_plan(group_rows("postgres", root), whole, affected, edited, reason, True)
+            return whole, {row.id.split(".", 1)[1]: run for row, run, _ in decisions}
+        whole, runs = replayed(["docs/design/a.md"])
+        expect(whole == REPLAY_WHOLE and all(runs.values()), f"M1 a replay reaching nothing runs whole: {runs}")
+        whole, runs = replayed(["crates/store-b/src/lib.rs"])
+        expect(not whole and runs == {"a": False, "b": True, "app": False, "object": True, "drill": False},
+               f"M2 a replay keeps its selection: {runs}")
         # T2 one crate selects its rows and its consumers' rows only.
         whole, runs, _ = plan(["crates/store-b/src/lib.rs"])
         expect(runs == {"a": False, "b": True, "app": False, "object": True, "drill": False}, f"T2 store-b: {runs}")
@@ -485,7 +515,7 @@ def self_test() -> int:
         print(f"service_test_plan self-test: FAIL {failure}", file=sys.stderr)
     if not failures:
         traced = "" if os.name == "nt" else ", E1-E3"
-        print(f"service_test_plan self-test: R1-R3, S1-S5, T1-T5, D1-D4, U1-U8{traced} and the shell helper hold")
+        print(f"service_test_plan self-test: R1-R3, S1-S5, T1-T5, M1-M2, D1-D4, U1-U8{traced} and the shell helper hold")
     return 1 if failures else 0
 
 
@@ -557,8 +587,11 @@ def main() -> int:
             shown = subprocess.run(["git", "show", f"{base}:{TABLE}"], cwd=ROOT, capture_output=True, text=True)
             return shown.stdout if shown.returncode == 0 else None
 
-        whole, affected, edited, reason, lines = classify(args.group, rust_test_plan.changed_sources(base),
-                                                          workspace_metadata, base_table)
+        replay = replayed_paths()
+        changed = rust_test_plan.changed_sources(base) if replay is None else replay
+        whole, affected, edited, reason, lines = classify(args.group, changed, workspace_metadata, base_table)
+        if replay is not None:
+            lines.insert(0, f"explain: re-checking main with the {len(replay)} path(s) its failing run changed")
     except PlanError as error:
         print(f"{error}\n{RULE}\nfix: name the package with -p in the row's args, or give a step row its packages",
               file=sys.stderr)
@@ -571,7 +604,7 @@ def main() -> int:
         return 1
     if args.explain:
         print("\n".join(lines), file=sys.stderr)
-    print("\n".join(render(whole, reason, decide(rows, whole, affected, edited))))
+    print("\n".join(render(*replay_plan(rows, whole, affected, edited, reason, replay is not None))))
     return 0
 
 
