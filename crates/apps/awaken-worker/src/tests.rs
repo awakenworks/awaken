@@ -1243,6 +1243,35 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
             .contains("hosted-csi-v1"),
         "R3"
     );
+
+    // R4 resident Hand + codec + store => refuse before registration/suspend;
+    // R5 resident + codec without store => ordinary resident execution remains
+    // available, but the manifest cannot place checkpoint-and-release work.
+    for store in [false, true] {
+        let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+        deployment.sandbox.container_hand_residency =
+            awaken_session_environment_contract::ContainerHandResidency::Resident;
+        let builder = base().with_deployment_config(deployment, false);
+        if store {
+            let result = builder
+                .with_environment_checkpoint_store(Arc::new(UnusedCheckpointStore))
+                .build();
+            assert_eq!(
+                result.err().unwrap().to_string(),
+                "checkpoint store requires a checkpoint-capable Session provider",
+                "R4"
+            );
+        } else {
+            let worker = builder.build().expect("R5");
+            assert!(
+                !worker
+                    .manifest()
+                    .checkpoint_formats
+                    .contains("hosted-csi-v1"),
+                "R5"
+            );
+        }
+    }
 }
 
 #[test]

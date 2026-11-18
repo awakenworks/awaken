@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::Sandbox as _;
 use awaken_sandbox_local::{LocalSandbox, NamespaceSandbox};
+use awaken_session_environment_contract::ContainerHandResidency as HandMode;
 use awaken_tool_contract::tool::ToolCall;
 use awaken_tool_contract::tool::{ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability};
 use tokio::sync::Mutex;
@@ -567,36 +568,6 @@ pub struct SessionHandExecutor {
     )>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HandMode {
-    AttachedExec,
-    Resident,
-}
-
-impl HandMode {
-    fn from_residency(
-        residency: awaken_session_environment_contract::ContainerHandResidency,
-    ) -> Self {
-        match residency {
-            awaken_session_environment_contract::ContainerHandResidency::AttachedExec => {
-                Self::AttachedExec
-            }
-            awaken_session_environment_contract::ContainerHandResidency::Resident => Self::Resident,
-        }
-    }
-
-    const fn recovery_capability(self) -> ToolRecoveryCapability {
-        match self {
-            Self::AttachedExec => ToolRecoveryCapability::NonRecoverable,
-            Self::Resident => ToolRecoveryCapability::DurableRequest,
-        }
-    }
-
-    const fn hibernates_when_idle(self) -> bool {
-        matches!(self, Self::AttachedExec)
-    }
-}
-
 impl SessionHandExecutor {
     pub(super) async fn contained_execution_domain(
         &self,
@@ -692,7 +663,7 @@ impl SessionHandExecutor {
         )>,
     ) -> Self {
         let operation_scope = launcher.operation_scope();
-        let mode = HandMode::from_residency(residency);
+        let mode = residency;
         let (activity, observed_activity) = tokio::sync::watch::channel(0);
         let executor = Self {
             launcher,
@@ -711,7 +682,7 @@ impl SessionHandExecutor {
             mode,
             container_skills,
         };
-        if mode.hibernates_when_idle() {
+        if mode == HandMode::AttachedExec {
             executor.spawn_idle_hibernation(observed_activity);
         }
         executor

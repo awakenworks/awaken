@@ -17,7 +17,7 @@
 //! reused, not a used container. Reusing a container after a session would require a
 //! workspace reset and is deliberately out of scope.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -43,6 +43,10 @@ pub use lease::{WarmCapacityLeasePolicy, WarmCapacityLeases, WarmCapacityReclama
 /// the same shape). Paired with the pool incarnation below, warm names are unique
 /// across processes too.
 static WARM_SEQ: AtomicU64 = AtomicU64::new(0);
+
+// One responsibility map: cancelled creates have only a scope; failed retire
+// retains its exact physical handle before the first disposal await.
+type UnreceiptedCapacity<R> = Arc<LeafLock<BTreeMap<String, Option<Arc<ContainerSandbox<R>>>>>>;
 
 /// The one warm-capacity admission rule. `SandboxCapacityShapeId` remains the
 /// neutral placement identity; only this owner decides whether physical
@@ -122,16 +126,28 @@ fn mint_warm_scope(
 async fn retire<R: ContainerRuntime + 'static>(
     leases: Option<&WarmLeaseLedger>,
     sandbox: ContainerSandbox<R>,
+    unreceipted_scopes: &UnreceiptedCapacity<R>,
 ) {
+    let sandbox = Arc::new(sandbox);
+    let scope = sandbox.id.clone();
+    unreceipted_scopes
+        .lock()
+        .insert(scope.clone(), Some(sandbox.clone()));
     let Some(leases) = leases else {
-        let _ = sandbox.dispose().await;
+        if sandbox.dispose().await.is_ok() {
+            unreceipted_scopes.lock().remove(&scope);
+        }
         return;
     };
     let Some(claim) = leases.begin_disposal(&sandbox.id) else {
+        unreceipted_scopes.lock().remove(&scope);
         return;
     };
     let removed = sandbox.dispose().await.is_ok();
     leases.finish_disposal(&claim, removed);
+    if removed {
+        unreceipted_scopes.lock().remove(&scope);
+    }
 }
 
 /// L5/L6: renew every record this pool holds, forget ready containers whose
@@ -141,6 +157,7 @@ async fn renew_capacity<R: ContainerRuntime + 'static>(
     leases: &WarmLeaseLedger,
     warm: &InvariantLock<HashMap<pc::SandboxCapacityShapeId, WarmEntry<R>>>,
     inner: &ContainerProvider<R>,
+    unreceipted_scopes: &UnreceiptedCapacity<R>,
 ) {
     let lost = leases.renew_held();
     let probes = {
@@ -176,7 +193,7 @@ async fn renew_capacity<R: ContainerRuntime + 'static>(
             })
         };
         if let Some(sandbox) = vanished {
-            retire(Some(leases), sandbox).await;
+            retire(Some(leases), sandbox, unreceipted_scopes).await;
         }
     }
 }
@@ -193,18 +210,20 @@ struct WarmEntry<R: ContainerRuntime> {
 /// every rejected candidate is disposed here.
 async fn ready_candidate<R: ContainerRuntime + 'static>(
     sandbox: ContainerSandbox<R>,
+    leases: Option<&WarmLeaseLedger>,
+    unreceipted_scopes: &UnreceiptedCapacity<R>,
 ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
     match pc::Sandbox::status(&sandbox).await {
         Ok(pc::SandboxStatus::Ready) => Ok(sandbox),
         Ok(_) => {
-            let _ = sandbox.dispose().await;
+            retire(leases, sandbox, unreceipted_scopes).await;
             Err(pc::SandboxError::backend(
                 "ready_candidate",
                 "prewarmed container did not become ready",
             ))
         }
         Err(error) => {
-            let _ = sandbox.dispose().await;
+            retire(leases, sandbox, unreceipted_scopes).await;
             Err(error)
         }
     }
@@ -231,23 +250,20 @@ pub struct WarmContainerPool<R: ContainerRuntime> {
     total_size: usize,
     idle_ttl: Duration,
     warm: Arc<InvariantLock<HashMap<pc::SandboxCapacityShapeId, WarmEntry<R>>>>,
-    /// Serialize explicit startup warmup per exact shape. Adaptive replenishment
-    /// still remains off-path; its cap check disposes any concurrent excess.
-    prewarm_gates: LeafLock<HashMap<pc::SandboxCapacityShapeId, Arc<tokio::sync::Mutex<()>>>>,
+    /// One admission gate shared by startup and adaptive replenishment; a burst
+    /// of checkouts cannot launch a separate create for every missing slot.
+    prewarm_gate: Arc<tokio::sync::Mutex<()>>,
     /// Set by [`shutdown`](Self::shutdown) so in-flight replenishment stops adding
     /// containers after the drain — otherwise a replenish that lands mid-drain would
     /// leak a warm container past teardown.
     closed: Arc<AtomicBool>,
     in_flight_creates: Arc<AtomicUsize>,
     create_changed: Arc<tokio::sync::Notify>,
-    /// Warm scopes whose create was started and whose caller then went away.
-    ///
-    /// A scope lands here only through an [`pc::EffectClaim::in_process`]
-    /// retention, which runs on exactly one transition: the claimed create
-    /// dropped unsettled. A create that returned — `Ok` or `Err` — settles and
-    /// never records, because a returned container is in hand and a returned
-    /// error owns whatever it half-created.
-    unreceipted_scopes: Arc<LeafLock<BTreeSet<String>>>,
+    /// Cancelled/failed creates and failed retirements, retained until exact
+    /// removal succeeds or the durable lease reclaimer takes responsibility.
+    /// A normally returned error must explicitly retain its participant: it
+    /// settles the ClaimedEffect and therefore does not run drop retention.
+    unreceipted_scopes: UnreceiptedCapacity<R>,
     /// This pool's incarnation, mixed into every warm scope. See
     /// [`next_warm_scope`].
     incarnation: String,
@@ -286,11 +302,11 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             total_size,
             idle_ttl,
             warm: Arc::new(InvariantLock::new(HashMap::new())),
-            prewarm_gates: LeafLock::new(HashMap::new()),
+            prewarm_gate: Arc::new(tokio::sync::Mutex::new(())),
             closed: Arc::new(AtomicBool::new(false)),
             in_flight_creates: Arc::new(AtomicUsize::new(0)),
             create_changed: Arc::new(tokio::sync::Notify::new()),
-            unreceipted_scopes: Arc::new(LeafLock::new(BTreeSet::new())),
+            unreceipted_scopes: Arc::new(LeafLock::new(BTreeMap::new())),
             incarnation: crate::runtime_owner_id(),
             leases: None,
             maintenance: LeafLock::new(None),
@@ -339,6 +355,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let inner = Arc::downgrade(&self.inner);
         let closed = self.closed.clone();
         let rounds = self.maintenance_rounds.clone();
+        let unreceipted_scopes = self.unreceipted_scopes.clone();
         let renew_interval = policy.renew_interval();
         let reclaim_every = policy
             .reclaim_interval()
@@ -359,7 +376,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 else {
                     return;
                 };
-                renew_capacity(&leases, &warm, &inner).await;
+                renew_capacity(&leases, &warm, &inner, &unreceipted_scopes).await;
                 round += 1;
                 if round.is_multiple_of(reclaim_every) {
                     let _ = leases.reclaim(&inner).await;
@@ -374,7 +391,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// calls this every renew interval; a caller that opted out of it must.
     pub async fn renew_capacity_leases(&self) -> Result<(), pc::SandboxError> {
         let leases = self.lease_ledger()?;
-        renew_capacity(leases, &self.warm, &self.inner).await;
+        renew_capacity(leases, &self.warm, &self.inner, &self.unreceipted_scopes).await;
         Ok(())
     }
 
@@ -423,7 +440,8 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// in-process claim, which covers cancellation but not process death.
     fn claimed_warm_create<'a>(
         inner: &'a ContainerProvider<R>,
-        unreceipted_scopes: &Arc<LeafLock<BTreeSet<String>>>,
+        leases: Option<&'a WarmLeaseLedger>,
+        unreceipted_scopes: &'a UnreceiptedCapacity<R>,
         warm: WarmScope,
         warm_spec: &'a pc::SandboxSpec,
     ) -> pc::ClaimedEffect<'a, ContainerSandbox<R>> {
@@ -434,7 +452,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let scopes = unreceipted_scopes.clone();
         let scope = warm.scope;
         let in_flight = move || {
-            scopes.lock().insert(scope);
+            scopes.lock().entry(scope).or_insert(None);
         };
         let claim = if warm.leased {
             pc::EffectClaim::durable(WARM_LEASE_RECONCILER, in_flight)
@@ -442,14 +460,23 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             pc::EffectClaim::in_process(in_flight)
         };
         pc::ClaimedEffect::new(claim, async move {
-            ready_candidate(inner.create_container(warm_spec).await?).await
+            match inner.create_container(warm_spec).await {
+                Ok(sandbox) => ready_candidate(sandbox, leases, unreceipted_scopes).await,
+                Err(error) => {
+                    unreceipted_scopes
+                        .lock()
+                        .entry(warm_spec.scope.clone())
+                        .or_insert(None);
+                    Err(error)
+                }
+            }
         })
     }
 
     /// Warm scopes currently on record as created-by-nobody. Read by
     /// [`Self::shutdown`] and by the cancellation tests.
     pub(crate) fn unreceipted_warm_scopes(&self) -> Vec<String> {
-        self.unreceipted_scopes.lock().iter().cloned().collect()
+        self.unreceipted_scopes.lock().keys().cloned().collect()
     }
 
     /// Dispose every warm scope on record, clearing each only once the runtime
@@ -469,11 +496,17 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                     }
                 },
             };
-            let removed = self
-                .inner
-                .dispose_unreceipted_capacity(&scope)
-                .await
-                .is_ok();
+            let retained = self
+                .unreceipted_scopes
+                .lock()
+                .get(&scope)
+                .cloned()
+                .flatten();
+            let removed = match retained {
+                Some(sandbox) => sandbox.dispose().await,
+                None => self.inner.dispose_unreceipted_capacity(&scope).await,
+            }
+            .is_ok();
             if removed {
                 self.unreceipted_scopes.lock().remove(&scope);
             }
@@ -513,13 +546,8 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let Some(key) = poolable_shape(spec) else {
             return Ok(0);
         };
-        let gate = self
-            .prewarm_gates
-            .lock()
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
-        let _guard = gate.lock().await;
+        let _guard = self.prewarm_gate.lock().await;
+        self.dispose_unreceipted_scopes().await;
         loop {
             let (ready, expired) = {
                 let now = mono::now();
@@ -531,7 +559,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                     })
                     .map(|(shape, _)| shape.clone())
                     .collect::<Vec<_>>();
-                let expired = expired_keys
+                let mut expired = expired_keys
                     .into_iter()
                     .filter_map(|shape| map.remove(&shape))
                     .flat_map(|entry| entry.ready)
@@ -540,20 +568,45 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                     entry.last_desired = now;
                     entry.ready.len()
                 });
+                if ready < target
+                    && map.values().map(|e| e.ready.len()).sum::<usize>() >= self.total_size
+                {
+                    let oldest = map
+                        .iter()
+                        .filter(|(shape, e)| *shape != &key && !e.ready.is_empty())
+                        .min_by_key(|(_, e)| e.last_desired)
+                        .map(|(shape, _)| shape.clone());
+                    if let Some(candidate) =
+                        oldest.and_then(|shape| map.get_mut(&shape)?.ready.pop())
+                    {
+                        expired.push(candidate);
+                    }
+                }
                 (ready, expired)
             };
             for sandbox in expired {
-                retire(self.leases.as_deref(), sandbox).await;
+                retire(self.leases.as_deref(), sandbox, &self.unreceipted_scopes).await;
             }
             if ready >= target {
                 return Ok(ready);
+            }
+            if !self.unreceipted_scopes.lock().is_empty() {
+                return Err(pc::SandboxError::backend(
+                    "warm pool",
+                    "unfinished capacity cleanup blocks replenishment",
+                ));
             }
             let create = self.begin_create()?;
             let warm = mint_warm_scope(self.leases.as_deref(), &self.incarnation)?;
             let mut warm_spec = spec.clone();
             warm_spec.scope = warm.scope.clone();
-            let in_flight =
-                Self::claimed_warm_create(&self.inner, &self.unreceipted_scopes, warm, &warm_spec);
+            let in_flight = Self::claimed_warm_create(
+                &self.inner,
+                self.leases.as_deref(),
+                &self.unreceipted_scopes,
+                warm,
+                &warm_spec,
+            );
             let sandbox = match in_flight.await {
                 Ok(sandbox) => sandbox,
                 Err(error) => {
@@ -567,27 +620,10 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             };
             // A poisoned ready set admits nothing: the create is retired and
             // the refusal returned once it is.
-            let (excess, evicted, poisoned) = match self.warm.lock() {
-                Err(poisoned) => (Some(sandbox), Vec::new(), Some(poisoned)),
+            let (excess, poisoned) = match self.warm.lock() {
+                Err(poisoned) => (Some(sandbox), Some(poisoned)),
                 Ok(mut map) => {
-                    let mut evicted = Vec::new();
-                    let mut total = map.values().map(|entry| entry.ready.len()).sum::<usize>();
-                    while total >= self.total_size {
-                        let oldest = map
-                            .iter()
-                            .filter(|(shape, entry)| *shape != &key && !entry.ready.is_empty())
-                            .min_by_key(|(_, entry)| entry.last_desired)
-                            .map(|(shape, _)| shape.clone());
-                        let Some(oldest) = oldest else {
-                            break;
-                        };
-                        if let Some(candidate) =
-                            map.get_mut(&oldest).and_then(|entry| entry.ready.pop())
-                        {
-                            evicted.push(candidate);
-                            total -= 1;
-                        }
-                    }
+                    let total = map.values().map(|entry| entry.ready.len()).sum::<usize>();
                     let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
                         template: spec.clone(),
                         ready: Vec::new(),
@@ -598,18 +634,15 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                         || entry.ready.len() >= target
                         || total >= self.total_size
                     {
-                        (Some(sandbox), evicted, None)
+                        (Some(sandbox), None)
                     } else {
                         entry.ready.push(sandbox);
-                        (None, evicted, None)
+                        (None, None)
                     }
                 }
             };
-            for sandbox in evicted {
-                retire(self.leases.as_deref(), sandbox).await;
-            }
             if let Some(excess) = excess {
-                retire(self.leases.as_deref(), excess).await;
+                retire(self.leases.as_deref(), excess, &self.unreceipted_scopes).await;
                 if let Some(poisoned) = poisoned {
                     return Err(warm_poisoned(poisoned));
                 }
@@ -648,9 +681,8 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             .and_then(|mut map| map.remove(&key))
             .map(|entry| entry.ready)
             .unwrap_or_default();
-        self.prewarm_gates.lock().remove(&key);
         for sandbox in ready {
-            retire(self.leases.as_deref(), sandbox).await;
+            retire(self.leases.as_deref(), sandbox, &self.unreceipted_scopes).await;
         }
     }
 
@@ -667,7 +699,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 Err(_) => Vec::new(),
             };
             for sandbox in batch {
-                retire(self.leases.as_deref(), sandbox).await;
+                retire(self.leases.as_deref(), sandbox, &self.unreceipted_scopes).await;
             }
             // The ready set is only the capacity that arrived. A create whose
             // caller was cancelled never reaches it, so draining `warm` alone is
@@ -706,9 +738,8 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         }
     }
 
-    /// Replenish `key` back to `size` off the request path (bounded). Concurrent
-    /// replenishers for the same key may briefly overshoot; the cap check discards
-    /// (and disposes) the excess, so the steady state is exactly `size`.
+    /// Replenish off the request path through the same admission gate as
+    /// explicit prewarming. Recheck ready/global caps before every create.
     fn spawn_replenish(&self, key: pc::SandboxCapacityShapeId) {
         if self.size == 0 || self.closed.load(Ordering::SeqCst) {
             return;
@@ -723,6 +754,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let leases = self.leases.clone();
         let size = self.size;
         let total_size = self.total_size;
+        let prewarm_gate = self.prewarm_gate.clone();
         in_flight_creates.fetch_add(1, Ordering::SeqCst);
         if closed.load(Ordering::SeqCst) {
             in_flight_creates.fetch_sub(1, Ordering::SeqCst);
@@ -734,8 +766,9 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 count: in_flight_creates,
                 changed: create_changed,
             };
+            let _guard = prewarm_gate.lock().await;
             loop {
-                if closed.load(Ordering::SeqCst) {
+                if closed.load(Ordering::SeqCst) || !unreceipted_scopes.lock().is_empty() {
                     return;
                 }
                 // How many are missing + the shape to build, read under the lock.
@@ -745,7 +778,13 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                         return;
                     };
                     match map.get(&key) {
-                        Some(e) if e.ready.len() < size => e.template.clone(),
+                        Some(e)
+                            if e.ready.len() < size
+                                && map.values().map(|e| e.ready.len()).sum::<usize>()
+                                    < total_size =>
+                        {
+                            e.template.clone()
+                        }
                         _ => return,
                     }
                 };
@@ -759,8 +798,13 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 // cancelled by its caller, but it is still dropped when the
                 // runtime it was spawned onto shuts down, and that drop strands
                 // the identical container.
-                let in_flight =
-                    Self::claimed_warm_create(&inner, &unreceipted_scopes, minted, &warm_spec);
+                let in_flight = Self::claimed_warm_create(
+                    &inner,
+                    leases.as_deref(),
+                    &unreceipted_scopes,
+                    minted,
+                    &warm_spec,
+                );
                 match in_flight.await {
                     Ok(sandbox) => {
                         // Re-check the cap under the lock; dispose an over-cap create.
@@ -780,7 +824,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                             Err(_) => Some(sandbox),
                         };
                         if let Some(excess) = over {
-                            retire(leases.as_deref(), excess).await;
+                            retire(leases.as_deref(), excess, &unreceipted_scopes).await;
                             return;
                         }
                     }
@@ -1015,6 +1059,7 @@ mod tests {
         fenced_creates: AtomicUsize,
         realization_phases: Mutex<Vec<RealizationPhase>>,
         pub(super) removes: AtomicUsize,
+        pub(super) fail_remove: AtomicBool,
         pub(super) ready: AtomicBool,
         pub(super) block_create: AtomicBool,
         pub(super) create_started: tokio::sync::Notify,
@@ -1034,6 +1079,7 @@ mod tests {
                 fenced_creates: AtomicUsize::new(0),
                 realization_phases: Mutex::new(Vec::new()),
                 removes: AtomicUsize::new(0),
+                fail_remove: AtomicBool::new(false),
                 ready: AtomicBool::new(true),
                 block_create: AtomicBool::new(false),
                 create_started: tokio::sync::Notify::new(),
@@ -1257,6 +1303,11 @@ mod tests {
             _container_id: &str,
         ) -> Result<(), awaken_container_contract::RuntimeError> {
             self.removes.fetch_add(1, Ordering::SeqCst);
+            if self.fail_remove.load(Ordering::SeqCst) {
+                return Err(awaken_container_contract::RuntimeError::Backend(
+                    "removal unavailable".into(),
+                ));
+            }
             Ok(())
         }
 
@@ -1702,6 +1753,56 @@ mod tests {
         assert_eq!(runtime.removes.load(Ordering::SeqCst), 1, "E2");
         assert_eq!(pool.ready_len(&spec), 0, "E3");
         environment.dispose_unattached().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_replenishers_share_the_creation_budget_and_failed_cleanup_blocks_growth() {
+        // C1 many adaptive replenishers see one missing ready slot; C2 one
+        // create is blocked; C3 a discarded container cannot be removed.
+        // R1 C1+C2 => exactly one create in flight, others share admission.
+        // R2 release => exactly target capacity, no excess create/retire burst.
+        // R3 C3 => explicit prewarm refuses new allocation until cleanup works.
+        let runtime = Arc::new(RecordingRuntime::ready());
+        let pool = recording_pool(runtime.clone(), 1);
+        let spec = spec("bounded-replenishment", &[]);
+        pool.prewarm(&spec, 1).await.unwrap();
+        let key = poolable_shape(&spec).unwrap();
+        let old = pool
+            .warm
+            .lock()
+            .unwrap_or_else(|_| panic!("test warm map poisoned"))
+            .get_mut(&key)
+            .unwrap()
+            .ready
+            .pop()
+            .unwrap();
+        retire(None, old, &pool.unreceipted_scopes).await;
+        runtime.block_create.store(true, Ordering::SeqCst);
+        let started = runtime.create_started.notified();
+        for _ in 0..20 {
+            pool.spawn_replenish(key.clone());
+        }
+        started.await;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(runtime.creates.load(Ordering::SeqCst), 2, "R1");
+        runtime.block_create.store(false, Ordering::SeqCst);
+        runtime.allow_create.add_permits(20);
+        for _ in 0..100 {
+            if pool.in_flight_creates.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(runtime.creates.load(Ordering::SeqCst), 2, "R2");
+        assert_eq!(pool.ready_len(&spec), 1, "R2");
+        runtime.fail_remove.store(true, Ordering::SeqCst);
+        pool.discard(&spec).await;
+        assert!(pool.prewarm(&spec, 1).await.is_err(), "R3");
+        assert_eq!(runtime.creates.load(Ordering::SeqCst), 2, "R3");
+        runtime.fail_remove.store(false, Ordering::SeqCst);
+        pool.shutdown().await;
     }
 
     #[test]

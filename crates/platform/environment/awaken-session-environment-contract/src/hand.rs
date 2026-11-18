@@ -73,6 +73,16 @@ pub enum ContainerHandResidency {
 }
 
 impl ContainerHandResidency {
+    /// A codec is usable only when the complete Environment can quiesce its
+    /// Hand. Registration and realization share this exact format projection.
+    #[must_use]
+    pub fn checkpoint_formats(self, formats: Vec<String>) -> Vec<String> {
+        match self {
+            Self::AttachedExec => formats,
+            Self::Resident => Vec::new(),
+        }
+    }
+
     /// Recovery evidence shared by Worker registration and the realized
     /// Session environment executor. Keeping this exhaustive mapping here makes
     /// a new residency mode a compile error until both paths agree.

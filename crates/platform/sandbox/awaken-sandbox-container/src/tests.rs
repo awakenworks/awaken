@@ -1236,58 +1236,79 @@ async fn native_memory_volume_seeds_and_harvests_through_the_same_mounter() {
      * fails before removal, retaining the environment for retry; read-only access
      * deliberately has no harvest effect (KM1 covers its Pod mount projection).
      */
-    let archive = one_file_archive("changed.txt", b"changed-in-pod");
-    let runtime = Arc::new(FakeRuntime::default().with_native_memory_archive(archive));
-    let mut sandbox_spec = spec("native-memory");
-    sandbox_spec.mounts.push(pc::MountRequirement {
-        mount_id: "memory".into(),
-        source: pc::MountSource::MemoryStore {
-            store_id: "mutable-store-id".into(),
-            materialization_reference: Some("claim-fenced-reference".into()),
-            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-        },
-        mount_path: "/workspace/.mnt/memory".into(),
-        access: pc::MountAccess::ReadWrite,
-        lifetime: pc::MountLifetime::Session,
-        required: true,
-    });
-    let provider = provider(runtime.clone());
-    let reference = Arc::new(Mutex::new(None));
-    let harvested = Arc::new(Mutex::new(None));
-    let recovered_evidence = Arc::new(Mutex::new(None));
-    let reconciled = Arc::new(Mutex::new(None));
-    let reconcile_calls = Arc::new(AtomicUsize::new(0));
-    provider.install_memory_mounter(Arc::new(HarvestingMemoryMounter {
-        reference: reference.clone(),
-        harvested: harvested.clone(),
-        recovered_evidence,
-        reconciled,
-        reconcile_calls,
-    }));
+    // NM3: C5 reap fails while archived bytes remain readable. C5 => skip
+    // all live Memory reads, preserve the seed snapshot, remove environment,
+    // report incomplete harvest. !C5 retains the NM1 success behavior.
+    for unquiet in [false, true] {
+        let archive = one_file_archive("changed.txt", b"changed-in-pod");
+        let runtime = Arc::new(FakeRuntime::default().with_native_memory_archive(archive));
+        let mut sandbox_spec = spec("native-memory");
+        sandbox_spec.mounts.push(pc::MountRequirement {
+            mount_id: "memory".into(),
+            source: pc::MountSource::MemoryStore {
+                store_id: "mutable-store-id".into(),
+                materialization_reference: Some("claim-fenced-reference".into()),
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+            },
+            mount_path: "/workspace/.mnt/memory".into(),
+            access: pc::MountAccess::ReadWrite,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        });
+        let provider = provider(runtime.clone());
+        let reference = Arc::new(Mutex::new(None));
+        let harvested = Arc::new(Mutex::new(None));
+        let recovered_evidence = Arc::new(Mutex::new(None));
+        let reconciled = Arc::new(Mutex::new(None));
+        let reconcile_calls = Arc::new(AtomicUsize::new(0));
+        provider.install_memory_mounter(Arc::new(HarvestingMemoryMounter {
+            reference: reference.clone(),
+            harvested: harvested.clone(),
+            recovered_evidence,
+            reconciled,
+            reconcile_calls,
+        }));
 
-    let sandbox = provider.create(&sandbox_spec).await.expect("NM1 create");
-    assert_eq!(
-        reference.lock().unwrap().as_deref(),
-        Some("claim-fenced-reference"),
-        "E1 exact reference"
-    );
-    {
-        let state = runtime.st.lock().unwrap();
-        assert!(
-            state.created_binds["cid-native-memory"]
-                .iter()
-                .all(|bind| bind.mount_path != "/workspace/.mnt/memory")
+        let sandbox = provider.create(&sandbox_spec).await.expect("NM1 create");
+        assert_eq!(
+            reference.lock().unwrap().as_deref(),
+            Some("claim-fenced-reference"),
+            "E1 exact reference"
         );
-        let mount = &state.created_memory_mounts["cid-native-memory"][0];
-        assert!(!mount.snapshot_tar.is_empty(), "E1 seeded snapshot");
-    }
+        {
+            let state = runtime.st.lock().unwrap();
+            assert!(
+                state.created_binds["cid-native-memory"]
+                    .iter()
+                    .all(|bind| bind.mount_path != "/workspace/.mnt/memory")
+            );
+            let mount = &state.created_memory_mounts["cid-native-memory"][0];
+            assert!(!mount.snapshot_tar.is_empty(), "E1 seeded snapshot");
+        }
 
-    sandbox.dispose_unattached().await.expect("NM1 dispose");
-    assert_eq!(
-        harvested.lock().unwrap().as_deref(),
-        Some(b"changed-in-pod".as_slice()),
-        "E2 same mounter harvest"
-    );
+        if unquiet {
+            sandbox.spawn(pc::Command::new(["true"])).await.unwrap();
+            runtime.st.lock().unwrap().fail_spawn = true;
+        }
+        let result = sandbox.dispose_unattached().await;
+        assert_eq!(result.is_err(), unquiet, "NM1/NM3");
+        if unquiet {
+            assert!(
+                harvested.lock().unwrap().is_none(),
+                "NM3 no concurrent snapshot"
+            );
+            assert!(
+                !runtime.st.lock().unwrap().removals.is_empty(),
+                "NM3 removal still completes"
+            );
+            continue;
+        }
+        assert_eq!(
+            harvested.lock().unwrap().as_deref(),
+            Some(b"changed-in-pod".as_slice()),
+            "E2 same mounter harvest"
+        );
+    }
 }
 
 #[tokio::test]
@@ -6951,6 +6972,41 @@ async fn failed_remote_credential_harvest_blocks_writeback_and_environment_remov
             .get("cid-rejected-credential-writeback"),
         Some(&true),
         "D3 preserve the environment until broker recovery"
+    );
+}
+
+#[tokio::test]
+async fn unquiet_credential_disposal_never_reads_or_publishes_and_can_retry() {
+    // Causes: C1 writable durable credential; C2 old exec exists; C3 reap fails
+    // while live credential reads would succeed; C4 reap succeeds on retry.
+    // R1 C1+C2+C3 => zero credential reads/writebacks/removal, retain source.
+    // R2 C4 => harvest exact live bytes once, publish once, remove source.
+    let runtime = Arc::new(FakeRuntime::default().with_live_credential(b"rotated"));
+    let broker = Arc::new(RecordingSecretBroker::default());
+    let provider =
+        ContainerProvider::for_test(runtime.clone(), "fixture").with_secret_broker(broker.clone());
+    let sandbox = provider
+        .create_container(&writable_credential_spec("unquiet-secret"))
+        .await
+        .unwrap();
+    pc::Sandbox::spawn(&sandbox, pc::Command::new(["true"]))
+        .await
+        .unwrap();
+    runtime.st.lock().unwrap().fail_spawn = true;
+    assert!(sandbox.dispose().await.is_err(), "R1");
+    {
+        let state = runtime.st.lock().unwrap();
+        assert_eq!(state.live_credential_reads, 0, "R1");
+        assert!(state.removals.is_empty(), "R1");
+    }
+    assert!(broker.writes.lock().unwrap().is_empty(), "R1");
+    runtime.st.lock().unwrap().fail_spawn = false;
+    sandbox.dispose().await.unwrap();
+    assert_eq!(runtime.st.lock().unwrap().live_credential_reads, 1, "R2");
+    assert_eq!(
+        broker.writes.lock().unwrap().as_slice(),
+        &[b"rotated".to_vec()],
+        "R2"
     );
 }
 

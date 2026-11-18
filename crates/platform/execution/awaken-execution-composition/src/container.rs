@@ -98,6 +98,9 @@ async fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
             capacity: None,
         });
     }
+    if !leased {
+        return Err("warm container capacity requires durable capacity reclamation; use image prewarming for this runtime".into());
+    }
     #[cfg(not(unix))]
     {
         let _ = (leased, clock);
@@ -113,8 +116,7 @@ async fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
         );
         // Warm capacity outlives this process only as far as its host lease
         // records reach: this reclaims what a dead incarnation left once its lease
-        // expired, and keeps this pool's own records renewed. A runtime that names
-        // no lease domain (Kubernetes) keeps process-local warm capacity.
+        // expired, and keeps this pool's own records renewed.
         if leased {
             // The host lease records are judged on the process clock the
             // composition chose for the Host.
@@ -452,11 +454,10 @@ mod tests {
 
     #[tokio::test]
     async fn provider_selection_supports_direct_and_warm_pool_shapes() {
-        /* Capacity selection table: C1=size 0 or positive; C2=Unix lease
-         * substrate or Windows host. E1 size 0 returns the direct provider;
-         * E2 positive+Unix returns one warm-capacity owner; E3 positive+Windows
-         * fails explicitly before allocating capacity. R1=zero=>E1;
-         * R2=positive+Unix=>E2; R3=positive+Windows=>E3. */
+        /* Capacity selection table: C1=size zero/positive; C2=runtime has
+         * durable reclamation; C3=Unix lease substrate. R1 zero=>direct;
+         * R2 positive+!C2=>refuse before allocating. Existing lease tests own
+         * positive durable reclamation and isolated backend fault cases. */
         use awaken_sandbox_container::podman::PodmanRuntime;
 
         let settings = awaken_deployment_config::SandboxSettings {
@@ -475,13 +476,12 @@ mod tests {
         };
         let pooled = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
         let pooled = wrap(pooled, false, &settings, awaken_time::system_clock()).await;
-        #[cfg(unix)]
-        assert!(pooled.unwrap().capacity.is_some(), "R2");
-        #[cfg(not(unix))]
         assert!(
-            pooled.is_err_and(|error| error.contains("requires the Unix host lease protocol")),
-            "R3"
+            pooled.is_err_and(|error| error.contains("requires durable capacity reclamation")),
+            "R2"
         );
+        // Positive durable-lease creation/reclamation is covered with an
+        // isolated fake daemon and temporary lease root in pool::lease_tests.
     }
 
     #[test]

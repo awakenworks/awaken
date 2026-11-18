@@ -445,3 +445,131 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
     sandbox.dispose_unattached().await.unwrap();
     assert_eq!(broker.0.lock().unwrap().as_slice(), refreshed);
 }
+
+#[tokio::test]
+async fn podman_removal_reclaims_image_anonymous_volumes_and_preserves_named_cache() {
+    // Causes: C1 image declares VOLUME; C2 an explicitly named cache is also
+    // mounted; C3 remove is repeated after response loss. Effects: R1 C1 =>
+    // exact container and anonymous volume disappear through the compiled
+    // adapter; R2 C2 => named cache remains; R3 C3 => idempotent success.
+    // OCI execution is unnecessary: Podman creates image volumes at create.
+    // This test owns only nonce-named resources; its guard also runs on panic.
+    let rt = PodmanRuntime::new(AGENT_PORT);
+    if let Err(error) = rt.ping().await {
+        assert_ne!(
+            std::env::var("AWAKEN_TEST_REQUIRE_PODMAN").as_deref(),
+            Ok("1"),
+            "required Podman unavailable: {error}"
+        );
+        eprintln!("Podman volume qualification unavailable: {error}");
+        return;
+    }
+    fn cli(args: &[&str]) -> std::process::Output {
+        std::process::Command::new("podman")
+            .args(args)
+            .output()
+            .unwrap()
+    }
+    fn successful(args: &[&str]) -> String {
+        let output = cli(args);
+        assert!(
+            output.status.success(),
+            "Podman {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+    struct OwnedVolumeFixture {
+        name: String,
+        image: String,
+        cache: String,
+        anonymous: Option<String>,
+    }
+    impl Drop for OwnedVolumeFixture {
+        fn drop(&mut self) {
+            let _ = cli(&["rm", "--force", "--volumes", "--ignore", "--", &self.name]);
+            // A removal regression can delete the container yet leak its
+            // anonymous volume. Retain that exact id even after container loss.
+            if let Some(anonymous) = &self.anonymous {
+                let _ = cli(&["volume", "rm", "--", anonymous]);
+            }
+            let _ = cli(&["volume", "rm", "--", &self.cache]);
+            let _ = cli(&["image", "rm", "--", &self.image]);
+        }
+    }
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let mut owned = OwnedVolumeFixture {
+        name: format!("awaken-volume-test-{token}"),
+        image: format!("localhost/awaken-volume-test:{token}"),
+        cache: format!("awaken-cache-test-{token}"),
+        anonymous: None,
+    };
+    let root = tempfile::tempdir().unwrap();
+    // Use an already cached exact base; no registry pull or mutable base change.
+    let base = successful(&[
+        "image",
+        "inspect",
+        "--format",
+        "{{.Id}}",
+        "docker.io/library/busybox:latest",
+    ]);
+    std::fs::write(
+        root.path().join("Containerfile"),
+        format!("FROM {base}\nVOLUME /awaken-anonymous\n"),
+    )
+    .unwrap();
+    successful(&[
+        "build",
+        "--pull=never",
+        "--network=none",
+        "--force-rm",
+        "--tag",
+        &owned.image,
+        root.path().to_str().unwrap(),
+    ]);
+    successful(&["volume", "create", &owned.cache]);
+    let container = successful(&[
+        "create",
+        "--name",
+        &owned.name,
+        "--network=none",
+        "--volume",
+        &format!("{}:/cache", owned.cache),
+        &owned.image,
+        "true",
+    ]);
+    let mounts: serde_json::Value = serde_json::from_str(&successful(&[
+        "inspect",
+        "--format",
+        "{{json .Mounts}}",
+        &container,
+    ]))
+    .unwrap();
+    let anonymous = mounts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|mount| mount["Destination"] == "/awaken-anonymous")
+        .unwrap()["Name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    owned.anonymous = Some(anonymous.clone());
+    assert_ne!(anonymous, owned.cache);
+    rt.remove(&container).await.unwrap();
+    assert_eq!(
+        cli(&["container", "exists", &container]).status.code(),
+        Some(1),
+        "R1"
+    );
+    assert_eq!(
+        cli(&["volume", "exists", &anonymous]).status.code(),
+        Some(1),
+        "R1"
+    );
+    assert!(
+        cli(&["volume", "exists", &owned.cache]).status.success(),
+        "R2"
+    );
+    rt.remove(&container).await.unwrap();
+}

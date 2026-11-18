@@ -1,6 +1,40 @@
 //! One live Session environment shared by native tools, processes, ACP, and Skill paths.
 
 use super::*;
+use awaken_session_environment_contract::ContainerHandResidency;
+
+#[test]
+fn checkpoint_formats_require_the_composed_hand_to_support_quiescence() {
+    // Causes: C1 provider exports a checkpoint codec; C2 Hand is resident or
+    // attached. Rules: R1 C1+attached => preserve exact formats; R2 C1+resident
+    // => no continuation admission, before any physical create or suspend.
+    // Existing quiescence tests own retained resident-process retry behavior.
+    for residency in [
+        ContainerHandResidency::AttachedExec,
+        ContainerHandResidency::Resident,
+    ] {
+        let provider = Arc::new(FakeContainerProvider::default());
+        *provider.checkpoint_formats.lock() = vec!["test-writable-format".into()];
+        let configured = SandboxEnvironmentProvider::container_with_hand_idle_and_residency(
+            provider.clone(),
+            Vec::new(),
+            Arc::new(FakeHandExecutorFactory),
+            "hand",
+            std::time::Duration::ZERO,
+            residency,
+            awaken_time::system_clock(),
+        );
+        assert_eq!(
+            configured.checkpoint_formats(),
+            if residency == ContainerHandResidency::Resident {
+                Vec::<String>::new()
+            } else {
+                vec!["test-writable-format".into()]
+            }
+        );
+        assert_eq!(provider.creates.load(Ordering::SeqCst), 0);
+    }
+}
 
 #[tokio::test]
 async fn revoked_container_rebinds_only_a_proven_owned_path_successor() {

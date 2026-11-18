@@ -148,10 +148,13 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     /// they are archived.
     async fn harvest_memory_snapshots(
         &self,
-        // Taken for its existence, not its contents: holding one is the proof
-        // that nothing new can be writing to what this reads.
-        _seal: &crate::exec_attempts::DisposalSeal,
+        seal: &crate::exec_attempts::DisposalSeal,
     ) -> Result<(), pc::SandboxError> {
+        if seal.unquiet().is_some() {
+            // Closing admission does not prove old writers stopped. Preserve
+            // the previous snapshot; prepare_disposal reports the skipped read.
+            return Ok(());
+        }
         let mut memory = self.lifecycle.memory.lock().await;
         let Some(memory) = memory.as_mut() else {
             return Ok(());

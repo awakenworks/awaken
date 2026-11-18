@@ -667,13 +667,7 @@ impl ContainerRuntime for PodmanRuntime {
                     // Only the shared fingerprint+Session-fence decision can
                     // authorize force removal, and the target is the immutable
                     // observed container id rather than the reusable name.
-                    let removal = self
-                        .run(&[
-                            "rm".into(),
-                            "--force".into(),
-                            observed.incarnation.identity.clone(),
-                        ])
-                        .await;
+                    let removal = self.remove(&observed.incarnation.identity).await;
                     let after = self
                         .create_decision(context, Some(realization_fingerprint))
                         .await
@@ -1152,9 +1146,18 @@ impl ContainerRuntime for PodmanRuntime {
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        self.run(&["rm".into(), "-f".into(), container_id.into()])
-            .await
-            .map(|_| ())
+        // Podman's --volumes removes anonymous image volumes, retaining named
+        // cache volumes. --ignore makes response-loss/absence retries idempotent.
+        self.run(&[
+            "rm".into(),
+            "--force".into(),
+            "--volumes".into(),
+            "--ignore".into(),
+            "--".into(),
+            container_id.into(),
+        ])
+        .await
+        .map(|_| ())
     }
 
     fn capacity_lease_domain(&self) -> Option<String> {
@@ -1166,9 +1169,7 @@ impl ContainerRuntime for PodmanRuntime {
         // "absent is success": the cancelled create may never have reached
         // Podman at all.
         let name = runtime_container_name(self.realization_namespace.as_str(), scope)?;
-        self.run(&["rm".into(), "-f".into(), "--ignore".into(), name])
-            .await
-            .map(|_| ())
+        self.remove(&name).await
     }
 
     async fn remove_exact_incarnation(

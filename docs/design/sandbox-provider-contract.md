@@ -49,6 +49,30 @@ allowlist capability and normalization imports do not change. This source
 migration does not claim that awaken-cloud or a deployment has been qualified.
 
 
+## Lifecycle resource safety (2026-11-18)
+
+Session root state, effect fencing and the existing provider remain the sole
+lifecycle and physical disposal authorities. Checkpoint format advertisement
+belongs to the composed Environment: a container codec alone cannot promise
+quiescence of its resident Hand. Until that Hand supplies a qualified quiescence
+proof, its Environment advertises no checkpoint format; admission refuses
+checkpoint-and-release before committing a suspend intent. Resident execution
+and durable request recovery retain their existing behavior.
+
+Disposal seals admission, observes existing execs stop, then harvests mutable
+bytes. An unquiet seal skips optional unattached Memory harvest without replacing
+the host snapshot, and reports incomplete harvest after removal. Pending durable
+credential writeback instead preserves the environment and refuses both the
+read and publication until a retry proves quiescence. Managed Memory continues
+through Host terminal reconciliation and its existing acknowledgement.
+
+Podman removal uses one adapter edge for normal, exact replacement and unused
+capacity removal. It removes anonymous image volumes with their container,
+preserves explicitly named caches, and treats confirmed CLI absence as success.
+Warm capacity failures remain owned by the existing pool/host lease machinery;
+a backend without durable capacity reclamation must not enable hosted warm
+capacity. Neither labels nor age authorize deleting a retained Session PVC.
+
 ## Container failure value ownership (2026-10-18)
 
 `awaken-container-contract::RuntimeError` owns the existing seven container

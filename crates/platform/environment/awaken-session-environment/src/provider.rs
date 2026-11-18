@@ -974,7 +974,11 @@ impl pc::SandboxReadiness for SandboxEnvironmentProvider {
         match self {
             Self::Workdir { provider, .. } => pc::SandboxReadiness::checkpoint_formats(provider),
             Self::Namespace { provider, .. } => pc::SandboxReadiness::checkpoint_formats(provider),
-            Self::Container { provider, .. } => provider.checkpoint_formats(),
+            Self::Container {
+                provider,
+                hand_residency,
+                ..
+            } => hand_residency.checkpoint_formats(provider.checkpoint_formats()),
         }
     }
 

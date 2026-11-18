@@ -1437,9 +1437,7 @@ impl ContainerCleanupState {
         container_id: &str,
         effect: Option<(&pc::SandboxEffectFence, &pc::SandboxHandle)>,
         authorize: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
-        // Taken for its existence, not its contents: holding one is the proof
-        // that nothing new can be writing to what this reads.
-        _seal: &crate::exec_attempts::DisposalSeal,
+        seal: &crate::exec_attempts::DisposalSeal,
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.writeback_done.lock().await;
         authorize()?;
@@ -1447,6 +1445,12 @@ impl ContainerCleanupState {
             return Ok(());
         }
         if !self.secret_writebacks.is_empty() {
+            if let Some(why) = seal.unquiet() {
+                return Err(pc::SandboxError::backend(
+                    "write_back_secrets",
+                    format!("durable credential harvest requires quiescence: {why}"),
+                ));
+            }
             let broker = self.secret_broker.as_ref().ok_or_else(|| {
                 pc::SandboxError::unsupported("durable writable Secret has no credential broker")
             })?;

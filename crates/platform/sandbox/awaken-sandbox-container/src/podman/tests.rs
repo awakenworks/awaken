@@ -880,12 +880,27 @@ async fn read_artifact_returns_the_tar_stream_or_maps_the_error() {
 
 #[tokio::test]
 async fn remove_force_deletes_the_container() {
+    // Causes: C1 normal/exact cleanup vs unreceipted scope; C2 container may
+    // already be absent; C3 CLI rejects removal. R1 C1+C2 uses one idempotent
+    // edge with anonymous-volume removal; R2 C3 propagates failure. Named
+    // volume preservation is qualified against real Podman in the live suite.
     let (rt, fake) = runtime_with(9000, |_| ok(""));
     rt.remove("cid").await.unwrap();
     assert_eq!(
         *fake.calls.lock().unwrap().last().unwrap(),
-        vec!["rm", "-f", "cid"]
+        vec!["rm", "--force", "--volumes", "--ignore", "--", "cid"]
     );
+    rt.remove_unreceipted_scope("warm").await.unwrap();
+    {
+        let calls = fake.calls.lock().unwrap();
+        let args = calls.last().unwrap();
+        assert_eq!(
+            &args[..5],
+            &["rm", "--force", "--volumes", "--ignore", "--"]
+        );
+    }
+    let (refusing, _) = runtime_with(9000, |_| err("permission denied"));
+    assert!(refusing.remove("cid").await.is_err(), "R2");
 }
 
 fn exec_process(child: Option<Child>, bin: &str) -> PodmanExecProcess {

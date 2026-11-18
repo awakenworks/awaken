@@ -896,9 +896,11 @@ impl WorkerNodeBuilder {
             &self.session_container_provider,
             &self.prepared_local_sandbox,
         ) {
-            (Some(installed), _) => installed
-                .provider
-                .checkpoint_formats()
+            (Some(installed), _) => self
+                .deployment
+                .sandbox
+                .container_hand_residency
+                .checkpoint_formats(installed.provider.checkpoint_formats())
                 .into_iter()
                 .collect(),
             // A local provider always knows its format; it promises restore

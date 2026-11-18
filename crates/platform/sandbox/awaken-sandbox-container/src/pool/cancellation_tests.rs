@@ -146,3 +146,39 @@ fn warm_scopes_are_unique_per_incarnation_rather_than_per_pid() {
     let pid_prefix = format!("warmpool-{}-", std::process::id());
     assert!(!first.starts_with(&pid_prefix), "E2 {first}");
 }
+
+#[tokio::test]
+async fn returned_readiness_and_retirement_errors_retain_exact_cleanup_handles() {
+    // Causes: C1 readiness fails / ready candidate is discarded; C2 physical
+    // removal fails; C3 drain retries before/after backend recovery.
+    // R1 C1+C2 => candidate never enters ready capacity; exact cleanup remains
+    // owned even though ClaimedEffect returned Err and settled.
+    // R2 C3+failure => record remains. R3 C3+recovery => remove exact handle,
+    // clear record, never fall back to unsafe name-only deletion.
+    for initially_ready in [false, true] {
+        let runtime = Arc::new(RecordingRuntime::ready());
+        runtime.ready.store(initially_ready, Ordering::SeqCst);
+        let pool = recording_pool(runtime.clone(), 1);
+        let spec = spec("failed-warm-disposal", &[]);
+        if initially_ready {
+            pool.prewarm(&spec, 1).await.unwrap();
+        }
+        runtime.fail_remove.store(true, Ordering::SeqCst);
+        if initially_ready {
+            pool.discard(&spec).await;
+        } else {
+            assert!(pool.prewarm(&spec, 1).await.is_err(), "R1");
+        }
+        assert_eq!(pool.ready_len(&spec), 0, "R1");
+        assert_eq!(pool.unreceipted_warm_scopes().len(), 1, "R1");
+        pool.shutdown().await;
+        assert_eq!(pool.unreceipted_warm_scopes().len(), 1, "R2");
+        runtime.fail_remove.store(false, Ordering::SeqCst);
+        pool.shutdown().await;
+        assert!(pool.unreceipted_warm_scopes().is_empty(), "R3");
+        assert!(
+            runtime.unreceipted_removals.lock().unwrap().is_empty(),
+            "R3 exact handle"
+        );
+    }
+}
