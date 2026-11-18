@@ -8,7 +8,7 @@
 //! |---|---|---|---|---|
 //! | K1 | none | absent | any | ordinary mode |
 //! | K2 | some | absent | any | refused |
-//! | K3 | none | present | any | refused |
+//! | K3 | none | present | any | byte maintenance only; no format advertised |
 //! | K4 | some | present | Unsupported | refused before any Environment exists |
 //! | K5 | some | present | targets or restorable | admitted |
 
@@ -28,9 +28,10 @@ pub(super) fn validate(
     checkpoint_store: bool,
 ) -> Result<(), WorkerNodeBuildError> {
     let refusal = match (formats.is_empty(), checkpoint_store) {
-        (true, false) => return Ok(()),
+        // Byte custody also services terminal deletion and response-lost upload
+        // cleanup. Its presence cannot manufacture a capture/restore format.
+        (true, _) => return Ok(()),
         (false, false) => "checkpoint-capable Session provider requires a checkpoint store",
-        (true, true) => "checkpoint store requires a checkpoint-capable Session provider",
         (false, true)
             if provider.is_some_and(|provider| provider.restoration().targets().is_err()) =>
         {

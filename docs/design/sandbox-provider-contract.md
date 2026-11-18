@@ -58,6 +58,11 @@ quiescence of its resident Hand. Until that Hand supplies a qualified quiescence
 proof, its Environment advertises no checkpoint format; admission refuses
 checkpoint-and-release before committing a suspend intent. Resident execution
 and durable request recovery retain their existing behavior.
+The byte store may remain installed without an advertised checkpoint format:
+terminal recovery still needs its existing read/delete port for checkpoints or
+uploads already owned by the root. Store presence alone grants no capture or
+restore placement capability. Advertising a format still requires both byte
+custody and the matching restoration rung.
 
 Disposal seals admission, observes existing execs stop, then harvests mutable
 bytes. An unquiet seal skips optional unattached Memory harvest without replacing

@@ -1244,7 +1244,7 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
         "R3"
     );
 
-    // R4 resident Hand + codec + store => refuse before registration/suspend;
+    // R4 resident Hand + codec + store => retain terminal byte maintenance;
     // R5 resident + codec without store => ordinary resident execution remains
     // available, but the manifest cannot place checkpoint-and-release work.
     for store in [false, true] {
@@ -1253,13 +1253,20 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
             awaken_session_environment_contract::ContainerHandResidency::Resident;
         let builder = base().with_deployment_config(deployment, false);
         if store {
-            let result = builder
+            let worker = builder
                 .with_environment_checkpoint_store(Arc::new(UnusedCheckpointStore))
-                .build();
-            assert_eq!(
-                result.err().unwrap().to_string(),
-                "checkpoint store requires a checkpoint-capable Session provider",
-                "R4"
+                .build()
+                .expect("R4 resident maintenance");
+            assert!(
+                worker.application.capabilities().unwrap().checkpoint_store,
+                "R4 byte custody retained"
+            );
+            assert!(
+                !worker
+                    .manifest()
+                    .checkpoint_formats
+                    .contains("hosted-csi-v1"),
+                "R4 no checkpoint-and-release placement"
             );
         } else {
             let worker = builder.build().expect("R5");

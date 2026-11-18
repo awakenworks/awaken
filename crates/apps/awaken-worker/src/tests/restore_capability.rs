@@ -6,7 +6,7 @@
 //! |---|---|---|---|---|
 //! | K1 | none | absent | Unsupported | ordinary mode builds; no provider format advertised |
 //! | K2 | hosted | absent | Unsupported | refused (format/store pairing) |
-//! | K3 | none | present | Unsupported | refused (store without format) |
+//! | K3 | none | present | Unsupported | maintenance store retained; no provider format advertised |
 //! | K4 | hosted | present | Unsupported | refused at construction, zero creates |
 //!
 //! K4 is the restore-capability rung: a manifest that advertises checkpoint
@@ -278,16 +278,22 @@ async fn restore_capability_pairing_and_ordinary_mode_hold_and_late_option_disco
     );
     assert_eq!(formats_only.creates(), 0, "K2 zero creates");
 
-    // K3 store without formats.
+    // K3 byte custody without capture formats preserves terminal maintenance;
+    // its presence cannot grant restore placement or cause a physical create.
     let store_only = Arc::new(CountingRestoreProvider::new(&[]));
-    assert_eq!(
-        builder(store_only.clone(), true)
-            .build()
-            .err()
-            .expect("K3 must fail closed")
-            .to_string(),
-        "checkpoint store requires a checkpoint-capable Session provider",
-        "K3"
+    let worker = builder(store_only.clone(), true)
+        .build()
+        .expect("K3 maintenance");
+    assert!(
+        worker.application.capabilities().unwrap().checkpoint_store,
+        "K3 store remains"
+    );
+    assert!(
+        !worker
+            .manifest()
+            .checkpoint_formats
+            .contains("hosted-csi-v1"),
+        "K3 no format grant"
     );
     assert_eq!(store_only.creates(), 0, "K3 zero creates");
 
