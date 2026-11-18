@@ -339,6 +339,23 @@ impl WorkConsumer {
         }
         Ok(result)
     }
+
+    pub async fn request_stop(
+        &self,
+        environment_id: &str,
+        work_id: &str,
+        worker_id: &str,
+    ) -> Result<storage::WorkMutationResult, EnvironmentExecutionError> {
+        self.context.require_environment(environment_id).await?;
+        let result = self
+            .port
+            .request_stop(environment_id, work_id, worker_id)
+            .await?;
+        if matches!(result, storage::WorkMutationResult::Accepted(_)) {
+            self.waits.notify(environment_id);
+        }
+        Ok(result)
+    }
 }
 
 /// Authenticate a Session bearer against the current durable Work lease.
@@ -424,6 +441,20 @@ impl SessionWorkLeaseControl {
             .require_environment(&access.environment_id)
             .await?;
         let result = self.port.stop_with_session_access(access).await?;
+        if matches!(result, storage::WorkMutationResult::Accepted(_)) {
+            self.waits.notify(&access.environment_id);
+        }
+        Ok(result)
+    }
+
+    pub async fn request_stop(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<storage::WorkMutationResult, EnvironmentExecutionError> {
+        self.context
+            .require_environment(&access.environment_id)
+            .await?;
+        let result = self.port.request_stop_with_session_access(access).await?;
         if matches!(result, storage::WorkMutationResult::Accepted(_)) {
             self.waits.notify(&access.environment_id);
         }
@@ -567,5 +598,89 @@ mod wait_tests {
             .await;
         assert_eq!(result, Ok(Some("reclaimable")));
         assert_eq!(mono::now() - start, EMPTY_RECHECK);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_probes_release_the_waiter_and_do_not_publish_an_empty_result() {
+        // Cancel while inside the store probe. Its mutex and registry owner
+        // must disappear; a replacement request observes its own grant.
+        let waits = WorkWaits::default();
+        let watch = waits.subscribe("t");
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let signal = entered.clone();
+        let waiting = tokio::spawn(async move {
+            watch
+                .claim(
+                    MonoDeadline::after(Duration::from_secs(10)),
+                    None,
+                    || async {
+                        signal.notify_one();
+                        std::future::pending::<Result<Option<usize>, ()>>().await
+                    },
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .unwrap();
+        waiting.abort();
+        assert!(waiting.await.unwrap_err().is_cancelled());
+        assert!(waits.0.lock().is_empty());
+        let replacement = waits.subscribe("t");
+        assert_eq!(
+            replacement
+                .claim(
+                    MonoDeadline::after(Duration::from_secs(1)),
+                    None,
+                    || async { Ok::<_, ()>(Some(7)) }
+                )
+                .await,
+            Ok(Some(7))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_store_probes_are_not_shared_as_successful_empty_reads() {
+        let waits = WorkWaits::default();
+        let watch = waits.subscribe("t");
+        let deadline = MonoDeadline::after(Duration::from_secs(1));
+        assert_eq!(
+            watch
+                .claim(deadline, None, || async {
+                    Err::<Option<usize>, _>("store unavailable")
+                })
+                .await,
+            Err("store unavailable")
+        );
+        assert!(watch.entry.empty.lock().await.is_none());
+        assert_eq!(
+            watch
+                .claim(deadline, Some(1), || async { Ok::<_, &str>(Some(9)) })
+                .await,
+            Ok(Some(9))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn distinct_reclaim_windows_keep_their_own_discovery_semantics() {
+        let waits = WorkWaits::default();
+        let a = waits.subscribe("t");
+        let b = waits.subscribe("t");
+        let probes = AtomicUsize::new(0);
+        let deadline = MonoDeadline::after(Duration::from_millis(70));
+        let (empty, ready) = tokio::join!(
+            a.claim(deadline, Some(1), || async {
+                Ok::<Option<usize>, ()>(None)
+            }),
+            b.claim(deadline, Some(2), || async {
+                Ok::<_, ()>((probes.fetch_add(1, Relaxed) > 0).then_some(2))
+            }),
+        );
+        assert_eq!(empty, Ok(None));
+        assert_eq!(
+            ready,
+            Ok(Some(2)),
+            "a different reclaim window cannot reuse another caller's empty observation"
+        );
     }
 }

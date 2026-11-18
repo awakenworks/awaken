@@ -1506,6 +1506,15 @@ mod tests {
         {
             self.inner.stop(env, work, worker).await
         }
+        async fn request_stop(
+            &self,
+            env: &str,
+            work: &str,
+            worker: &str,
+        ) -> Result<awaken_executable_environment_contract::WorkMutationResult, WorkQueueError>
+        {
+            self.inner.request_stop(env, work, worker).await
+        }
     }
 
     #[async_trait::async_trait]
@@ -1545,6 +1554,13 @@ mod tests {
         ) -> Result<awaken_executable_environment_contract::WorkMutationResult, WorkQueueError>
         {
             self.inner.stop_with_session_access(access).await
+        }
+        async fn request_stop_with_session_access(
+            &self,
+            access: &awaken_executable_environment_contract::WorkSessionAccess,
+        ) -> Result<awaken_executable_environment_contract::WorkMutationResult, WorkQueueError>
+        {
+            self.inner.request_stop_with_session_access(access).await
         }
     }
 

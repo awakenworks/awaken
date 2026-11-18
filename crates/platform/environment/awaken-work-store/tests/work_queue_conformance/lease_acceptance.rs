@@ -1075,6 +1075,241 @@ async fn postgres_mutation_snapshot_matches(
 mod stop_replay;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn graceful_stop_preserves_the_epoch_until_completion_or_expiry() {
+    // R1 owner/exact epoch requests stopping, never renewal; R2 another owner
+    // or epoch is refused; R3 stopping blocks public/native takeover; R4 force
+    // or TTL settles only this epoch; R5 a fresh wake fences every old proof.
+    gap_backends(
+        "graceful stop violated lease authority",
+        async |pair: &Pair| {
+            for (index, bound) in [false, true].into_iter().enumerate() {
+                let base = index as u64 * LEASE_TTL_MS * 8;
+                let env = format!("graceful-{index}");
+                let (work, proof) = claimed_work(pair, &env, true, base).await;
+                let proof = proof.unwrap();
+                let next = pair
+                    .a
+                    .enqueue_session(&env, &SessionId::from(format!("next-{index}")))
+                    .await
+                    .unwrap();
+                pair.clock.set(base + 100);
+                let requested = if bound {
+                    pair.a.request_stop_with_session_access(&proof).await
+                } else {
+                    pair.a.request_stop(&env, &work, "owner").await
+                }
+                .unwrap()
+                .into_item()
+                .unwrap();
+                assert_eq!(requested.state, WorkState::Stopping, "{}", pair.label);
+                assert!(requested.stopped_at.is_none());
+                let shutdown_access = pair.b.authenticate_session_access(&session_access_digest(base + 901)).await.unwrap().expect("the original token can finish shutdown");
+                assert_eq!(shutdown_access.lease_epoch, proof.lease_epoch);
+                assert_eq!(shutdown_access.expires_at_unix_ms, proof.expires_at_unix_ms);
+                let retry = pair
+                    .b
+                    .request_stop_with_session_access(&proof)
+                    .await
+                    .unwrap()
+                    .into_item()
+                    .unwrap();
+                assert!(same_item(&requested, &retry));
+                assert!(matches!(
+                    pair.b.request_stop(&env, &work, "other").await.unwrap(),
+                    WorkMutationResult::PreconditionFailed
+                ));
+                let mut wrong = proof.clone();
+                wrong.lease_epoch = awaken_lease_contract::fence::Epoch::from_persisted(
+                    proof.lease_epoch.get() + 1,
+                )
+                .unwrap();
+                assert!(matches!(
+                    pair.b
+                        .request_stop_with_session_access(&wrong)
+                        .await
+                        .unwrap(),
+                    WorkMutationResult::PreconditionFailed
+                ));
+                let HeartbeatResult::Accepted(heartbeat) = pair
+                    .b
+                    .heartbeat_with_session_access(&proof, LeaseHeartbeat { condition: awaken_executable_environment_contract::HeartbeatCondition::Unconditional, desired_ttl_seconds: None })
+                    .await
+                    .unwrap()
+                else {
+                    panic!("heartbeat cannot signal shutdown")
+                };
+                assert_eq!(heartbeat.state, WorkState::Stopping);
+                assert!(!heartbeat.lease_extended);
+                assert!(
+                    pair.b
+                        .acquire_session(
+                            &env,
+                            &SessionId::from(format!("next-{index}")),
+                            "native-owner"
+                        )
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "native claim cannot bypass shutdown"
+                );
+                assert!(
+                    pair.b
+                        .claim_with_reclaim(&env, "other", "other", Some(0))
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                let stopped = if bound {
+                    pair.clock.set(base + LEASE_TTL_MS);
+                    // No stop acknowledgement: expiry frees the next item, never
+                    // requeues the stopping item or extends it from heartbeat.
+                    assert_eq!(
+                        pair.b.claim(&env, "next-owner").await.unwrap().unwrap().id,
+                        next
+                    );
+                    pair.b.get(&env, &work).await.unwrap().unwrap()
+                } else {
+                    pair.clock.set(base + 200);
+                    pair.b
+                        .stop_with_session_access(&proof)
+                        .await
+                        .unwrap()
+                        .into_item()
+                        .unwrap()
+                };
+                assert_eq!(stopped.state, WorkState::Stopped);
+                assert!(pair.a.authenticate_session_access(&session_access_digest(base + 901)).await.unwrap().is_none(), "completion or expiry revokes the original token");
+                assert_eq!(stopped.stop_requested_at, requested.stop_requested_at);
+                assert!(stopped.stopped_at.is_some());
+                assert!(
+                    pair.a
+                        .stop_with_session_access(&proof)
+                        .await
+                        .unwrap()
+                        .into_item()
+                        .is_some()
+                );
+                pair.clock.set(base + LEASE_TTL_MS * 2);
+                pair.a.claim(&env, "next-owner").await.unwrap();
+                pair.a.stop(&env, &next, "next-owner").await.unwrap();
+                pair.a
+                    .wake_session(&env, &SessionId::from(env.as_str()))
+                    .await
+                    .unwrap();
+                assert!(pair.a.claim(&env, "owner").await.unwrap().is_some());
+                assert!(matches!(
+                    pair.b
+                        .request_stop_with_session_access(&proof)
+                        .await
+                        .unwrap(),
+                    WorkMutationResult::PreconditionFailed
+                ));
+                assert!(matches!(
+                    pair.b.stop_with_session_access(&proof).await.unwrap(),
+                    WorkMutationResult::PreconditionFailed
+                ));
+            }
+            true
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn graceful_stop_racing_completion_never_restores_the_released_lease() {
+    gap_backends("stop race restored a lease", async |pair: &Pair| {
+        let (work, proof) = claimed_work(pair, "stop-race", true, 0).await;
+        let proof = proof.unwrap();
+        let a = pair.a.clone();
+        let b = pair.b.clone();
+        let request = proof.clone();
+        let complete = proof.clone();
+        let (requested, completed, concurrent) = race(
+            false,
+            async move { a.request_stop_with_session_access(&request).await.unwrap() },
+            async move { b.stop_with_session_access(&complete).await.unwrap() },
+        )
+        .await;
+        assert_eq!(concurrent, 2);
+        assert!(requested.into_item().is_some());
+        assert_eq!(completed.into_item().unwrap().state, WorkState::Stopped);
+        assert_eq!(
+            pair.a.get("stop-race", &work).await.unwrap().unwrap().state,
+            WorkState::Stopped
+        );
+        assert!(
+            pair.a
+                .renew_exact_session(
+                    &awaken_session_types::SessionWorkLease::from_persisted(
+                        work,
+                        "stop-race",
+                        SessionId::from("stop-race"),
+                        "owner",
+                        proof.lease_epoch.get(),
+                        proof.expires_at_unix_ms,
+                    )
+                    .unwrap()
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        true
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn graceful_stop_can_be_completed_by_the_exact_native_binding() {
+    gap_backends(
+        "native completion lost shutdown intent",
+        async |pair: &Pair| {
+            let session = SessionId::from("native-shutdown");
+            pair.clock.set(0);
+            let lease = pair
+                .a
+                .acquire_session("native-shutdown", &session, "native")
+                .await
+                .unwrap()
+                .unwrap();
+            pair.clock.set(100);
+            let requested = pair
+                .a
+                .request_stop("native-shutdown", lease.work_id(), "native")
+                .await
+                .unwrap()
+                .into_item()
+                .unwrap();
+            assert_eq!(requested.state, WorkState::Stopping);
+            assert!(pair.b.renew_exact_session(&lease).await.unwrap().is_none());
+            pair.clock.set(200);
+            assert!(pair.b.release_session(&lease).await.unwrap());
+            let stopped = pair
+                .a
+                .get("native-shutdown", lease.work_id())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(stopped.state, WorkState::Stopped);
+            assert_eq!(stopped.stop_requested_at, requested.stop_requested_at);
+            assert!(pair.b.release_session(&lease).await.unwrap());
+            pair.a
+                .wake_session("native-shutdown", &session)
+                .await
+                .unwrap();
+            pair.a
+                .acquire_session("native-shutdown", &session, "native")
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!pair.b.release_session(&lease).await.unwrap());
+            true
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retried_stop_after_lost_response_replays() {
     stop_replay::retry_matrix().await;
 }

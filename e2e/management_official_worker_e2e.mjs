@@ -34,6 +34,7 @@ async function main() {
   try {
     await waitForPort(PORT);
     const stopCalls = new Map();
+    const heartbeatStates = new Map();
     const client = new Anthropic({
       apiKey: 'e2e-dummy',
       baseURL: baseUrl,
@@ -45,7 +46,16 @@ async function main() {
           const id = decodeURIComponent(match[1]);
           stopCalls.set(id, [...(stopCalls.get(id) ?? []), body ? JSON.parse(body).force : undefined]);
         }
-        return fetch(request);
+        // Observe the request without replacing the SDK's transport arguments.
+        // In particular its original AbortSignal must reach native fetch.
+        const response = await fetch(input, init);
+        const heartbeat = new URL(request.url).pathname.match(/\/work\/([^/]+)\/heartbeat$/);
+        if (request.method === 'POST' && heartbeat && response.ok) {
+          const id = decodeURIComponent(heartbeat[1]);
+          const { state } = await response.clone().json();
+          heartbeatStates.set(id, [...(heartbeatStates.get(id) ?? []), state]);
+        }
+        return response;
       },
     });
 
@@ -169,6 +179,56 @@ async function main() {
     assert.ok(stopped.stopped_at, 'EnvironmentWorker cancellation settles lease ownership');
     assert.deepEqual(stopCalls.get(active.id), [true], 'EnvironmentWorker requests forced stop on cancellation');
     pass('the official SDK EnvironmentWorker settles Awaken Session work unmodified');
+
+    // Graceful control-plane stop is not a lease release: heartbeat must tell
+    // the unmodified Worker to exit, and its own forced stop settles the lease.
+    const gracefulSession = await client.beta.sessions.create({
+      agent: 'assistant', environment_id: workerEnvironment.id, betas: BETAS,
+    });
+    const gracefulController = new AbortController();
+    const gracefulRunning = client.beta.environments.work.worker({
+      environmentId: workerEnvironment.id, environmentKey: 'e2e-env-key',
+      workdir, tools: [], maxIdleMs: 50, signal: gracefulController.signal,
+    }).run();
+    try {
+      const granted = await waitForValue(
+        async () => (await drain(client.beta.environments.work.list(workerEnvironment.id, { betas: BETAS })))
+          .find((work) => work.data.type === 'session' && work.data.id === gracefulSession.id),
+        (work) => work?.state === 'active' && work.latest_heartbeat_at !== null,
+        'the official Worker did not heartbeat the graceful-stop Session',
+        { timeoutMs: 20_000, pollMs: 40 },
+      );
+      const stopping = await client.beta.environments.work.stop(granted.id, {
+        environment_id: workerEnvironment.id, force: false, betas: BETAS,
+      }, { headers: { Authorization: 'Bearer e2e-env-key' } });
+      assert.equal(stopping.state, 'stopping');
+      assert.equal(stopping.stopped_at, null);
+      const settled = await waitForValue(
+        () => client.beta.environments.work.retrieve(granted.id, { environment_id: workerEnvironment.id, betas: BETAS }),
+        (work) => work.state === 'stopped',
+        'heartbeat did not lead the official Worker to confirm graceful shutdown',
+        // The locked SDK renews this 60-second lease every 30 seconds.
+        // Allow one real heartbeat plus shutdown; do not replace its timer.
+        { timeoutMs: 45_000, pollMs: 40 },
+      );
+      assert.equal(settled.stop_requested_at, stopping.stop_requested_at);
+      assert.ok(heartbeatStates.get(granted.id)?.includes('stopping'), 'the real SDK heartbeat observed the stop request');
+      assert.deepEqual(stopCalls.get(granted.id), [false, true]);
+      pass('graceful stop reaches the official Worker through heartbeat before forced completion');
+    } finally {
+      gracefulController.abort();
+      let shutdownDeadline;
+      try {
+        await Promise.race([
+          gracefulRunning,
+          new Promise((_, reject) => {
+            shutdownDeadline = setTimeout(() => reject(new Error('the official Worker did not exit after abort')), 10_000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(shutdownDeadline);
+      }
+    }
 
     console.log('E2E PASS: awaken’s work queue is driven by the official SDK EnvironmentWorker helper.');
     process.exitCode = 0;

@@ -59,13 +59,20 @@ pub struct ThreadEventHub {
     channels: Arc<Channels>,
 }
 
-type Channels = InvariantLock<HashMap<String, broadcast::Sender<ThreadEvent>>>;
+type Channels = InvariantLock<HashMap<String, Channel>>;
+type PreviewClaim = awaken_sync::LeafLock<Option<(String, u64)>>;
+
+struct Channel {
+    sender: broadcast::Sender<ThreadEvent>,
+    claim: Arc<PreviewClaim>,
+}
 
 /// Owns a receiver and removes its channel when the last observer leaves.
 pub struct ThreadSubscription {
     channels: Arc<Channels>,
     key: String,
     receiver: Option<broadcast::Receiver<ThreadEvent>>,
+    claim: Arc<PreviewClaim>,
 }
 
 impl ThreadSubscription {
@@ -93,7 +100,7 @@ impl Drop for ThreadSubscription {
             drop(self.receiver.take());
             if channels
                 .get(&self.key)
-                .is_some_and(|sender| sender.receiver_count() == 0)
+                .is_some_and(|channel| channel.sender.receiver_count() == 0)
             {
                 channels.remove(&self.key);
             }
@@ -114,14 +121,19 @@ impl ThreadEventHub {
             .channels
             .lock()
             .map_err(|_| DeliveryLock::ThreadEventHub)?;
-        let receiver = channels
+        let channel = channels
             .entry(thread_key.to_owned())
-            .or_insert_with(|| broadcast::channel(HUB_CAPACITY).0)
-            .subscribe();
+            .or_insert_with(|| Channel {
+                sender: broadcast::channel(HUB_CAPACITY).0,
+                claim: Arc::default(),
+            });
+        let receiver = channel.sender.subscribe();
+        let claim = channel.claim.clone();
         Ok(ThreadSubscription {
             channels: self.channels.clone(),
             key: thread_key.to_owned(),
             receiver: Some(receiver),
+            claim,
         })
     }
 
@@ -129,7 +141,7 @@ impl ThreadEventHub {
     pub fn publish(&self, thread_key: &str, event: ThreadEvent) {
         match self.channels.lock() {
             Ok(channels) => {
-                if let Some(sender) = channels.get(thread_key) {
+                if let Some(channel) = channels.get(thread_key) {
                     let event = match (event, awaken_dispatch_contract::preview_claim_epoch()) {
                         (ThreadEvent::Live(observation), Some(epoch)) => ThreadEvent::ClaimedLive(
                             awaken_session_execution_contract::ThreadLiveObservation {
@@ -139,7 +151,18 @@ impl ThreadEventHub {
                         ),
                         (event, _) => event,
                     };
-                    let _ = sender.send(event);
+                    if let ThreadEvent::ClaimedLive(live) = &event
+                        && let Some(epoch) = live.epoch
+                    {
+                        let mut claim = channel.claim.lock();
+                        if claim.as_ref().is_some_and(|(run, latest)| {
+                            run == &live.observation.event.run_id.0 && epoch.get() < *latest
+                        }) {
+                            return;
+                        }
+                        *claim = Some((live.observation.event.run_id.0.clone(), epoch.get()));
+                    }
+                    let _ = channel.sender.send(event);
                 }
             }
             Err(_) => tracing::error!(
@@ -181,12 +204,36 @@ impl awaken_session_execution_contract::SessionThreadLiveSubscription for HubLiv
         loop {
             match self.receiver.recv().await {
                 Ok(ThreadEvent::Live(observation)) => {
+                    if self
+                        .receiver
+                        .claim
+                        .lock()
+                        .as_ref()
+                        .is_some_and(|(run, _)| run == &observation.event.run_id.0)
+                    {
+                        continue;
+                    }
                     return Ok(Some(ThreadLiveObservation {
                         observation,
                         epoch: None,
                     }));
                 }
-                Ok(ThreadEvent::ClaimedLive(live)) => return Ok(Some(live)),
+                Ok(ThreadEvent::ClaimedLive(live)) => {
+                    // Recheck attribution at dequeue: a newer publication can
+                    // fence an older queued preview before this receiver sees it.
+                    if live.epoch.is_some_and(|epoch| {
+                        self.receiver
+                            .claim
+                            .lock()
+                            .as_ref()
+                            .is_some_and(|(run, newest)| {
+                                run == &live.observation.event.run_id.0 && epoch.get() < *newest
+                            })
+                    }) {
+                        continue;
+                    }
+                    return Ok(Some(live));
+                }
                 Ok(
                     ThreadEvent::Committed(_)
                     | ThreadEvent::StepEnded { .. }
@@ -354,5 +401,47 @@ mod tests {
             .unwrap();
         assert_eq!(live.observation.event.run_id.0, "run");
         assert_eq!(live.epoch.map(|epoch| epoch.get()), Some(7));
+    }
+
+    #[tokio::test]
+    async fn a_new_publication_fences_older_queued_previews_before_the_receiver_observes_it() {
+        use awaken_agent_contract::agent::run::Id as RunId;
+        use awaken_agent_contract::event::{AgentEvent, Delta};
+        use awaken_agent_contract::stream::event::Event;
+        let hub = ThreadEventHub::new();
+        let mut receiver = hub.live_subscription("t").unwrap();
+        for epoch in [7, 8] {
+            let claim = awaken_worker_contract::RunClaim {
+                run_id: RunId("run".into()),
+                owner: "worker".into(),
+                epoch,
+            };
+            awaken_dispatch_contract::with_preview_claim_epoch(&claim, async {
+                hub.publish(
+                    "t",
+                    ThreadEvent::Live(
+                        Event {
+                            run_id: RunId("run".into()),
+                            kind: AgentEvent::Delta(Delta::TextDelta {
+                                delta: epoch.to_string(),
+                            }),
+                        }
+                        .into(),
+                    ),
+                );
+            })
+            .await;
+        }
+        let live = tokio::time::timeout(std::time::Duration::from_secs(30), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.epoch.map(|epoch| epoch.get()), Some(8));
+        assert!(
+            hub.channels
+                .lock()
+                .is_ok_and(|channels| channels.len() == 1)
+        );
     }
 }

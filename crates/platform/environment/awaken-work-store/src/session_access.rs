@@ -130,7 +130,7 @@ impl SqliteWorkQueue {
         }
         Self::reclaim_lapsed(&mut tx, env_id, now_ms).await?;
         let active: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND state = 'active'",
+            "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND state IN ('active', 'stopping')",
         )
         .bind(env_id)
         .fetch_one(&mut *tx)
@@ -351,6 +351,7 @@ impl SqliteWorkQueue {
         worker_id: &str,
         fence: LeaseFence,
         clock: &dyn WallClock,
+        graceful: bool,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = backends::immediate(conn).await?;
         let Some(current) = Self::owned(&mut tx, env_id, wid).await? else {
@@ -383,6 +384,25 @@ impl SqliteWorkQueue {
         if authority.owner.as_deref() != Some(worker_id) || !fence.admits(authority.epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
+        if graceful && matches!(current.data, WorkPayload::Session { .. }) {
+            if current.state != WorkState::Stopping {
+                let now_ms = clock.now_ms();
+                if authority
+                    .expires_at
+                    .is_none_or(|expiry| expiry <= db_millis(now_ms))
+                {
+                    return Ok(WorkMutationResult::PreconditionFailed);
+                }
+                sqlx::query("UPDATE work_queue_item SET state = 'stopping', stop_requested_at = ?1 WHERE work_id = ?2")
+                    .bind(awaken_time::utc::epoch_millis_to_rfc3339(now_ms)).bind(wid)
+                    .execute(&mut *tx).await.map_err(storage)?;
+            }
+            let item = Self::owned(&mut tx, env_id, wid)
+                .await?
+                .expect("locked Work exists");
+            tx.commit().await.map_err(storage)?;
+            return Ok(WorkMutationResult::accepted(item));
+        }
         let receipt_epoch = stored_lease_epoch(authority.granted_epoch()?)?;
         let LeaseAuthorityDecision::Apply(next_authority) = lease_authority_transition(
             authority,
@@ -394,7 +414,7 @@ impl SqliteWorkQueue {
             return Ok(WorkMutationResult::PreconditionFailed);
         };
         sqlx::query(
-            "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
+            "UPDATE work_queue_item SET stop_requested_at = COALESCE(stop_requested_at, ?1), stopped_at = ?1, \
              state = 'stopped', lease_owner = ?2, lease_expires_ms = ?3, \
              lease_refreshed_ms = ?4, session_token_sha256 = NULL, \
              stop_lease_owner = ?6, stop_lease_epoch = ?7 \
@@ -526,7 +546,7 @@ impl SqliteWorkQueue {
             next.granted_epoch()?
         } else {
             let active: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND state = 'active'",
+                "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND state IN ('active', 'stopping')",
             )
             .bind(env_id)
             .fetch_one(&mut *tx)
@@ -629,6 +649,7 @@ impl PostgresWorkQueue {
         // the new deadline and `started_at` are all this reading, and the later
         // acknowledgement and stop judge that window on the same clock.
         let now_ms = self.clock.now_ms();
+        crate::backends::finish_stopping_postgres(&mut tx, env_id, now_ms).await?;
         if let Some(cutoff) = reclaim_cutoff(now_ms, age_ms) {
             sqlx::query(
                 "UPDATE work_queue_item SET state = 'queued', lease_owner = $1, lease_expires_ms = $2, lease_refreshed_ms = $3, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
@@ -659,7 +680,7 @@ impl PostgresWorkQueue {
         .await
         .map_err(storage)?;
         let active: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND state = 'active'",
+            "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND state IN ('active', 'stopping')",
         )
         .bind(env_id)
         .fetch_one(&mut *tx)
@@ -890,6 +911,7 @@ sqlx::AssertSqlSafe(format!(
         wid: &str,
         worker_id: &str,
         fence: LeaseFence,
+        graceful: bool,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let row = sqlx::query(
@@ -937,6 +959,27 @@ sqlx::AssertSqlSafe(format!(
         if authority.owner.as_deref() != Some(worker_id) || !fence.admits(authority.epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
+        if graceful && matches!(current.data, WorkPayload::Session { .. }) {
+            if current.state == WorkState::Stopping {
+                tx.commit().await.map_err(storage)?;
+                return Ok(WorkMutationResult::accepted(current));
+            }
+            let now_ms = self.clock.now_ms();
+            if authority
+                .expires_at
+                .is_none_or(|expiry| expiry <= db_millis(now_ms))
+            {
+                return Ok(WorkMutationResult::PreconditionFailed);
+            }
+            let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE work_queue_item SET state = 'stopping', stop_requested_at = $1 WHERE work_id = $2 RETURNING {COLS}"
+            )))
+                .bind(awaken_time::utc::epoch_millis_to_rfc3339(now_ms)).bind(wid)
+                .fetch_one(&mut *tx).await.map_err(storage)?;
+            let item = pg_row_to_item(&row)?;
+            tx.commit().await.map_err(storage)?;
+            return Ok(WorkMutationResult::accepted(item));
+        }
         let receipt_epoch = stored_lease_epoch(authority.granted_epoch()?)?;
         let LeaseAuthorityDecision::Apply(next_authority) = lease_authority_transition(
             authority,
@@ -950,7 +993,7 @@ sqlx::AssertSqlSafe(format!(
         let row = sqlx::query(
             // Only the fixed row-codec column list and schema namespace form SQL; values are bound.
             sqlx::AssertSqlSafe(format!(
-                "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
+                "UPDATE work_queue_item SET stop_requested_at = COALESCE(stop_requested_at, $1), stopped_at = $1, \
              state = 'stopped', lease_owner = $2, lease_expires_ms = $3, \
              lease_refreshed_ms = $4, session_token_sha256 = NULL, \
              stop_lease_owner = $7, stop_lease_epoch = $8 \

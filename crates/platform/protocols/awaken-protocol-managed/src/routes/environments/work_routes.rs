@@ -330,17 +330,25 @@ pub(super) async fn stop_work(
     // The official SDK sends `{}` or `{force}`; retain the earlier empty-body
     // transport as the sole backwards-compatible alias and validate every
     // non-empty body against the exact 0.120 DTO.
-    let _params = if body.is_empty() {
+    let params = if body.is_empty() {
         WorkStopParams::default()
     } else {
         serde_json::from_slice::<WorkStopParams>(&body)
             .map_err(|error| bad_request(format!("invalid Work stop request: {error}")))?
     };
     let result = if let Some(access) = access.as_deref() {
-        routes.session_leases.stop(access).await
+        if params.force == Some(true) {
+            routes.session_leases.stop(access).await
+        } else {
+            routes.session_leases.request_stop(access).await
+        }
     } else {
         let owner = work_lease_owner(&headers)?;
-        routes.consumer.stop(&id, &wid, &owner).await
+        if params.force == Some(true) {
+            routes.consumer.stop(&id, &wid, &owner).await
+        } else {
+            routes.consumer.request_stop(&id, &wid, &owner).await
+        }
     }
     .map_err(map_execution_error)?;
     if matches!(

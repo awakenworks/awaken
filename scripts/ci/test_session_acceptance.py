@@ -452,7 +452,9 @@ class EvidenceRecorderTests(unittest.TestCase):
             binding = check_session_acceptance.bind_test(root, "B900", "test_holds", "probe.py", "E90",
                                                          "ProbeTests.test_holds", "probe", "probe.py",
                                                          "T00-C01", [0], True, "fixture")
-            self.assertEqual([site["line"] for site in binding["assertion_locations"]], [7])
+            self.assertEqual([site["function"] for site in binding["assertion_locations"]], ["test_holds"])
+            self.assertNotIn("line", binding["source_locations"][0])
+            self.assertNotIn("line", binding["assertion_locations"][0])
             data = check_session_acceptance._load(root)
             case = data["groups"][0]["cases"][0]
             self.assertEqual(case["binding_ids"], ["B900"])
@@ -477,7 +479,7 @@ class EvidenceRecorderTests(unittest.TestCase):
 
 
 class LineDriftFixTests(unittest.TestCase):
-    """`--fix` moves a binding with its test inside one file and refuses every other change."""
+    """Legacy line-only bindings still support explicit, conservative --fix."""
 
     git = EvidenceRecorderTests.git
     ledger = EvidenceRecorderTests.ledger
@@ -488,6 +490,7 @@ class LineDriftFixTests(unittest.TestCase):
         self.record(root)
         check_session_acceptance.bind_test(root, "B900", "test_holds", "probe.py", "E90", "ProbeTests.test_holds",
                                            "probe", "probe.py", "T00-C01", [0], True, "fixture")
+        self.legacy(root)
         self.git(root, "add", "--all")
         self.git(root, "commit", "--quiet", "-m", "bound")
         self.assertEqual(check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root), [])
@@ -498,6 +501,23 @@ class LineDriftFixTests(unittest.TestCase):
 
     def binding(self, root: Path) -> dict:
         return check_session_acceptance._load(root)["bindings"][0]
+
+    def legacy(self, root: Path) -> None:
+        part = root / check_session_acceptance.LEDGER / "bindings-1.json"
+        rows = json.loads(part.read_text(encoding="utf-8"))
+        for binding in rows:
+            for location in binding["source_locations"] + binding["assertion_locations"]:
+                lines = (root / location["path"]).read_text(encoding="utf-8").splitlines()
+                function = location["function"]
+                if "assertion_sha256" in location:
+                    location["line"] = next(anchor["line"] for anchor in
+                        check_session_acceptance._assertion_anchors(lines, location["path"], function)
+                        if anchor["assertion_sha256"] == location["assertion_sha256"])
+                else:
+                    location["line"] = check_session_acceptance._function_spans(lines, location["path"], function)[0][0]
+                location.pop("function", None)
+                location.pop("assertion_sha256", None)
+        check_session_acceptance._write_json(part, rows)
 
     def test_a_test_moved_within_its_file_is_relocated_and_the_ledger_validates(self) -> None:
         for label, edit, start, assertion in (
@@ -543,6 +563,7 @@ class LineDriftFixTests(unittest.TestCase):
             self.record(root)
             check_session_acceptance.bind_test(root, "B900", "test_holds", "probe.py", "E90", "ProbeTests.test_holds",
                                                "probe", "probe.py", "T00-C01", [0], True, "fixture")
+            self.legacy(root)
             lines = probe.read_text(encoding="utf-8").splitlines()
             cited = lines.index("    def helper(self):") + 2
             part = root / check_session_acceptance.LEDGER / "bindings-1.json"
@@ -600,6 +621,85 @@ class LineDriftFixTests(unittest.TestCase):
             self.assertEqual(moved, [])
             self.assertTrue(refused and refused[0].startswith("X03 B900"), refused)
             self.assertEqual(self.ledger_bytes(root), held)
+
+
+class StableBindingTests(unittest.TestCase):
+    """Source motion is harmless; missing, changed and ambiguous assertions fail closed."""
+
+    git = EvidenceRecorderTests.git
+    ledger = EvidenceRecorderTests.ledger
+    record = EvidenceRecorderTests.record
+
+    def bound(self, directory: str) -> Path:
+        root = self.ledger(directory)
+        self.record(root)
+        check_session_acceptance.bind_test(root, "B900", "test_holds", "probe.py", "E90",
+                                           "ProbeTests.test_holds", "probe", "probe.py", "T00-C01",
+                                           [0], True, "fixture")
+        return root
+
+    def test_source_motion_and_python_formatting_need_no_ledger_write(self) -> None:
+        for edit in (
+            lambda text: "# unrelated\n\n" + text,
+            lambda text: text.replace("self.assertEqual(1 + 1, 2)",
+                                      "self.assertEqual(\n            1 + 1,\n            2,\n        )", 1),
+        ):
+            with tempfile.TemporaryDirectory(prefix="acceptance-symbol-") as directory:
+                root = self.bound(directory)
+                before = LineDriftFixTests.ledger_bytes(self, root)
+                probe = root / "probe.py"
+                probe.write_text(edit(probe.read_text(encoding="utf-8")), encoding="utf-8")
+                self.assertEqual(check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root), [])
+                self.assertEqual(check_session_acceptance.relocate_bindings(root), ([], []))
+                self.assertEqual(LineDriftFixTests.ledger_bytes(self, root), before)
+
+    def test_renames_duplicate_functions_and_changed_assertions_are_refused(self) -> None:
+        for code, edit in (
+            ("L03", lambda text: text.replace("def test_holds", "def renamed")),
+            ("L03", lambda text: text + "\nclass Other:\n    def test_holds(self):\n        assert True\n"),
+            ("L04", lambda text: text.replace("self.assertEqual(1 + 1, 2)", "self.assertEqual(2, 2)", 1)),
+            ("L04", lambda text: text.replace("self.assertEqual(1 + 1, 2)", 'print("self.assertEqual(1 + 1, 2)")', 1)),
+        ):
+            with self.subTest(code), tempfile.TemporaryDirectory(prefix="acceptance-refusal-") as directory:
+                root = self.bound(directory)
+                probe = root / "probe.py"
+                probe.write_text(edit(probe.read_text(encoding="utf-8")), encoding="utf-8")
+                errors = check_session_acceptance.ledger_errors(check_session_acceptance._load(root), root)
+                self.assertTrue(any(error.startswith(code) for error in errors), errors)
+
+    def test_rust_anchors_ignore_comments_and_formatting_but_preserve_literals(self) -> None:
+        original = 'fn holds() { assert_eq!(actual, "a b", "oracle"); }'
+        formatted = '// fn holds() { assert!(false); }\nfn holds() {\n    assert_eq!(\n actual, /* moved */ "a b",\n "oracle",\n );\n}'
+        first = check_session_acceptance._assertion_anchors(original.splitlines(), "probe.rs", "holds")
+        moved = check_session_acceptance._assertion_anchors(formatted.splitlines(), "probe.rs", "holds")
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(first[0]["assertion_sha256"], moved[0]["assertion_sha256"])
+        changed = check_session_acceptance._assertion_anchors(
+            original.replace('"a b"', '"ab"').splitlines(), "probe.rs", "holds")
+        self.assertNotEqual(first[0]["assertion_sha256"], changed[0]["assertion_sha256"])
+        quoted = 'fn holds() { let report = r#"assert!(false); } fn holds() {"#; }'
+        self.assertEqual(check_session_acceptance._assertion_anchors(quoted.splitlines(), "probe.rs", "holds"), [])
+        declaration = 'trait Port { fn holds(); } fn other() { assert!(false); }'
+        self.assertEqual(check_session_acceptance._assertion_anchors(declaration.splitlines(), "probe.rs", "holds"), [])
+        adjacent = original + ' fn other() { assert!(false); }'
+        self.assertEqual(len(check_session_acceptance._assertion_anchors(adjacent.splitlines(), "probe.rs", "holds")), 1)
+
+    def test_duplicated_assertions_cannot_silently_choose_an_occurrence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="acceptance-ambiguous-") as directory:
+            root = Path(directory)
+            data = check_session_acceptance._fixture(root)
+            binding = data["bindings"][0]
+            binding["source_locations"][0]["function"] = "real_case"
+            file = root / "src/lib.rs"
+            text = file.read_text(encoding="utf-8")
+            binding["assertion_locations"] = [
+                {"path": "src/lib.rs", **anchor} for anchor in
+                check_session_acceptance._assertion_anchors(text.splitlines(), "src/lib.rs", "real_case")]
+            self.assertEqual(check_session_acceptance.ledger_errors(data, root), [])
+            file.write_text(text.replace("assert_eq!(x, 1);", "assert_eq!(x, 1);\n    assert_eq!(x, 1);", 1), encoding="utf-8")
+            errors = check_session_acceptance.ledger_errors(data, root)
+            self.assertTrue(any(error.startswith("L04") for error in errors), errors)
 
 
 class EvidenceArtifactByteTests(unittest.TestCase):

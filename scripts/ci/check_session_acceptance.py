@@ -8,6 +8,11 @@ whose source identity was rewritten, or a suite total. This checker decides
 those questions from the ledger and the source it cites; it does not run any
 test and it is not a second runner.
 
+New bindings identify a function within its file and fingerprint the cited
+assertion's syntax. Line numbers are navigation hints, not proof identity.
+Legacy line-only bindings and their explicit --fix migration remain supported;
+historical execution receipts are never rewritten by source relocation.
+
 Decision table (each rule refuses with its code; ``--self-test`` executes every
 refusal against a mutated copy of a minimal ledger):
 
@@ -37,7 +42,7 @@ Evidence is produced by two subcommands, never by hand:
 ``record`` runs ARGV (a verbose unittest run or a cargo nextest run), keeps its
 log and receipt under ``target/session-acceptance-evidence/ID/`` and appends a
 registry entry with exactly the fields E11/E12/E15 carry. ``bind`` locates the
-test and its assertion lines in the tree, cites the evidence and the executed
+function and fingerprints its assertions, cites the evidence and the executed
 case, adds the id to the covered case and refuses unless the whole ledger still
 validates. Evidence state and slices stay a reviewed edit. ``record`` refuses:
 
@@ -71,6 +76,7 @@ refuses (writing nothing for that binding):
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import difflib
 import hashlib
@@ -85,6 +91,8 @@ import time
 from collections import Counter
 from pathlib import Path
 from xml.etree import ElementTree
+
+import _crate_boundary_workspace as rust_source
 
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER = Path("docs/design/session-execution-test-acceptance")
@@ -158,6 +166,94 @@ def _defines(lines: list[str], path: str, name: str) -> bool:
     return not path.endswith((".rs", ".py")) and any(name in line for line in lines)
 
 
+def _rust_function_bodies(text: str, name: str) -> list[tuple[int, int, int]]:
+    syntax = rust_source.rust_syntax(text)
+    bodies = []
+    for match in re.finditer(DEFINITION.format(name=re.escape(name)), syntax):
+        end = rust_source._rust_item_end(syntax, match.start())
+        opening = None if end is None else rust_source._rust_body_start(syntax, match.end(), end)
+        if opening is not None:
+            bodies.append((match.start(), opening, end))
+    return bodies
+
+
+def _function_spans(lines: list[str], path: str, name: str) -> list[tuple[int, int]]:
+    """Exact function bodies; comments and quoted function names are not definitions."""
+    if not isinstance(name, str) or not name:
+        return []
+    text = "\n".join(lines)
+    if path.endswith(".py"):
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return []
+        return [(node.lineno, node.end_lineno) for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name]
+    if not path.endswith(".rs"):
+        return []
+    return [(text.count("\n", 0, start) + 1, text.count("\n", 0, end) + 1)
+            for start, _opening, end in _rust_function_bodies(text, name)]
+
+
+def _rust_assertion_digest(text: str) -> str:
+    """Ignore formatting/comments, preserving every string and character literal byte."""
+    text = rust_source.rust_without_comments(text)
+    parts, cursor = [], 0
+    while cursor < len(text):
+        match = rust_source._RUST_LEXEME_START.search(text, cursor)
+        if match is None:
+            parts.append(re.sub(r"\s+", "", text[cursor:]))
+            break
+        start = match.start()
+        parts.append(re.sub(r"\s+", "", text[cursor:start]))
+        end = rust_source._raw_string_end(text, start)
+        if end is None and text[start] == '"':
+            end = rust_source._quoted_string_end(text, start)
+        if end is None and text[start] == "'":
+            end = rust_source._character_literal_end(text, start)
+        end = end if end is not None else start + 1
+        parts.append(text[start:end])
+        cursor = end
+    canonical = "".join(parts)
+    if canonical[-2:-1] == "," and canonical[-1:] in (")", "]", "}"):
+        canonical = canonical[:-2] + canonical[-1]
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _assertion_anchors(lines: list[str], path: str, function: str) -> list[dict]:
+    spans = _function_spans(lines, path, function)
+    if len(spans) != 1:
+        return []
+    first, last = spans[0]
+    text = "\n".join(lines)
+    anchors = []
+    if path.endswith(".py"):
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if not (first <= getattr(node, "lineno", 0) <= last):
+                continue
+            is_call = isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+            if isinstance(node, ast.Assert) or is_call and ASSERTION.search(ast.unparse(node.value.func) + "("):
+                digest = hashlib.sha256(ast.dump(node, include_attributes=False).encode("utf-8")).hexdigest()
+                anchors.append({"line": node.lineno, "function": function, "assertion_sha256": digest})
+    else:
+        syntax = rust_source.rust_syntax(text)
+        _start, offset, through = _rust_function_bodies(text, function)[0]
+        for match in ASSERTION.finditer(syntax, offset, through):
+            opening = match.end() if syntax[match.end() - 1] != "(" else match.end() - 1
+            while opening < len(syntax) and syntax[opening].isspace():
+                opening += 1
+            if opening >= len(syntax) or syntax[opening] not in "([{":
+                continue
+            delimiter = syntax[opening]
+            end = rust_source._balanced_end(syntax, opening, delimiter, {"(": ")", "[": "]", "{": "}"}[delimiter])
+            if end is not None:
+                anchors.append({"line": syntax.count("\n", 0, match.start()) + 1,
+                                "function": function,
+                                "assertion_sha256": _rust_assertion_digest(text[match.start():end])})
+    return anchors
+
+
 def _witness_errors(binding: dict, registry: dict, root: Path) -> list[str]:
     errors = []
     for witness in binding["execution_witnesses"]:
@@ -203,9 +299,14 @@ def _binding_errors(binding: dict, registry: dict, root: Path, cache: dict) -> l
         elif not _defines(lines, location["path"], binding["name"]):
             errors.append(f"L03 {binding['id']} {location['path']} does not define {binding['name']}")
         elif binding["relation"] == CLAUSE_RELATION:
-            line = location.get("line", 0)
-            if not (0 < line <= len(lines)) or binding["name"] not in lines[line - 1]:
-                errors.append(f"L03 {binding['id']} {location['path']}:{line} is not {binding['name']}")
+            function = location.get("function")
+            if function is not None:
+                if function != binding["name"] or len(_function_spans(lines, location["path"], function)) != 1:
+                    errors.append(f"L03 {binding['id']} {location['path']} does not uniquely define {binding['name']}")
+            else:
+                line = location.get("line", 0)
+                if not (0 < line <= len(lines)) or binding["name"] not in lines[line - 1]:
+                    errors.append(f"L03 {binding['id']} {location['path']}:{line} is not {binding['name']}")
     if binding["relation"] == GAP_RELATION:
         for location in binding["source_locations"]:
             lines = _source_lines(root, location["path"], cache) or []
@@ -221,6 +322,15 @@ def _binding_errors(binding: dict, registry: dict, root: Path, cache: dict) -> l
             errors.append(f"L04 {binding['id']} cites no assertion")
         for site in sites:
             lines = _source_lines(root, site["path"], cache)
+            if "function" in site or "assertion_sha256" in site:
+                key = (site["path"], site.get("function"))
+                if key not in cache:
+                    cache[key] = _assertion_anchors(lines or [], site["path"], site.get("function", ""))
+                matches = [anchor for anchor in cache[key]
+                           if anchor["assertion_sha256"] == site.get("assertion_sha256")]
+                if len(matches) != 1:
+                    errors.append(f"L04 {binding['id']} {site['path']}::{site.get('function')} does not uniquely contain the cited assertion")
+                continue
             line = site.get("line", 0)
             if lines is None or not (0 < line <= len(lines)) or not ASSERTION.search(lines[line - 1]):
                 errors.append(f"L04 {binding['id']} {site['path']}:{line} is not an assertion")
@@ -619,15 +729,16 @@ def bind_test(root: Path, binding_id: str, name: str, source: str, evidence_id: 
     starts = [number for number, line in enumerate(lines, 1) if regex.search(line)]
     if len(starts) != 1:
         raise Refused(f"L03 {source} defines {name} {len(starts)} times; bind exactly one definition")
-    asserts = [number for number in _test_body(lines, starts[0], source)
-               if ASSERTION.search(lines[number - 1])]
+    anchors = _assertion_anchors(lines, source, name)
+    asserts = [anchor["line"] for anchor in anchors]
     if not asserts:
         raise Refused(f"L04 {name} in {source} has no assertion line to cite")
     binding = {
         "name": name,
-        "source_locations": [{"path": source, "line": starts[0],
+        "source_locations": [{"path": source, "function": name,
                               "file_sha256": hashlib.sha256(file.read_bytes()).hexdigest()}],
-        "assertion_locations": [{"path": source, "line": number} for number in asserts],
+        "assertion_locations": [{"path": source, **{key: value for key, value in anchor.items() if key != "line"}}
+                                for anchor in anchors],
         "execution_witnesses": [{
             "evidence": evidence_id, "case": case, "package": package, "target": target,
             "result": "passed", "skipped": False, "source_head": evidence["source"]["head"],
@@ -690,6 +801,8 @@ def remedy(error: str, root: Path = ROOT) -> str:
         if DRIFT.match(error):
             return f"the test moved within its file; run `{FIX}` to re-point {subject} at it"
         if code == "L03":
+            if "does not uniquely define" in error:
+                return "select an unambiguous function and bind its executed case again; changing a line number cannot restore its identity"
             name = error.rsplit(" ", 1)[-1]
             return (f"{name} is gone from that file. Decide: renamed -> set {subject}.name and run `{FIX}` "
                     "(its evidence still names the old case; record and bind again if the body changed); "
@@ -706,6 +819,8 @@ def remedy(error: str, root: Path = ROOT) -> str:
         if code == "L02":
             return "record the evidence first (`check_session_acceptance.py record ...`) or bind an existing id"
         if code == "L04":
+            if "does not uniquely contain" in error:
+                return "review the missing, changed or duplicated assertion and record/bind a fresh execution; line-number repair cannot validate it"
             return (f"cite an assertion line of {subject}'s test body in "
                     f"{_part_holding(root, 'bindings', subject)}, or bind it again with `check_session_acceptance.py bind`")
         if code == "L11":

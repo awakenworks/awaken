@@ -86,6 +86,7 @@ impl SqliteWorkQueue {
         env_id: &str,
         now_ms: u64,
     ) -> Result<(), WorkQueueError> {
+        finish_stopping_sqlite(tx, env_id, now_ms).await?;
         let cleared = reclaimed_lease_authority();
         sqlx::query(
             "UPDATE work_queue_item \
@@ -172,6 +173,35 @@ impl SqliteWorkQueue {
         .map(|row| row_to_item(&row).map_err(storage))
         .transpose()
     }
+}
+
+/// Expiry settles logical shutdown; it never certifies process termination.
+pub(super) async fn finish_stopping_sqlite(
+    tx: &mut SqliteConnection,
+    env_id: &str,
+    now_ms: u64,
+) -> Result<(), WorkQueueError> {
+    sqlx::query("UPDATE work_queue_item SET state = 'stopped', stopped_at = ?1, \
+        stop_lease_owner = lease_owner, stop_lease_epoch = lease_epoch, \
+        lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, session_token_sha256 = NULL \
+        WHERE environment_id = ?2 AND state = 'stopping' AND (lease_expires_ms IS NULL OR lease_expires_ms <= ?3)")
+        .bind(awaken_time::utc::epoch_millis_to_rfc3339(now_ms)).bind(env_id).bind(db_millis(now_ms))
+        .execute(tx).await.map_err(storage)?;
+    Ok(())
+}
+
+pub(super) async fn finish_stopping_postgres(
+    tx: &mut sqlx::PgConnection,
+    env_id: &str,
+    now_ms: u64,
+) -> Result<(), WorkQueueError> {
+    sqlx::query("UPDATE work_queue_item SET state = 'stopped', stopped_at = $1, \
+        stop_lease_owner = lease_owner, stop_lease_epoch = lease_epoch, \
+        lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, session_token_sha256 = NULL \
+        WHERE environment_id = $2 AND state = 'stopping' AND (lease_expires_ms IS NULL OR lease_expires_ms <= $3)")
+        .bind(awaken_time::utc::epoch_millis_to_rfc3339(now_ms)).bind(env_id).bind(db_millis(now_ms))
+        .execute(tx).await.map_err(storage)?;
+    Ok(())
 }
 
 /// Open the write transaction every SQLite queue mutation runs in: SQLite's

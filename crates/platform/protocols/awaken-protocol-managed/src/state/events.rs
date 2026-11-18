@@ -19,6 +19,7 @@ use awaken_session_contract::{
     SessionEventToolReplyKind, SessionOutcomeRubric,
 };
 use awaken_session_execution_contract::{CoordinatedThreadLink, CoordinatedThreadTarget};
+pub use stream::SessionEventSubscription;
 
 const MANAGED_MULTIAGENT_EVENT_ID_PREFIX: &str = "magent_v1_";
 

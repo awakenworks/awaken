@@ -69,9 +69,8 @@ pub enum WorkState {
     Queued,
     Starting,
     Active,
-    /// No transition currently produces `Stopping` (`stop` goes straight to
-    /// `Stopped`); it is kept because it is Anthropic wire vocabulary a future
-    /// writer could emit, and `state_from_wire` must round-trip a `'stopping'` row.
+    /// A graceful Session stop was requested. The original lease is retained
+    /// for shutdown acknowledgement, but heartbeat cannot extend it.
     Stopping,
     Stopped,
 }
@@ -547,8 +546,18 @@ pub trait WorkConsumer: Send + Sync {
         worker_id: &str,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError>;
-    /// Request a stop (→stopped).
+    /// Complete/release owned Work (→stopped). This is a logical lease receipt,
+    /// never evidence that an operating-system process exited.
     async fn stop(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError>;
+    /// Ask the current Session Worker to stop without renewing or releasing its
+    /// lease. Healthchecks have no Session execution and complete immediately.
+    /// Retrying preserves the first request timestamp and the original epoch.
+    async fn request_stop(
         &self,
         env_id: &str,
         wid: &str,
@@ -591,6 +600,11 @@ pub trait SessionWorkLeaseControl: Send + Sync {
     async fn stop_with_session_access(
         &self,
         _access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError>;
+    /// Request graceful shutdown only at this exact authenticated epoch.
+    async fn request_stop_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError>;
 }
 
@@ -895,6 +909,14 @@ mod tests {
                 Ok(HeartbeatResult::NotFound)
             }
             async fn stop(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> Result<WorkMutationResult, WorkQueueError> {
+                Ok(WorkMutationResult::NotFound)
+            }
+            async fn request_stop(
                 &self,
                 _: &str,
                 _: &str,

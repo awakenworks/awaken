@@ -65,8 +65,9 @@ use awaken_executable_environment_contract::{
     EnvironmentWorkLifecycle, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats,
     SessionAccessAuthenticator, SessionAccessDigest, SessionWorkLeaseControl,
     SessionWorkReleaseAdmission, SessionWorkStore, SessionWorkerLeaseStore, WorkClaim,
-    WorkConsumer, WorkItem, WorkMetadataPatch, WorkMutationResult, WorkQueries, WorkQueueError,
-    WorkSessionAccess, WorkerLeaseObservation, session_work_release_admission,
+    WorkConsumer, WorkItem, WorkMetadataPatch, WorkMutationResult, WorkPayload, WorkQueries,
+    WorkQueueError, WorkSessionAccess, WorkState, WorkerLeaseObservation,
+    session_work_release_admission,
 };
 use awaken_session_types::SessionWorkLease;
 
@@ -315,6 +316,26 @@ impl WorkConsumer for SqliteWorkQueue {
             worker_id,
             LeaseFence::OwnerOnly,
             self.clock.as_ref(),
+            false,
+        )
+        .await
+    }
+
+    async fn request_stop(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        let mut conn = self.connection().await?;
+        Self::stop_inner(
+            &mut conn,
+            env_id,
+            wid,
+            worker_id,
+            LeaseFence::OwnerOnly,
+            self.clock.as_ref(),
+            true,
         )
         .await
     }
@@ -330,7 +351,7 @@ impl SessionAccessAuthenticator for SqliteWorkQueue {
         let mut conn = self.connection().await?;
         let row: Option<(String, String, String, String, i64, u64)> = sqlx::query_as(
             "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
-             FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
+             FROM work_queue_item WHERE data_type = 'session' AND state IN ('active', 'stopping') \
                AND session_token_sha256 = ?1 AND lease_expires_ms IS NOT NULL \
              ORDER BY lease_expires_ms DESC LIMIT 1",
         )
@@ -406,6 +427,24 @@ impl SessionWorkLeaseControl for SqliteWorkQueue {
             &access.lease_owner,
             LeaseFence::Exact(access.lease_epoch),
             self.clock.as_ref(),
+            false,
+        )
+        .await
+    }
+
+    async fn request_stop_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        let mut conn = self.connection().await?;
+        Self::stop_inner(
+            &mut conn,
+            &access.environment_id,
+            &access.work_id,
+            &access.lease_owner,
+            LeaseFence::Exact(access.lease_epoch),
+            self.clock.as_ref(),
+            true,
         )
         .await
     }
@@ -554,7 +593,7 @@ impl SessionWorkerLeaseStore for SqliteWorkQueue {
         };
         let admission = session_work_release_admission(
             data_type == "session" && data_id == lease.session_id(),
-            state == "active",
+            matches!(state.as_str(), "active" | "stopping"),
             state == "stopped",
             owner.as_deref() == Some(lease.owner()),
             current_epoch == epoch,
@@ -582,7 +621,7 @@ impl SessionWorkerLeaseStore for SqliteWorkQueue {
             return Ok(false);
         };
         let changed = sqlx::query(
-            "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
+            "UPDATE work_queue_item SET stop_requested_at = COALESCE(stop_requested_at, ?1), stopped_at = ?1, \
              state = 'stopped', lease_owner = ?2, lease_expires_ms = ?3, \
              lease_refreshed_ms = ?4, session_token_sha256 = NULL \
              WHERE work_id = ?5 AND environment_id = ?6",
@@ -835,7 +874,17 @@ impl WorkConsumer for PostgresWorkQueue {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError> {
-        self.stop_inner(env_id, wid, worker_id, LeaseFence::OwnerOnly)
+        self.stop_inner(env_id, wid, worker_id, LeaseFence::OwnerOnly, false)
+            .await
+    }
+
+    async fn request_stop(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.stop_inner(env_id, wid, worker_id, LeaseFence::OwnerOnly, true)
             .await
     }
 }
@@ -849,7 +898,7 @@ impl SessionAccessAuthenticator for PostgresWorkQueue {
         let digest = presented.as_str();
         let row = sqlx::query(
             "SELECT work_id, environment_id, data_id, lease_owner, lease_epoch, lease_expires_ms \
-             FROM work_queue_item WHERE data_type = 'session' AND state = 'active' \
+             FROM work_queue_item WHERE data_type = 'session' AND state IN ('active', 'stopping') \
                AND session_token_sha256 = $1 AND lease_expires_ms IS NOT NULL \
              ORDER BY lease_expires_ms DESC LIMIT 1",
         )
@@ -919,6 +968,21 @@ impl SessionWorkLeaseControl for PostgresWorkQueue {
             &access.work_id,
             &access.lease_owner,
             LeaseFence::Exact(access.lease_epoch),
+            false,
+        )
+        .await
+    }
+
+    async fn request_stop_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.stop_inner(
+            &access.environment_id,
+            &access.work_id,
+            &access.lease_owner,
+            LeaseFence::Exact(access.lease_epoch),
+            true,
         )
         .await
     }

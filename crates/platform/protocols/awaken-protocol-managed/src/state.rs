@@ -38,6 +38,7 @@ mod constants;
 mod deployment_sessions;
 mod error;
 mod events;
+pub use events::SessionEventSubscription;
 pub(crate) use events::{
     CommittedEventDelivery, ProjectionObservationDecision, StreamReplay,
     managed_assistant_event_id, preview_was_closed,

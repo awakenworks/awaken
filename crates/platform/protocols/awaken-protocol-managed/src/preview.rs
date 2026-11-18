@@ -632,5 +632,88 @@ mod tests {
         assert_eq!(emit(&mut projector, 1, 2, text("live")).len(), 2);
         assert!(emit(&mut projector, 2, 1, text("too late")).is_empty());
         assert_eq!(emit(&mut projector, 1, 2, text("still live")).len(), 1);
+        let mut takeover = ThreadPreviewProjector::new("s1".into(), "s1".into());
+        assert_eq!(emit(&mut takeover, 0, 1, text("old prefix")).len(), 2);
+        assert!(
+            emit(&mut takeover, 0, 2, text("replacement prefix")).is_empty(),
+            "stable ids cannot splice two attempts"
+        );
+        assert_eq!(emit(&mut takeover, 1, 2, text("next response")).len(), 2);
+        assert!(emit(&mut takeover, 2, 1, text("old tail")).is_empty());
+    }
+
+    #[test]
+    fn preview_bounds_never_forget_closed_responses_or_leak_child_buffers() {
+        // Decision rows: closed set full -> suppress; pending bytes/frames full
+        // -> drop preview only; an ordinary committed message still closes it.
+        let mut root = ThreadPreviewProjector::new("s1".into(), "s1".into());
+        for index in 0..MAX_PREVIEW_IDENTITIES {
+            root.close(&format!("closed-{index}"));
+        }
+        assert!(root.project(observation("s1", 0, text("late"))).is_empty());
+        let mut child = ThreadPreviewProjector::new("s1".into(), "child".into());
+        for _ in 0..MAX_PENDING_FRAMES * 2 {
+            assert!(child.project(observation("child", 0, text("x"))).is_empty());
+        }
+        let ThreadPreviewState::Child { responses } = &child.state else {
+            unreachable!()
+        };
+        assert!(
+            responses
+                .values()
+                .all(|value| value.frames.len() <= MAX_PENDING_FRAMES)
+        );
+        assert!(
+            child
+                .project(observation(
+                    "child",
+                    1,
+                    text(&"x".repeat(MAX_PENDING_BYTES + 1))
+                ))
+                .is_empty()
+        );
+        assert!(child.pending_bytes <= MAX_PENDING_BYTES);
+        child.discard_uncommitted();
+        assert_eq!(child.pending_bytes, 0);
+    }
+
+    #[test]
+    fn interruption_closes_the_previous_response_but_running_allows_the_next() {
+        let mut root = ThreadPreviewProjector::new("s1".into(), "s1".into());
+        assert_eq!(root.project(observation("s1", 0, text("first"))).len(), 2);
+        let interrupt = Event {
+            id: "interrupt".into(),
+            processed_at: None,
+            kind: OutboundKind::UserInterrupt {
+                session_thread_id: Some("foreign".into()),
+            },
+        };
+        root.observe_committed(&interrupt);
+        assert_eq!(
+            root.project(observation("s1", 0, text("same thread")))
+                .len(),
+            1
+        );
+        root.observe_committed(&Event {
+            kind: OutboundKind::UserInterrupt {
+                session_thread_id: None,
+            },
+            ..interrupt
+        });
+        assert!(root.project(observation("s1", 0, text("late"))).is_empty());
+        root.observe_committed(&Event {
+            id: "running".into(),
+            processed_at: None,
+            kind: OutboundKind::SessionStatusRunning {},
+        });
+        assert!(
+            root.project(observation("s1", 0, text("still closed")))
+                .is_empty()
+        );
+        assert_eq!(
+            root.project(observation("s1", 1, text("new response")))
+                .len(),
+            2
+        );
     }
 }

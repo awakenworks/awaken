@@ -215,6 +215,15 @@ impl WorkConsumer for RebuildsMutationResult {
         let result = self.inner.stop(env_id, wid, worker_id).await?;
         self.rebuilt(env_id, wid, result).await
     }
+    async fn request_stop(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        let result = self.inner.request_stop(env_id, wid, worker_id).await?;
+        self.rebuilt(env_id, wid, result).await
+    }
 }
 
 #[async_trait]
@@ -249,6 +258,12 @@ impl SessionWorkLeaseControl for RebuildsMutationResult {
         access: &WorkSessionAccess,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         self.inner.stop_with_session_access(access).await
+    }
+    async fn request_stop_with_session_access(
+        &self,
+        access: &WorkSessionAccess,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        self.inner.request_stop_with_session_access(access).await
     }
 }
 

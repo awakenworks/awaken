@@ -4,19 +4,21 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 363,
         "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312",
-        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_parity.rs:343"
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_parity.rs:343",
+        "function": "divergent_backend_fails_the_shared_behaviour_table"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 364
+        "function": "divergent_backend_fails_the_shared_behaviour_table",
+        "assertion_sha256": "7067cb6d02cbd385b7d07a7f2112979a74cc6b557d15aed485b47a66b59a7d99"
       },
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 374
+        "function": "divergent_backend_fails_the_shared_behaviour_table",
+        "assertion_sha256": "917a3f28d7367fd0968d4f7992c32de6896f64e6fead1ba8a455c018975f2693"
       }
     ],
     "execution_witnesses": [
@@ -50,23 +52,26 @@
     "source_locations": [
       {
         "path": "crates/platform/environment/awaken-work-store/tests/work_queue_parity.rs",
-        "line": 394,
         "file_sha256": "16b4b1e43176f388e72ba889c64a1b9e5db18bec83e12a4ab5d169630e5b7312",
-        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_parity.rs:374"
+        "relocated_from": "crates/stores/awaken-work-store/tests/work_queue_parity.rs:374",
+        "function": "postgres_reopen_preserves_authority_through_an_independent_pool"
       }
     ],
     "assertion_locations": [
       {
         "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs",
-        "line": 1779
+        "function": "reopen_preserves_authority",
+        "assertion_sha256": "ab202bd994db333cc1a952c47161df65c33b1cae335278012f7139fce4bcad40"
       },
       {
         "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs",
-        "line": 1802
+        "function": "reopen_preserves_authority",
+        "assertion_sha256": "4dc3611b2e6eba94efa339f63b24d2191481cb75dcc17acdc37573153711be6b"
       },
       {
         "path": "crates/platform/committed-truth/awaken-store-conformance/src/work_queue.rs",
-        "line": 1842
+        "function": "reopen_preserves_authority",
+        "assertion_sha256": "80de203a688f73ba3df0e641aa748e46a7f19a8e7da1b41e65630d8b9cf54f1c"
       }
     ],
     "execution_witnesses": [

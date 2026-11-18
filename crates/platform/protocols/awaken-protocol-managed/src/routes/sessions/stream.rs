@@ -4,6 +4,7 @@
 
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
+use crate::types::OutboundKind;
 use awaken_time::mono::MonoDeadline;
 
 // Private authority is freshly checked on every connection. An already
@@ -174,7 +175,7 @@ pub(super) struct LiveSseSource {
 pub(super) fn live_sse_stream<F>(
     source: LiveSseSource,
     snapshot: crate::state::StreamReplay,
-    mut rx: broadcast::Receiver<Event>,
+    mut rx: crate::state::SessionEventSubscription,
     previews: PreviewSelection,
     terminal_scope: SseTerminalScope,
     project: F,
@@ -189,6 +190,7 @@ where
     let deadline = source.deadline;
     let api_version = source.api_version;
     let presentation = source.state.agent_definition_presentation;
+    let snapshot = snapshot.into_events();
     let stream = async_stream::stream! {
         // Committed identities and their immutable payloads were already
         // validated by publication. Only process-local overlays need connection
@@ -206,8 +208,18 @@ where
         let mut terminal_hint = false;
         let mut current = source.current;
         let mut cursor = (source.revision, usize::MAX);
-        for event in snapshot.events.iter().cloned() {
+        for event in snapshot.iter().cloned() {
             let Some(event) = project(event) else { continue; };
+            // Replay the current interruption/running state before live input.
+            // Closed response ids are checked against the shared index instead
+            // of filling each connection with every historical response id.
+            if let Some((_, projector)) = thread_preview.as_mut()
+                && matches!(&event.kind,
+                    OutboundKind::UserInterrupt { .. }
+                    | OutboundKind::SessionStatusRunning {}
+                    | OutboundKind::SessionThreadStatusRunning { .. }) {
+                let _ = projector.observe_committed(&event);
+            }
             terminal_hint = replay_is_terminal_after(terminal_hint, event.type_str(), terminal_scope);
             match admit(&event) {
                 Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event), api_version, presentation)),

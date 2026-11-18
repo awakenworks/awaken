@@ -153,6 +153,7 @@ async fn acquire_existing_on(
     };
     let may_claim = claimant.is_some();
     if may_claim {
+        crate::backends::finish_stopping_postgres(connection, env_id, now_ms).await?;
         let cleared = reclaimed_lease_authority();
         sqlx::query(
                 "UPDATE work_queue_item SET state = 'queued', lease_owner = $1, \
@@ -248,7 +249,7 @@ async fn acquire_existing_on(
         next_authority.granted_epoch()?
     } else {
         let active: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND state = 'active'",
+            "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = $1 AND state IN ('active', 'stopping')",
         )
         .bind(env_id)
         .fetch_one(&mut *connection)
@@ -324,7 +325,7 @@ pub async fn release_postgres_session_work_on(
     };
     let admission = session_work_release_admission(
         data_type == "session" && data_id == lease.session_id(),
-        state == "active",
+        matches!(state.as_str(), "active" | "stopping"),
         state == "stopped",
         owner.as_deref() == Some(lease.owner()),
         current_epoch == epoch,
@@ -352,7 +353,7 @@ pub async fn release_postgres_session_work_on(
         return Ok(false);
     };
     let changed = sqlx::query(
-        "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
+        "UPDATE work_queue_item SET stop_requested_at = COALESCE(stop_requested_at, $1), stopped_at = $1, \
              state = 'stopped', lease_owner = $2, lease_expires_ms = $3, \
              lease_refreshed_ms = $4, session_token_sha256 = NULL \
              WHERE work_id = $5 AND environment_id = $6",

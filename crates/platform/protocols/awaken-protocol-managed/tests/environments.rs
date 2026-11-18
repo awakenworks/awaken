@@ -966,6 +966,180 @@ async fn work_poll_honors_documented_blocking_partitions_and_boundaries() {
     }
 }
 
+#[tokio::test]
+async fn session_work_graceful_stop_is_observed_before_forced_completion() {
+    // Rows: healthcheck completion releases immediately; a Session stop retains
+    // its owner, heartbeat reports stopping without renewal; force settles it.
+    let awaken_protocol_managed_testkit::EnvironmentFixture {
+        application,
+        execution,
+        ..
+    } = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
+    let app = environment_authoring_router(application).merge(environment_work_router(
+        execution.work_queries(),
+        execution.work_consumer(),
+        execution.work_metadata(),
+        execution.session_work_leases(),
+    ));
+    let env = make_env(&app).await;
+    let health = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{env}/work/poll"),
+        None,
+    )
+    .await
+    .expect(StatusCode::OK);
+    let hid = health["id"].as_str().unwrap();
+    let stopped = call(
+        &app,
+        "POST",
+        &format!("/v1/environments/{env}/work/{hid}/stop"),
+        Some(json!({})),
+    )
+    .await
+    .expect(StatusCode::OK);
+    assert_eq!(stopped["state"], "stopped");
+    awaken_session_application_contract::SessionWorkerAssignment::enqueue_session(
+        execution.as_ref(),
+        &env,
+        &awaken_session_types::SessionId::from("session-stop"),
+    )
+    .await
+    .unwrap();
+    let work = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{env}/work/poll"),
+        None,
+    )
+    .await
+    .expect(StatusCode::OK);
+    let wid = work["id"].as_str().expect("Session work was claimed");
+    let uri = format!("/v1/environments/{env}/work/{wid}");
+    let stopping = call(
+        &app,
+        "POST",
+        &format!("{uri}/stop"),
+        Some(json!({"force":false})),
+    )
+    .await
+    .expect(StatusCode::OK);
+    assert_eq!(stopping["state"], "stopping");
+    assert!(stopping["stop_requested_at"].is_string());
+    assert!(stopping["stopped_at"].is_null());
+    let retry = call(&app, "POST", &format!("{uri}/stop"), Some(json!({})))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(retry, stopping, "request retry does not restamp or renew");
+    let heartbeat = call(&app, "POST", &format!("{uri}/heartbeat"), None)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(heartbeat["state"], "stopping");
+    assert_eq!(heartbeat["lease_extended"], false);
+    let ended = call(
+        &app,
+        "POST",
+        &format!("{uri}/stop"),
+        Some(json!({"force":true})),
+    )
+    .await
+    .expect(StatusCode::OK);
+    assert_eq!(ended["state"], "stopped");
+    assert_eq!(ended["stop_requested_at"], stopping["stop_requested_at"]);
+    assert!(ended["stopped_at"].is_string());
+}
+
+#[tokio::test]
+async fn independent_postgres_coordinators_observe_shutdown_and_claim_only_once() {
+    // Two HTTP adapters own distinct applications, wait registries and pools.
+    // Only the original PostgreSQL queue coordinates stopping and next claim.
+    use awaken_executable_environment_contract::SessionWorkStore as _;
+    use std::sync::Arc;
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_700_000_000_000));
+    let a = Arc::new(
+        awaken_work_store::PostgresWorkQueue::connect(&url, clock.clone())
+            .await
+            .unwrap(),
+    );
+    let b = Arc::new(
+        awaken_work_store::PostgresWorkQueue::connect_existing(&url, clock)
+            .await
+            .unwrap(),
+    );
+    let catalog =
+        Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
+    catalog
+        .install_seed(awaken_environment_application::default_environment_registration())
+        .unwrap();
+    let first = awaken_environment_application::execution::EnvironmentExecutionApplication::new(
+        a.clone(),
+        catalog.clone(),
+    );
+    let second =
+        awaken_environment_application::execution::EnvironmentExecutionApplication::new(b, catalog);
+    let app = |application: &awaken_environment_application::execution::EnvironmentExecutionApplication| environment_work_router(
+        application.work_queries(), application.work_consumer(), application.work_metadata(), application.session_work_leases(),
+    );
+    let first = app(&first);
+    let second = app(&second);
+    let work = a
+        .enqueue_session(
+            "env_local",
+            &awaken_session_types::SessionId::from("shutdown-http"),
+        )
+        .await
+        .unwrap();
+    let poll = "/v1/environments/env_local/work/poll";
+    assert_eq!(
+        call(&first, "GET", poll, None).await.expect(StatusCode::OK)["id"],
+        work
+    );
+    let uri = format!("/v1/environments/env_local/work/{work}");
+    let request = call(&first, "POST", &format!("{uri}/stop"), Some(json!({})))
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(request["state"], "stopping");
+    let heartbeat = call(&second, "POST", &format!("{uri}/heartbeat"), None)
+        .await
+        .expect(StatusCode::OK);
+    assert_eq!(heartbeat["state"], "stopping");
+    assert_eq!(heartbeat["lease_extended"], false);
+    let next = a
+        .enqueue_session(
+            "env_local",
+            &awaken_session_types::SessionId::from("next-http"),
+        )
+        .await
+        .unwrap();
+    assert!(
+        call(&second, "GET", poll, None)
+            .await
+            .expect(StatusCode::OK)
+            .is_null()
+    );
+    let complete = call(
+        &second,
+        "POST",
+        &format!("{uri}/stop"),
+        Some(json!({"force":true})),
+    )
+    .await
+    .expect(StatusCode::OK);
+    assert_eq!(complete["state"], "stopped");
+    assert_eq!(complete["stop_requested_at"], request["stop_requested_at"]);
+    let (left, right) = tokio::join!(
+        call(&first, "GET", poll, None),
+        call(&second, "GET", poll, None)
+    );
+    let grants = [left.expect(StatusCode::OK), right.expect(StatusCode::OK)];
+    assert_eq!(grants.iter().filter(|work| !work.is_null()).count(), 1);
+    assert!(grants.iter().any(|work| work["id"] == next));
+}
+
 /// The sole snapshot compiler normalizes all networking wire shapes. In
 /// particular, an empty limited allowlist is exactly `None`, not a parallel
 /// spelling that would demand an unsupported allowlist provider.

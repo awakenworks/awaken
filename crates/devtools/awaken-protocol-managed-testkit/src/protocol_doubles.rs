@@ -65,10 +65,12 @@ pub struct CoordinatedRuntimeFake {
         tokio::sync::broadcast::Sender<awaken_agent_contract::stream::event::Observation>,
     >,
     live_subscribed: std::sync::Arc<tokio::sync::Notify>,
+    live_delivered: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 struct FakeLiveSubscription {
     receiver: tokio::sync::broadcast::Receiver<awaken_agent_contract::stream::event::Observation>,
+    delivered: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 #[async_trait::async_trait]
@@ -82,6 +84,7 @@ impl awaken_session_execution_contract::SessionThreadLiveSubscription for FakeLi
         loop {
             match self.receiver.recv().await {
                 Ok(observation) => {
+                    self.delivered.add_permits(1);
                     return Ok(Some(
                         awaken_session_execution_contract::ThreadLiveObservation {
                             observation,
@@ -124,6 +127,7 @@ impl Default for CoordinatedRuntimeFake {
             user_run_activation_release: Default::default(),
             live: std::sync::Arc::new(tokio::sync::broadcast::channel(32).0),
             live_subscribed: Default::default(),
+            live_delivered: std::sync::Arc::new(tokio::sync::Semaphore::new(0)),
         }
     }
 }
@@ -260,6 +264,17 @@ impl CoordinatedRuntimeFake {
         self.live_subscribed.notified().await;
     }
 
+    pub async fn wait_for_live_deliveries(&self, count: u32) {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.live_delivered.acquire_many(count),
+        )
+        .await
+        .expect("SSE consumed the queued observations")
+        .unwrap()
+        .forget();
+    }
+
     fn current_child_response(&self) -> (awaken_agent_contract::agent::run::Id, usize) {
         let run_ordinal = self.runs.load(std::sync::atomic::Ordering::SeqCst);
         let run_id = awaken_agent_contract::agent::run::Id(format!("coord-run-{run_ordinal}"));
@@ -300,6 +315,14 @@ impl CoordinatedRuntimeFake {
                 ),
             ),
         );
+    }
+
+    /// Deliver an explicitly retained observation after a competing commit.
+    pub fn publish_live_observation(
+        &self,
+        observation: awaken_agent_contract::stream::event::Observation,
+    ) {
+        let _ = self.live.send(observation);
     }
 
     pub fn publish_child_live_reasoning(&self, text: &str) {
@@ -901,6 +924,7 @@ impl awaken_session_execution_contract::ChildRunCoordination for CoordinatedRunt
         }
         let subscription = FakeLiveSubscription {
             receiver: self.live.subscribe(),
+            delivered: self.live_delivered.clone(),
         };
         self.live_subscribed.notify_one();
         Ok(Some(Box::new(subscription)))

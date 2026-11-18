@@ -9,6 +9,48 @@ const LIVE_CHANNEL_CAPACITY: usize = 64;
 #[cfg(not(feature = "test-support"))]
 const LIVE_CHANNEL_CAPACITY: usize = 1024;
 
+/// Owns one committed-event receiver. It retains no Session state or sender.
+/// Last-observer removal is serialized with subscription and publication.
+pub struct SessionEventSubscription {
+    channels: std::sync::Weak<
+        awaken_sync::LeafLock<std::collections::HashMap<String, broadcast::Sender<Event>>>,
+    >,
+    session_id: String,
+    receiver: Option<broadcast::Receiver<Event>>,
+}
+
+impl SessionEventSubscription {
+    pub async fn recv(&mut self) -> Result<Event, broadcast::error::RecvError> {
+        self.receiver
+            .as_mut()
+            .expect("live subscription")
+            .recv()
+            .await
+    }
+
+    pub fn try_recv(&mut self) -> Result<Event, broadcast::error::TryRecvError> {
+        self.receiver
+            .as_mut()
+            .expect("live subscription")
+            .try_recv()
+    }
+}
+
+impl Drop for SessionEventSubscription {
+    fn drop(&mut self) {
+        if let Some(channels) = self.channels.upgrade() {
+            let mut channels = channels.lock();
+            drop(self.receiver.take());
+            if channels
+                .get(&self.session_id)
+                .is_some_and(|sender| sender.receiver_count() == 0)
+            {
+                channels.remove(&self.session_id);
+            }
+        }
+    }
+}
+
 /// One immutable projection version and its matching delivery index.
 pub(crate) struct StreamReplay {
     pub(crate) events: Arc<Vec<Event>>,
@@ -16,6 +58,12 @@ pub(crate) struct StreamReplay {
 }
 
 impl StreamReplay {
+    /// Initial replay retains only its immutable payload. Catch-up and terminal
+    /// reconciliation acquire their own coherent current index when needed.
+    pub(crate) fn into_events(self) -> Arc<Vec<Event>> {
+        self.events
+    }
+
     pub(crate) fn changed_after(&self, id: &str, cursor: (u64, usize)) -> bool {
         self.index.changed_after(id, cursor)
     }
@@ -45,11 +93,17 @@ impl ManagedState {
     /// Capacity is generous so a fast Run's commit burst does not lag a slow
     /// subscriber into `Lagged`; an overflow wakes the same durable projection
     /// catch-up rather than dropping committed facts.
-    fn live_sender(&self, session_id: &str) -> broadcast::Sender<Event> {
+    fn live_receiver(&self, session_id: &str) -> SessionEventSubscription {
         let mut live = self.live.lock();
-        live.entry(session_id.to_string())
+        let receiver = live
+            .entry(session_id.to_string())
             .or_insert_with(|| broadcast::channel(LIVE_CHANNEL_CAPACITY).0)
-            .clone()
+            .subscribe();
+        SessionEventSubscription {
+            channels: Arc::downgrade(&self.live),
+            session_id: session_id.to_owned(),
+            receiver: Some(receiver),
+        }
     }
 
     /// Open a live SSE subscription for `session_id`: the current committed-event
@@ -61,7 +115,7 @@ impl ManagedState {
     pub fn stream_subscribe(
         &self,
         session_id: &str,
-    ) -> Result<(Vec<Event>, broadcast::Receiver<Event>), StateError> {
+    ) -> Result<(Vec<Event>, SessionEventSubscription), StateError> {
         self.stream_projection_subscribe(session_id)
             .map(|(snapshot, receiver, _)| ((*snapshot.events).clone(), receiver))
     }
@@ -69,8 +123,8 @@ impl ManagedState {
     pub(crate) fn stream_projection_subscribe(
         &self,
         session_id: &str,
-    ) -> Result<(StreamReplay, broadcast::Receiver<Event>, u64), StateError> {
-        let rx = self.live_sender(session_id).subscribe();
+    ) -> Result<(StreamReplay, SessionEventSubscription, u64), StateError> {
+        let rx = self.live_receiver(session_id);
         let sessions = self.sessions.lock()?;
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
         Ok((

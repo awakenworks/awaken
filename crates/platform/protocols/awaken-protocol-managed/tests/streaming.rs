@@ -154,7 +154,7 @@ fn sse_committed_ids(body: &str) -> Vec<String> {
 /// Drain every frame currently buffered on `rx` (all frames are published
 /// before this call through the awaited admission/reconciliation/projection
 /// sequence). Returns the frames and how many `Lagged` gaps were observed.
-fn drain(rx: &mut tokio::sync::broadcast::Receiver<Event>) -> (Vec<Event>, usize) {
+fn drain(rx: &mut awaken_protocol_managed::SessionEventSubscription) -> (Vec<Event>, usize) {
     let mut frames = Vec::new();
     let mut lagged = 0;
     loop {
@@ -653,6 +653,50 @@ async fn root_stream_immediately_projects_thread_live_observations_only() {
     );
 }
 
+#[tokio::test]
+async fn replayed_interrupt_suppresses_queued_previews_before_live_delivery() {
+    // A durable interruption predates subscription. The real HTTP body must
+    // replay it into its preview state before draining independent live input.
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(support::state(runtime.clone()).await);
+    let app = router(state.clone());
+    let id = http_create(&app).await;
+    state_send_interrupts(&state, &id, 1).await;
+    let stream_app = app.clone();
+    let uri = format!("/v1/sessions/{id}/events/stream?event_deltas[]=agent.message");
+    let stream = tokio::spawn(async move { http_sse(&stream_app, &uri, &[], None).await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        runtime.wait_for_live_subscription(),
+    )
+    .await
+    .unwrap();
+    runtime.publish_root_live_text(&id, "interrupted-prefix");
+    runtime.publish_root_live_text(&id, "interrupted-suffix");
+    runtime.wait_for_live_deliveries(2).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/sessions/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::time::timeout(std::time::Duration::from_secs(30), stream)
+        .await
+        .unwrap()
+        .unwrap()
+        .expect(StatusCode::OK);
+    assert!(body.contains("event: user.interrupt"));
+    assert!(
+        !body.contains("event: event_delta"),
+        "interrupted preview leaked: {body}"
+    );
+}
+
 // === 3 child Thread isolation and durable archive ===========================
 
 /// Causes: C1 one real child Thread has committed created/running/message/idle
@@ -1084,6 +1128,29 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
         serde_json::Value::Null,
     )
     .await;
+    // The final response is already in the shared committed index. Deliver the
+    // exact old coordinate afterwards, before the child terminal can mask it.
+    let mut late = awaken_agent_contract::stream::event::Observation::assistant_delta(
+        awaken_agent_contract::agent::run::Id("coord-run-1".into()),
+        awaken_agent_contract::agent::thread::Id(child_id.into()),
+        0,
+        0,
+        awaken_agent_contract::event::AgentEvent::Delta(
+            awaken_agent_contract::event::Delta::TextDelta {
+                delta: "closed response reopened".into(),
+            },
+        ),
+    );
+    runtime.publish_live_observation(late.clone());
+    late.event.kind = awaken_agent_contract::event::AgentEvent::Delta(
+        awaken_agent_contract::event::Delta::ToolCallDelta {
+            id: "late-proof".into(),
+            name: "read".into(),
+            args_delta: "{}".into(),
+        },
+    );
+    runtime.publish_live_observation(late);
+    runtime.wait_for_live_deliveries(6).await;
     runtime.publish_child_live_reasoning("terminal private chain");
     runtime.publish_child_live_text("terminal report");
     let child_boundary = runtime.complete_deferred_child("terminal report", admitted);
@@ -1122,6 +1189,10 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
     assert!(sse.contains("event: event_delta"), "L1/E1 sse:\n{sse}");
     assert!(sse.contains("live progress"), "L1/E1");
     assert!(!sse.contains("private chain"), "L1,L3/E2");
+    assert!(
+        !sse.contains("closed response reopened"),
+        "a final response must reject an exact-coordinate late delta"
+    );
     assert_eq!(
         sse.matches("terminal report").count(),
         1,
