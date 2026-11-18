@@ -908,11 +908,16 @@ async fn registered_application_factory_uses_one_identity_and_rejects_drift_befo
                     }),
                 )
                 .with_admin_listen(&admin_addr);
-        // A checkpoint declaration on an incapable provider fails before
-        // registration by the original builder invariant, rather than drifting
-        // into a second startup-time compatibility check.
+        // A checkpoint store on an incapable provider is byte custody for
+        // terminal maintenance only (checkpoint topology K3): the Worker builds,
+        // but advertises no checkpoint format, so no checkpoint-and-release
+        // work can be placed on it, and building registers nothing.
         if fault == "checkpoint" {
-            assert!(worker.build().is_err());
+            let built = worker.build().expect("K3 byte-custody Worker builds");
+            assert!(
+                built.manifest().checkpoint_formats.is_empty(),
+                "K3 advertises no checkpoint format"
+            );
             assert_eq!(factories.load(Ordering::SeqCst), 0);
             assert!(upstream.requests().is_empty());
             continue;
