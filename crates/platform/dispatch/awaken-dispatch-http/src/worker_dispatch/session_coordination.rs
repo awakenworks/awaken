@@ -79,7 +79,7 @@ async fn claimed_session_authority(
     identity: &WorkerIdentity,
     claim: &RunClaim,
     session_id: &str,
-) -> Result<(ClaimAuthority, awaken_dispatch::CommitEpochGuard), RealizationHttpError> {
+) -> Result<(ClaimAuthority, awaken_dispatch_contract::ClaimAuthority), RealizationHttpError> {
     // This guard proves the authenticated claim and trusted Session affinity at
     // command admission. Callers deliberately drop it before invoking the
     // Session application: send/report re-enter this same
@@ -98,7 +98,7 @@ async fn claimed_session_authority(
     }
     let guard = service
         .dispatch
-        .lock_commit_epoch(claim)
+        .acquire_commit_authority(claim)
         .await
         .map_err(|error| ApplicationError::internal(error.to_string()))
         .map_err(RealizationHttpError::from)?
@@ -124,7 +124,7 @@ async fn claimed_session_authority(
 }
 
 fn require_primary_session_claim(
-    guard: &awaken_dispatch::CommitEpochGuard,
+    guard: &awaken_dispatch_contract::ClaimAuthority,
 ) -> Result<(), RealizationHttpError> {
     let dispatch = guard.request();
     if dispatch.thread_id() != dispatch.session_thread_id() {
@@ -229,14 +229,31 @@ pub(super) async fn session_model_request_admit(
         // Unlike message/report commands this application call does not enqueue
         // work. Keep the exact claim guard alive across root usage
         // reconciliation so a superseded Worker cannot spend another request.
-        let admitted = service
-            .session_coordination
-            .admit_session_model_request(
-                &awaken_session_types::SessionId::from(&request.session_id),
-                &request.thread_id,
-                &request.run_id,
-            )
-            .await
+        let session = awaken_session_types::SessionId::from(&request.session_id);
+        let coordination = &service.session_coordination;
+        let admitted =
+            match guard.publication_condition() {
+                Some(condition) => service
+                    .conditional_model_admission
+                    .as_ref()
+                    .ok_or_else(|| {
+                        coordination_failure(awaken_runtime_contract::runs::RunError::unavailable(
+                            "Session model admission cannot consume the publication condition",
+                        ))
+                    })?
+                    .admit_session_model_request_conditionally(
+                        &session,
+                        &request.thread_id,
+                        &request.run_id,
+                        condition,
+                    )
+                    .await,
+                None => {
+                    coordination
+                        .admit_session_model_request(&session, &request.thread_id, &request.run_id)
+                        .await
+                }
+            }
             .map_err(coordination_failure)?;
         drop(guard);
         Ok(json!({ "admitted": admitted }))
@@ -286,7 +303,7 @@ pub(super) async fn session_run_activity_admit(
         let acquire = || async {
             service
                 .dispatch
-                .lock_session_run_reservation_epoch(&request.claim)
+                .acquire_session_run_reservation_authority(&request.claim)
                 .await
                 .map_err(|error| {
                     RealizationHttpError::from(ApplicationError::internal(error.to_string()))
@@ -297,7 +314,7 @@ pub(super) async fn session_run_activity_admit(
                     ))
                 })
         };
-        let validate = |guard: &awaken_dispatch_contract::CommitEpochGuard| {
+        let validate = |guard: &awaken_dispatch_contract::ClaimAuthority| {
             crate::require_worker_run_activity(
                 guard.observation(),
                 &request.claim,
@@ -368,7 +385,7 @@ pub(super) async fn session_run_activity_admit(
                 .admit_prepared_session_run(
                     service.clock.as_ref(),
                     recovery,
-                    |cursor, _cancelled| async move {
+                    |cursor, _cancelled, publication_condition| async move {
                         service_ref
                             .session_coordination
                             .admit_prepared_session_run_activity(
@@ -377,6 +394,7 @@ pub(super) async fn session_run_activity_admit(
                                 request_ref.mode,
                                 awaken_session_execution_contract::PreparedSessionRunActivity {
                                     projected_revision,
+                                    publication_condition,
                                     admitted_after_cursor: cursor,
                                 },
                             )
@@ -388,6 +406,9 @@ pub(super) async fn session_run_activity_admit(
                 )
                 .await
         } else {
+            let guard = guard.into_locked().map_err(|message| {
+                RealizationHttpError::from(ApplicationError::internal(message))
+            })?;
             let admission = async {
                 exact?;
                 service

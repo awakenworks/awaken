@@ -29,6 +29,24 @@ pub fn coordinator_run_commits(
     executor.run_assembly.authority.coordinator_run_commits()
 }
 
+/// Preserve the original Coordinator binding for authenticated remote streaming ports.
+pub fn coordinator_persistence_transport(
+    executor: &ExecutorComponents,
+) -> Option<awaken_dispatch_contract::ClaimedPersistence> {
+    let authority = executor
+        .run_assembly
+        .authority
+        .dispatch_binding()?
+        .runtime_authority()?;
+    if !authority.uses_conditional_publication() {
+        return None;
+    }
+    Some(awaken_dispatch_erasure::runtime_persistence_transport(
+        authority,
+        executor.worker_stream_sink(),
+    ))
+}
+
 impl ExecutorComponents {
     pub fn worker_recovery_source(&self) -> Arc<dyn RunRecoverySource> {
         self.thread_reads.clone()

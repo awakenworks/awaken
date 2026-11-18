@@ -86,9 +86,11 @@ pub use coordinator_component::{
 #[cfg(any(test, feature = "test-support"))]
 pub use coordinator_persistence::open_durable_runtime_authority;
 pub use coordinator_persistence::{
-    CoordinatorPersistence, migrate_postgres_schema as migrate_postgres_coordinator_schema,
+    CoordinatorPersistence, ObjectAgentPersistence,
+    migrate_postgres_schema as migrate_postgres_coordinator_schema,
     migrate_postgres_schema_with_pool as migrate_postgres_coordinator_schema_with_pool,
-    open as open_coordinator_persistence, open_existing as open_existing_coordinator_persistence,
+    object_agent_persistence, open as open_coordinator_persistence,
+    open_existing as open_existing_coordinator_persistence, open_object_coordinator_persistence,
 };
 pub use execution_ports::{
     ColocatedExecution, ColocatedExecutionInputs, ExecutionPorts, InferenceSelection,
@@ -1346,8 +1348,9 @@ async fn mount_with_managed_over_and_models(
     let dispatch = execution.coordinator_dispatch.clone();
     let checkpoint =
         worker_checkpoint_authority(dispatch.as_ref(), execution.storage_dir.as_deref()).await?;
-    let dispatch_router = awaken_dispatch_http::registered_dispatch_router(
+    let mut worker_dispatch = awaken_dispatch_http::WorkerDispatchService::new(
         awaken_dispatch_http::RegisteredDispatchDependencies {
+            wake: execution.dispatch.registered_claim_wake(),
             claim_persistence: execution.worker_claim_persistence.clone(),
             execution_bindings: worker_execution_bindings,
             execution_stops: worker_execution_stops,
@@ -1379,6 +1382,17 @@ async fn mount_with_managed_over_and_models(
             max_attempts: awaken_dispatch_http::WORKER_DISPATCH_MAX_ATTEMPTS,
         },
     );
+    if matches!(
+        &execution.worker_claim_persistence,
+        awaken_dispatch_http::WorkerClaimPersistence::Object(_)
+    ) {
+        worker_dispatch = worker_dispatch.with_session_publication(
+            session_application.coordination(),
+            session_application.realizations(),
+        );
+    }
+    let dispatch_router =
+        awaken_dispatch_http::dispatch_transport_router_with_service(Arc::new(worker_dispatch));
     let file_content = awaken_resource_worker_http::worker_file_content_router(Arc::new(
         awaken_resource_worker_http::WorkerFileContentService::new(
             execution.worker_file_content.clone(),
@@ -1633,3 +1647,6 @@ fn resource_manifest_routes(state: Arc<awaken_protocol_managed::ManagedState>) -
     )
     .with_state(state)
 }
+
+/// Object transport configuration for the canonical paired Agent persistence selection.
+pub use awaken_store_s3::S3Config as AgentObjectStorageConfig;

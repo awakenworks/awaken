@@ -313,8 +313,12 @@ impl ProcessDispatch {
             .bind_worker_evidence(directory, source)
     }
 
-    /// The immutable publication capability over the same original hint. Its
-    /// callers never retain this process, its service handles or resolver.
+    /// The registered claim pool listens on the same hint as publication.
+    pub fn registered_claim_wake(&self) -> Option<Arc<dyn awaken_dispatch_contract::WakeSignal>> {
+        (!self.topology.claim_pool.runs_local_pool()).then(|| self.hint.wake())
+    }
+
+    /// The immutable publication capability over the same original hint.
     #[must_use]
     pub fn publication(&self) -> crate::DispatchPublication {
         self.publication.clone()

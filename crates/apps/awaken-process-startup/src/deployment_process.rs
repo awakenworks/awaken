@@ -65,7 +65,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     installations: installation_binding::PreparedDeploymentInstallations,
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<PreparedProcess, String> {
-    let (mut managed_services, coordinator_services) = services;
+    let (mut managed_services, mut coordinator_services) = services;
     debug_assert!(matches!(
         role,
         config::Role::AllInOne | config::Role::Coordinator
@@ -91,13 +91,37 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         config::OperatingMode::Server => PostgresSchemaMode::Verify,
     };
     let storage = deployment.runtime.coordinator_storage();
-    let persistence = match deployment.mode {
-        config::OperatingMode::Local => {
-            awaken_coordinator::open_coordinator_persistence(&storage, clock.clone()).await?
-        }
-        config::OperatingMode::Server => {
-            awaken_coordinator::open_existing_coordinator_persistence(&storage, clock.clone())
-                .await?
+    let injected_agent = coordinator_services.agent_persistence.take();
+    if injected_agent.is_some() && deployment.agent_object_storage.is_some() {
+        return Err("select either injected Agent persistence or agent_object_storage".into());
+    }
+    let agent = match (&deployment.agent_object_storage, injected_agent) {
+        (_, Some(agent)) => Some(agent),
+        (Some(config), None) => Some(awaken_coordinator::object_agent_persistence(
+            config
+                .open(clock.clone())
+                .map_err(|error| error.to_string())?,
+            &config.default_scope,
+        )?),
+        (None, None) => None,
+    };
+    let persistence = if let Some(agent) = agent {
+        awaken_coordinator::open_object_coordinator_persistence(
+            &storage,
+            clock.clone(),
+            agent,
+            deployment.mode == config::OperatingMode::Server,
+        )
+        .await?
+    } else {
+        match deployment.mode {
+            config::OperatingMode::Local => {
+                awaken_coordinator::open_coordinator_persistence(&storage, clock.clone()).await?
+            }
+            config::OperatingMode::Server => {
+                awaken_coordinator::open_existing_coordinator_persistence(&storage, clock.clone())
+                    .await?
+            }
         }
     };
     let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(
@@ -128,6 +152,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     )
     .await?;
     let stores = open_process_stores(ProcessStoreOpenOptions {
+        agent_sessions: persistence.agent_sessions.clone(),
         control: deployment.control.clone(),
         agent_governance: deployment.cloud_iam.agent_governance.clone(),
         coordinator: deployment.coordinator.clone(),
@@ -387,6 +412,7 @@ pub(crate) async fn migrate_deployment_schema_prepared(
         || manifest.contains(&MigrationComponent::Coordinator)
     {
         open_process_stores(ProcessStoreOpenOptions {
+            agent_sessions: None,
             control: deployment.control.clone(),
             agent_governance: deployment.cloud_iam.agent_governance.clone(),
             coordinator: deployment.coordinator.clone(),

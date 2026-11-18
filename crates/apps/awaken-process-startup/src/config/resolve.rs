@@ -181,9 +181,10 @@ impl ResolvedDeployment {
         )?;
         let runtime_settings = runtime_settings::resolve(&file, &data_dir)?;
         // Registered Workers have execution slots and receive claims from the
-        // Coordinator. Only AllInOne can attach a wake adapter to its queue.
-        let owns_local_dispatch = role == Role::AllInOne && run_local_pool;
-        let wake = if owns_local_dispatch {
+        // Coordinator. Both local and registered pools can receive durable hints.
+        let owns_dispatch_wake =
+            role == Role::Coordinator || (role == Role::AllInOne && run_local_pool);
+        let wake = if owns_dispatch_wake {
             runtime_settings.wake
         } else {
             Wake::None
@@ -194,13 +195,13 @@ impl ResolvedDeployment {
             );
         }
         let mut deprecations = Vec::new();
-        if !owns_local_dispatch
+        if !owns_dispatch_wake
             && (runtime_settings.wake != Wake::None
                 || file.nats_url.is_some()
                 || file.dispatch_wake_channel.is_some())
         {
             deprecations.push(
-                "dispatch_wake, dispatch_wake_channel and nats_url are ignored without a local Coordinator claim pool; remove the legacy notification settings from this process configuration".to_owned(),
+                "dispatch_wake, dispatch_wake_channel and nats_url are ignored without a Coordinator claim pool; remove the legacy notification settings from this process configuration".to_owned(),
             );
         }
         let configured_acp_clis = file.acp_clis.as_ref().map(|_| {
@@ -315,9 +316,9 @@ impl ResolvedDeployment {
             wake_channel: file
                 .dispatch_wake_channel
                 .clone()
-                .filter(|_| owns_local_dispatch)
+                .filter(|_| owns_dispatch_wake)
                 .unwrap_or_else(|| DEFAULT_WAKE_CHANNEL.to_owned()),
-            nats_url: file.nats_url.clone().filter(|_| owns_local_dispatch),
+            nats_url: file.nats_url.clone().filter(|_| owns_dispatch_wake),
             preview_relay: match (&file.preview_nats_url, &file.preview_nats_subject) {
                 (None, None) => None,
                 (Some(url), Some(subject)) if !url.is_empty() && !subject.is_empty() => {
@@ -515,7 +516,14 @@ impl ResolvedDeployment {
             }
             .to_owned(),
         );
+        if let Some(object) = &file.agent_object_storage {
+            object.validate().map_err(|error| error.to_string())?;
+            if matches!(role, Role::Control | Role::Worker) {
+                return Err("agent_object_storage belongs to Coordinator or AllInOne".into());
+            }
+        }
         Ok(Self {
+            agent_object_storage: file.agent_object_storage,
             role,
             mode,
             bind,

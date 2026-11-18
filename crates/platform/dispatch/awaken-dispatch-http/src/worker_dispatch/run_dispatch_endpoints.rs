@@ -202,7 +202,7 @@ pub(super) async fn claim_for_request(
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<awaken_dispatch_contract::ClaimWorkRequest>,
 ) -> (StatusCode, Json<Value>) {
-    use awaken_dispatch_contract::{ClaimRequestOutcome, DispatchError};
+    use awaken_dispatch_contract::ClaimRequestOutcome;
 
     let result = async {
         let id = &request.claim.request_id;
@@ -214,34 +214,7 @@ pub(super) async fn claim_for_request(
         {
             return Err(ApplicationError::invalid("invalid claim request id"));
         }
-        let authority = claim_authority(&service, &worker, request.identity.as_ref(), true).await?;
-        let workers = if request.claim.run_id.is_none() {
-            service
-                .directory
-                .list()
-                .await
-                .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-                .into_iter()
-                .map(|record| record.snapshot)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let outcome = service
-            .dispatch
-            .claim_for_request(
-                &request.claim,
-                &authority.snapshot,
-                workers,
-                service.placement_policy.clone(),
-                authority.lease_ms,
-            )
-            .await
-            .map_err(|error| match error {
-                DispatchError::Rejected(message) => ApplicationError::invalid(message),
-                DispatchError::Conflict(message) => ApplicationError::conflict(message),
-                DispatchError::Unavailable(message) => ApplicationError::unavailable(message),
-            })?;
+        let (authority, outcome) = wait_for_claim_request(&service, &worker, &request).await?;
         match outcome {
             ClaimRequestOutcome::Unsupported => Ok(None),
             ClaimRequestOutcome::Empty => Ok(Some(json!({ "claimed": null }))),
@@ -263,6 +236,132 @@ pub(super) async fn claim_for_request(
         ),
         Ok(Some(response)) => respond(Ok(response)),
         Err(error) => respond(Err(error)),
+    }
+}
+
+async fn search_claim_request(
+    service: &WorkerDispatchService,
+    worker: &VerifiedWorkerContext,
+    request: &awaken_dispatch_contract::ClaimWorkRequest,
+    search: awaken_dispatch_contract::ClaimSearch,
+) -> Result<
+    (
+        super::ClaimAuthority,
+        awaken_dispatch_contract::ClaimRequestOutcome,
+    ),
+    ApplicationError,
+> {
+    use awaken_dispatch_contract::{ClaimSearch, DispatchError};
+    let authority = claim_authority(service, worker, request.identity.as_ref(), true).await?;
+    let workers = if request.claim.run_id.is_none() && search != ClaimSearch::Replay {
+        service
+            .directory
+            .list()
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+            .into_iter()
+            .map(|record| record.snapshot)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let result = if search == ClaimSearch::Any {
+        service
+            .dispatch
+            .claim_for_request(
+                &request.claim,
+                &authority.snapshot,
+                workers,
+                service.placement_policy.clone(),
+                authority.lease_ms,
+            )
+            .await
+    } else {
+        service
+            .dispatch
+            .search_claim_request(
+                &request.claim,
+                &authority.snapshot,
+                workers,
+                service.placement_policy.clone(),
+                authority.lease_ms,
+                search,
+            )
+            .await
+    };
+    let outcome = result.map_err(|error| match error {
+        DispatchError::Rejected(message) => ApplicationError::invalid(message),
+        DispatchError::Conflict(message) => ApplicationError::conflict(message),
+        DispatchError::Unavailable(message) => ApplicationError::unavailable(message),
+    })?;
+    Ok((authority, outcome))
+}
+
+async fn wait_for_claim_request(
+    service: &WorkerDispatchService,
+    worker: &VerifiedWorkerContext,
+    request: &awaken_dispatch_contract::ClaimWorkRequest,
+) -> Result<
+    (
+        super::ClaimAuthority,
+        awaken_dispatch_contract::ClaimRequestOutcome,
+    ),
+    ApplicationError,
+> {
+    use awaken_dispatch_contract::{ClaimRequestOutcome, ClaimSearch};
+    let wait_ms = request.wait_ms.unwrap_or_default().min(2_000);
+    if wait_ms == 0 || request.claim.run_id.is_some() {
+        return search_claim_request(service, worker, request, ClaimSearch::Any).await;
+    }
+
+    let deadline = awaken_time::mono::now() + std::time::Duration::from_millis(wait_ms);
+    let replay = search_claim_request(service, worker, request, ClaimSearch::Replay).await?;
+    if matches!(replay.1, ClaimRequestOutcome::Unsupported) {
+        return search_claim_request(service, worker, request, ClaimSearch::Any).await;
+    }
+    if !matches!(replay.1, ClaimRequestOutcome::Empty) {
+        return Ok(replay);
+    }
+    loop {
+        let changed = service.ready_shards.changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        let hint = service
+            .ready_shards
+            .observe(service.dispatch.as_ref())
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+        let Some(shards) = hint else {
+            return search_claim_request(service, worker, request, ClaimSearch::Any).await;
+        };
+        for shard in shards.into_iter().take(4) {
+            if awaken_time::mono::now() >= deadline {
+                break;
+            }
+            let Some(permit) = service.ready_shards.try_claim(shard) else {
+                continue;
+            };
+            let outcome =
+                search_claim_request(service, worker, request, ClaimSearch::Shard(shard)).await?;
+            drop(permit);
+            if matches!(outcome.1, ClaimRequestOutcome::Claimed(_)) {
+                // Start the next idle Worker draining the same cached backlog
+                // as soon as this claim frees capacity in the shard.
+                service.ready_shards.changed.notify_one();
+            }
+            if !matches!(outcome.1, ClaimRequestOutcome::Empty) {
+                return Ok(outcome);
+            }
+        }
+        if awaken_time::mono::now() >= deadline {
+            // A sibling Coordinator may have published the receipt during the
+            // wait, including after the last candidate was removed.
+            return search_claim_request(service, worker, request, ClaimSearch::Replay).await;
+        }
+        tokio::select! {
+            () = changed => {}
+            () = tokio::time::sleep_until(deadline.min(awaken_time::mono::now() + super::ready_shards::REFRESH)) => {}
+        }
     }
 }
 

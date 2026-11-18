@@ -723,7 +723,7 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
 
 #[cfg(kani)]
 /// @obligation model_operation.ordinal_never_wraps_or_reuses_a_coordinate
-/// @kani profile=solver-kissat-v1 tier=nightly
+/// @kani profile=solver-cadical-v1 tier=nightly
 #[kani::proof]
 // The bound covers the two-element history fold and the byte comparison of the
 // representative's longest coordinate ("native"): the binding is now a real

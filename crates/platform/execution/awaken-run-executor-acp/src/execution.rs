@@ -887,7 +887,13 @@ impl AcpRunExecutor {
                 context.ownership.clone(),
                 permission_resume.as_ref(),
             )
-            .with_tool_call_limit(activation.snapshot.resolved_spec.max_steps);
+            .with_tool_call_limit(activation.snapshot.resolved_spec.max_steps)
+            .with_progress(
+                context.stream_sink.clone(),
+                activation.thread_id.clone(),
+                usize::try_from(step_ordinal - 1)
+                    .map_err(|_| Error::Execution("ACP progress step exhausted".into()))?,
+            );
             let (mut injections, interrupt_forwarder) =
                 tool_continuation::attempt_interrupt_channel(context);
             let client_execution = Arc::new(awaken_sync::InvariantLock::new(None));
@@ -1520,6 +1526,11 @@ fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: PauseReason)
 /// `Role::Tool` `ToolResult` addressed to that call). `TurnEnd` carries no message —
 /// it is returned as the Step's reason.
 struct CollectingAppender {
+    progress: Option<(
+        Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+        ThreadId,
+        usize,
+    )>,
     run_id: RunId,
     namespace: String,
     next_assistant_step: usize,
@@ -1542,6 +1553,16 @@ struct CollectingAppender {
 }
 
 impl CollectingAppender {
+    fn with_progress(
+        mut self,
+        sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+        thread: ThreadId,
+        step: usize,
+    ) -> Self {
+        self.progress = sink.map(|sink| (sink, thread, step));
+        self
+    }
+
     fn new(
         run_id: RunId,
         namespace: String,
@@ -1551,6 +1572,7 @@ impl CollectingAppender {
         resumed_call: Option<&PermissionResume>,
     ) -> Self {
         Self {
+            progress: None,
             run_id,
             namespace,
             next_assistant_step,
@@ -1733,6 +1755,26 @@ impl RunFactAppender for CollectingAppender {
                 });
             }
             AcpProjectedEvent::TurnEnd { .. } => self.open_text_message = None,
+        }
+        // ACP Message updates are text fragments. Use the same neutral sink as
+        // Native execution, after logical message boundaries have been resolved.
+        if let (AcpProjectedEvent::Message { text, .. }, Some((sink, thread, step))) =
+            (event, &self.progress)
+        {
+            let observation = awaken_agent_contract::stream::event::Observation::assistant_delta(
+                self.run_id.clone(),
+                thread.clone(),
+                *step,
+                self.next_assistant_step.saturating_sub(1),
+                awaken_agent_contract::event::AgentEvent::Delta(
+                    awaken_agent_contract::event::Delta::TextDelta {
+                        delta: text.clone(),
+                    },
+                ),
+            );
+            // The Runtime sink contract remains best-effort. A durable wrapper
+            // forwards live output only after its own confirmed publication.
+            let _ = sink.send_observation(observation).await;
         }
         Ok(())
     }

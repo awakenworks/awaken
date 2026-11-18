@@ -207,7 +207,7 @@ def observation_value(value: Any, *, as_set: bool = False) -> str:
     if isinstance(value, list):
         body = ", ".join(observation_value(item) for item in value)
         return "{" + body + "}" if as_set else "<<" + body + ">>"
-    if isinstance(value, dict) and value and all(re.fullmatch(r"[a-z][a-z_]*", key) for key in value):
+    if isinstance(value, dict) and value and all(re.fullmatch(r"[a-z][a-z0-9_]*", key) for key in value):
         return "[" + ", ".join(f"{key} |-> {observation_value(item, as_set=key in OBSERVATION_SET_FIELDS)}" for key, item in value.items()) + "]"
     raise ValueError(f"unsupported observation value: {value!r}")
 
@@ -398,7 +398,33 @@ def project_realization_trace(events: list[dict[str, Any]]) -> list[dict[str, An
 def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
     """Bind partition labels to raw measured conditions; model owns outcomes."""
     rule = step["rule"]
-    if name == "realization-capacity-cancellation":
+    if rule == "lost-acknowledgement-takeover":
+        operation = {"run_id": "text", "ordinal": "uint"}
+        receipt = {"operation_id": operation, "commit_sequence": "uint",
+                   "thread_version": "uint", "payload_hash": "text", "duplicate": "bool"}
+        point = {"kind": ("initial", "unknown", "replayed", "takeover", "fenced", "identity-conflict"),
+                 "epoch": "uint", "receipts": [receipt], "state": {
+                     "version": "uint", "ordinal": "uint", "cursor": "uint", "messages": "uint"}}
+        validate_observation_schema(step, {"rule": "text", "trace": {
+            "input": {"operation": operation, "hash": "text", "conflict_hash": "text",
+                      "version": "uint", "messages": "uint"},
+            "observations": [point],
+        }}, name)
+    elif name == "s3-concurrent-stream":
+        frame = {"sequence": "uint", "step": "uint", "response": "uint", "attempt": "uint",
+                 "after": "uint", "mime": "text", "sha256": "text"}
+        validate_observation_schema(step, {"rule": "text", "trace": {
+            "stream_count": "uint", "frames_per_stream": "uint", "peak_writers": "uint",
+            "watermark": "uint", "live": [frame], "frozen": [frame], "tail": [frame],
+            "checkpoint_before": "bool", "checkpoint_after": "bool",
+        }}, name)
+    elif name == "s3-sealed-collection":
+        validate_observation_schema(step, {"rule": "text", "trace": {
+            "old_generation": "uint", "fresh_generation": "uint", "cutoff": "uint", "deleted": "uint",
+            "old_read_before": "bool", "sealed_pin_rejected": "bool", "fresh_pin_admitted": "bool",
+            "old_read_after_failed": "bool", "fresh_read_after": "bool",
+        }}, name)
+    elif name == "realization-capacity-cancellation":
         state = {"sequence": "uint", "scheduler": "text", "event": "text",
             "request": ("none", "queued", "held", "done"),
             "completion": ("none", "queued", "held", "done"),
@@ -529,8 +555,8 @@ def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
             raise ValueError("observation rule conditions drift")
 
 
-def render_observations(trace_dir: Path, output: Path, repository: Path, manifest: dict[str, Any], require_complete: bool) -> int:
-    profile = manifest["session_observations"]
+def render_observations(trace_dir: Path, output: Path, repository: Path, manifest: dict[str, Any], require_complete: bool, projection: str = "session-observations") -> int:
+    profile = manifest[projection.replace("-", "_")]
     output.mkdir(parents=True, exist_ok=True)
     seen: set[str] = set()
     families: set[str] = set()
@@ -592,8 +618,8 @@ def render_observations(trace_dir: Path, output: Path, repository: Path, manifes
     missing = sorted(set(profile["required_scenarios"]) - seen)
     missing_families = sorted(set(profile["families"]) - families)
     report = {"projection_id": profile["projection_id"], "scenarios": sorted(seen), "rules": {name: profile["required_scenarios"][name]["rules"] for name in sorted(seen)}, "missing": missing, "missing_families": missing_families, "complete": not missing and not missing_families}
-    (output / "session-observation-coverage.json").write_text(json.dumps(report, indent=2) + "\n")
-    print(f"session observation coverage: {len(seen)} scenarios, missing={missing}, missing_families={missing_families}")
+    (output / (projection.removesuffix("s") + "-coverage.json")).write_text(json.dumps(report, indent=2) + "\n")
+    print(f"{projection} coverage: {len(seen)} scenarios, missing={missing}, missing_families={missing_families}")
     if not seen or require_complete and (missing or missing_families):
         raise ValueError("production observation trace coverage is incomplete")
     return 0
@@ -601,7 +627,7 @@ def render_observations(trace_dir: Path, output: Path, repository: Path, manifes
 
 def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument("--projection", choices=["thread-commit", "session-observations"], default="thread-commit")
+    parser.add_argument("--projection", choices=["thread-commit", "session-observations", "storage-observations"], default="thread-commit")
     parser.add_argument("trace_dir", type=Path)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument(
@@ -621,10 +647,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if args.projection == "session-observations":
+    if args.projection in {"session-observations", "storage-observations"}:
         repository = Path(__file__).resolve().parents[2]
         manifest = json.loads((args.manifest or repository / "formal/runtime-refinement-manifest.json").read_text())
-        return render_observations(args.trace_dir, args.output_dir, repository, manifest, args.require_complete_transition_coverage)
+        return render_observations(
+            args.trace_dir, args.output_dir, repository, manifest,
+            args.require_complete_transition_coverage, args.projection,
+        )
 
     traces = sorted(args.trace_dir.glob("*.json"))
     if not traces:

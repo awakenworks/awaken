@@ -90,7 +90,7 @@ async fn publish(
     }
     let current = service
         .dispatch
-        .lock_commit_epoch(claim)
+        .acquire_commit_authority(claim)
         .await
         .map_err(|error| ApplicationError::internal(error.to_string()))?;
     let Some(guard) = current else {
@@ -106,13 +106,75 @@ async fn publish(
             "live Worker event does not match its claim's logical Thread",
         ));
     }
+    if matches!(
+        &service.claim_persistence,
+        crate::WorkerClaimPersistence::Object(_)
+    ) {
+        guard
+            .release()
+            .await
+            .map_err(ApplicationError::unavailable)?;
+        return Ok(publish_preview(service, claim, observations).await);
+    }
+    let guard = guard.into_locked().map_err(ApplicationError::unavailable)?;
+    let accepted = publish_preview(service, claim, observations).await;
+    drop(guard);
+    Ok(accepted)
+}
+
+async fn publish_preview(
+    service: &WorkerDispatchService,
+    claim: &RunClaim,
+    observations: impl IntoIterator<Item = Observation>,
+) -> Value {
     awaken_dispatch_contract::with_preview_claim_epoch(claim, async {
         for observation in observations {
             let _ = service.stream_sink.send_observation(observation).await;
         }
     })
     .await;
-    // Keep the exact epoch guarded through publication, as on the single path.
-    drop(guard);
-    Ok(json!({ "accepted": true }))
+    json!({ "accepted": true })
+}
+
+pub(super) async fn append_progress_batch(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<awaken_dispatch_contract::AppendProgressRequest>,
+) -> (StatusCode, Json<Value>) {
+    use awaken_dispatch_contract::ProgressError;
+    let authority = match claim_authority(&service, &worker, Some(&request.identity), false).await {
+        Ok(authority) => authority,
+        Err(error) => return respond(Err(error)),
+    };
+    if request.claim.owner != authority.owner {
+        return respond(Err(ApplicationError::invalid(
+            "progress does not match its authenticated claim",
+        )));
+    }
+    let crate::WorkerClaimPersistence::Object(persistence) = &service.claim_persistence else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({ "error": "durable progress is unsupported" })),
+        );
+    };
+    match persistence
+        .progress
+        .append_progress_batch(&request.claim, request.batch)
+        .await
+    {
+        Ok(receipt) => respond(Ok(json!(receipt))),
+        Err(ProgressError::Unsupported) => (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({ "error": "durable progress is unsupported" })),
+        ),
+        Err(ProgressError::Invalid) => {
+            respond(Err(ApplicationError::invalid("invalid progress batch")))
+        }
+        Err(ProgressError::Fenced | ProgressError::Conflict) => respond(Err(
+            ApplicationError::conflict("progress claim or batch conflicts with committed progress"),
+        )),
+        Err(ProgressError::Unavailable) => respond(Err(ApplicationError::unavailable(
+            "durable progress outcome is unavailable",
+        ))),
+    }
 }

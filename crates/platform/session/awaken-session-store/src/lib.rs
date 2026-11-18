@@ -40,6 +40,11 @@ use {
     awaken_session_types::SessionRecoveryQuarantine,
 };
 
+mod object;
+pub use awaken_object_storage::{
+    ImmutableSessionRecord, SessionObject, SessionObjectStore, SessionObjectUpdate,
+};
+pub use object::ObjectManagedSessionRepository;
 mod content_visibility;
 mod creation_intents;
 mod deployments;

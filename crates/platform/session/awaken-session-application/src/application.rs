@@ -131,8 +131,11 @@ impl<
 /// One immutable persistence selection made before the execution Host exists.
 /// The application and its Environment receipt sink always share these exact
 /// Store/Clock handles; no app-to-Host installation is needed to create it.
+#[derive(Clone)]
 pub struct SessionPersistence {
     store: Arc<dyn crate::SessionStore>,
+    conditional_publication:
+        Option<Arc<dyn awaken_session_contract::SessionConditionalPublication>>,
     clock: Arc<dyn awaken_time::WallClock>,
     environment_binding_sink: Arc<dyn SessionEnvironmentBindingSink>,
 }
@@ -148,9 +151,22 @@ impl SessionPersistence {
             Arc::new(RepositoryEnvironmentBindingSink::new(repo, clock.clone()));
         Self {
             store,
+            conditional_publication: None,
             clock,
             environment_binding_sink,
         }
+    }
+
+    /// Select both publication roles from the same repository instance.
+    #[must_use]
+    pub fn conditional<S>(store: Arc<S>, clock: Arc<dyn awaken_time::WallClock>) -> Self
+    where
+        S: crate::SessionStore + awaken_session_contract::SessionConditionalPublication + 'static,
+    {
+        let publication = store.clone();
+        let mut persistence = Self::new(store, clock);
+        persistence.conditional_publication = Some(publication);
+        persistence
     }
 
     #[must_use]

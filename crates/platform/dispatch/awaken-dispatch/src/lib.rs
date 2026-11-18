@@ -38,6 +38,8 @@ pub use awaken_dispatch_execution::{
 #[cfg(feature = "durable")]
 mod any_factory;
 mod application;
+#[cfg(feature = "durable")]
+mod claim_request;
 mod clock;
 mod dispatch;
 mod dispatch_schema;
@@ -52,6 +54,16 @@ mod durable;
 mod inbox_mutation;
 #[cfg(any(test, feature = "test-support"))]
 pub mod memory;
+#[cfg(all(feature = "durable", not(any(test, feature = "test-support"))))]
+mod memory;
+#[cfg(feature = "durable")]
+mod object;
+#[cfg(feature = "durable")]
+pub use object::ObjectDispatchPartition;
+#[cfg(feature = "durable")]
+mod object_router;
+#[cfg(feature = "durable")]
+pub use object_router::ObjectDispatchStore;
 #[cfg(feature = "durable")]
 mod postgres;
 #[cfg(feature = "durable")]

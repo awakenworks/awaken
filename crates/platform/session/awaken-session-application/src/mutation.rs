@@ -13,6 +13,10 @@ use awaken_session_contract::{
     SessionMutationPayload, SessionMutationResult, SessionRepositoryError,
 };
 use awaken_session_contract::{SessionRepository, SessionRepositoryReads};
+use awaken_session_execution_contract::{
+    BeginSessionRealization, RenewSessionRealization, SessionRealizationControl as _,
+    SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationLeaseReceipt,
+};
 pub use awaken_session_execution_contract::{
     SessionAdmissionFailure, SessionMutationError, SessionRootCommit, SessionStateViolation,
 };
@@ -161,6 +165,8 @@ pub(crate) const ROOT_CAS_ATTEMPTS: usize = 3;
 /// driver, retry queue or alternative idempotency protocol.
 pub struct SessionMutations {
     repository: Arc<dyn SessionRepository>,
+    conditional_publication:
+        Option<Arc<dyn awaken_session_contract::SessionConditionalPublication>>,
     clock: Arc<dyn awaken_time::WallClock>,
     mutation_sequence: AtomicU64,
 }
@@ -172,9 +178,18 @@ impl SessionMutations {
     ) -> Self {
         Self {
             repository,
+            conditional_publication: None,
             clock,
             mutation_sequence: AtomicU64::new(0),
         }
+    }
+
+    pub(crate) fn with_conditional_publication(
+        mut self,
+        publication: Option<Arc<dyn awaken_session_contract::SessionConditionalPublication>>,
+    ) -> Self {
+        self.conditional_publication = publication;
+        self
     }
 
     pub(crate) fn repository(&self) -> &Arc<dyn SessionRepository> {
@@ -293,6 +308,37 @@ impl SessionMutations {
             {
                 Err(SessionMutationError::Conflict) if attempt + 1 < ROOT_CAS_ATTEMPTS => {}
                 result => return result.map(|_| ()),
+            }
+        }
+        Err(SessionMutationError::Conflict)
+    }
+
+    pub(crate) async fn retire_issued_realization(
+        &self,
+        command: awaken_session_execution_contract::RetireSessionRealization,
+    ) -> Result<awaken_session_contract::SessionRealizationRetirement, SessionMutationError> {
+        for _ in 0..ROOT_CAS_ATTEMPTS {
+            let owner = self.owner(&command.session_id).await?;
+            let mut session = self.session_aggregate(&command.session_id).await?;
+            let before = session.realization.clone();
+            let outcome = session.assignment().retire_issued(&command.lease);
+            if outcome != (awaken_session_contract::SessionRealizationRetirement::Retired {})
+                || session.realization == before
+            {
+                return Ok(outcome);
+            }
+            match self
+                .commit_session_snapshot_with_outcome(
+                    &owner,
+                    session,
+                    "retire-issued-session-realization",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(_) => return Ok(outcome),
+                Err(SessionMutationError::Conflict) => continue,
+                Err(error) => return Err(error),
             }
         }
         Err(SessionMutationError::Conflict)
@@ -568,6 +614,69 @@ impl SessionMutations {
     }
 }
 
+/// The object adapter consumes the exact claim condition in the root CAS.
+pub(crate) struct ConditionalSessionRootCommit<'a> {
+    pub(crate) mutations: &'a SessionMutations,
+    pub(crate) session: &'a awaken_session_types::SessionId,
+    pub(crate) condition: &'a awaken_session_types::SessionPublicationCondition,
+}
+
+impl ConditionalSessionRootCommit<'_> {
+    fn publication(
+        &self,
+    ) -> Result<&dyn awaken_session_contract::SessionConditionalPublication, SessionMutationError>
+    {
+        self.mutations
+            .conditional_publication
+            .as_deref()
+            .ok_or_else(|| {
+                repository_failure(awaken_session_contract::SessionRepositoryError::NotApplied(
+                    "Session repository cannot consume the publication condition".into(),
+                ))
+            })
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRootCommit for ConditionalSessionRootCommit<'_> {
+    async fn validate_claim(&self) -> Result<(), SessionMutationError> {
+        if !self
+            .publication()?
+            .validate_publication_condition(self.session, self.condition, None)
+            .await
+            .map_err(repository_failure)?
+        {
+            return Err(SessionMutationError::Conflict);
+        }
+        Ok(())
+    }
+
+    async fn commit(
+        &self,
+        owner_scope: &str,
+        mutation: SessionMutation,
+    ) -> Result<SessionMutationResult, SessionMutationError> {
+        self.publication()?
+            .commit_conditionally(owner_scope, mutation, self.condition)
+            .await
+            .map_err(repository_failure)
+    }
+
+    async fn validate(
+        &self,
+        id: &awaken_session_types::SessionId,
+        revision: SessionRevision,
+    ) -> Result<bool, SessionMutationError> {
+        if id != self.session {
+            return Err(SessionMutationError::Conflict);
+        }
+        self.publication()?
+            .validate_publication_condition(id, self.condition, Some(revision))
+            .await
+            .map_err(repository_failure)
+    }
+}
+
 #[async_trait::async_trait]
 impl SessionRootCommit for SessionMutations {
     async fn validate_claim(&self) -> Result<(), SessionMutationError> {
@@ -593,6 +702,51 @@ impl SessionRootCommit for SessionMutations {
         // The ordinary application path has no external Dispatch tenure. Its
         // aggregate/Repository CAS retains exactly the existing authority law.
         Ok(true)
+    }
+}
+
+// Object publication conditions select the same Root CAS at the application boundary.
+impl crate::SessionRealizations {
+    /// Adapt the object claim observation to the shared final Root gate.
+    pub async fn begin_session_realization_conditionally(
+        &self,
+        command: BeginSessionRealization,
+        condition: Option<&awaken_session_types::SessionPublicationCondition>,
+    ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        let session = command.session_id.clone();
+        let conditional =
+            condition.map(|condition| crate::mutation::ConditionalSessionRootCommit {
+                mutations: self.mutations.as_ref(),
+                session: &session,
+                condition,
+            });
+        let commit: &dyn crate::SessionRootCommit = match &conditional {
+            Some(gate) => gate,
+            None => self.mutations.as_ref(),
+        };
+        self.begin_session_realization_with_commit(command, commit)
+            .await
+    }
+
+    pub(crate) async fn renew_with_publication_condition(
+        &self,
+        command: RenewSessionRealization,
+        condition: Option<&awaken_session_types::SessionPublicationCondition>,
+    ) -> Result<SessionRealizationLeaseReceipt, SessionRealizationControlFailure> {
+        let Some(condition) = condition else {
+            return self.renew_session_realization(command).await;
+        };
+        let session = command.session_id.clone();
+        let commit = crate::mutation::ConditionalSessionRootCommit {
+            mutations: self.mutations.as_ref(),
+            session: &session,
+            condition,
+        };
+        SessionRealizationLeaseReceipt::issued_at(
+            self.renew_session_realization_with_commit(command, &commit)
+                .await?,
+            self.clock.now_ms(),
+        )
     }
 }
 

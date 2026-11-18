@@ -1,0 +1,59 @@
+[package]
+name = "awaken-store-s3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+product = "platform"
+bounded_context = "committed-truth"
+layer = "infrastructure"
+authority = "store-s3"
+separation = "isolation"
+isolates = ["object_store"]
+
+[features]
+test-support = []
+
+[dependencies]
+awaken-object-storage = { workspace = true, features = ["s3"] }
+awaken-agent-contract.workspace = true
+awaken-session-types.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-dispatch-contract.workspace = true
+awaken-worker-contract.workspace = true
+awaken-time.workspace = true
+awaken-sync.workspace = true
+awaken-lease-contract.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing = "0.1"
+sha2 = "0.10"
+bytes = "1"
+futures = "0.3"
+object_store = { version = "0.14", features = ["aws"] }
+zstd = "0.13"
+uuid = {version="1",features=["v4","v7","serde"]}
+
+[dev-dependencies]
+awaken-session-contract.workspace = true
+awaken-session-store.workspace = true
+awaken-dispatch = {workspace=true, features=["durable"]}
+awaken-dispatch-erasure.workspace = true
+awaken-runtime.workspace = true
+awaken-store-conformance.workspace = true
+awaken-lease-testkit.workspace = true
+awaken-dispatch-testkit.workspace = true
+awaken-reliability-testkit.workspace = true
+tempfile = "3"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[lints]
+workspace = true

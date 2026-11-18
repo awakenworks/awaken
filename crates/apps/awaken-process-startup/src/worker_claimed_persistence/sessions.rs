@@ -221,6 +221,7 @@ impl WorkerSessionClaims for PostgresWorkerClaims {
                     run,
                     mode,
                     awaken_session_execution_contract::PreparedSessionRunActivity {
+                        publication_condition: None,
                         projected_revision: revision,
                         admitted_after_cursor: cursor,
                     },

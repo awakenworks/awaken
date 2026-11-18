@@ -763,3 +763,4 @@ impl<
 }
 
 pub use worker_dispatch::resolve_worker_dispatch_dependencies;
+include!("conformance/portable_scans.rs");

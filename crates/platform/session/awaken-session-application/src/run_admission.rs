@@ -123,6 +123,7 @@ pub(crate) struct SessionRunAdmissionCollaborators {
 }
 
 struct RunActivityAdmission {
+    publication_condition: Option<awaken_session_types::SessionPublicationCondition>,
     session_id: awaken_session_types::SessionId,
     run_id: awaken_agent_contract::agent::run::Id,
     projected_revision: SessionRevision,
@@ -407,6 +408,7 @@ impl SessionRunAdmissions {
                     projected_revision,
                     existing_activity_epoch,
                     projection,
+                    publication_condition: None,
                 },
                 reservation,
                 false,
@@ -429,6 +431,7 @@ impl SessionRunAdmissions {
     ) -> futures_util::future::BoxFuture<'a, Result<AdmittedSessionRun, RunError>> {
         Box::pin(async move {
             let RunActivityAdmission {
+                publication_condition,
                 session_id,
                 run_id,
                 projected_revision,
@@ -462,6 +465,7 @@ impl SessionRunAdmissions {
                                         projected_revision,
                                         (&thread_id, &run_id),
                                         admitted_after_cursor,
+                                        publication_condition,
                                     )
                                     .await?
                             }
@@ -902,6 +906,16 @@ impl awaken_session_execution_contract::SessionRunActivityAdmitter for PreparedR
         recover_only: bool,
         admitted_after_cursor: Option<u64>,
     ) -> Result<AdmittedSessionRun, RunError> {
+        self.admit_conditionally(reservation, recover_only, admitted_after_cursor, None)
+            .await
+    }
+    async fn admit_conditionally(
+        &self,
+        reservation: awaken_session_execution_contract::SessionRunReservation,
+        recover_only: bool,
+        admitted_after_cursor: Option<u64>,
+        publication_condition: Option<awaken_session_types::SessionPublicationCondition>,
+    ) -> Result<AdmittedSessionRun, RunError> {
         let thread = awaken_agent_contract::ThreadId(self.session_id.to_string());
         let operation = session_run_activity_operation_id(&self.session_id, &self.run_id);
         let epoch = self
@@ -923,6 +937,7 @@ impl awaken_session_execution_contract::SessionRunActivityAdmitter for PreparedR
                     projected_revision: self.projected_revision,
                     existing_activity_epoch: epoch,
                     projection: RunActivityProjection::Prepared,
+                    publication_condition,
                 },
                 reservation,
                 recover_only,

@@ -13,6 +13,7 @@ separation = "process"
 
 
 [dependencies]
+awaken-store-s3.workspace = true
 awaken-sync.workspace = true
 awaken-inference-endpoint = { workspace = true, features = ["brokered"] }
 awaken-dispatch-contract.workspace = true
@@ -146,6 +147,11 @@ container-k8s = ["dep:awaken-container-contract"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+awaken-run-executor-acp.workspace = true
+awaken-session-run-delivery.workspace = true
+awaken-store-s3 = {workspace=true,features=["test-support"]}
+awaken-runtime.workspace = true
+awaken-store-conformance.workspace = true
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-session-application = { workspace = true, features = ["test-support"] }
 # The Broker regressions retain the original real Kube client/ledger fixture.

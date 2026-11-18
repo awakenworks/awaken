@@ -183,6 +183,9 @@ pub struct HttpDispatchQueue {
     worker_manifest: Option<awaken_worker_contract::WorkerManifest>,
     request_authorizer: Option<std::sync::Arc<dyn WorkerRequestAuthorizer>>,
     pending_claims: PendingClaims,
+    claim_wait_ms: Option<u64>,
+    waiting_claim: tokio::sync::Mutex<()>,
+    last_retry_probe: tokio::sync::Mutex<Option<tokio::time::Instant>>,
     previews: PreviewQueue,
 }
 
@@ -191,11 +194,7 @@ pub fn dispatch_transport_with_upstream(
     upstream: &WorkerUpstream,
     identity: WorkerIdentity,
 ) -> Arc<HttpDispatchQueue> {
-    Arc::new(
-        HttpDispatchQueue::new(upstream.base_url(), identity)
-            .with_client(upstream.client().clone())
-            .with_request_authorizer(upstream.request_authorizer()),
-    )
+    Arc::new(HttpDispatchQueue::for_upstream(upstream, identity))
 }
 
 /// Expose the one transport through the two neutral ports consumed by a Worker
@@ -209,15 +208,20 @@ pub fn worker_transports_with_upstream(
     Arc<dyn ClaimedStreamPublisher>,
 ) {
     let transport = Arc::new(
-        HttpDispatchQueue::new(upstream.base_url(), identity)
-            .with_client(upstream.client().clone())
-            .with_request_authorizer(upstream.request_authorizer())
-            .with_worker_manifest(manifest),
+        HttpDispatchQueue::for_upstream(upstream, identity)
+            .with_worker_manifest(manifest)
+            .with_idle_claim_wait(),
     );
     (transport.clone(), transport)
 }
 
 impl HttpDispatchQueue {
+    fn for_upstream(upstream: &WorkerUpstream, identity: WorkerIdentity) -> Self {
+        Self::new(upstream.base_url(), identity)
+            .with_client(upstream.client().clone())
+            .with_request_authorizer(upstream.request_authorizer())
+    }
+
     /// Freeze the same immutable capabilities the concrete Worker registered.
     /// This is a response admission check, not another Registry or mutable
     /// capability source. Production Worker construction always supplies it.
@@ -227,6 +231,11 @@ impl HttpDispatchQueue {
         manifest: awaken_worker_contract::WorkerManifest,
     ) -> Self {
         self.worker_manifest = Some(manifest);
+        self
+    }
+
+    fn with_idle_claim_wait(mut self) -> Self {
+        self.claim_wait_ms = Some(1_000);
         self
     }
 
@@ -272,6 +281,9 @@ impl HttpDispatchQueue {
             worker_manifest: None,
             request_authorizer: None,
             pending_claims: PendingClaims::default(),
+            claim_wait_ms: None,
+            waiting_claim: tokio::sync::Mutex::new(()),
+            last_retry_probe: tokio::sync::Mutex::new(None),
             previews: PreviewQueue::default(),
         }
     }
@@ -419,11 +431,23 @@ impl HttpDispatchQueue {
     ) -> Result<Option<Option<Claimed>>, DispatchError> {
         // Keep uncertain request ids available for replay, without giving
         // the same logical request to two local execution slots.
+        let wait_ms = self.claim_wait_ms.filter(|_| run_id.is_none());
+        let _wait = if wait_ms.is_some() {
+            let Ok(permit) = self.waiting_claim.try_lock() else {
+                // The other local slot is already waiting. Do not queue an
+                // HTTP poll while retaining the Worker's drain read guard.
+                return Ok(Some(None));
+            };
+            Some(permit)
+        } else {
+            None
+        };
         let mut attempt = self.pending_claims.begin(run_id).await;
         let response = self
             .post_replayable(
                 "/v1/worker/dispatch/claim_for_request",
                 &ClaimWorkRequest {
+                    wait_ms,
                     identity: Some(self.worker_identity.clone()),
                     claim: ClaimRequest {
                         request_id: attempt.request_id().to_owned(),
@@ -508,6 +532,42 @@ async fn send_dispatch_request<T: Serialize + ?Sized>(
         .send()
         .await
         .map_err(|error| DispatchError::Rejected(format!("dispatch transport: {error}")))
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::AppendRunProgress for HttpDispatchQueue {
+    async fn append_progress_batch(
+        &self,
+        claim: &RunClaim,
+        batch: awaken_dispatch_contract::ProgressBatch,
+    ) -> Result<awaken_dispatch_contract::ProgressReceipt, awaken_dispatch_contract::ProgressError>
+    {
+        use awaken_dispatch_contract::{
+            AppendProgressRequest, PROGRESS_BATCH_PATH, ProgressError, ProgressReceipt,
+        };
+        batch.validate(claim)?;
+        let expected = batch.batch_index + 1;
+        let request = AppendProgressRequest {
+            identity: self.worker_identity.clone(),
+            claim: claim.clone(),
+            batch,
+        };
+        let response = self
+            .post_replayable(PROGRESS_BATCH_PATH, &request, self.worker_id(), Some(true))
+            .await
+            .map_err(|error| match error {
+                DispatchError::Conflict(_) => ProgressError::Conflict,
+                DispatchError::Unavailable(_) => ProgressError::Unavailable,
+                DispatchError::Rejected(_) => ProgressError::Invalid,
+            })?
+            .ok_or(ProgressError::Unsupported)?;
+        let receipt: ProgressReceipt =
+            serde_json::from_value(response).map_err(|_| ProgressError::Unavailable)?;
+        if receipt.next_batch != expected {
+            return Err(ProgressError::Unavailable);
+        }
+        Ok(receipt)
+    }
 }
 
 #[async_trait]
@@ -679,6 +739,16 @@ impl awaken_dispatch_contract::DispatchClaims for HttpDispatchQueue {
         lease_ms: u64,
         _max_attempts: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
+        let now = awaken_time::mono::now();
+        if let Some(wait_ms) = self.claim_wait_ms {
+            let mut last = self.last_retry_probe.lock().await;
+            if last.is_some_and(|previous| {
+                now.duration_since(previous) < std::time::Duration::from_millis(wait_ms)
+            }) {
+                return Ok(None);
+            }
+            *last = Some(now);
+        }
         // Retry limit, clock, and lease are control-side policy. The Worker
         // supplies only its authenticated identity and receives an ordinary
         // claimed epoch to terminalize through its existing commit transport.

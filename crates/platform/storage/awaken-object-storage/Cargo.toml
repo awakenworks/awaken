@@ -1,0 +1,27 @@
+[package]
+name = "awaken-object-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+product = "platform"
+bounded_context = "storage"
+layer = "infrastructure"
+authority = "conditional-object-publication"
+separation = "isolation"
+isolates = ["object_store"]
+
+[features]
+default = []
+s3 = ["dep:object_store"]
+
+[dependencies]
+object_store = { version = "0.14", features = ["aws"], optional = true }
+async-trait.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

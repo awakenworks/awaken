@@ -92,6 +92,15 @@ RULES = (
 # behaviour for an implementation that does not override it. An entry is a
 # decision someone made and can be argued with.
 DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {
+    "WakeSignal::publish_shard": (
+        "The shard is an advisory routing hint. A broadcast-only adapter delivers "
+        "the same nudge to all eligible claimers, which must recheck authoritative "
+        "eligibility. Lost hints also remain covered by durable polling."
+    ),
+    "WakeSignal::wait_shard": (
+        "None describes a truthful unqualified wake from an adapter that does "
+        "not carry shard hints. The caller refreshes from durable readiness."
+    ),
     "Runs::run_streaming": (
         "Live observation is best effort; without a live producer the same Run "
         "command settles and returns the authoritative outcome. AG-UI and AI SDK "

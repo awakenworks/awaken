@@ -9,6 +9,9 @@
 // @formal evidence ingress.epoch_reclaim
 // @formal evidence ingress.single_owner
 // @formal evidence run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
+/// The authenticated HTTP checkpoint response or its typed transport failure.
+pub type ClaimedCheckpointRead<E = DispatchError> = Result<Option<StreamCheckpoint>, E>;
+
 /// Remote claim-fenced checkpoint and committed-recovery operations. This is
 /// not a second checkpoint store: the Coordinator endpoint applies the same
 /// Dispatch claim guard to its canonical stores.
@@ -432,6 +435,17 @@ pub trait DispatchCommitAuthority: Send + Sync {
         &self,
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError>;
+    /// Acquire either a real lock or an engine-consumed publication condition.
+    /// Legacy effects must continue using lock_commit_epoch.
+    async fn acquire_commit_authority(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<ClaimAuthority>, DispatchError> {
+        Ok(self
+            .lock_commit_epoch(claim)
+            .await?
+            .map(ClaimAuthority::Locked))
+    }
 }
 
 /// Exact-epoch settlement after committed Run truth is observed.
@@ -626,6 +640,15 @@ pub trait SessionReservationAuthority: Send + Sync {
         &self,
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError>;
+    async fn acquire_session_run_reservation_authority(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<ClaimAuthority>, DispatchError> {
+        Ok(self
+            .lock_session_run_reservation_epoch(claim)
+            .await?
+            .map(ClaimAuthority::Locked))
+    }
 }
 
 /// Trusted Coordinator attempt admission and independent closure commands.
@@ -660,13 +683,43 @@ pub trait DispatchControlClaims: Send + Sync {
     /// An expired or superseded receipt is empty and cannot mint a new epoch.
     async fn claim_for_request(
         &self,
+        request: &ClaimRequest,
+        requester: &WorkerSnapshot,
+        workers: Vec<WorkerSnapshot>,
+        policy: std::sync::Arc<dyn PlacementPolicy>,
+        lease_ms: u64,
+    ) -> Result<ClaimRequestOutcome, DispatchError> {
+        self.search_claim_request(
+            request,
+            requester,
+            workers,
+            policy,
+            lease_ms,
+            crate::ClaimSearch::Any,
+        )
+        .await
+    }
+
+    async fn search_claim_request(
+        &self,
         _request: &ClaimRequest,
         _requester: &WorkerSnapshot,
         _workers: Vec<WorkerSnapshot>,
         _policy: std::sync::Arc<dyn PlacementPolicy>,
         _lease_ms: u64,
+        _search: crate::ClaimSearch,
     ) -> Result<ClaimRequestOutcome, DispatchError> {
         Ok(ClaimRequestOutcome::Unsupported)
+    }
+
+    /// Only a hint. False positives, removals and concurrent changes are
+    /// reconciled by the original exact claim transition.
+    async fn claimable_shards(&self) -> Result<Option<Vec<u8>>, DispatchError> {
+        Ok(None)
+    }
+
+    async fn dispatch_shard_for_run(&self, _run: &RunId) -> Result<Option<u8>, DispatchError> {
+        Ok(None)
     }
 
     /// Claim according to a replaceable preference policy while preserving the
@@ -780,6 +833,31 @@ pub trait DispatchControlReads: DispatchAttemptRecordReads {
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<DispatchCompletion>, DispatchError>;
+    async fn scan_completions(
+        &self,
+        cursor: Option<&crate::DispatchScanCursor>,
+        limit: usize,
+    ) -> Result<crate::DispatchScanPage<DispatchCompletion>, DispatchError> {
+        let after = crate::DispatchScanCursor::single_position(cursor, "completions", None)?;
+        let events = self.completion_events_after(after, limit).await?;
+        let position = events.last().map_or(after, |event| event.sequence);
+        Ok(crate::DispatchScanPage {
+            events,
+            next_cursor: crate::DispatchScanCursor::single("completions", None, position)?,
+        })
+    }
+    /// Read one immutable Run completion without a process-wide sequence.
+    /// Partitioned engines route internally; this grants no execution authority.
+    async fn completion_for_run(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<DispatchCompletion>, DispatchError> {
+        Ok(self
+            .completion_events_after(0, usize::MAX)
+            .await?
+            .into_iter()
+            .find(|event| &event.run_id == run))
+    }
 
     /// One store-time observation of claimable and currently leased Dispatch
     /// rows. The two classes are disjoint: an expired lease is runnable, while

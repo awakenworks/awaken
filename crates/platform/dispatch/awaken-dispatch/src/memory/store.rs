@@ -8,6 +8,13 @@ use awaken_sync::InvariantLock;
 use super::State;
 
 /// In-memory durable-ingress store. Cloneable handles share one state.
+#[cfg_attr(
+    not(any(test, feature = "test-support")),
+    expect(
+        unreachable_pub,
+        reason = "the public reference adapter is exported only with test-support; production reuses its private transition kernel"
+    )
+)]
 pub struct MemoryDispatchStore {
     pub(super) state: InvariantLock<State>,
     pub(super) authority: Arc<tokio::sync::Mutex<()>>,
@@ -34,6 +41,13 @@ impl MemoryDispatchStore {
     /// but it does make it impossible to make *silently*: a caller that wants
     /// wall time now says so.
     #[must_use]
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        expect(
+            unreachable_pub,
+            reason = "the public reference adapter is exported only with test-support; production reuses its private transition kernel"
+        )
+    )]
     pub fn new(clock: Arc<dyn awaken_time::WallClock>) -> Self {
         Self {
             state: InvariantLock::new(State::new(clock.clone())),

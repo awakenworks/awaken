@@ -12,6 +12,15 @@ pub trait WakeSignal: Send + Sync {
     /// Publish a wake hint. Best-effort: a failure or a lost hint is tolerable.
     async fn publish(&self) -> Result<(), DispatchError>;
 
+    async fn publish_shard(&self, _shard: u8) -> Result<(), DispatchError> {
+        self.publish().await
+    }
+
+    async fn wait_shard(&self) -> Option<u8> {
+        self.wait().await;
+        None
+    }
+
     /// Wait for the next wake hint.
     async fn wait(&self);
 }

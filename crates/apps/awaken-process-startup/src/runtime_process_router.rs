@@ -414,6 +414,7 @@ async fn assemble_control_component(
 /// Control neither mirrors it nor owns a fallback token directory.
 struct ExecutionStores {
     sessions: Arc<dyn awaken_session_application::SessionStore>,
+    session_persistence: awaken_session_application::SessionPersistence,
     application_access: Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>,
     dream_process_store: Arc<dyn awaken_session_dream_contract::DreamProcessStore>,
     capture_sink: Arc<dyn awaken_runtime_contract::CaptureSink>,
@@ -429,6 +430,7 @@ async fn assemble_execution_stores(
     let CoordinatorStores {
         resources: _,
         sessions,
+        conditional_sessions,
         application_access,
         deployments: _,
         dream_process_store,
@@ -463,8 +465,14 @@ async fn assemble_execution_stores(
         .synchronize_recoverable_references()
         .await
         .map_err(|error| format!("restore Memory extraction references: {error}"))?;
+    let clock = base.stores.clock.clone();
+    let session_persistence = match conditional_sessions {
+        Some(store) => awaken_session_application::SessionPersistence::conditional(store, clock),
+        None => awaken_session_application::SessionPersistence::new(sessions.clone(), clock),
+    };
     Ok(ExecutionStores {
         sessions,
+        session_persistence,
         application_access,
         dream_process_store,
         capture_sink,
@@ -578,10 +586,7 @@ async fn assemble_execution_host(
         .runtime_authority
         .take()
         .ok_or_else(|| "execution process requires its selected Runtime authority".to_string())?;
-    let session_persistence = awaken_session_application::SessionPersistence::new(
-        execution.sessions.clone(),
-        clock.clone(),
-    );
+    let session_persistence = execution.session_persistence.clone();
     // The process keeps the Deployment it resolved: the execution placement
     // below installs the Session environment and ACP routes from it.
     let deployment = base

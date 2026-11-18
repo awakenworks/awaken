@@ -112,7 +112,7 @@ fn process_role_owns_one_local_pool_meaning() {
 }
 
 #[test]
-fn dispatch_wake_is_only_enabled_for_a_colocated_coordinator_pool() {
+fn dispatch_wake_is_selected_for_local_and_registered_coordinator_pools() {
     let postgres = || FileConfig {
         runtime_database_url: Some("postgres://coordinator/db".into()),
         resource_database_url: Some("postgres://resource/db".into()),
@@ -152,13 +152,14 @@ fn dispatch_wake_is_only_enabled_for_a_colocated_coordinator_pool() {
                     ..Default::default()
                 },
             );
-            let effective = if local { expected } else { Wake::None };
+            let listens = local || role == Role::Coordinator;
+            let effective = if listens { expected } else { Wake::None };
             assert_eq!(resolved.runtime.wake, effective);
             assert_eq!(resolved.runtime.coordinator_storage().wake, effective);
-            assert_eq!(resolved.runtime.nats_url, nats_url.filter(|_| local));
+            assert_eq!(resolved.runtime.nats_url, nats_url.filter(|_| listens));
             assert_eq!(
                 resolved.runtime.wake_channel,
-                if local && expected != Wake::None {
+                if listens && expected != Wake::None {
                     "legacy-dispatch-wake"
                 } else {
                     DEFAULT_WAKE_CHANNEL
@@ -166,7 +167,7 @@ fn dispatch_wake_is_only_enabled_for_a_colocated_coordinator_pool() {
             );
             assert_eq!(
                 resolved.deprecations.len(),
-                usize::from(!local && expected != Wake::None)
+                usize::from(!listens && expected != Wake::None)
             );
             assert!(
                 resolved
@@ -174,7 +175,7 @@ fn dispatch_wake_is_only_enabled_for_a_colocated_coordinator_pool() {
                     .iter()
                     .all(|warning| !warning.contains("broker.invalid"))
             );
-            if !local {
+            if !listens {
                 let report: serde_json::Value =
                     serde_json::from_str(&resolved.report(true)).unwrap();
                 assert_eq!(report["dispatch_wake"], "poll");

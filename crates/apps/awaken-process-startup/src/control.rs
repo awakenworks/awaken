@@ -310,6 +310,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
     )
     .with_minimum(deployment.runtime.postgres_min_connections);
     let stores = open_process_stores(ProcessStoreOpenOptions {
+        agent_sessions: None,
         control: deployment.control.clone(),
         agent_governance: deployment.cloud_iam.agent_governance.clone(),
         coordinator: deployment.coordinator.clone(),

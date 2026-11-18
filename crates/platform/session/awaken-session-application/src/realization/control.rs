@@ -1082,6 +1082,20 @@ impl SessionRealizationControl for RefreshedSessionRealizationControl<'_> {
 }
 
 #[async_trait::async_trait]
+impl awaken_session_execution_contract::ConditionalSessionRealizationRenewal
+    for SessionRealizations
+{
+    async fn renew_session_realization_conditionally(
+        &self,
+        command: RenewSessionRealization,
+        condition: &awaken_session_types::SessionPublicationCondition,
+    ) -> Result<SessionRealizationLeaseReceipt, SessionRealizationControlFailure> {
+        self.renew_with_publication_condition(command, Some(condition))
+            .await
+    }
+}
+
+#[async_trait::async_trait]
 impl SessionRealizationControl for SessionRealizations {
     async fn retire_session_realization(
         &self,
@@ -1100,40 +1114,10 @@ impl SessionRealizationControl for SessionRealizations {
                 "issued realization grant is invalid".into(),
             ));
         }
-        for _ in 0..ROOT_CAS_ATTEMPTS {
-            let owner = self
-                .mutations
-                .owner(&command.session_id)
-                .await
-                .map_err(mutation_control)?;
-            let mut session = self
-                .mutations
-                .session_aggregate(&command.session_id)
-                .await
-                .map_err(repository_control)?;
-            let before = session.realization.clone();
-            let outcome = session.assignment().retire_issued(&command.lease);
-            if outcome != (awaken_session_contract::SessionRealizationRetirement::Retired {})
-                || session.realization == before
-            {
-                return Ok(outcome);
-            }
-            match self
-                .mutations
-                .commit_session_snapshot_with_outcome(
-                    &owner,
-                    session,
-                    "retire-issued-session-realization",
-                    Vec::new(),
-                )
-                .await
-            {
-                Ok(_) => return Ok(outcome),
-                Err(SessionMutationError::Conflict) => continue,
-                Err(error) => return Err(mutation_control(error)),
-            }
-        }
-        Err(SessionRealizationControlFailure::Conflict)
+        self.mutations
+            .retire_issued_realization(command)
+            .await
+            .map_err(mutation_control)
     }
 
     async fn begin_claimed_session_realization(
@@ -1144,6 +1128,11 @@ impl SessionRealizationControl for SessionRealizations {
         context
             .verify_current_session_at(command.session_id.as_str(), self.clock.now_ms())
             .await?;
+        if let Some(condition) = context.publication_condition() {
+            return self
+                .begin_session_realization_conditionally(command, Some(condition))
+                .await;
+        }
         let commit = context.root_commit(self.mutations.as_ref());
         self.begin_session_realization_with_commit(command, commit)
             .await

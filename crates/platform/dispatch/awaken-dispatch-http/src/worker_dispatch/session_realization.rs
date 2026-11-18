@@ -281,7 +281,7 @@ pub(super) async fn session_resume(
         }
         let mut guard = service
             .dispatch
-            .lock_commit_epoch(&request.claim)
+            .acquire_commit_authority(&request.claim)
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))
             .map_err(RealizationHttpError::from)?
@@ -314,28 +314,22 @@ pub(super) async fn session_resume(
         command.validate_continuation()
             .map_err(crate::worker_application_error).map_err(RealizationHttpError::from)?;
         if let Some(asserted) = request.continuation.as_ref() {
-            // Reuse the existing exact-fence renewal CAS. Stale continuation is
-            // never converted into a reassignment; a cold/retired Worker must
-            // explicitly take the ordinary assignment path without this proof.
-            let renewed = control
-                .renew_session_realization(awaken_session_execution_contract::RenewSessionRealization {
-                    session_id: awaken_session_types::SessionId::from(
-                        request.session_id.clone(),
-                    ),
-                    asserted_lease: asserted.clone(),
-                    requested_expires_at_unix_ms: realization_expiry
-                        .max(asserted.expires_at_unix_ms),
-                })
-                .await
-                .map_err(RealizationHttpError::Control)?;
-            if !awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
-                &renewed.lease,
-                asserted,
-            ) {
-                return Err(RealizationHttpError::Control(
-                    awaken_session_execution_contract::SessionRealizationControlFailure::StaleOwnership,
-                ));
-            }
+            super::claimed_preparation::require_worker_claimed_preparation(
+                guard.observation(), &request.claim, receipt, service.clock.now_ms(),
+            ).map_err(RealizationHttpError::Control)?;
+            let renew = awaken_session_execution_contract::RenewSessionRealization {
+                session_id: command.session_id.clone(),
+                asserted_lease: asserted.clone(),
+                requested_expires_at_unix_ms: realization_expiry.max(asserted.expires_at_unix_ms),
+            };
+            awaken_session_execution_contract::renew_claimed_session_continuation(
+                control.as_ref(),
+                service.conditional_realization_renewal.as_deref(),
+                renew,
+                guard.publication_condition(),
+            )
+            .await
+            .map_err(RealizationHttpError::Control)?;
         }
         let realization = match super::claimed_preparation::begin(
             control.as_ref(), &mut guard, &request.claim, receipt, service.clock.as_ref(),
@@ -346,7 +340,8 @@ pub(super) async fn session_resume(
                     owner: request.identity.worker_id.clone(),
                     runtime_incarnation: request.identity.lease_owner(),
                     lease_expires_at_unix_ms: realization_expiry,
-                    // The exact live dispatch guard above proves this Worker is
+                    // Assignment consumes the exact Dispatch condition at its root CAS.
+                    // The current authority proves this Worker is
                     // the sole executor for the Session thread. It may therefore
                     // fence a predecessor Worker's longer-lived projection lease
                     // without waiting for an unrelated timeout.

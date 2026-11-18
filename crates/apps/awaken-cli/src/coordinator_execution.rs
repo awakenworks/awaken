@@ -98,6 +98,9 @@ pub fn coordinator_execution(
         }
         error => CoordinatorExecutionError::Binding(error),
     })?;
+    let worker_claim_persistence = awaken_session_executor::coordinator_persistence_transport(host)
+        .map(awaken_coordinator::WorkerClaimPersistence::Object)
+        .unwrap_or(worker_claim_persistence);
     Ok(awaken_coordinator::ExecutionPorts {
         session_runs,
         durable_runs: host.session_runs().clone(),

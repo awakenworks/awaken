@@ -790,17 +790,9 @@ impl DeploymentConfig {
             storage_dir: self.storage_dir.clone(),
             store: self.store,
             dispatch_backend: self.dispatch_backend,
-            wake: if self.disable_local_pool {
-                Wake::None
-            } else {
-                self.wake
-            },
-            wake_channel: if self.disable_local_pool {
-                DEFAULT_WAKE_CHANNEL.to_owned()
-            } else {
-                self.wake_channel.clone()
-            },
-            nats_url: self.nats_url.clone().filter(|_| !self.disable_local_pool),
+            wake: self.wake,
+            wake_channel: self.wake_channel.clone(),
+            nats_url: self.nats_url.clone(),
             database_url: self.database_url.clone(),
             postgres_max_connections: self.postgres_max_connections,
             postgres_min_connections: self.postgres_min_connections,

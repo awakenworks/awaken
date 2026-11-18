@@ -89,6 +89,19 @@ impl SessionRunReservationRecovery {
                 .map_or(claimed.cancellation_requested, |guard| {
                     guard.cancellation_requested()
                 });
+            let preparation = if !prepared_kind
+                && local_guard
+                    .as_ref()
+                    .is_some_and(|authority| authority.publication_condition().is_some())
+            {
+                // No legacy check-then-root-write may use an observational
+                // authority as though it were a held exclusion.
+                Err(awaken_dispatch_contract::DispatchSettlementError(
+                    "legacy activity admission requires conditional publication support".into(),
+                ))
+            } else {
+                preparation
+            };
             let mode = if cancellation_requested {
                 SessionRunActivityAdmissionMode::RecoverOnly
             } else {
@@ -128,7 +141,7 @@ impl SessionRunReservationRecovery {
                             .admit_prepared_session_run(
                                 clock,
                                 recovery,
-                                |cursor, cancelled| async move {
+                                |cursor, cancelled, publication_condition| async move {
                                     match observer {
                                         Some(observer) => observer
                                             .admit_session_run_activity(
@@ -141,6 +154,7 @@ impl SessionRunReservationRecovery {
                                                 },
                                                 Some(awaken_session_execution_contract::PreparedSessionRunActivity {
                                                     projected_revision,
+                                                    publication_condition,
                                                     admitted_after_cursor: cursor,
                                                 }),
                                             )
@@ -181,6 +195,7 @@ impl SessionRunReservationRecovery {
                                 prepared_kind.then_some(
                                     awaken_session_execution_contract::PreparedSessionRunActivity {
                                         projected_revision,
+                                        publication_condition: None,
                                         admitted_after_cursor: 0,
                                     },
                                 ),

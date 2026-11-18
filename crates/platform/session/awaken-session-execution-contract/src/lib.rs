@@ -135,21 +135,24 @@ pub use application_binding::{
     SessionApplicationMode, SessionApplications,
 };
 pub use bound_source_end::{BoundSourceEnd, RecordedProcessEnd};
-pub use claimed_control::{ClaimedSessionControlError, ClaimedSessionRealizationControl};
+pub use claimed_control::{
+    ClaimedSessionControlError, ClaimedSessionRealizationControl,
+    renew_claimed_session_continuation,
+};
 pub use claimed_coordination::ClaimedSessionCoordinationControl;
 pub use coordination::{
-    CoordinatedAdmissionRef, CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind,
-    CoordinatedThreadLink, CoordinatedThreadTarget, PreparedSessionRunActivity,
-    SessionAgentBoundaryAction, SessionAgentBoundaryCommand, SessionAgentBoundaryRole,
-    SessionAgentBoundaryVisibility, SessionAgentCommittedReport, SessionAgentCoordination,
-    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
-    SessionAgentRosterEntry, SessionAgentTarget, SessionRunActivityAdmission,
-    SessionRunActivityAdmissionMode, admit_event_batch_topology, agent_report_run_id,
-    coordinated_activation_input, coordinated_run_id, coordinated_thread_closed,
-    coordinated_thread_id, coordinated_thread_is_interruptible, interrupt_child_targets,
-    session_agent_boundary_action, session_agent_report_messages, session_agent_report_text,
-    session_agent_run_boundary, session_run_activity_operation_id, validate_interrupt_children,
-    validate_tool_reply_coordinates,
+    ConditionalSessionModelAdmission, CoordinatedAdmissionRef, CoordinatedRunCommand,
+    CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadLink, CoordinatedThreadTarget,
+    PreparedSessionRunActivity, SessionAgentBoundaryAction, SessionAgentBoundaryCommand,
+    SessionAgentBoundaryRole, SessionAgentBoundaryVisibility, SessionAgentCommittedReport,
+    SessionAgentCoordination, SessionAgentMessageCommand, SessionAgentMessageReceipt,
+    SessionAgentReportContinuation, SessionAgentRosterEntry, SessionAgentTarget,
+    SessionRunActivityAdmission, SessionRunActivityAdmissionMode, admit_event_batch_topology,
+    agent_report_run_id, coordinated_activation_input, coordinated_run_id,
+    coordinated_thread_closed, coordinated_thread_id, coordinated_thread_is_interruptible,
+    interrupt_child_targets, session_agent_boundary_action, session_agent_report_messages,
+    session_agent_report_text, session_agent_run_boundary, session_run_activity_operation_id,
+    validate_interrupt_children, validate_tool_reply_coordinates,
 };
 pub use durable_run_operations::{
     ApplicationError, ApplicationErrorKind, DurableDispatchStatus, DurableRunOperations,
@@ -186,12 +189,13 @@ pub use session::{
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     CanonicalPublicationError, CanonicalSessionProjection, CanonicalSessionPublication,
-    ClaimedSessionCredentialPreparationContext, ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
-    ENVIRONMENT_PROVISIONING_CODE, ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE,
-    FailSessionRealization, FinishSessionPreparation, FrozenAgentPublicationDecision,
-    FrozenProjectionReceipt, FrozenResourceTransitionUse, FrozenSessionProjection,
-    MCP_CONNECTION_EXHAUSTED_CODE, ObservedSessionRealizationLease, ProjectionReceiptRefusal,
-    RealizationFailureOutcome, RenewSessionRealization, RetireSessionRealization,
+    ClaimedSessionCredentialPreparationContext, ConditionalSessionRealizationRenewal,
+    ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_PROVISIONING_CODE,
+    ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE, FailSessionRealization,
+    FinishSessionPreparation, FrozenAgentPublicationDecision, FrozenProjectionReceipt,
+    FrozenResourceTransitionUse, FrozenSessionProjection, MCP_CONNECTION_EXHAUSTED_CODE,
+    ObservedSessionRealizationLease, ProjectionReceiptRefusal, RealizationFailureOutcome,
+    RenewSessionRealization, RetireSessionRealization,
     SESSION_ENVIRONMENT_REBUILD_SOURCE_UNAVAILABLE_CODE,
     SESSION_PUBLICATION_SOURCE_UNAVAILABLE_CODE, SESSION_REALIZATION_NOT_READY_CODE,
     STALE_PROJECTION_CODE, SessionCheckpointArtifactControl, SessionContinuationReceipt,

@@ -428,7 +428,7 @@ async fn verify_run_repository_binding(
     ) {
         return status.into_response();
     }
-    let guard = match service.dispatch.lock_commit_epoch(&claim).await {
+    let guard = match service.dispatch.acquire_commit_authority(&claim).await {
         Ok(Some(guard))
             if guard.is_live_at(clock_ms(service.clock.as_ref()))
                 && !guard.cancellation_requested() =>
@@ -504,7 +504,7 @@ async fn verify_run_repository_binding(
     };
     let revalidated = service
         .dispatch
-        .lock_commit_epoch(&claim)
+        .acquire_commit_authority(&claim)
         .await
         .ok()
         .flatten()

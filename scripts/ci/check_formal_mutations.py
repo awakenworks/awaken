@@ -42,6 +42,18 @@ def write_json(path: Path, value: object) -> None:
 
 
 class MutationOracleTests(unittest.TestCase):
+    def test_stream_digest_records_render_valid_tla_identifiers(self) -> None:
+        from render_runtime_refinement_traces import observation_value
+
+        self.assertEqual(
+            observation_value({"live": [{"after": 1, "sha256": "digest"}]}),
+            '[live |-> <<[after |-> 1, sha256 |-> "digest"]>>]',
+        )
+        for invalid in ("0sha256", "sha-256", "sha256] /\\ FALSE"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                observation_value({invalid: "digest"})
+
+
     def test_model_cli_flags_keep_their_exact_single_handler(self) -> None:
         # R1 each existing flag => exactly its handler, once, with parsed Path.
         # This compatibility list is independent of the production registry;
@@ -50,6 +62,7 @@ class MutationOracleTests(unittest.TestCase):
             "session-budget-admission-model-mutants", "work-queue-stop-model-mutants",
             "session-ownership-model-mutants", "config-cas-model-mutant",
             "background-completion-model-mutant", "file-reclamation-model-mutants",
+            "s3-storage-model-mutants",
             "resource-preparation-model-mutant", "realization-renewal-model-mutant",
             "erasure-checkpoint-model-mutants", "credential-creation-model-mutants",
             "mcp-credential-model-mutants", "credential-effect-model-mutants",
@@ -341,6 +354,7 @@ def main() -> None:
         "config-cas-model-mutant": check_config_cas_model_mutant,
         "background-completion-model-mutant": check_background_completion_model_mutant,
         "file-reclamation-model-mutants": check_file_reclamation_model_mutants,
+        "s3-storage-model-mutants": check_s3_storage_model_mutants,
         "resource-preparation-model-mutant": check_resource_preparation_model_mutant,
         "realization-renewal-model-mutant": check_realization_renewal_model_mutant,
         "erasure-checkpoint-model-mutants": check_erasure_checkpoint_model_mutants,
@@ -413,6 +427,108 @@ def check_file_reclamation_model_mutants(tlc_jar: Path) -> None:
         mutations.append((witness_source, config + f"INVARIANT {name}\n", name))
     check_tlc_model_mutations(tlc_jar, "ResourceReclamation", source, config, mutations)
     print("File reclamation: 2/2 mutants killed; 3/3 durable-prefix/completion witnesses reachable")
+
+
+def check_s3_storage_model_mutants(tlc_jar: Path) -> None:
+    models = {
+        "S3Publication": (
+            ("StoreHistory",),
+            (
+                ("/\\ request.expected = head.generation", "/\\ TRUE", "AcknowledgedReceiptsStayPublished"),
+                ("/\\ Authorized(request)\n       /\\ Shared!OperationAcceptable",
+                 "/\\ TRUE\n       /\\ Shared!OperationAcceptable", "PublicationWasAuthorized"),
+                ('/\\ request.phase = "uploaded"\n       /\\ request.expected',
+                 '/\\ request.phase \\in {"prepared", "uploaded"}\n       /\\ request.expected',
+                 "PublishedReferencesExist"),
+                ("/\\ receipts' = request.proposal.receipts", "/\\ receipts' = receipts",
+                 "EveryPublishedOperationHasReceipt"),
+                (", !.checkpoints = @ \\ {op}", "", "CommittedCheckpointsRetired"),
+            ),
+            ("NoConcurrentDrafts", "NoLostAcknowledgement", "NoStagedTakeover"),
+        ),
+        "S3Reachability": (
+            (),
+            (
+                ("/\\ writer.generation = head.gc \\/ head.roots[\"pin\"] = Blob(writer.generation)",
+                 "/\\ TRUE", "SealedReferencesStayMarked"),
+                ("!.kept = Reachable(head.roots)", "!.kept = Direct(head.roots)", "SealedReferencesStayMarked"),
+                ("!.kept = Reachable(head.roots)",
+                 '!.kept = Reachable([head.roots EXCEPT !["archive"] = NoRef])',
+                 "SealedReferencesStayMarked"),
+                ("/\\ o.generation <= collector.cutoff", "/\\ TRUE", "LiveReferencesExist"),
+            ),
+            ("NoSealDuringPreparedPin", "NoNestedForkAfterRelease"),
+        ),
+    }
+    for name, (dependencies, guards, witnesses) in models.items():
+        source = (ROOT / f"formal/tla/{name}.tla").read_text()
+        config = (ROOT / f"formal/tla/{name}.cfg").read_text()
+        single_invariant = config.split("INVARIANTS\n", 1)[0] + "INVARIANT "
+        cases = []
+        for before, after, invariant in guards:
+            if source.count(before) != 1:
+                raise SystemExit(f"{name} mutation anchor drifted: {before}")
+            cases.append((source.replace(before, after), single_invariant + invariant + "\n", invariant))
+        cases.extend((source, single_invariant + witness + "\n", witness) for witness in witnesses)
+        check_tlc_model_mutations(
+            tlc_jar, name, source, config, cases,
+            dependencies=dependencies, heap_mb=1024, timeout_seconds=300, workers=2,
+        )
+        print(f"{name}: {len(guards)}/{len(guards)} mutants killed; {len(witnesses)}/{len(witnesses)} witnesses reachable")
+    check_s3_stream_observation_mutants(tlc_jar)
+
+
+
+def check_s3_stream_observation_mutants(tlc_jar: Path) -> None:
+    """Qualify the finite-trace oracle; the live producer supplies real traces separately."""
+    source = (ROOT / "formal/tla/S3Publication.tla").read_text()
+    footer = "=" * 77
+    fixture = r"""
+FixtureFrame(sequence, response, after, mime, digest) ==
+    [sequence |-> sequence, step |-> 0, response |-> response,
+     attempt |-> 0, after |-> after, mime |-> mime, sha256 |-> digest]
+FixtureLive ==
+    <<FixtureFrame(1, 0, 1, "text/plain", "a"),
+      FixtureFrame(2, 1, 1, "audio/pcm", "b"),
+      FixtureFrame(3, 0, 2, "text/plain", "c"),
+      FixtureFrame(4, 1, 2, "audio/pcm", "d")>>
+FixtureFrozen == FixtureLive
+FixtureTrace ==
+    [stream_count |-> 2, frames_per_stream |-> 2, peak_writers |-> 2,
+     watermark |-> 4, live |-> FixtureLive, frozen |-> FixtureFrozen,
+     tail |-> <<FixtureFrame(5, 0, 3, "text/plain", "e")>>,
+     checkpoint_before |-> TRUE, checkpoint_after |-> FALSE]
+FixtureInit == Init
+FixtureNext == UNCHANGED vars
+FixtureSpec == FixtureInit /\ [][FixtureNext]_vars
+\* Keep a state-level witness so malformed observations yield a named invariant counterexample.
+StreamTraceRefines == (head.generation = 0) /\ StreamOrderRefinement(FixtureTrace)
+"""
+    if source.count(footer) != 1:
+        raise SystemExit("S3 stream observation fixture anchor drifted")
+    baseline = source.replace(footer, fixture + "\n" + footer)
+    config = """CONSTANTS NoReceipt = NoReceipt
+          NoDraft = NoDraft
+SPECIFICATION FixtureSpec
+INVARIANT StreamTraceRefines
+CHECK_DEADLOCK FALSE
+"""
+    guards = (
+        ("FixtureFrame(1, 0, 1,", "FixtureFrame(0, 0, 1,"),
+        ("FixtureFrame(1, 0, 1,", "FixtureFrame(1, 0, 2,"),
+        ("FixtureFrozen == FixtureLive",
+         'FixtureFrozen == [FixtureLive EXCEPT ![1].sha256 = "changed"]'),
+        ("checkpoint_after |-> FALSE", "checkpoint_after |-> TRUE"),
+    )
+    cases = []
+    for before, after in guards:
+        if baseline.count(before) != 1:
+            raise SystemExit(f"S3 stream observation mutation anchor drifted: {before}")
+        cases.append((baseline.replace(before, after), config, "StreamTraceRefines"))
+    check_tlc_model_mutations(tlc_jar, "S3Publication", baseline, config, cases,
+                             dependencies=("StoreHistory",), heap_mb=512,
+                             timeout_seconds=60, workers=1)
+    print("S3 finite streaming observations: 4/4 order/cursor/bytes/checkpoint mutants rejected")
 
 
 def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:

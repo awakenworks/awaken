@@ -40,7 +40,7 @@ use crate::{
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_runtime_contract::resume::ResumeResult;
+pub(crate) use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchPage, LeaseLossReason,
@@ -91,17 +91,22 @@ mod outbox;
 mod physical_attempt;
 mod selection;
 mod settlement;
+mod snapshot;
 mod store;
 use awaken_time::WallClockExt;
 use integrity::{
     claim_generation_admits, dead_letter_expired_lease, refuse_untrustworthy_expired_leases,
 };
 use selection::{retry_deadline_is_due, runnable, select_where, thread_has_claim_blocking_peer};
+#[cfg(any(test, feature = "test-support"))]
 pub use store::MemoryDispatchStore;
+#[cfg(not(any(test, feature = "test-support")))]
+pub(crate) use store::MemoryDispatchStore;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Row {
     request: RunDispatch,
+    #[serde(with = "snapshot::state_codec")]
     state: DispatchState,
     /// Set before signalling a live attempt. It remains true across lease expiry
     /// and recovery until the worker commits Cancelled and settles Done.
@@ -222,7 +227,7 @@ impl Row {
 }
 
 /// A pending input with its optimistic-concurrency revision.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PendingRow {
     input: PendingInput,
     revision: u64,
@@ -230,6 +235,7 @@ struct PendingRow {
 
 /// One record in the original completion log; the operational receipt is
 /// unchanged while eligible Task sources stay in this same authority record.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct CompletionRecord {
     receipt: DispatchCompletion,
     retained_request: Option<Box<RunDispatch>>,
@@ -250,6 +256,7 @@ struct State {
     completions: Vec<CompletionRecord>,
     /// Dispatch-authority transitions in the same order as their mutations.
     operations: Vec<crate::dispatch::StoredDispatchEvent>,
+    claim_requests: BTreeMap<String, snapshot::ObjectClaimReceipt>,
     /// Rows whose untrustworthy claim generation the scans already reported.
     reported: crate::ReportedClaimGenerations,
 }
@@ -264,6 +271,7 @@ impl State {
             outbox: Vec::new(),
             completions: Vec::new(),
             operations: Vec::new(),
+            claim_requests: BTreeMap::new(),
             reported: crate::ReportedClaimGenerations::default(),
         }
     }
@@ -271,6 +279,7 @@ impl State {
 
 impl MemoryDispatchStore {
     /// Number of live dispatch rows (test introspection).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn dispatch_count(&self) -> usize {
         self.state.lock().map(|s| s.rows.len()).unwrap_or(0)
     }
@@ -307,6 +316,7 @@ impl MemoryDispatchStore {
     }
 
     /// Unconsumed pending inputs for a run (test introspection).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn pending_count(&self, run_id: &RunId) -> usize {
         self.state
             .lock()

@@ -103,7 +103,7 @@ pub async fn run_prepared_session_run<'p>(
                             pending("legacy Run is not an adoptable unstarted Pending dispatch")
                         })?;
                     let guard = owner
-                        .lock_session_run_reservation_epoch(&claim)
+                        .acquire_session_run_reservation_authority(&claim)
                         .await
                         .map_err(|error| pending(error.to_string()))?
                         .ok_or_else(|| pending("legacy Run adoption claim is stale"))?;
@@ -121,11 +121,12 @@ pub async fn run_prepared_session_run<'p>(
                         .admit_prepared_session_run(
                             clock,
                             recovery,
-                            |cursor, cancelled| {
-                                activity.admit(
+                            |cursor, cancelled, publication_condition| {
+                                activity.admit_conditionally(
                                     SessionRunReservation::AlreadyReserved,
                                     cancelled,
                                     Some(cursor),
+                                    publication_condition,
                                 )
                             },
                             pending,

@@ -370,6 +370,18 @@ where
             .await
     }
 
+    async fn recovery_snapshot_in_session(
+        &self,
+        session: &ThreadId,
+        thread: &ThreadId,
+        run: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.store
+            .as_ref()
+            .recovery_snapshot_in_session(session, thread, run)
+            .await
+    }
+
     async fn recovery_snapshot(
         &self,
         thread_id: &ThreadId,
@@ -396,5 +408,143 @@ where
         self.queries
             .events_after(self.store.as_ref(), cursor, limit)
             .await
+    }
+}
+
+/// Adapt an already claim-bound commit source to the SDK's legacy Coordinator
+/// ports. The writer and committed view remain owned by the selected source;
+/// this adapter opens no storage and never acquires a second claim.
+pub struct ClaimedCommitAdapter<S> {
+    source: Arc<S>,
+    claim: Option<awaken_worker_contract::RunClaim>,
+}
+impl<S> ClaimedCommitAdapter<S> {
+    pub fn new(source: Arc<S>, claim: awaken_worker_contract::RunClaim) -> Self {
+        Self {
+            source,
+            claim: Some(claim),
+        }
+    }
+    /// Pre-claim Runtime projections have no authority to write.
+    pub fn read_only(source: Arc<S>) -> Self {
+        Self {
+            source,
+            claim: None,
+        }
+    }
+    pub fn source(&self) -> &Arc<S> {
+        &self.source
+    }
+}
+#[async_trait::async_trait]
+impl<S> Coordinator for ClaimedCommitAdapter<S>
+where
+    S: awaken_dispatch_contract::ClaimedRunCommit<Error> + RunRecoverySource + Send + Sync,
+{
+    async fn commit(
+        &self,
+        commit: awaken_agent_contract::thread::commit::staged::ThreadCommit,
+    ) -> Result<awaken_agent_contract::thread::commit::staged::CommitRecord, Error> {
+        use awaken_agent_contract::thread::commit::operation::{
+            CommitOperationId, commit_payload_hash,
+        };
+        let claim = self
+            .claim
+            .as_ref()
+            .ok_or_else(|| Error::Rejected("an exact claim is required for writes".into()))?;
+        if commit.run_id() != &claim.run_id {
+            return Err(Error::Rejected("bound claim Run mismatch".into()));
+        }
+        let snapshot = self
+            .source
+            .recovery_snapshot(&commit.thread_id, &claim.run_id)
+            .await
+            .map_err(|error| Error::Rejected(error.to_string()))?;
+        let operation = awaken_agent_contract::thread::commit::operation::CommitOperation {
+            operation_id: CommitOperationId::new(
+                claim.run_id.clone(),
+                snapshot.next_commit_ordinal,
+            ),
+            expected_thread_version: snapshot.thread_version,
+            payload_hash: commit_payload_hash(&commit)
+                .map_err(|error| Error::Rejected(error.to_string()))?,
+            commit,
+        };
+        self.commit_operation(operation)
+            .await
+            .map(|receipt| receipt.commit_record())
+    }
+}
+#[async_trait::async_trait]
+impl<S> OperationCoordinator for ClaimedCommitAdapter<S>
+where
+    S: awaken_dispatch_contract::ClaimedRunCommit<Error> + RunRecoverySource + Send + Sync,
+{
+    async fn commit_operation(
+        &self,
+        operation: awaken_agent_contract::thread::commit::operation::CommitOperation,
+    ) -> Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, Error> {
+        self.source
+            .commit_operation(awaken_dispatch_contract::ClaimedCommitCommand {
+                claim: self.claim.clone().ok_or_else(|| {
+                    Error::Rejected("an exact claim is required for writes".into())
+                })?,
+                operation,
+            })
+            .await
+    }
+}
+impl<S: CommittedThreadView> CommittedThreadView for ClaimedCommitAdapter<S> {
+    fn committed_messages(&self, thread: &ThreadId) -> Vec<Message> {
+        self.source.committed_messages(thread)
+    }
+    fn run(&self, run: &RunId) -> Option<RunRecord> {
+        self.source.run(run)
+    }
+    fn latest_run(&self, thread: &ThreadId) -> Option<RunRecord> {
+        self.source.latest_run(thread)
+    }
+    fn resume_ticket(&self, run: &RunId) -> Option<ResumeTicket> {
+        self.source.resume_ticket(run)
+    }
+    fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
+        self.source.open_wait_for_thread(thread)
+    }
+    fn committed_state(&self, thread: &ThreadId) -> Vec<StateCommand> {
+        self.source.committed_state(thread)
+    }
+}
+#[async_trait::async_trait]
+impl<S: RunRecoverySource> RunRecoverySource for ClaimedCommitAdapter<S> {
+    async fn recovery_snapshot_in_session(
+        &self,
+        session: &ThreadId,
+        thread: &ThreadId,
+        run: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.source
+            .recovery_snapshot_in_session(session, thread, run)
+            .await
+    }
+    async fn recovery_snapshot(
+        &self,
+        thread: &ThreadId,
+        run: &RunId,
+    ) -> Result<
+        awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+        awaken_agent_contract::thread::read::recovery::RecoveryError,
+    > {
+        self.source.recovery_snapshot(thread, run).await
+    }
+}
+#[async_trait::async_trait]
+impl<S: CheckpointReader> CheckpointReader for ClaimedCommitAdapter<S> {
+    async fn list_events(
+        &self,
+        scope: &awaken_agent_contract::thread::read::checkpoint::EventScope,
+        from: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<awaken_agent_contract::audit::record::Record>, String> {
+        self.source.list_events(scope, from, limit).await
     }
 }

@@ -33,11 +33,9 @@ async fn completion_retains_the_settled_cancel_request(store: &dyn ConformanceDi
         run: &RunId,
     ) -> awaken_dispatch_contract::DispatchCompletion {
         let fed = store
-            .completion_events_after(0, usize::MAX)
+            .completion_for_run(run)
             .await
-            .expect("completion feed")
-            .into_iter()
-            .find(|completion| &completion.run_id == run)
+            .expect("completion lookup")
             .expect("settled Run has one completion tombstone");
         assert_eq!(
             store

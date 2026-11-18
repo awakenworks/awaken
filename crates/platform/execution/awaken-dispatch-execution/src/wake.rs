@@ -30,10 +30,20 @@ use awaken_dispatch_contract::{DispatchError, WakeSignal};
 /// One budget at the calling boundary prevents an unavailable transport from
 /// blocking an already-committed command or the next reconciliation pass.
 pub async fn publish_dispatch_hint(wake: &dyn WakeSignal, shutdown: &CancellationToken) {
+    publish_hint(wake, shutdown, None).await;
+}
+
+async fn publish_hint(wake: &dyn WakeSignal, shutdown: &CancellationToken, shard: Option<u8>) {
+    let publish = async {
+        match shard {
+            Some(shard) => wake.publish_shard(shard).await,
+            None => wake.publish().await,
+        }
+    };
     tokio::select! {
         biased;
         _ = shutdown.cancelled() => {}
-        result = tokio::time::timeout(std::time::Duration::from_millis(100), wake.publish()) => {
+        result = tokio::time::timeout(std::time::Duration::from_millis(100), publish) => {
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => tracing::warn!(%error, "dispatch wake publication failed; polling will recover"),
@@ -69,6 +79,10 @@ impl DispatchHint {
     pub async fn publish(&self) {
         publish_dispatch_hint(self.wake.as_ref(), &CancellationToken::new()).await;
     }
+
+    pub async fn publish_shard(&self, shard: Option<u8>) {
+        publish_hint(self.wake.as_ref(), &CancellationToken::new(), shard).await;
+    }
 }
 
 /// Single-process wake signal over a shared `tokio` notify. A hint published when
@@ -94,6 +108,7 @@ impl DispatchHint {
 #[derive(Clone, Default)]
 pub struct LocalWakeSignal {
     notify: Arc<Notify>,
+    shard: Arc<std::sync::atomic::AtomicU16>,
 }
 
 impl LocalWakeSignal {
@@ -105,8 +120,24 @@ impl LocalWakeSignal {
 #[async_trait]
 impl WakeSignal for LocalWakeSignal {
     async fn publish(&self) -> Result<(), DispatchError> {
+        self.shard.store(0, std::sync::atomic::Ordering::Relaxed);
         self.notify.notify_one();
         Ok(())
+    }
+
+    async fn publish_shard(&self, shard: u8) -> Result<(), DispatchError> {
+        self.shard
+            .store(u16::from(shard) + 1, std::sync::atomic::Ordering::Relaxed);
+        self.notify.notify_one();
+        Ok(())
+    }
+
+    async fn wait_shard(&self) -> Option<u8> {
+        self.wait().await;
+        self.shard
+            .swap(0, std::sync::atomic::Ordering::Relaxed)
+            .checked_sub(1)
+            .and_then(|shard| u8::try_from(shard).ok())
     }
 
     async fn wait(&self) {

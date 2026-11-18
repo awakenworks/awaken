@@ -171,6 +171,9 @@ pub struct ClaimWorkerRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimWorkRequest {
     pub identity: Option<WorkerIdentity>,
+    /// An undirected poll can wait briefly for indexed work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u64>,
     #[serde(flatten)]
     pub claim: crate::ClaimRequest,
 }

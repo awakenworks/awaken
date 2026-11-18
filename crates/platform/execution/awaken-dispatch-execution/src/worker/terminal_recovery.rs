@@ -560,7 +560,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     })?;
                     // Pre-settlement Session effects need the same physical gate as
                     // the queue CAS. A remote observer checks its authority-side
-                    // guard; a local observer consumes the colocated locked facts.
+                    // guard; a local observer checks the colocated authority observation.
                     let guard = if observer.owns_dispatch_fence() {
                         None
                     } else {
@@ -569,7 +569,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                                 "remote settlement observer must own its dispatch fence".into(),
                             )));
                         };
-                        let Some(guard) = store.lock_commit_epoch(&claim).await? else {
+                        let Some(guard) = store.acquire_commit_authority(&claim).await? else {
                             return Ok(SettleOutcome::Fenced);
                         };
                         if !guard.permits_settlement() {

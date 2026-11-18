@@ -1,3 +1,4 @@
+// @formal evidence store_history.s3_publication_refines_committed_history
 //! The production-selected PostgreSQL writer and real Dispatch transitions.
 
 use super::*;
@@ -927,6 +928,42 @@ async fn selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_ta
     let writer = authority.clone().run_commits();
     let first = writer.commit_operation(command.clone()).await.unwrap();
 
+    use awaken_agent_contract::thread::read::recovery::LoadedRunRecovery;
+    struct RecoveryOnlySink;
+    #[async_trait::async_trait]
+    impl awaken_agent_contract::stream::sink::Sink for RecoveryOnlySink {
+        async fn send(
+            &self,
+            _: awaken_agent_contract::stream::event::Event,
+        ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
+            unreachable!("recovery does not publish live progress");
+        }
+    }
+    let persistence = awaken_dispatch_erasure::runtime_persistence_transport(
+        authority.clone(),
+        Arc::new(RecoveryOnlySink),
+    );
+    let LoadedRunRecovery::Full {
+        prefix: Some(prefix),
+        ..
+    } = persistence
+        .checkpoints
+        .load_recovery(&command.claim, None, None)
+        .await
+        .unwrap()
+    else {
+        panic!("PostgreSQL recovery must provide an exact committed prefix");
+    };
+    let reused = persistence
+        .checkpoints
+        .load_recovery(&command.claim, None, Some(prefix))
+        .await
+        .unwrap();
+    assert!(matches!(
+        reused,
+        LoadedRunRecovery::Reuse { reused } if reused.prefix == prefix && reused.run_id == run
+    ));
+
     let mut stale_version = command.clone();
     stale_version.operation.operation_id.ordinal += 1;
     let failure = writer.commit_operation(stale_version).await.unwrap_err();
@@ -992,6 +1029,13 @@ async fn selected_postgres_cold_reads_freeze_pages_and_resume_lifecycle_after_ta
     let claim = RunClaim::from(&successor.lease);
     assert!(claim.epoch > command.claim.epoch);
     assert!(writer.commit_operation(command.clone()).await.is_err());
+    assert!(matches!(
+        persistence
+            .checkpoints
+            .load_recovery(&command.claim, None, Some(prefix))
+            .await,
+        Err(awaken_dispatch_contract::DispatchError::Conflict(_))
+    ));
 
     command.claim = claim.clone();
     let duplicate = writer.commit_operation(command.clone()).await.unwrap();
@@ -1444,4 +1488,111 @@ async fn postgres_process_dependency_reads_keep_the_original_claim_authority() {
         .await
         .unwrap();
     admin.close().await;
+}
+
+#[tokio::test]
+async fn selected_postgres_shares_s3_claimed_operation_laws() {
+    let Some((_, authority, _)) = fixture().await else {
+        return;
+    };
+    let command = initial_claim(&authority).await;
+    let writer = authority.clone().run_commits();
+    let recovery = authority.shared_recovery_source().unwrap();
+    awaken_store_conformance::claimed_commit::exact_replay_and_rejections(
+        writer.as_ref(),
+        recovery.as_ref(),
+        command,
+    )
+    .await;
+}
+#[tokio::test]
+async fn selected_postgres_shares_s3_concurrent_operation_laws() {
+    let Some((_, authority, _)) = fixture().await else {
+        return;
+    };
+    let command = initial_claim(&authority).await;
+    let writer = authority.clone().run_commits();
+    let recovery = authority.shared_recovery_source().unwrap();
+    awaken_store_conformance::claimed_commit::concurrent_operation_has_one_winner(
+        writer.as_ref(),
+        recovery.as_ref(),
+        command,
+    )
+    .await;
+}
+
+async fn replacement_claim(authority: &DurableRuntimeAuthority, claim: &RunClaim) -> RunClaim {
+    let dispatch = authority.dispatch_store();
+    assert_eq!(
+        dispatch.relinquish_claim(claim).await.unwrap(),
+        SettleOutcome::Applied
+    );
+    RunClaim::from(
+        &dispatch
+            .claim("store-conformance-successor", 60_000, &Default::default())
+            .await
+            .unwrap()
+            .unwrap()
+            .lease,
+    )
+}
+
+#[tokio::test]
+async fn selected_postgres_shares_s3_takeover_laws() {
+    let Some((_, authority, _)) = fixture().await else {
+        return;
+    };
+    let stale = initial_claim(&authority).await;
+    let mut current = stale.clone();
+    current.claim = replacement_claim(&authority, &stale.claim).await;
+    awaken_store_conformance::claimed_commit::stale_claim_cannot_publish(
+        authority.clone().run_commits().as_ref(),
+        authority.shared_recovery_source().unwrap().as_ref(),
+        stale,
+        current,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn selected_postgres_shares_s3_lost_acknowledgement_laws() {
+    let Some((_, authority, _)) = fixture().await else {
+        return;
+    };
+    let command = initial_claim(&authority).await;
+    let writer = authority.clone().run_commits();
+    let trace = awaken_store_conformance::claimed_commit::lost_acknowledgement_and_takeover(
+        writer.as_ref(),
+        authority.shared_recovery_source().unwrap().as_ref(),
+        command,
+        async |command| {
+            // Drop the reply after the production SQL transaction commits.
+            assert!(!writer.commit_operation(command).await.unwrap().duplicate);
+        },
+        async |claim| replacement_claim(&authority, claim).await,
+    )
+    .await;
+    awaken_reliability_testkit::write_observation_trace(
+        "postgres-claimed-store",
+        "claimed-store",
+        serde_json::json!([{"rule": "lost-acknowledgement-takeover", "trace": trace}]),
+    );
+}
+
+#[tokio::test]
+async fn selected_postgres_shares_s3_control_checkpoint_preservation_law() {
+    let Some((_, authority, _)) = fixture().await else {
+        return;
+    };
+    let command = initial_claim(&authority).await;
+    let checkpoint = authority
+        .stream_checkpoint(&command.operation.commit.thread_id.0)
+        .await
+        .unwrap();
+    awaken_store_conformance::claimed_commit::control_commit_preserves_interrupted_stream(
+        &*authority.clone().run_commits(),
+        &*checkpoint,
+        command,
+    )
+    .await;
 }

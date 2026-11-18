@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["async-nats", "sqlx"]
 
 [dependencies]
+awaken-object-storage.workspace = true
 awaken-lease-contract.workspace = true
 awaken-sync.workspace = true
 awaken-credential-contract.workspace = true
@@ -46,7 +47,7 @@ awaken-sql-storage = { workspace = true, optional = true, features = ["postgres"
 async-nats = { version = "0.50", optional = true }
 awaken-time.workspace = true
 futures-lite = { version = "2", optional = true }
-uuid = { version = "1", features = ["v7"], optional = true }
+uuid = { version = "1", features = ["v7"] }
 
 [features]
 default = ["durable"]
@@ -59,7 +60,6 @@ durable = [
     "awaken-scoped-migration/sqlite",
     "dep:awaken-sqlite-pool",
     "dep:awaken-sql-storage",
-    "dep:uuid",
 ]
 # Private SQLite dispatch authority for unit/integration/scenario fixtures.
 test-support = ["durable", "awaken-dispatch-execution/test-support"]

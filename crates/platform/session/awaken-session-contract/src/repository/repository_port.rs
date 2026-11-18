@@ -106,6 +106,26 @@ pub trait SessionRepositoryReads: Send + Sync {
     ) -> Result<Option<crate::repository::DeletedSessionEventAdmissions>, SessionRepositoryError>;
 }
 
+/// Optional authority-capable publication implemented by the repository.
+#[async_trait]
+pub trait SessionConditionalPublication: Send + Sync {
+    /// Publish the Session root and the authority check atomically.
+    async fn commit_conditionally(
+        &self,
+        owner_scope: &str,
+        mutation: SessionMutation,
+        condition: &awaken_session_types::SessionPublicationCondition,
+    ) -> Result<SessionMutationResult, SessionRepositoryError>;
+
+    /// Observe a condition at the optionally specified Session revision.
+    async fn validate_publication_condition(
+        &self,
+        id: &SessionId,
+        condition: &awaken_session_types::SessionPublicationCondition,
+        revision: Option<awaken_session_types::SessionRevision>,
+    ) -> Result<bool, SessionRepositoryError>;
+}
+
 /// Outbound persistence port of the Session aggregate.
 ///
 /// Every method is required and names a real consumer; a backend that cannot
@@ -167,7 +187,6 @@ pub trait SessionRepository: SessionRepositoryReads + SessionReconciliation {
         owner_scope: &str,
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionRepositoryError>;
-
     /// One keyset page of Run-free preparation roots: explicit initial demand
     /// or an Idle MCP update retained in the same authoritative Session.
     /// Adapters may use their root-derived index; the application always

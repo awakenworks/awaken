@@ -16,6 +16,7 @@
 //! from their own test crate, each with a freshly constructed store, so the suite
 //! stays backend-agnostic and the media (inmem/fs/postgres/sqlite) cannot diverge.
 
+pub mod claimed_commit;
 pub mod dream_store;
 pub mod env_registry;
 pub mod physical_admission;

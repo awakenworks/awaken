@@ -52,7 +52,7 @@ pub async fn activate_session_run_reservation(
         SessionRunActivation::Activated | SessionRunActivation::AlreadyActivated { .. }
     ) {
         publication
-            .publish_staged(owner)
+            .publish_activated(owner, &delivery.run_id)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
     }

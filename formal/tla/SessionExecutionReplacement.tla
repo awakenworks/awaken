@@ -24,13 +24,22 @@ EXTENDS SessionExecutionBinding
    Unknown evidence has no liveness guarantee. Enabledness below forbids a
    vacuously safe implementation which simply never admits the new scope. *)
 VARIABLES phase, caller, cancelled, tree, observation, nextCapture, newEffect, badNewEffect, originalPhase
-replacementVars == <<phase, caller, cancelled, tree, observation, nextCapture, newEffect, badNewEffect, originalPhase>>
+replacementControlVars == <<phase, caller, cancelled, tree, observation, nextCapture, newEffect, badNewEffect>>
+replacementVars == <<replacementControlVars, originalPhase>>
 VARIABLES rootReceipt, observedReceipt, rootWrites, cancelledAfterCommit, badRootCommit,
           captures, cancelledFresh, cancelledCommitted
 receiptVars == <<rootReceipt, observedReceipt, rootWrites, cancelledAfterCommit, badRootCommit,
                 captures, cancelledFresh, cancelledCommitted>>
 VARIABLE copyWriter
 replacementAll == <<bindingAll, replacementVars, receiptVars, copyWriter>>
+
+(* The chain checks only safety. Setup and StartOriginal read originalPhase
+   only in "initial"; the next-state relation never returns there. All
+   subsequent actions and the chain's safety predicates agree across states
+   that differ only in this fixed origin. Witness configs keep the full state. *)
+ReplacementChainView == <<bindingAll, replacementControlVars, receiptVars, copyWriter,
+                          IF phase = "initial" THEN originalPhase ELSE "started">>
+
 FourGenerations == 4
 OriginalEnvironmentPhase == IF originalPhase = "resident" THEN "resident" ELSE "candidate"
 Successor == INSTANCE SessionExecutionBinding

@@ -178,6 +178,18 @@ impl RegisteredExecution {
             memory: memory.clone(),
         });
         let binding = self.binding;
+        let worker_claim_persistence = binding
+            .runtime_authority()
+            .filter(|authority| authority.uses_conditional_publication())
+            .map(|authority| {
+                awaken_dispatch_http::WorkerClaimPersistence::Object(
+                    awaken_dispatch_erasure::runtime_persistence_transport(
+                        authority,
+                        self.completion.clone(),
+                    ),
+                )
+            })
+            .unwrap_or(worker_claim_persistence);
         let worker_commits = binding
             .local_run_commits()
             .expect("Coordinator binding has its selected writer")

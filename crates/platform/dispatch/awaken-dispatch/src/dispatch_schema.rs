@@ -417,6 +417,12 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 include_str!("migrations/V0012__dispatch_claim_request.postgres.sql").trim(),
                 include_str!("migrations/V0012__dispatch_claim_request.sqlite.sql").trim(),
             )?,
+            Migration::per_dialect(
+                13,
+                "index runnable Dispatch partitions by Session shard",
+                include_str!("migrations/V0013__dispatch_candidate_shards.postgres.sql").trim(),
+                include_str!("migrations/V0013__dispatch_candidate_shards.sqlite.sql").trim(),
+            )?,
         ],
     )
 }

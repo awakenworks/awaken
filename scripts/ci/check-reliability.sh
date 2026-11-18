@@ -52,12 +52,72 @@ if [ "${1:-}" = "--session-observations" ]; then
   exit 0
 fi
 
+# Explicit live-provider qualification; no absent fixture can become a pass.
+if [ "$#" -eq 1 ] && [ "$1" = "--s3-live" ]; then
+  : "${AWAKEN_TEST_S3_ENDPOINT:?provide a live S3-compatible fixture}"
+  : "${AWAKEN_TEST_S3_BUCKET:?provide the isolated fixture bucket}"
+  source scripts/ci/_rust_test_execution.sh
+  for live_case in \
+    independent_clients_race_real_create_and_etag_conditions \
+    actual_tcp_loss_before_and_after_put_preserves_one_operation \
+    processes::process_death_after_real_put_reuses_postgres_lost_acknowledgement_contract \
+    processes::independent_process_takeover_preserves_the_unfinished_physical_slot \
+    load::long_session_survives_pack_gc_and_cold_frozen_pagination \
+    load::capacity_rejection_is_atomic_and_same_operation_recovers_after_packing \
+    load::concurrent_multimodal_producers_live_reader_and_cold_replay_agree; do
+    run_required_rust_tests -p awaken-store-s3 --test live_s3 "$live_case" \
+      --require-case="$live_case" -- --ignored --exact
+  done
+  run_required_rust_tests -p awaken-coordinator --lib \
+    live_object_cold_restart_recovers_session_dispatch_runtime_and_checkpoint_together \
+    --require-case=runtime_authority::object_tests::live_object_cold_restart_recovers_session_dispatch_runtime_and_checkpoint_together \
+    -- --ignored
+  exit 0
+fi
+
+# Live store traces are separate from the fixture-free formal gate.
+if [ "$#" -eq 1 ] && [ "$1" = "--storage-observations" ]; then
+  : "${AWAKEN_TEST_DATABASE_URL:?provide an isolated PostgreSQL fixture}"
+  : "${AWAKEN_TEST_S3_ENDPOINT:?provide a live S3-compatible fixture}"
+  : "${AWAKEN_TEST_S3_BUCKET:?provide the fixture bucket}"
+  : "${TLA2TOOLS_JAR:?provide tla2tools.jar}"
+  test -f "$TLA2TOOLS_JAR"
+  command -v java >/dev/null
+
+  trace_dir="$(mktemp -d -t awaken-storage-observations.XXXXXXXX)"
+  trap 'rm -rf -- "$trace_dir"' EXIT
+  export AWAKEN_OBSERVATION_TRACE_DIR="$trace_dir/raw"
+  export AWAKEN_TEST_REQUIRE_POSTGRES=1
+  cargo test --locked -p awaken-coordinator --lib selected_postgres_shares_s3_
+  cargo test --locked -p awaken-store-s3 --test canonical_ports canonical_writer_shares_postgres_
+  source scripts/ci/_rust_test_execution.sh
+  run_required_rust_tests -p awaken-store-s3 --test live_s3 \
+    processes::process_death_after_real_put_reuses_postgres_lost_acknowledgement_contract \
+    --require-case=processes::process_death_after_real_put_reuses_postgres_lost_acknowledgement_contract \
+    -- --ignored --exact
+  run_required_rust_tests -p awaken-store-s3 --test live_s3 \
+    load::concurrent_multimodal_producers_live_reader_and_cold_replay_agree \
+    --require-case=load::concurrent_multimodal_producers_live_reader_and_cold_replay_agree \
+    -- --ignored --exact
+  cargo test --locked -p awaken-store-s3 --test session_protocol collection_fences_old_blob_pins_while_the_bytes_still_exist
+  python3 scripts/ci/render_runtime_refinement_traces.py --projection storage-observations \
+    "$AWAKEN_OBSERVATION_TRACE_DIR" "$trace_dir/rendered" --require-complete-transition-coverage
+  for config in "$trace_dir"/rendered/RustTrace*.cfg; do
+    model="${config%.cfg}.tla"
+    name="$(basename "$model" .tla)"
+    mkdir "$trace_dir/$name"
+    java -Djava.io.tmpdir="$trace_dir/$name" -XX:+UseParallelGC -jar "$TLA2TOOLS_JAR" \
+      -metadir "$trace_dir/$name/states" -config "$config" "$model"
+  done
+  exit 0
+fi
+
 # Every suite is a row of scripts/ci/service_suites.toml, run here by id.
 # --affected <base> runs only the rows the change since <base> can reach
 # (scripts/ci/service_test_plan.py) and sets up no tool when none is.
 mode=--quick
 affected_base=""
-reliability_usage="usage: scripts/ci/check-reliability.sh [--quick|--full|--require-tools|--session-observations] [--affected <base>]"
+reliability_usage="usage: scripts/ci/check-reliability.sh [--quick|--full|--require-tools|--session-observations|--storage-observations|--s3-live] [--affected <base>]"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --quick|--full|--require-tools) mode="$1" ;;

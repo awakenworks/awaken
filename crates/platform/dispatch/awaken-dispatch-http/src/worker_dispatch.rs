@@ -56,6 +56,7 @@ use registry_endpoints::{
 };
 
 mod preparation_work;
+mod ready_shards;
 mod run_dispatch_endpoints;
 mod session_coordination;
 mod session_realization;
@@ -239,6 +240,7 @@ pub fn worker_source_retention_router(
 /// provider-dependent collaborators (`Option`s and the grant issuers) fail
 /// closed when absent (see [`RegisteredDispatchDependencies`]).
 pub struct WorkerDispatchService {
+    ready_shards: Arc<ready_shards::ReadyShards>,
     claim_persistence: crate::WorkerClaimPersistence,
     dispatch: Arc<dyn WorkerDispatchAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
@@ -262,6 +264,10 @@ pub struct WorkerDispatchService {
     session_environment_bindings:
         Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     session_coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
+    conditional_model_admission:
+        Option<Arc<dyn awaken_session_execution_contract::ConditionalSessionModelAdmission>>,
+    conditional_realization_renewal:
+        Option<Arc<dyn awaken_session_execution_contract::ConditionalSessionRealizationRenewal>>,
     session_work: Arc<dyn awaken_session_application_contract::SessionWorkerLeaseAuthority>,
     worker_work_release: Arc<dyn awaken_dispatch::ConditionalSessionWorkRelease>,
     credential_grants: WorkerCredentialGrantIssuers,
@@ -282,6 +288,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn new(dependencies: RegisteredDispatchDependencies) -> Self {
         let RegisteredDispatchDependencies {
+            wake,
             claim_persistence,
             execution_bindings,
             execution_stops,
@@ -310,6 +317,7 @@ impl WorkerDispatchService {
             max_attempts,
         } = dependencies;
         Self {
+            ready_shards: ready_shards::ReadyShards::new(wake),
             claim_persistence,
             dispatch,
             authenticator,
@@ -329,6 +337,8 @@ impl WorkerDispatchService {
             terminal_cleanup_control: terminal_cleanup,
             session_environment_bindings,
             session_coordination: coordination,
+            conditional_model_admission: None,
+            conditional_realization_renewal: None,
             session_work,
             worker_work_release,
             credential_grants,
@@ -338,6 +348,18 @@ impl WorkerDispatchService {
             execution_bindings,
             execution_stops,
         }
+    }
+
+    /// Bind the condition-consuming application ports selected at startup.
+    #[must_use]
+    pub fn with_session_publication(
+        mut self,
+        model: Arc<dyn awaken_session_execution_contract::ConditionalSessionModelAdmission>,
+        renewal: Arc<dyn awaken_session_execution_contract::ConditionalSessionRealizationRenewal>,
+    ) -> Self {
+        self.conditional_model_admission = Some(model);
+        self.conditional_realization_renewal = Some(renewal);
+        self
     }
 }
 
@@ -474,6 +496,7 @@ async fn observe_expired_predecessor(
 /// Everything [`WorkerDispatchService::new`] consumes. Every collaborator is
 /// required except the three whose provider exists only in some deployments.
 pub struct RegisteredDispatchDependencies {
+    pub wake: Option<Arc<dyn awaken_dispatch_contract::WakeSignal>>,
     pub claim_persistence: crate::WorkerClaimPersistence,
     /// Present only where a provider (systemd user units, Kubernetes Pods)
     /// observes Worker processes. Without it the unbound transport (the
@@ -603,6 +626,12 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             awaken_dispatch_contract::STREAM_PREVIEW_BATCH_PATH,
             post(live_stream::stream_preview_batch).layer(axum::extract::DefaultBodyLimit::max(
                 awaken_dispatch_contract::MAX_STREAM_PREVIEW_BODY_BYTES,
+            )),
+        )
+        .route(
+            awaken_dispatch_contract::PROGRESS_BATCH_PATH,
+            post(live_stream::append_progress_batch).layer(axum::extract::DefaultBodyLimit::max(
+                awaken_dispatch_contract::PROGRESS_BATCH_BYTES + 16 * 1024,
             )),
         )
         .route("/v1/worker/register", post(register_worker))
@@ -876,7 +905,7 @@ async fn claim_is_current(
         }
         let guard = service
             .dispatch
-            .lock_commit_epoch(&request.claim)
+            .acquire_commit_authority(&request.claim)
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?;
         let Some(guard) = guard else {
@@ -930,7 +959,7 @@ async fn recovery_snapshot(
         }
         let guard = service
             .dispatch
-            .lock_commit_epoch(&request.claim)
+            .acquire_commit_authority(&request.claim)
             .await
             .map_err(|error| ApplicationError::internal(error.to_string()))?
             .ok_or_else(|| ApplicationError::conflict("run claim is stale"))?;
@@ -980,16 +1009,29 @@ async fn recovery_snapshot(
                 }
             }
         }
-        let recovery = service
-            .recovery
-            .load_recovery(
-                dispatch.session_thread_id(),
-                dispatch.thread_id(),
-                dispatch.run_id(),
-                request.cached_prefix,
-            )
-            .await
-            .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        let recovery = if let crate::WorkerClaimPersistence::Object(persistence) = &service.claim_persistence {
+            guard.release().await.map_err(ApplicationError::unavailable)?;
+            persistence
+                .checkpoints
+                .load_recovery(
+                    &request.claim,
+                    request.session_work_authority.as_ref(),
+                    request.cached_prefix,
+                )
+                .await
+                .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        } else {
+            service
+                .recovery
+                .load_recovery(
+                    dispatch.session_thread_id(),
+                    dispatch.thread_id(),
+                    dispatch.run_id(),
+                    request.cached_prefix,
+                )
+                .await
+                .map_err(|error| ApplicationError::internal(error.to_string()))?
+        };
         serde_json::to_value(recovery)
             .map_err(|error| ApplicationError::internal(error.to_string()))
     }
@@ -1022,6 +1064,15 @@ async fn bind_sandbox(
     respond(result)
 }
 
+fn object_persistence_error(error: awaken_dispatch_contract::DispatchError) -> ApplicationError {
+    use awaken_dispatch_contract::DispatchError;
+    match error {
+        DispatchError::Conflict(detail) => ApplicationError::conflict(detail),
+        DispatchError::Rejected(detail) => ApplicationError::invalid(detail),
+        error => ApplicationError::unavailable(error.to_string()),
+    }
+}
+
 async fn checkpoint_authority(
     service: &WorkerDispatchService,
     worker: &VerifiedWorkerContext,
@@ -1049,6 +1100,14 @@ async fn get_checkpoint(
                 .await
                 .map_err(crate::worker_application_error)?;
             return Ok(json!({ "checkpoint": checkpoint, "claim_verified": true }));
+        }
+        if let crate::WorkerClaimPersistence::Object(persistence) = &service.claim_persistence {
+            let outcome = persistence
+                .checkpoints
+                .load_stream_checkpoint(&request.claim)
+                .await
+                .map_err(object_persistence_error)?;
+            return Ok(json!({ "checkpoint": outcome, "claim_verified": true }));
         }
         let Some(guard) = service
             .dispatch
@@ -1102,6 +1161,14 @@ async fn put_checkpoint(
                 .map_err(crate::worker_application_error)?;
             return Ok(json!({ "applied": outcome.applied() }));
         }
+        if let crate::WorkerClaimPersistence::Object(persistence) = &service.claim_persistence {
+            let outcome = persistence
+                .checkpoints
+                .put_stream_checkpoint(&request.claim, checkpoint)
+                .await
+                .map_err(object_persistence_error)?;
+            return Ok(json!({ "applied": outcome.applied() }));
+        }
         let Some(guard) = service
             .dispatch
             .lock_commit_epoch(&request.claim)
@@ -1138,6 +1205,14 @@ async fn delete_checkpoint(
                 .delete_stream_checkpoint(&request.claim)
                 .await
                 .map_err(crate::worker_application_error)?;
+            return Ok(json!({ "applied": outcome.applied() }));
+        }
+        if let crate::WorkerClaimPersistence::Object(persistence) = &service.claim_persistence {
+            let outcome = persistence
+                .checkpoints
+                .delete_stream_checkpoint(&request.claim)
+                .await
+                .map_err(object_persistence_error)?;
             return Ok(json!({ "applied": outcome.applied() }));
         }
         let Some(guard) = service
@@ -1221,7 +1296,7 @@ async fn settle(
         };
         let authorized = service
             .dispatch
-            .lock_commit_epoch(&claim)
+            .acquire_commit_authority(&claim)
             .await
             .map_err(|error| {
                 RealizationHttpError::from(ApplicationError::internal(error.to_string()))
@@ -1262,7 +1337,7 @@ async fn settle(
             RealizationHttpError::from(ApplicationError::unavailable(error))
         })?;
         let recovery = match &service.claim_persistence {
-            crate::WorkerClaimPersistence::Independent => service
+            crate::WorkerClaimPersistence::Independent | crate::WorkerClaimPersistence::Object(_) => service
                 .recovery
                 .recovery_snapshot_in_session(&session_thread_id, &thread_id, &claim.run_id)
                 .await
@@ -1306,7 +1381,7 @@ async fn settle(
         };
         let Some(guard) = service
             .dispatch
-            .lock_commit_epoch(&claim)
+            .acquire_commit_authority(&claim)
             .await
             .map_err(|error| {
                 RealizationHttpError::from(ApplicationError::internal(error.to_string()))

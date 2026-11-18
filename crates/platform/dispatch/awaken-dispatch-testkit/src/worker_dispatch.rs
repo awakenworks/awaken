@@ -63,6 +63,7 @@ pub fn worker_dispatch_dependencies(
 ) -> RegisteredDispatchDependencies {
     let unconfigured = Arc::new(UnconfiguredCollaborators);
     RegisteredDispatchDependencies {
+        wake: None,
         claim_persistence: awaken_dispatch_http::WorkerClaimPersistence::Independent,
         execution_bindings: None,
         execution_stops: None,

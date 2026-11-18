@@ -236,7 +236,7 @@ impl awaken_session_execution_contract::SessionProjectionSynchronizer
 /// realization identity. Every phase decision is the aggregate's or the
 /// realization contract's; this component orders reads, decisions and commits.
 pub struct SessionRealizations {
-    mutations: Arc<crate::SessionMutations>,
+    pub(crate) mutations: Arc<crate::SessionMutations>,
     pub(super) clock: Arc<dyn awaken_time::WallClock>,
     queries: Arc<crate::SessionQueries>,
     credentials: Arc<crate::SessionCredentials>,

@@ -92,8 +92,8 @@ pub use event::{
 pub use repository::{
     LifecycleOutbox, LifecycleOutboxBatch, LifecycleOutboxCursor, PreparedParticipantIntent,
     PreparedParticipantIntentClaim, PreparedParticipantIntentPhase,
-    PreparedParticipantIntentRecord, PreparedParticipantIntents, SessionReconciliation,
-    SessionRepository, SessionRepositoryReads,
+    PreparedParticipantIntentRecord, PreparedParticipantIntents, SessionConditionalPublication,
+    SessionReconciliation, SessionRepository, SessionRepositoryReads,
 };
 pub use state::{
     ActivationState, CheckpointReceipt, IdempotencyRecord, MaterializationKind, PersistedSession,

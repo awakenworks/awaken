@@ -93,5 +93,33 @@ async fn nats_wake_signal_notifies_a_waiter() {
         message.payload.is_empty(),
         "wake hints carry no durable authority"
     );
+
+    // Registered claimers on different Coordinators share a queue group.
+    // A single shard hint goes to one coordinator even though both are ready.
+    let peer = NatsWakeSignal::connect(&url, subject.clone())
+        .await
+        .expect("peer connection");
+    let mut first = Box::pin(tokio::task::unconstrained(waiter.wait_shard()));
+    let mut second = Box::pin(tokio::task::unconstrained(peer.wait_shard()));
+    assert!(futures_util::poll!(&mut first).is_pending());
+    assert!(futures_util::poll!(&mut second).is_pending());
+    confirm_server_subscription(&waiter.client, "first claimer").await;
+    confirm_server_subscription(&peer.client, "second claimer").await;
+    publisher.publish_shard(173).await.expect("publish shard");
+    let (shard, mut remaining) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            shard = &mut first => (shard, second),
+            shard = &mut second => (shard, first),
+        }
+    })
+    .await
+    .expect("one of the queue subscribers receives the shard");
+    assert_eq!(shard, Some(173));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut remaining)
+            .await
+            .is_err(),
+        "the same hint reached both queue subscribers"
+    );
     awaken_reliability_testkit::report_nats_fixture_exercised();
 }

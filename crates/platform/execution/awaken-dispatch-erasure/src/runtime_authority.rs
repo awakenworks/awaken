@@ -44,6 +44,12 @@ pub fn claimed_store_run_error(
     }
 }
 
+/// Run-scoped persistence selected after scheduling from the same authority
+/// as commit_operation. The engine wraps live delivery with durable ingestion.
+pub struct RunPersistence {
+    pub checkpoint: Arc<dyn StreamCheckpointStore>,
+    pub stream: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+}
 /// The complete durable capability injected into one Coordinator Runtime Host.
 ///
 /// Source-owner rule A3: composition consumes this original canonical declaration;
@@ -114,6 +120,30 @@ pub trait RuntimeAuthority: Send + Sync {
     /// Process-wide lifecycle order, when the backend has one shared commit space.
     fn shared_lifecycle_feed(&self) -> Option<Arc<dyn RunLifecycleFeed>> {
         None
+    }
+
+    /// Select claimed HTTP persistence without inferring it from the SQL registry.
+    fn uses_conditional_publication(&self) -> bool {
+        false
+    }
+
+    /// None preserves the existing lock-fenced checkpoint and live stream path.
+    /// A conditional engine supplies both ports bound to the exact captured claim.
+    fn bind_run_persistence(
+        &self,
+        _claim: &awaken_worker_contract::RunClaim,
+        _live: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Option<RunPersistence> {
+        None
+    }
+
+    async fn append_progress_batch(
+        &self,
+        _claim: &awaken_worker_contract::RunClaim,
+        _batch: awaken_dispatch_contract::ProgressBatch,
+    ) -> Result<awaken_dispatch_contract::ProgressReceipt, awaken_dispatch_contract::ProgressError>
+    {
+        Err(awaken_dispatch_contract::ProgressError::Unsupported)
     }
 
     fn dispatch_store(&self) -> Arc<AnyCoordinatorDispatch>;

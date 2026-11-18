@@ -169,6 +169,13 @@ pub trait SessionRunActivityAdmitter: Send + Sync {
         recover_only: bool,
         admitted_after_cursor: Option<u64>,
     ) -> Result<AdmittedSessionRun, awaken_runtime_contract::runs::RunError>;
+    async fn admit_conditionally(
+        &self,
+        reservation: SessionRunReservation,
+        recover_only: bool,
+        admitted_after_cursor: Option<u64>,
+        condition: Option<awaken_session_types::SessionPublicationCondition>,
+    ) -> Result<AdmittedSessionRun, awaken_runtime_contract::runs::RunError>;
 }
 
 /// Closed result of reserving a dispatch row before root activity admission.

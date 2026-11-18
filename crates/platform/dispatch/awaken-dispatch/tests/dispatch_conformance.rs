@@ -232,3 +232,20 @@ async fn postgres_session_reply_activity_rotation_conforms() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn postgres_portable_partition_scan_laws() {
+    let Some(pool) = harness::schema_pool("t_pg_portable_scans").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool).await.unwrap();
+    awaken_dispatch_testkit::assert_portable_dispatch_scan_conformance(&store, "pg-portable").await;
+}
+#[tokio::test]
+async fn sqlite_portable_partition_scan_laws() {
+    let store = SqliteDispatchStore::open_in_memory(awaken_time::system_clock())
+        .await
+        .unwrap();
+    awaken_dispatch_testkit::assert_portable_dispatch_scan_conformance(&store, "sqlite-portable")
+        .await;
+}

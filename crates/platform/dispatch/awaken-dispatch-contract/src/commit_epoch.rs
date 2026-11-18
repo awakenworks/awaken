@@ -300,6 +300,141 @@ pub fn prepared_session_run_admission_cursor(
     Ok(snapshot.store_cursor)
 }
 
+/// Exact claim facts read from a CAS engine. It is never a held lock.
+/// Every dependent mutation must carry the condition to atomic publication.
+pub struct ConditionalClaimAuthority {
+    pub observation: crate::CommitEpochObservation,
+    pub condition: awaken_session_types::SessionPublicationCondition,
+}
+/// A caller explicitly chooses between a held exclusion and a condition
+/// consumed by the selected engine. Conditional observations cannot authorize
+/// legacy lock-only effects.
+pub enum ClaimAuthority {
+    Locked(CommitEpochGuard),
+    Conditional(ConditionalClaimAuthority),
+}
+impl ClaimAuthority {
+    pub fn observation(&self) -> &crate::CommitEpochObservation {
+        match self {
+            Self::Locked(guard) => guard.observation(),
+            Self::Conditional(authority) => &authority.observation,
+        }
+    }
+
+    /// Deadline observed with this exact authority; it is never renewed locally.
+    pub fn expires_ms(&self) -> u64 {
+        match self {
+            Self::Locked(g) => g.expires_ms(),
+            Self::Conditional(g) => g.observation.expires_ms,
+        }
+    }
+    pub fn request(&self) -> &RunDispatch {
+        match self {
+            Self::Locked(g) => g.request(),
+            Self::Conditional(g) => &g.observation.request,
+        }
+    }
+    pub fn is_live_at(&self, now_ms: u64) -> bool {
+        match self {
+            Self::Locked(g) => g.is_live_at(now_ms),
+            Self::Conditional(g) => now_ms < g.observation.expires_ms,
+        }
+    }
+    pub fn permits_settlement(&self) -> bool {
+        match self {
+            Self::Locked(g) => g.permits_settlement(),
+            Self::Conditional(g) => g.observation.physical_slot.permits_settlement(),
+        }
+    }
+    pub fn cancellation_requested(&self) -> bool {
+        match self {
+            Self::Locked(g) => g.cancellation_requested(),
+            Self::Conditional(g) => g.observation.cancellation_requested,
+        }
+    }
+    pub fn publication_condition(
+        &self,
+    ) -> Option<&awaken_session_types::SessionPublicationCondition> {
+        match self {
+            Self::Locked(_) => None,
+            Self::Conditional(g) => Some(&g.condition),
+        }
+    }
+    pub async fn release(self) -> Result<(), String> {
+        match self {
+            Self::Locked(g) => g.release().await,
+            Self::Conditional(_) => Ok(()),
+        }
+    }
+    /// Only a real lock can authorize an existing lock-only effect.
+    pub fn into_locked(self) -> Result<CommitEpochGuard, String> {
+        match self {
+            Self::Locked(guard) => Ok(guard),
+            Self::Conditional(_) => {
+                Err("this operation requires conditional publication support".into())
+            }
+        }
+    }
+    /// Forward the exact witness to the root CAS. Receipt recovery never creates activity.
+    pub async fn admit_prepared_session_run<T, E, F: Future<Output = Result<T, E>>>(
+        self,
+        clock: &dyn awaken_time::WallClock,
+        recovery: Result<PreparedRunRecovery<'_>, E>,
+        admit: impl FnOnce(u64, bool, Option<awaken_session_types::SessionPublicationCondition>) -> F,
+        failure: impl Fn(String) -> E,
+    ) -> Result<Result<T, E>, String> {
+        match self {
+            Self::Locked(guard) => {
+                guard
+                    .admit_prepared_session_run(
+                        clock,
+                        recovery,
+                        |cursor, cancelled| admit(cursor, cancelled, None),
+                        failure,
+                    )
+                    .await
+            }
+            Self::Conditional(authority) => {
+                let result = async {
+                    let recovery = recovery?;
+                    if clock.now_ms() >= authority.observation.expires_ms
+                        || !authority.observation.physical_slot.permits_settlement()
+                    {
+                        return Err(failure(
+                            "prepared reservation requires a live claim and empty physical slot"
+                                .into(),
+                        ));
+                    }
+                    let request = &authority.observation.request;
+                    let cursor = match recovery {
+                        PreparedRunRecovery::OriginalAuthority(source) => {
+                            let snapshot = source
+                                .recovery_snapshot_in_session(
+                                    request.session_thread_id(),
+                                    request.thread_id(),
+                                    request.run_id(),
+                                )
+                                .await
+                                .map_err(|e| failure(e.to_string()))?;
+                            prepared_session_run_admission_cursor(request, &snapshot)
+                                .map_err(&failure)?
+                        }
+                        PreparedRunRecovery::ReceiptOnly => 0,
+                    };
+                    admit(
+                        cursor,
+                        authority.observation.cancellation_requested,
+                        Some(authority.condition),
+                    )
+                    .await
+                }
+                .await;
+                Ok(result)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod commit_epoch_tests {
     use super::*;

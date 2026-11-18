@@ -22,17 +22,31 @@ fn pg_url() -> Option<String> {
 /// waiter on timeout, so a timed-out fixture cannot leave its listener alive.
 async fn publish_until_woken(
     publisher: &dyn WakeSignal,
-    mut wait_task: tokio::task::JoinHandle<()>,
+    wait_task: tokio::task::JoinHandle<()>,
     budget: Duration,
 ) -> bool {
+    observe_delivery(|| publisher.publish(), wait_task, budget)
+        .await
+        .is_some()
+}
+
+async fn observe_delivery<T, F, Publication>(
+    publish: F,
+    mut wait_task: tokio::task::JoinHandle<T>,
+    budget: Duration,
+) -> Option<T>
+where
+    F: Fn() -> Publication,
+    Publication: Future<Output = Result<(), awaken_dispatch_contract::DispatchError>>,
+{
     // awaken-allow(wait): settle on delivered wake, never a sleep or LISTEN query.
     let outcome = tokio::time::timeout(budget, async {
         loop {
-            publisher.publish().await.expect("publish wake hint");
+            publish().await.expect("publish wake hint");
             if let Ok(joined) =
                 tokio::time::timeout(Duration::from_millis(100), &mut wait_task).await
             {
-                return joined.is_ok();
+                return joined.ok();
             }
         }
     })
@@ -41,7 +55,7 @@ async fn publish_until_woken(
         wait_task.abort();
         let _ = wait_task.await;
     }
-    outcome.unwrap_or(false)
+    outcome.ok().flatten()
 }
 
 #[tokio::test(start_paused = true)]
@@ -106,6 +120,16 @@ async fn publish_wakes_a_waiter_on_another_connection() {
         publish_until_woken(&publisher, wait_task, Duration::from_secs(5)).await,
         "PgNotifyWake.wait did not return after a cross-connection publish"
     );
+
+    let waiter = PgNotifyWake::new(pool, channel);
+    let shard = observe_delivery(
+        || publisher.publish_shard(173),
+        tokio::spawn(async move { waiter.wait_shard().await }),
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("shard hint reaches a separate connection");
+    assert_eq!(shard, Some(173));
 }
 
 #[tokio::test]

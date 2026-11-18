@@ -451,6 +451,7 @@ impl awaken_dispatch_contract::DispatchClaims for PostgresDispatchStore {
             capabilities,
             CandidateAudience::Local,
             None,
+            None,
         )
         .await
     }
@@ -466,6 +467,7 @@ impl awaken_dispatch_contract::DispatchClaims for PostgresDispatchStore {
             lease_ms,
             &capabilities,
             CandidateAudience::Compatible(worker),
+            None,
             None,
         )
         .await

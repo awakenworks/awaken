@@ -133,7 +133,7 @@ async fn read_skill_bundle(
             ) {
                 return status.into_response();
             }
-            let guard = match service.dispatch.lock_commit_epoch(claim).await {
+            let guard = match service.dispatch.acquire_commit_authority(claim).await {
                 Ok(Some(guard)) if guard.is_live_at(now_ms) => guard,
                 Ok(_) => return StatusCode::CONFLICT.into_response(),
                 Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),

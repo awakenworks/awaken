@@ -41,3 +41,10 @@ pub trait ClaimedStreamPublisher: Send + Sync {
         self.publish(claim, observation.event).await
     }
 }
+
+/// Paired claim-aware persistence roles selected from one Runtime authority.
+#[derive(Clone)]
+pub struct ClaimedPersistence {
+    pub checkpoints: std::sync::Arc<dyn crate::ClaimedCheckpointTransport>,
+    pub progress: std::sync::Arc<dyn crate::AppendRunProgress>,
+}

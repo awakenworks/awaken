@@ -202,9 +202,11 @@ impl CredentialMaterialMutationFence {
                         %violation,
                         "lease generation integrity violated; refusing this credential mutation recovery permanently"
                     );
-                    CredentialError::MutationConflict(format!(
-                        "credential material writer: {violation}"
-                    ))
+                    CredentialError::MutationConflict(
+                        "credential material writer: lease_generation_integrity_violated: \
+                         the persisted lease epoch has no successor"
+                            .into(),
+                    )
                 },
             )?,
         );
@@ -1336,11 +1338,10 @@ mod exhaustive {
         assert_eq!(calls, 1, "T3 existing entropy order");
         // The refusal is the permanent lease-generation integrity class, the
         // same on every attempt, and never mints or wraps a generation.
-        let refused = Err(CredentialError::MutationConflict(
-            "credential material writer: lease_generation_integrity_violated: \
-             the persisted lease epoch has no successor"
-                .into(),
-        ));
+        let refused = Err(CredentialError::MutationConflict(format!(
+            "credential material writer: {}",
+            EpochIntegrityViolation::Exhausted
+        )));
         assert_eq!(result, refused, "T3 exhausted epoch");
         for _ in 0..2 {
             assert_eq!(

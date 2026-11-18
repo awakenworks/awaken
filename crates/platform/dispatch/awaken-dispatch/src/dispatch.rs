@@ -178,7 +178,7 @@ pub(crate) fn diagnostic_page(
 /// The sole Memory operation element, and the canonical decoded SQL element.
 /// Public/internal pages are projections, never mirrored persistence.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct StoredDispatchEvent {
     pub(crate) cursor: awaken_dispatch_contract::DispatchCursor,
     pub(crate) recorded_at_ms: Option<u64>,

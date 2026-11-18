@@ -43,6 +43,7 @@ pub struct ResolvedDeployment {
     pub control_service: super::ControlServiceConfig,
     pub mcp_bearer_token: Option<String>,
     pub admin_listen: Option<String>,
+    pub agent_object_storage: Option<awaken_coordinator::AgentObjectStorageConfig>,
     pub runtime: awaken_deployment_config::DeploymentConfig,
     pub observability: awaken_observability::ObservabilityConfig,
     pub local_acp_observations: Vec<awaken_acp_contract::AcpHostObservation>,

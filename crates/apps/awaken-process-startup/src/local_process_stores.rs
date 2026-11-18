@@ -56,6 +56,7 @@ pub(super) async fn in_memory_process_stores() -> ProcessStores {
         coordinator: Some(CoordinatorStores {
             resources: crate::process_stores::ProcessResources::ephemeral(clock.clone()).await,
             sessions: sessions.clone(),
+            conditional_sessions: None,
             application_access: Arc::new(
                 awaken_coordinator::application_access_store::ApplicationAccessStore::open_in_memory(
                     clock.clone(),
@@ -195,6 +196,7 @@ pub(super) async fn open_local_process_stores(
     )
     .await?;
     open_process_stores(ProcessStoreOpenOptions {
+        agent_sessions: None,
         control: awaken_control::ControlStoreConfig::local(dir),
         agent_governance: None,
         coordinator: config::CoordinatorStoreConfig {

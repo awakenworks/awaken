@@ -14,6 +14,7 @@ separation = "isolation"
 isolates = ["sqlx"]
 
 [dependencies]
+awaken-object-storage.workspace = true
 awaken-session-configuration-contract.workspace = true
 # The repository port and persisted state implemented by both SQL backends.
 awaken-session-contract.workspace = true

@@ -191,6 +191,16 @@ mod repository_publication_projection_tests {
     }
 }
 
+/// Renew the realization while consuming the exact Dispatch publication condition.
+#[async_trait::async_trait]
+pub trait ConditionalSessionRealizationRenewal: Send + Sync {
+    async fn renew_session_realization_conditionally(
+        &self,
+        command: RenewSessionRealization,
+        condition: &awaken_session_types::SessionPublicationCondition,
+    ) -> Result<SessionRealizationLeaseReceipt, SessionRealizationControlFailure>;
+}
+
 /// Driving port for the Control-owned realization state machine. It performs no
 /// Runtime I/O; topology adapters execute the returned action and submit exact
 /// receipts/acknowledgements to the next phase.

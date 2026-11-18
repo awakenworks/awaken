@@ -35,6 +35,11 @@ pub trait ClaimedSessionCredentialPreparationContext: Send + Sync {
         self.verify_at(now_unix_ms)
     }
 
+    /// Condition consumed by the object engine at the final Root CAS.
+    fn publication_condition(&self) -> Option<&awaken_session_types::SessionPublicationCondition> {
+        None
+    }
+
     /// Select final admission from the explicitly supplied original Root role.
     /// Held contexts retain that role. PostgreSQL returns its same final gate.
     fn root_commit<'a>(

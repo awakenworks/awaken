@@ -45,6 +45,11 @@ pub use work_parking::{
 
 mod claimed_commit;
 mod claimed_stream;
+mod progress;
+pub use progress::{
+    AppendProgressRequest, AppendRunProgress, PROGRESS_BATCH_BYTES, PROGRESS_BATCH_ITEMS,
+    PROGRESS_BATCH_PATH, ProgressBatch, ProgressError, ProgressReceipt,
+};
 mod completion_sink;
 mod credential_grant;
 pub use credential_grant::{
@@ -56,8 +61,10 @@ mod dispatch_transition;
 mod execution_observation;
 pub mod operational;
 pub mod run_dispatch;
+mod scheduling;
 mod session_run_events;
 mod wake;
+pub use scheduling::{ClaimSearch, dispatch_shard};
 mod worker_transport;
 pub use completion_sink::CompletionSink;
 pub use execution_observation::DispatchExecutionReads;
@@ -69,19 +76,22 @@ pub use claimed_commit::{
     COMMIT_CAPACITY_EXHAUSTED, COMMIT_CONFLICT, COMMIT_FENCED, COMMIT_IDENTITY_MISMATCH,
     COMMIT_OUTCOME_UNKNOWN, ClaimedRunCommit, claimed_commit_sdk_error,
 };
-pub use claimed_stream::{ClaimedStreamPublisher, preview_claim_epoch, with_preview_claim_epoch};
+pub use claimed_stream::{
+    ClaimedPersistence, ClaimedStreamPublisher, preview_claim_epoch, with_preview_claim_epoch,
+};
 pub use dispatch::{
     AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosureKind,
     AttemptClosurePage, AttemptClosureRecord, AttemptPhysicalFact, AttemptReturnCause, CasOutcome,
-    ClaimCredentialOperation, Claimed, ClaimedCheckpointTransport, ClaimedCommitCommand,
-    CommitEpochAdmission, CommitEpochBoundary, CommitEpochCompletion, CommitEpochGuard,
-    ContinuationAdmission, DispatchCompletion, DispatchCredentialAdmissionError, DispatchDepths,
-    DispatchError, DispatchLease, DispatchOutcome, DispatchSettlementError,
-    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox,
-    PendingInput, PendingRecord, PreparedRunRecovery, SessionChildAdmission,
-    SessionContinuationOutbox, SessionRunAdmissionObservation, SessionRunReservationActivation,
-    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
-    can_admit_claim_credentials, claim_credential_operation, classify_commit_epoch_admission,
+    ClaimAuthority, ClaimCredentialOperation, Claimed, ClaimedCheckpointRead,
+    ClaimedCheckpointTransport, ClaimedCommitCommand, CommitEpochAdmission, CommitEpochBoundary,
+    CommitEpochCompletion, CommitEpochGuard, ConditionalClaimAuthority, ContinuationAdmission,
+    DispatchCompletion, DispatchCredentialAdmissionError, DispatchDepths, DispatchError,
+    DispatchLease, DispatchOutcome, DispatchSettlementError, DispatchSettlementObserver,
+    DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput,
+    PendingRecord, PreparedRunRecovery, SessionChildAdmission, SessionContinuationOutbox,
+    SessionRunAdmissionObservation, SessionRunReservationActivation, SessionRunReservationOutcome,
+    SessionRunReservationResolution, SettleOutcome, SubmitOptions, can_admit_claim_credentials,
+    claim_credential_operation, classify_commit_epoch_admission,
     compile_attempt_credential_bindings, compile_claim_credential_bindings, deadline_has_passed,
     decide_lease_renewal, prepared_session_run_admission_cursor,
     session_run_replacement_candidate_is_safe, verify_attempt_credential_bindings,
@@ -126,3 +136,5 @@ pub use worker_transport::{
 pub use dispatch::InboxRead;
 
 pub use dispatch::DispatchAttemptRecordReads;
+
+pub use operational::{DispatchScanCursor, DispatchScanPage};

@@ -232,11 +232,15 @@ impl SessionApplicationBuilder {
         self.assembly.configuration = self.assembly.configuration.validate()?;
         let crate::SessionPersistence {
             store,
+            conditional_publication,
             clock,
             environment_binding_sink,
         } = self.persistence;
         let started_at = clock.now().as_unix_nanos();
-        let mutations = Arc::new(crate::SessionMutations::new(store.clone(), clock.clone()));
+        let mutations = Arc::new(
+            crate::SessionMutations::new(store.clone(), clock.clone())
+                .with_conditional_publication(conditional_publication),
+        );
         let lifecycle = Arc::new(crate::SessionLifecycle::new(
             mutations.clone(),
             clock.clone(),

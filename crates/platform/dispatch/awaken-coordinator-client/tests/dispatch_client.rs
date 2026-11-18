@@ -736,7 +736,11 @@ async fn exhausted_finish_transport_remains_retryable_for_the_physical_ack_loop(
 /// | T3 | 400 | no | rejected immediately |
 #[tokio::test]
 async fn held_claim_response_does_not_block_another_logical_claim() {
-    for directed in [false, true] {
+    use awaken_coordinator_client::worker_transports_with_upstream;
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_worker_transport_security::WorkerUpstream;
+
+    for (long_poll, directed) in [(false, false), (false, true), (true, false), (true, true)] {
         let (requests, mut received) = tokio::sync::mpsc::unbounded_channel::<Value>();
         let release = Arc::new(tokio::sync::Notify::new());
         let app = Router::new().route(
@@ -763,7 +767,20 @@ async fn held_claim_response_does_not_block_another_logical_claim() {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let identity = WorkerIdentity::new("overlap-worker", "overlap-incarnation", 1);
         let owner = identity.lease_owner();
-        let queue = HttpDispatchQueue::new(url, identity);
+        let upstream = WorkerUpstream::new(&url);
+        let production;
+        let compatibility;
+        let queue: &dyn DispatchClaims = if long_poll {
+            (production, _) = worker_transports_with_upstream(
+                &upstream,
+                identity,
+                awaken_worker_contract::WorkerManifest::default(),
+            );
+            production.as_ref()
+        } else {
+            compatibility = HttpDispatchQueue::new(url, identity);
+            &compatibility
+        };
         let capabilities = Default::default();
         let mut first = Box::pin(queue.claim(&owner, 60_000, &capabilities));
         let first_body = tokio::select! {
@@ -787,10 +804,23 @@ async fn held_claim_response_does_not_block_another_logical_claim() {
                 .unwrap()
                 .is_none()
         );
-        let second_body = received.try_recv().unwrap();
         assert!(first_body["request_id"].is_string());
-        assert!(second_body["request_id"].is_string());
-        assert_ne!(first_body["request_id"], second_body["request_id"]);
+        if long_poll {
+            assert_eq!(first_body["wait_ms"], 1000);
+        } else {
+            assert!(first_body.get("wait_ms").is_none());
+        }
+        if long_poll && !directed {
+            assert!(
+                received.try_recv().is_err(),
+                "one outstanding idle wait per Worker"
+            );
+        } else {
+            let second_body = received.try_recv().unwrap();
+            assert!(second_body["request_id"].is_string());
+            assert_ne!(first_body["request_id"], second_body["request_id"]);
+            assert!(second_body.get("wait_ms").is_none());
+        }
         release.notify_one();
         assert!(first.await.unwrap().is_none());
         server.abort();

@@ -60,10 +60,11 @@ from formal_sources import SourceError, detached_git_environment, repository_env
 # names them) and every Cargo manifest (package and targets).
 INPUT_GLOBS: tuple[str, ...] = ("crates/**/*.rs", "crates/**/Cargo.toml")
 
-# The 23-harness event-admission selection exceeded the gate's 1800s deadline
-# although its individual proofs converged. Eight consecutive proofs took at
-# most 977s in that run; keep the same per-batch budget and bound aggregation.
+# Each invocation owns the gate's 1800s deadline. Solver- and loop-qualified
+# selections include expensive heap proofs, so each receives its own deadline.
+# Ordinary selections retain the larger batch size for shared compilation.
 MAX_HARNESSES_PER_BATCH = 8
+MAX_PROFILED_HARNESSES_PER_BATCH = 1
 
 ROOT = Path(__file__).resolve().parents[2]
 TIERS = ("pr", "nightly")
@@ -449,9 +450,12 @@ def batches(root: Path, tier: str, affected: set[str] | None = None) -> list[Bat
     # Their exact symbol catalog is validated by the real backend, not argv hashes.
     for key in sorted(grouped, key=lambda selection: (not bool(selection.profile), selection)):
         names = sorted(grouped[key].names)
+        batch_size = (
+            MAX_PROFILED_HARNESSES_PER_BATCH if key.profile else MAX_HARNESSES_PER_BATCH
+        )
         result.extend(
-            Batch(key, names[start:start + MAX_HARNESSES_PER_BATCH])
-            for start in range(0, len(names), MAX_HARNESSES_PER_BATCH)
+            Batch(key, names[start:start + batch_size])
+            for start in range(0, len(names), batch_size)
         )
     return result
 
@@ -697,7 +701,7 @@ def self_test() -> None:
         (crate / "src/orphan.rs").write_text(harness("orphan_default"))
         refused(root, "crates/a/src/orphan.rs:4: Kani harness orphan_default is not reachable")
 
-    # Ordering crosses package boundaries and keeps both chunks of a profile
+    # Ordering crosses package boundaries and keeps every chunk of a profile
     # before an ordinary package that sorts earlier. Tier filtering still owns
     # membership: only the ordinary nightly witness disappears in PR.
     with tempfile.TemporaryDirectory() as temporary:
@@ -715,8 +719,15 @@ def self_test() -> None:
         for tier, ordinary_count in (("pr", 1), ("full", 2)):
             plan = batches(root, tier)
             assert [(batch.selection.package, len(batch.names)) for batch in plan] == [
-                ("m", 1), ("z", 8), ("z", 1), ("a", ordinary_count)
+                ("m", 1), *(("z", 1) for _ in range(9)), ("a", ordinary_count)
             ], ("cross-package profile priority and chunk retention", tier)
+            assert all(
+                len(batch.names) <= (
+                    MAX_PROFILED_HARNESSES_PER_BATCH
+                    if batch.selection.profile else MAX_HARNESSES_PER_BATCH
+                )
+                for batch in plan
+            ), ("per-selection resource boundary", tier)
             names = [name for batch in plan for name in batch.names]
             required = ["solver", "ordinary", *(f"loop_{index}" for index in range(9))]
             if tier == "full":

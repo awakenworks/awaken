@@ -723,6 +723,18 @@ if [ "$tlc_available" -eq 1 ]; then
     -metadir "$tlc_state_root/store-history" \
     -config formal/tla/StoreHistory.cfg formal/tla/StoreHistory.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/S3Publication" \
+    -config formal/tla/S3Publication.cfg formal/tla/S3Publication.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/S3Reachability" \
+    -config formal/tla/S3Reachability.cfg formal/tla/S3Reachability.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/S3DispatchDiscovery" \
+    -config formal/tla/S3DispatchDiscovery.cfg formal/tla/S3DispatchDiscovery.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/S3ClaimRouteRetention" \
+    -config formal/tla/S3ClaimRouteRetention.cfg formal/tla/S3ClaimRouteRetention.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/work-queue" \
     -config formal/tla/WorkQueue.cfg formal/tla/WorkQueue.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
@@ -1159,6 +1171,7 @@ if [ "$tlc_available" -eq 1 ]; then
     python3 scripts/ci/check_formal_mutations.py --config-cas-model-mutant "$tla_jar"
     python3 scripts/ci/check_formal_mutations.py --background-completion-model-mutant "$tla_jar"
     python3 scripts/ci/check_formal_mutations.py --file-reclamation-model-mutants "$tla_jar"
+    python3 scripts/ci/check_formal_mutations.py --s3-storage-model-mutants "$tla_jar"
     python3 scripts/ci/check_formal_mutations.py --resource-preparation-model-mutant "$tla_jar"
     python3 scripts/ci/check_formal_mutations.py --realization-renewal-model-mutant "$tla_jar"
     python3 scripts/ci/check_formal_mutations.py --erasure-checkpoint-model-mutants "$tla_jar"

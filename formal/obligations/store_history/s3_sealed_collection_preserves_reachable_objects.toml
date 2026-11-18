@@ -1,0 +1,18 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = ["external.database_engine_correctness"]
+evidence = [
+  "formal/tla/S3Reachability.tla",
+  "formal/tla/S3Reachability.cfg",
+]
+production_entrypoints = []
+
+[[bounds]]
+text = '''Kani proves the production pin admission and sweep eligibility decisions for every generation and mark state. Given an exact mark and a head generation newer than the sweep cutoff, every admitted pin is protected by its mark or by its generation. The abstract model and live cases cover mark traversal, freeze and fork references, and interleavings. Object-provider read, list, delete, and conditional replacement semantics remain external assumptions.'''
+
+[[bounds]]
+text = '''One writer and one collector in one Session, at most two seals and seven head publications. The graph represents transcript bodies, frozen views and forks, live and archived frames, and explicit blob pins. Conditional head replacement and object read, list, and delete semantics belong to the storage provider.'''
+
+[[bounds]]
+text = '''The live trace from the deletion barrier observes an old blob by cold read after mark, rejects its pin, permits a current-generation pin and verifies both reachability outcomes after sweep. Additional cases cover frozen nested views, archived streams and attachments against the configured object backend.'''

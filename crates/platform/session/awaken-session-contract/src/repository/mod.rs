@@ -11,7 +11,9 @@ pub use creation_intents::{
     PreparedParticipantIntentRecord, PreparedParticipantIntents,
 };
 pub use lifecycle_outbox::{LifecycleOutbox, LifecycleOutboxBatch, LifecycleOutboxCursor};
-pub use repository_port::{SessionReconciliation, SessionRepository, SessionRepositoryReads};
+pub use repository_port::{
+    SessionConditionalPublication, SessionReconciliation, SessionRepository, SessionRepositoryReads,
+};
 
 #[cfg(test)]
 mod tests;

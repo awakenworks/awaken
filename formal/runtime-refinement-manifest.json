@@ -595,5 +595,59 @@
         ]
       }
     }
+  },
+  "storage_observations": {
+    "schema_version": 4,
+    "projection_id": "session-observations-v4",
+    "families": {
+      "claimed-store": {
+        "model": "StoreHistory",
+        "config": "StoreHistory",
+        "operator": "LostAcknowledgementRefinement",
+        "arguments": ["trace"],
+        "dependencies": []
+      },
+      "ordered-stream": {
+        "model": "S3Publication",
+        "config": "S3Publication",
+        "operator": "StreamOrderRefinement",
+        "arguments": ["trace"],
+        "dependencies": ["StoreHistory"]
+      },
+      "sealed-collection": {
+        "model": "S3Reachability",
+        "config": "S3Reachability",
+        "operator": "SealedCollectionRefinement",
+        "arguments": ["trace"],
+        "dependencies": []
+      }
+    },
+    "required_scenarios": {
+      "postgres-claimed-store": {
+        "family": "claimed-store",
+        "source": "crates/apps/awaken-coordinator/src/runtime_authority/tests/claimed_commit.rs",
+        "rules": ["lost-acknowledgement-takeover"]
+      },
+      "s3-claimed-store": {
+        "family": "claimed-store",
+        "source": "crates/platform/committed-truth/awaken-store-s3/tests/canonical_ports.rs",
+        "rules": ["lost-acknowledgement-takeover"]
+      },
+      "s3-wire-claimed-store": {
+        "family": "claimed-store",
+        "source": "crates/platform/committed-truth/awaken-store-s3/tests/live_s3/processes.rs",
+        "rules": ["lost-acknowledgement-takeover"]
+      },
+      "s3-concurrent-stream": {
+        "family": "ordered-stream",
+        "source": "crates/platform/committed-truth/awaken-store-s3/tests/live_s3/load.rs",
+        "rules": ["concurrent-stream"]
+      },
+      "s3-sealed-collection": {
+        "family": "sealed-collection",
+        "source": "crates/platform/committed-truth/awaken-store-s3/tests/session_protocol.rs",
+        "rules": ["sealed-collection"]
+      }
+    }
   }
 }

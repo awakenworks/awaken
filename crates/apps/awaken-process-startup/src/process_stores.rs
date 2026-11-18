@@ -161,6 +161,8 @@ pub(super) struct CoordinatorStores {
     pub(super) resources: ProcessResources,
     /// Durable home for the Managed Session aggregate and lifecycle outbox.
     pub(super) sessions: Arc<dyn awaken_session_application::SessionStore>,
+    pub(super) conditional_sessions:
+        Option<Arc<awaken_session_store::ObjectManagedSessionRepository>>,
     /// Coordinator-owned short-lived application capabilities. It shares the
     /// selected Session database but has its own aggregate table and ledger.
     pub(super) application_access:
@@ -338,6 +340,7 @@ pub(super) async fn open_application_access(
 /// bundle resolves backend addresses, but this function acquires only the group
 /// owned by `role`; split Control and Coordinator never share authority stores.
 pub(super) struct ProcessStoreOpenOptions<'a> {
+    pub(super) agent_sessions: Option<Arc<awaken_session_store::ObjectManagedSessionRepository>>,
     pub(super) control: awaken_control::ControlStoreConfig,
     pub(super) agent_governance: Option<awaken_control::AgentGovernanceConfig>,
     pub(super) coordinator: config::CoordinatorStoreConfig,
@@ -366,6 +369,7 @@ pub(super) async fn open_process_stores(
     let ProcessStoreOpenOptions {
         control: cfg,
         agent_governance,
+        agent_sessions,
         coordinator: coordinator_cfg,
         resources,
         postgres_pools,
@@ -482,6 +486,14 @@ pub(super) async fn open_process_stores(
         None
     };
 
+    let conditional_sessions = agent_sessions.clone();
+    if let Some(sessions) = agent_sessions {
+        let views = session_views
+            .as_mut()
+            .ok_or("Agent Session override requires managed execution role")?;
+        views.sessions = sessions;
+    }
+
     // A remote coordinate was already fenced by the PostgreSQL installation
     // gate. Local identity publication is deliberately deferred until every
     // role-owned store below has opened successfully.
@@ -553,6 +565,7 @@ pub(super) async fn open_process_stores(
             resources: resources
                 .ok_or_else(|| "Coordinator stores require Resources application".to_owned())?,
             sessions,
+            conditional_sessions,
             application_access,
             deployments,
             memory_extractions,

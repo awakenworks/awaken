@@ -13,6 +13,7 @@ pub enum DispatchTopology {
     Coordinator {
         owner: Arc<AnyCoordinatorDispatch>,
         commit: Arc<dyn ClaimedRunCommit<RunError>>,
+        authority: Arc<dyn crate::RuntimeAuthority>,
     },
     Remote {
         checkpoints: Arc<dyn ClaimedCheckpointTransport>,
@@ -64,7 +65,8 @@ impl DispatchBinding {
             queue: owner.worker_view(),
             placement: DispatchTopology::Coordinator {
                 owner,
-                commit: authority.run_commits(),
+                commit: authority.clone().run_commits(),
+                authority,
             },
         }
     }
@@ -76,6 +78,12 @@ impl DispatchBinding {
                 credentials: owner,
                 commit,
             },
+        }
+    }
+    pub fn runtime_authority(&self) -> Option<Arc<dyn crate::RuntimeAuthority>> {
+        match &self.placement {
+            DispatchTopology::Coordinator { authority, .. } => Some(authority.clone()),
+            _ => None,
         }
     }
     pub fn queue(&self) -> Arc<AnyDispatchStore> {

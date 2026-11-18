@@ -138,6 +138,7 @@ impl HttpFixture {
         };
         let sessions = sessions.clone();
         let mut dependencies = RegisteredDispatchDependencies {
+            wake: None,
             claim_persistence,
             realizations: application.realizations(),
             session_preparation: application.realizations(),

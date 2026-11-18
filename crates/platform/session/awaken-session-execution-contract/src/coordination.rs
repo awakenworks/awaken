@@ -127,8 +127,9 @@ pub enum SessionRunActivityAdmissionMode {
 /// Non-wire observations for one guarded prepared-reservation repair. The
 /// revision is prepared before the Dispatch guard; its cursor comes from the
 /// original Thread snapshot under that guard. Neither value grants execution.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct PreparedSessionRunActivity {
+    pub publication_condition: Option<awaken_session_types::SessionPublicationCondition>,
     pub projected_revision: Option<awaken_session_types::SessionRevision>,
     pub admitted_after_cursor: u64,
 }
@@ -1294,6 +1295,18 @@ pub struct CoordinatedThreadLink {
     pub target: CoordinatedThreadTarget,
     pub created_by_operation_id: String,
     pub latest_run_id: Option<RunId>,
+}
+
+/// Admit a model request under an exact Session publication condition.
+#[async_trait::async_trait]
+pub trait ConditionalSessionModelAdmission: Send + Sync {
+    async fn admit_session_model_request_conditionally(
+        &self,
+        session_id: &crate::SessionId,
+        thread_id: &ThreadId,
+        run_id: &RunId,
+        condition: &awaken_session_types::SessionPublicationCondition,
+    ) -> Result<bool, crate::RunError>;
 }
 
 /// Application port used by the fixed builtin tools. The implementation is the

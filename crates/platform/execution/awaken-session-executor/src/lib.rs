@@ -106,7 +106,7 @@ mod unavailable_worker;
 mod uninstalled_environment;
 mod web_search;
 mod worker_services;
-pub use worker_services::coordinator_run_commits;
+pub use worker_services::{coordinator_persistence_transport, coordinator_run_commits};
 
 pub(crate) use awaken_session_execution_contract::ResourceOperationFence;
 

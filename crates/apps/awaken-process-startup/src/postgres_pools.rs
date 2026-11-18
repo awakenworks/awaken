@@ -214,6 +214,7 @@ mod tests {
         .unwrap();
         let root = tempfile::tempdir().unwrap();
         let stores = crate::open_process_stores(crate::ProcessStoreOpenOptions {
+        agent_sessions: None,
             control: awaken_control::ControlStoreConfig::local(root.path()),
             agent_governance: None,
             coordinator: crate::config::CoordinatorStoreConfig {

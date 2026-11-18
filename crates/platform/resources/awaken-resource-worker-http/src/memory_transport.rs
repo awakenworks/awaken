@@ -670,7 +670,21 @@ async fn memory_operation(
             ) {
                 return status.into_response();
             }
-            let guard = match service.dispatch.lock_commit_epoch(&reference.claim).await {
+            // Snapshot reads need an exact authority observation. Write-back
+            // still requires the exclusion promised by its existing contract.
+            let authority = if request.operation.writes() {
+                service
+                    .dispatch
+                    .lock_commit_epoch(&reference.claim)
+                    .await
+                    .map(|guard| guard.map(awaken_dispatch_contract::ClaimAuthority::Locked))
+            } else {
+                service
+                    .dispatch
+                    .acquire_commit_authority(&reference.claim)
+                    .await
+            };
+            let guard = match authority {
                 Ok(Some(guard)) if guard.is_live_at(now_unix_ms) => guard,
                 Ok(_) => return StatusCode::CONFLICT.into_response(),
                 Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),

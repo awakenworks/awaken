@@ -276,7 +276,7 @@ async fn read_file_content(
             ) {
                 return status.into_response();
             }
-            let guard = service.dispatch.lock_commit_epoch(claim).await;
+            let guard = service.dispatch.acquire_commit_authority(claim).await;
             // The lock wait can outlive the lease; judge the guard, and the
             // authorization below, at the time the lock was actually won.
             let now_ms = clock_ms(service.clock.as_ref());

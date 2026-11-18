@@ -1385,3 +1385,269 @@ mod ambient_runtime_bridge_tests {
         assert!(result.is_err(), "D3");
     }
 }
+
+/// Object-backed Agent truth. The original RuntimeAuthority stays the only
+/// binding consumed by Hosts; each role below shares this exact engine.
+pub(crate) struct ObjectRuntimeAuthority {
+    storage: awaken_store_s3::S3Storage,
+    dispatch: Arc<AnyCoordinatorDispatch>,
+    local_commits: Arc<LocalCommitInitialization>,
+}
+impl ObjectRuntimeAuthority {
+    pub(crate) fn new(
+        storage: awaken_store_s3::S3Storage,
+        default_scope: &str,
+    ) -> Result<Self, String> {
+        let queue = awaken_dispatch::ObjectDispatchStore::new(
+            Arc::new(
+                storage
+                    .component_store("dispatch")
+                    .map_err(|error| error.to_string())?,
+            ),
+            default_scope.into(),
+            storage.clock(),
+        );
+        let dispatch = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+            queue,
+        )));
+        Ok(Self {
+            storage,
+            dispatch,
+            local_commits: Arc::new(LocalCommitInitialization::new(
+                MAX_CONCURRENT_LOCAL_COMMIT_INITIALIZATIONS,
+            )),
+        })
+    }
+}
+type ObjectReadAdapter =
+    awaken_dispatch_erasure::ClaimedCommitAdapter<awaken_store_s3::SessionProjection>;
+struct ObjectQueries;
+fn object_authority_error(error: awaken_store_s3::Error) -> RuntimeAuthorityError {
+    match error {
+        awaken_store_s3::Error::Corrupt(detail) => RuntimeAuthorityError::Corrupt(detail),
+        awaken_store_s3::Error::Invalid(detail) => RuntimeAuthorityError::Misconfigured(detail),
+        error => RuntimeAuthorityError::unavailable(error.to_string()),
+    }
+}
+fn object_page_error(error: awaken_store_s3::Error, request: &TranscriptPageRequest) -> RunError {
+    use awaken_store_s3::Error;
+    match error {
+        Error::Storage(detail) | Error::OutcomeUnknown(detail) => RunError::unavailable(detail),
+        Error::Corrupt(detail) => RunError::internal(detail),
+        Error::Invalid(detail) if request.snapshot.is_some() => {
+            RunError::conflict_classified("transcript_snapshot_unavailable", detail)
+        }
+        error => RunError::bad_request_classified("invalid_transcript_page", error.to_string()),
+    }
+}
+#[async_trait::async_trait]
+impl LocalCommitQueries<ObjectReadAdapter> for ObjectQueries {
+    async fn authoritative_run(
+        &self,
+        store: &ObjectReadAdapter,
+        run: &RunId,
+    ) -> Result<Option<RunRecord>, String> {
+        use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView as _;
+        store
+            .source()
+            .refresh()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(store.run(run))
+    }
+    async fn authoritative_latest_run(
+        &self,
+        store: &ObjectReadAdapter,
+        thread: &ThreadId,
+    ) -> Result<Option<RunRecord>, String> {
+        use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView as _;
+        store
+            .source()
+            .refresh()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(store.latest_run(thread))
+    }
+    async fn authoritative_committed_messages(
+        &self,
+        store: &ObjectReadAdapter,
+        thread: &ThreadId,
+    ) -> Result<Vec<Message>, String> {
+        use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView as _;
+        store
+            .source()
+            .refresh()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(store.committed_messages(thread))
+    }
+    async fn authoritative_committed_state(
+        &self,
+        store: &ObjectReadAdapter,
+        thread: &ThreadId,
+    ) -> Result<Vec<StateCommand>, String> {
+        use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView as _;
+        store
+            .source()
+            .refresh()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(store.committed_state(thread))
+    }
+    async fn authoritative_open_wait_for_thread(
+        &self,
+        store: &ObjectReadAdapter,
+        thread: &ThreadId,
+    ) -> Result<Option<(RunId, ResumeTicket)>, String> {
+        use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView as _;
+        store
+            .source()
+            .refresh()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(store.open_wait_for_thread(thread))
+    }
+    async fn authoritative_transcript_page(
+        &self,
+        store: &ObjectReadAdapter,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, RunError> {
+        object_transcript_page(store.source().session(), request).await
+    }
+    async fn events_after(
+        &self,
+        store: &ObjectReadAdapter,
+        cursor: RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
+        awaken_agent_contract::thread::read::lifecycle::checkpoint_lifecycle_events_after(
+            store, cursor, limit,
+        )
+        .await
+    }
+}
+async fn object_transcript_page(
+    session: &awaken_store_s3::SessionStorage,
+    request: &TranscriptPageRequest,
+) -> Result<TranscriptPage, RunError> {
+    if let Some(snapshot) = &request.snapshot
+        && (snapshot.thread_id != request.thread_id
+            || snapshot.view != request.view
+            || request.start > snapshot.end_seq)
+    {
+        return Err(RunError::bad_request_classified(
+            "invalid_transcript_page",
+            "snapshot scope or range mismatch",
+        ));
+    }
+    session
+        .read_page(request.clone())
+        .await
+        .map_err(|error| object_page_error(error, request))
+}
+#[async_trait::async_trait]
+impl RuntimeAuthority for ObjectRuntimeAuthority {
+    fn uses_conditional_publication(&self) -> bool {
+        true
+    }
+
+    async fn open_commit(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<dyn LocalCommit>, RuntimeAuthorityError> {
+        let session = self
+            .storage
+            .find_session(thread)
+            .await
+            .map_err(object_authority_error)?
+            .ok_or_else(|| {
+                RuntimeAuthorityError::unavailable(
+                    "Session identity is not present in the selected engine",
+                )
+            })?;
+        let id = session.key().session_id().to_string();
+        self.local_commits
+            .open(id, move || async move {
+                let projection = session
+                    .open_projection()
+                    .await
+                    .map_err(object_authority_error)?;
+                let read = Arc::new(awaken_dispatch_erasure::ClaimedCommitAdapter::read_only(
+                    Arc::new(projection),
+                ));
+                Ok(
+                    Arc::new(LocalCommitAdapter::with_queries(read, ObjectQueries))
+                        as Arc<dyn LocalCommit>,
+                )
+            })
+            .await
+    }
+    async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError> {
+        self.storage
+            .find_session(thread)
+            .await
+            .map(|session| session.is_some())
+            .map_err(object_authority_error)
+    }
+    async fn read_transcript_page(
+        &self,
+        session: &str,
+        request: &TranscriptPageRequest,
+    ) -> Result<TranscriptPage, RunError> {
+        let session = self
+            .storage
+            .find_session(session)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?
+            .ok_or_else(|| RunError::bad_request("Session identity does not exist"))?;
+        object_transcript_page(&session, request).await
+    }
+    fn run_commits(self: Arc<Self>) -> Arc<dyn ClaimedRunCommit<RunError>> {
+        Arc::new(self.storage.canonical_commits(self.dispatch.clone()))
+    }
+    fn bind_run_persistence(
+        &self,
+        claim: &awaken_worker_contract::RunClaim,
+        live: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Option<awaken_dispatch_erasure::RunPersistence> {
+        Some(awaken_dispatch_erasure::RunPersistence {
+            checkpoint: Arc::new(
+                self.storage
+                    .canonical_checkpoints(claim.clone(), self.dispatch.clone()),
+            ),
+            stream: Arc::new(self.storage.canonical_stream_sink(
+                claim.clone(),
+                self.dispatch.clone(),
+                live,
+            )),
+        })
+    }
+    async fn append_progress_batch(
+        &self,
+        claim: &awaken_worker_contract::RunClaim,
+        batch: awaken_dispatch_contract::ProgressBatch,
+    ) -> Result<awaken_dispatch_contract::ProgressReceipt, awaken_dispatch_contract::ProgressError>
+    {
+        self.storage
+            .canonical_commits(self.dispatch.clone())
+            .append_progress_batch(claim, batch)
+            .await
+    }
+
+    fn dispatch_store(&self) -> Arc<AnyCoordinatorDispatch> {
+        self.dispatch.clone()
+    }
+    fn dispatch_wake(&self) -> Option<Arc<dyn WakeSignal>> {
+        None
+    }
+    async fn stream_checkpoint(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<dyn StreamCheckpointStore>, RuntimeAuthorityError> {
+        Ok(Arc::new(self.storage.read_only_checkpoints(thread)))
+    }
+}
+
+#[cfg(test)]
+#[path = "runtime_authority_object_tests.rs"]
+mod object_tests;

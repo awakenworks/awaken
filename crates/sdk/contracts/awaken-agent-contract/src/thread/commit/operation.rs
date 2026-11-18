@@ -685,6 +685,7 @@ mod verification {
     /// @obligation store_history.concurrent_compare_and_swap_has_one_winner_per_thread_version
     /// @obligation store_history.exact_retry_and_every_rejection_are_atomic_stutters
     /// @obligation store_history.receipt_refines_one_exact_durable_record
+    /// @obligation store_history.s3_publication_refines_committed_history
     #[kani::proof]
     fn operation_append_requires_exact_prefix_and_nonwrapping_version() {
         let expected_version: u64 = kani::any();
@@ -703,7 +704,8 @@ mod verification {
                 events: Vec::new(),
             },
         };
-        let result = admit_commit_operation_append(&operation, current_version, current_ordinal);
+        let current = CommitOperationId::new(RunId("run".into()), current_ordinal);
+        let result = admit_commit_operation_append(&operation, current_version, current.ordinal);
         let expected = current_version == expected_version
             && current_ordinal == expected_ordinal
             && current_version < u64::MAX;
@@ -716,6 +718,7 @@ mod verification {
     /// @obligation store_history.exact_retry_and_every_rejection_are_atomic_stutters
     /// @obligation store_history.receipt_refines_one_exact_durable_record
     /// @obligation store_history.recovery_preserves_committed_time_and_receipt_identity
+    /// @obligation store_history.s3_publication_refines_committed_history
     #[kani::proof]
     fn applied_receipt_is_exact_and_names_one_successor_record() {
         let ordinal: u64 = kani::any();

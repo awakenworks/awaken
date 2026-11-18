@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 pub struct NatsWakeSignal {
     client: async_nats::Client,
     subject: String,
+    queue: tokio::sync::Mutex<Option<async_nats::Subscriber>>,
 }
 
 #[cfg(feature = "nats")]
@@ -35,6 +36,7 @@ impl NatsWakeSignal {
         Ok(Self {
             client,
             subject: subject.into(),
+            queue: tokio::sync::Mutex::new(None),
         })
     }
 }
@@ -47,6 +49,36 @@ impl WakeSignal for NatsWakeSignal {
             .publish(self.subject.clone(), Vec::new().into())
             .await
             .map_err(|err| DispatchError::Rejected(err.to_string()))
+    }
+
+    async fn publish_shard(&self, shard: u8) -> Result<(), DispatchError> {
+        self.client
+            .publish(self.subject.clone(), vec![shard].into())
+            .await
+            .map_err(|error| DispatchError::unavailable(error.to_string()))
+    }
+
+    async fn wait_shard(&self) -> Option<u8> {
+        use futures_lite::StreamExt;
+        let mut queue = self.queue.lock().await;
+        if queue.is_none() {
+            *queue = self
+                .client
+                .queue_subscribe(self.subject.clone(), format!("{}.claimers", self.subject))
+                .await
+                .ok();
+        }
+        let completed = match queue.as_mut() {
+            Some(subscriber) => subscriber.next().await,
+            None => None,
+        };
+        if let Some(message) = completed {
+            return message.payload.first().copied();
+        }
+        *queue = None;
+        drop(queue);
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        None
     }
 
     async fn wait(&self) {
@@ -71,6 +103,7 @@ pub struct PgNotifyWake {
     /// In-process fan-out: the single background listener nudges this, every drain
     /// task waits on it. Keeps `wait` off the connection pool.
     local: Arc<Notify>,
+    shard: Arc<std::sync::atomic::AtomicU16>,
     shutdown: CancellationToken,
     listener: Option<tokio::task::JoinHandle<()>>,
 }
@@ -90,6 +123,8 @@ impl PgNotifyWake {
             .connect_lazy_with((*pool.connect_options()).clone());
         let listen_channel = channel.clone();
         let waiters = local.clone();
+        let shard = Arc::new(std::sync::atomic::AtomicU16::new(0));
+        let latest = shard.clone();
         let shutdown = CancellationToken::new();
         let cancelled = shutdown.clone();
         let listener = tokio::spawn(async move {
@@ -101,7 +136,13 @@ impl PgNotifyWake {
                     {
                         // Keep reconnects under this task's backoff and cancellation.
                         listener.eager_reconnect(false);
-                        while matches!(listener.try_recv().await, Ok(Some(_))) {
+                        while let Ok(Some(message)) = listener.try_recv().await {
+                            let payload = message
+                                .payload()
+                                .parse::<u8>()
+                                .ok()
+                                .map_or(0, |v| u16::from(v) + 1);
+                            latest.store(payload, std::sync::atomic::Ordering::Relaxed);
                             waiters.notify_waiters();
                         }
                     }
@@ -124,9 +165,20 @@ impl PgNotifyWake {
             pool,
             channel,
             local,
+            shard,
             shutdown,
             listener: Some(listener),
         }
+    }
+
+    async fn notify(&self, payload: &str) -> Result<(), DispatchError> {
+        sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(&self.channel)
+            .bind(payload)
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+            .map_err(|error| DispatchError::unavailable(error.to_string()))
     }
 
     /// Stop and join this signal's sole listener. Consuming ownership prevents
@@ -152,12 +204,19 @@ impl Drop for PgNotifyWake {
 #[async_trait]
 impl WakeSignal for PgNotifyWake {
     async fn publish(&self) -> Result<(), DispatchError> {
-        sqlx::query("SELECT pg_notify($1, '')")
-            .bind(&self.channel)
-            .execute(&self.pool)
-            .await
-            .map(|_| ())
-            .map_err(|err| DispatchError::Rejected(err.to_string()))
+        self.notify("").await
+    }
+
+    async fn publish_shard(&self, shard: u8) -> Result<(), DispatchError> {
+        self.notify(&shard.to_string()).await
+    }
+
+    async fn wait_shard(&self) -> Option<u8> {
+        self.wait().await;
+        self.shard
+            .swap(0, std::sync::atomic::Ordering::Relaxed)
+            .checked_sub(1)
+            .and_then(|shard| u8::try_from(shard).ok())
     }
 
     async fn wait(&self) {

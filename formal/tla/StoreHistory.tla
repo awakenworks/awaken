@@ -73,6 +73,15 @@ OperationAcceptable(thread, run, state, operation,
     /\ expectedRunOrdinal = RunOrdinal(run)
     /\ TransitionAllowed(run, state)
 
+OperationReceipt(thread, payload, sequence, version, ordinal, observedAt) ==
+    [payload |-> payload,
+     sequence |-> sequence,
+     thread |-> thread,
+     threadVersion |-> version + 1,
+     expectedThreadVersion |-> version,
+     runOrdinal |-> ordinal,
+     observedAt |-> observedAt]
+
 ApplyOperation(thread, run, state, operation, payload,
                expectedThreadVersion, expectedRunOrdinal) ==
     /\ Len(history) < 3
@@ -83,13 +92,8 @@ ApplyOperation(thread, run, state, operation, payload,
     /\ UNCHANGED recoveredPrefix
     /\ receipts' = [receipts EXCEPT
          ![operation] =
-           [payload |-> payload,
-            sequence |-> Len(history'),
-            thread |-> thread,
-            threadVersion |-> expectedThreadVersion + 1,
-            expectedThreadVersion |-> expectedThreadVersion,
-            runOrdinal |-> expectedRunOrdinal,
-            observedAt |-> history'[Len(history')].observedAt]]
+           OperationReceipt(thread, payload, Len(history'), expectedThreadVersion,
+                            expectedRunOrdinal, history'[Len(history')].observedAt)]
 
 \* Exact retries and rejected requests are atomic stutters. Spec's [Next]_vars
 \* already includes precisely that relation; do not re-enumerate identical
@@ -198,5 +202,40 @@ RecoveryPreservesExactCommittedMetadata == CommittedMetadataPrefix(recoveredPref
 
 CommittedPrefixIsImmutable ==
     [][\A index \in HistoryIndexes : history'[index] = history[index]]_vars
+
+
+\* Adapter trace projection. Recovery exposes the next ordinal (zero-based)
+\* and the committed cursor. Payload bytes and full-prefix equality are checked
+\* by the producer; this law independently checks the recorded protocol coordinates.
+LostAcknowledgementRefinement(trace) ==
+    IF Len(trace.observations) /= 7 THEN FALSE ELSE
+    LET points == trace.observations
+        input == trace.input
+        before == points[1].state
+        after == points[2].state
+        oldEpoch == points[1].epoch
+        newEpoch == points[4].epoch
+    IN /\ [i \in 1..7 |-> points[i].kind] =
+               <<"initial", "unknown", "replayed", "takeover", "fenced", "identity-conflict", "replayed">>
+       /\ input.conflict_hash # input.hash
+       /\ before.version = input.version
+       /\ before.ordinal = input.operation.ordinal
+       /\ after.version = before.version + 1
+       /\ after.ordinal = before.ordinal + 1
+       /\ after.messages = before.messages + input.messages
+       /\ after.cursor > before.cursor
+       /\ \A i \in 2..7 : points[i].state = after
+       /\ oldEpoch > 0 /\ newEpoch > oldEpoch
+       /\ [i \in 1..7 |-> points[i].epoch] =
+               <<oldEpoch, oldEpoch, oldEpoch, newEpoch, oldEpoch, newEpoch, newEpoch>>
+       /\ \A i \in {1, 2, 4, 5, 6} : points[i].receipts = <<>>
+       /\ Len(points[3].receipts) = 1
+       /\ LET receipt == points[3].receipts[1]
+          IN /\ receipt.operation_id = input.operation
+             /\ receipt.payload_hash = input.hash
+             /\ receipt.thread_version = after.version
+             /\ receipt.commit_sequence = after.cursor
+             /\ receipt.duplicate
+             /\ points[7].receipts = <<receipt>>
 
 =============================================================================

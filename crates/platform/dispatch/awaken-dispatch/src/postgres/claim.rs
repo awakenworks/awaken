@@ -18,32 +18,9 @@ const RUNNABLE_SCAN_LIMIT: i64 = 128;
 )]
 const RUNNABLE_SCAN_LEN: usize = RUNNABLE_SCAN_LIMIT as usize;
 
-const CLAIM_RECEIPT_TTL_MS: i64 = 15 * 60 * 1_000;
-const CLAIM_REQUEST_CLOCK_SKEW_MS: i64 = 60 * 1_000;
-
-#[derive(Clone, Copy)]
-struct ClaimReceiptRequest<'a> {
-    request: &'a awaken_dispatch_contract::ClaimRequest,
-    expires_at_ms: i64,
-}
-
-impl<'a> ClaimReceiptRequest<'a> {
-    fn new(request: &'a awaken_dispatch_contract::ClaimRequest) -> Result<Self, DispatchError> {
-        let invalid =
-            || DispatchError::Rejected("claim request id must be a canonical UUIDv7".into());
-        let id = uuid::Uuid::parse_str(&request.request_id).map_err(|_| invalid())?;
-        if id.get_version_num() != 7 || id.to_string() != request.request_id {
-            return Err(invalid());
-        }
-        let (seconds, nanos) = id.get_timestamp().ok_or_else(invalid)?.to_unix();
-        let issued_at_ms =
-            i64::try_from(seconds * 1_000 + u64::from(nanos / 1_000_000)).map_err(|_| invalid())?;
-        Ok(Self {
-            request,
-            expires_at_ms: issued_at_ms + CLAIM_RECEIPT_TTL_MS,
-        })
-    }
-}
+use crate::claim_request::{
+    CLAIM_RECEIPT_TTL_MS, CLAIM_REQUEST_CLOCK_SKEW_MS, ClaimReceiptRequest,
+};
 
 #[derive(Clone, Copy)]
 enum CandidateAudience<'a> {
@@ -106,8 +83,22 @@ fn candidate_epoch_not_exhausted() -> &'static str {
     "d.lease_epoch < 9223372036854775807"
 }
 
+fn runnable_predicate() -> String {
+    let p = NS;
+    format!(
+        "((d.status IN ('reserved', 'reservation_running') AND \
+               d.lease_until IS NOT NULL AND d.lease_until <= $1) OR \
+              (d.status = 'running' AND d.lease_until IS NOT NULL AND \
+               d.lease_until <= $1) OR \
+              (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
+               SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id AND \
+               (pe.available_at IS NULL OR pe.available_at <= $1)))) OR \
+              d.status = 'pending')"
+    )
+}
+
 /// Restrict each read before the per-Thread and dynamic placement checks.
-fn runnable_runs_sql(local: bool) -> sqlx::SqlStr {
+fn runnable_runs_sql(local: bool, sharded: bool) -> sqlx::SqlStr {
     let p = NS;
     let thread_available = thread_available_for_claim(p);
     let local_filter = if local {
@@ -118,6 +109,12 @@ fn runnable_runs_sql(local: bool) -> sqlx::SqlStr {
     let reservation_peer = no_running_peer(p);
     let state_rank = candidate_state_rank(local);
     let retry_due = candidate_retry_due();
+    let runnable = runnable_predicate();
+    let shard_filter = if sharded {
+        "d.dispatch_shard = $10"
+    } else {
+        "$10::smallint IS NULL"
+    };
     let epoch_not_exhausted = candidate_epoch_not_exhausted();
     // Only closed literal branches and helpers using the built-in namespace
     // compose this query. Clock, page and cursor values are bound below.
@@ -139,14 +136,8 @@ fn runnable_runs_sql(local: bool) -> sqlx::SqlStr {
                      d.active_attempt_epoch IS NOT NULL)::integer AS physical_rank, \
                     {state_rank} AS state_rank \
              FROM {p}_dispatch d WHERE \
-             ((d.status IN ('reserved', 'reservation_running') AND \
-               d.lease_until IS NOT NULL AND d.lease_until <= $1) OR \
-              (d.status = 'running' AND d.lease_until IS NOT NULL AND \
-               d.lease_until <= $1) OR \
-              (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
-               SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id AND \
-               (pe.available_at IS NULL OR pe.available_at <= $1)))) OR \
-              d.status = 'pending') \
+             {runnable} \
+             AND {shard_filter} \
              AND {retry_due} \
              AND ($8::jsonb IS NULL OR d.cancel_requested = 1 OR \
                   d.status IN ('reserved', 'reservation_running') OR \
@@ -289,11 +280,12 @@ impl PostgresDispatchStore {
         now_ms: u64,
         after: Option<&CandidatePosition>,
         replays_receipts: bool,
+        shard: Option<u8>,
     ) -> Result<RunnableRuns, DispatchError> {
         let offered = audience
             .worker()
             .map(|worker| Json(&worker.manifest.capabilities));
-        let runs = sqlx::query(runnable_runs_sql(audience.local()))
+        let runs = sqlx::query(runnable_runs_sql(audience.local(), shard.is_some()))
             .bind(crate::clock::db_millis(now_ms))
             .bind(RUNNABLE_SCAN_LIMIT)
             .bind(after.map(|p| p.physical_rank))
@@ -303,6 +295,7 @@ impl PostgresDispatchStore {
             .bind(after.map(|p| p.run_id.as_str()))
             .bind(offered)
             .bind(replays_receipts)
+            .bind(shard.map(i16::from))
             .fetch_all(&self.pool)
             .await
             .map_err(store_error)?;
@@ -388,6 +381,7 @@ impl PostgresDispatchStore {
         capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
         audience: CandidateAudience<'_>,
         request: Option<ClaimReceiptRequest<'_>>,
+        shard: Option<u8>,
     ) -> Result<Option<Claimed>, DispatchError> {
         let discovery = async {
             // One waiter per connection may scan and try exact claims. A
@@ -403,7 +397,13 @@ impl PostgresDispatchStore {
             let mut position = None;
             loop {
                 let runnable = self
-                    .find_runnable_runs(audience, now_ms, position.as_ref(), request.is_some())
+                    .find_runnable_runs(
+                        audience,
+                        now_ms,
+                        position.as_ref(),
+                        request.is_some(),
+                        shard,
+                    )
                     .await?;
                 match self
                     .try_claim_discovered(
@@ -911,6 +911,7 @@ impl PostgresDispatchStore {
         policy: std::sync::Arc<dyn PlacementPolicy>,
         lease_ms: u64,
         request: Option<ClaimReceiptRequest<'_>>,
+        shard: Option<u8>,
     ) -> Result<Option<Claimed>, DispatchError> {
         let capabilities = installed_worker_credential_capabilities(requester)?;
         // A heartbeat can still report a full pool after all of its Runs
@@ -952,6 +953,7 @@ impl PostgresDispatchStore {
                 policy: policy.as_ref(),
             },
             request,
+            shard,
         )
         .await
     }
@@ -966,17 +968,18 @@ impl awaken_dispatch_contract::DispatchControlClaims for PostgresDispatchStore {
         policy: std::sync::Arc<dyn PlacementPolicy>,
         lease_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        self.claim_placed_with_request(requester, workers, policy, lease_ms, None)
+        self.claim_placed_with_request(requester, workers, policy, lease_ms, None, None)
             .await
     }
 
-    async fn claim_for_request(
+    async fn search_claim_request(
         &self,
         request: &awaken_dispatch_contract::ClaimRequest,
         requester: &WorkerSnapshot,
         workers: Vec<WorkerSnapshot>,
         policy: std::sync::Arc<dyn PlacementPolicy>,
         lease_ms: u64,
+        search: awaken_dispatch_contract::ClaimSearch,
     ) -> Result<awaken_dispatch_contract::ClaimRequestOutcome, DispatchError> {
         use awaken_dispatch_contract::ClaimRequestOutcome::{Claimed, Empty};
         let owner = requester.identity.lease_owner();
@@ -987,12 +990,24 @@ impl awaken_dispatch_contract::DispatchControlClaims for PostgresDispatchStore {
         if let Some(replay) = self.load_requested_claim(&owner, receipt).await? {
             return Ok(outcome(replay));
         }
+        let shard = match search {
+            awaken_dispatch_contract::ClaimSearch::Replay => return Ok(Empty),
+            awaken_dispatch_contract::ClaimSearch::Any => None,
+            awaken_dispatch_contract::ClaimSearch::Shard(shard) => Some(shard),
+        };
         let claimed = if let Some(run_id) = &request.run_id {
             self.claim_requested_run(receipt, run_id, requester, lease_ms)
                 .await?
         } else {
-            self.claim_placed_with_request(requester, workers, policy, lease_ms, Some(receipt))
-                .await?
+            self.claim_placed_with_request(
+                requester,
+                workers,
+                policy,
+                lease_ms,
+                Some(receipt),
+                shard,
+            )
+            .await?
         };
         match claimed {
             Some(claimed) => Ok(outcome(Some(claimed))),
@@ -1000,6 +1015,43 @@ impl awaken_dispatch_contract::DispatchControlClaims for PostgresDispatchStore {
                 self.load_requested_claim(&owner, receipt).await?.flatten(),
             )),
         }
+    }
+
+    async fn claimable_shards(&self) -> Result<Option<Vec<u8>>, DispatchError> {
+        let runnable = runnable_predicate();
+        let retry_due = candidate_retry_due();
+        let now = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
+        let shards: Vec<i16> = sqlx::query_scalar(sqlx::SqlSafeStr::into_sql_str(
+            sqlx::AssertSqlSafe(format!(
+                "SELECT shard::smallint FROM generate_series(0,255) AS shard
+             WHERE EXISTS (SELECT 1 FROM {NS}_dispatch d
+                           WHERE d.dispatch_shard = shard AND {runnable}
+                           AND {retry_due} AND NOT d.claim_receipts_retired)"
+            )),
+        ))
+        .bind(crate::clock::db_millis(now))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        shards
+            .into_iter()
+            .map(u8::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+            .map_err(DispatchError::unavailable)
+    }
+
+    async fn dispatch_shard_for_run(&self, run: &RunId) -> Result<Option<u8>, DispatchError> {
+        let shard: Option<i16> =
+            sqlx::query_scalar("SELECT dispatch_shard FROM runtime_dispatch WHERE run_id = $1")
+                .bind(&run.0)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(store_error)?;
+        shard
+            .map(u8::try_from)
+            .transpose()
+            .map_err(DispatchError::unavailable)
     }
 
     async fn claim_for_terminal_recovery(

@@ -18,6 +18,37 @@ use crate::{
     SessionRealizationControlFailure, SessionRealizationDirective,
 };
 
+/// Renew an admitted continuation and verify that it retained its realization generation.
+pub async fn renew_claimed_session_continuation(
+    control: &dyn SessionRealizationControl,
+    conditional: Option<&dyn crate::ConditionalSessionRealizationRenewal>,
+    command: crate::RenewSessionRealization,
+    condition: Option<&awaken_session_types::SessionPublicationCondition>,
+) -> Result<(), SessionRealizationControlFailure> {
+    let asserted = command.asserted_lease.clone();
+    let renewed = match condition {
+        Some(condition) => {
+            conditional
+                .ok_or_else(|| {
+                    SessionRealizationControlFailure::Unavailable(
+                        "Session realization cannot consume the publication condition".into(),
+                    )
+                })?
+                .renew_session_realization_conditionally(command, condition)
+                .await
+        }
+        None => control.renew_session_realization(command).await,
+    }?;
+    if awaken_session_configuration_contract::resource::realization_lease_generation_authorizes(
+        &renewed.lease,
+        &asserted,
+    ) {
+        Ok(())
+    } else {
+        Err(SessionRealizationControlFailure::StaleOwnership)
+    }
+}
+
 /// Failure crossing the authenticated claim-fenced Session-control boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("claimed Session control failed: {0}")]

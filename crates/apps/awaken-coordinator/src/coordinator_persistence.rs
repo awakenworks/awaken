@@ -16,6 +16,8 @@ use awaken_deployment_config::CoordinatorStorage;
 #[derive(Clone)]
 pub struct CoordinatorPersistence {
     pub worker_directory: WorkerDirectoryHandle,
+    pub agent_sessions:
+        Option<std::sync::Arc<awaken_session_store::ObjectManagedSessionRepository>>,
     pub runtime_authority: std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
     /// Process-owned PostgreSQL authority pool shared by guarded writes and
     /// hosted adapters. Dependency reads use a separate bounded pool selected
@@ -44,6 +46,51 @@ pub async fn migrate_postgres_schema(storage: &CoordinatorStorage) -> Result<(),
         .await
         .map_err(|error| error.to_string())?;
     migrate_postgres_schema_with_pool(storage, pool).await
+}
+
+/// Agent truth roles selected from one object engine. Other bounded contexts
+/// retain their own independent persistence selection.
+#[derive(Clone)]
+pub struct ObjectAgentPersistence {
+    sessions: std::sync::Arc<awaken_session_store::ObjectManagedSessionRepository>,
+    runtime: std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
+}
+impl ObjectAgentPersistence {
+    pub fn sessions(&self) -> std::sync::Arc<dyn awaken_session_application::SessionStore> {
+        self.sessions.clone()
+    }
+    pub fn session_persistence(
+        &self,
+        clock: std::sync::Arc<dyn awaken_time::WallClock>,
+    ) -> awaken_session_application::SessionPersistence {
+        awaken_session_application::SessionPersistence::conditional(self.sessions.clone(), clock)
+    }
+
+    pub fn runtime_authority(
+        &self,
+    ) -> std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority> {
+        self.runtime.clone()
+    }
+}
+/// One concrete production selection for Session roots, Run scheduling,
+/// committed Thread truth, range history and claim-scoped streaming ports.
+pub fn object_agent_persistence(
+    storage: awaken_store_s3::S3Storage,
+    default_scope: &str,
+) -> Result<ObjectAgentPersistence, String> {
+    awaken_store_s3::SessionKey::new(default_scope, "_").map_err(|error| error.to_string())?;
+    let sessions = std::sync::Arc::new(awaken_session_store::ObjectManagedSessionRepository::new(
+        std::sync::Arc::new(
+            storage
+                .component_store("managed_session")
+                .map_err(|error| error.to_string())?,
+        ),
+    ));
+    let runtime = std::sync::Arc::new(super::runtime_authority::ObjectRuntimeAuthority::new(
+        storage,
+        default_scope,
+    )?);
+    Ok(ObjectAgentPersistence { sessions, runtime })
 }
 
 /// Operational migration reuses the composition's one bounded pool. Scope SQL
@@ -86,7 +133,7 @@ pub async fn open(
     storage: &CoordinatorStorage,
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
-    open_with(storage, SchemaAccess::Migrate, clock).await
+    open_with(storage, SchemaAccess::Migrate, clock, None).await
 }
 
 /// Open Coordinator-owned authorities after verifying externally-applied
@@ -95,32 +142,54 @@ pub async fn open_existing(
     storage: &CoordinatorStorage,
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
-    open_with(storage, SchemaAccess::Verify, clock).await
+    open_with(storage, SchemaAccess::Verify, clock, None).await
+}
+
+/// Select the paired Agent engine while retaining independent Worker directory persistence.
+pub async fn open_object_coordinator_persistence(
+    storage: &CoordinatorStorage,
+    clock: std::sync::Arc<dyn awaken_time::WallClock>,
+    agent: ObjectAgentPersistence,
+    verify_existing_schema: bool,
+) -> Result<CoordinatorPersistence, String> {
+    let schema = if verify_existing_schema {
+        SchemaAccess::Verify
+    } else {
+        SchemaAccess::Migrate
+    };
+    open_with(storage, schema, clock, Some(agent)).await
 }
 
 async fn open_with(
     storage: &CoordinatorStorage,
     schema: SchemaAccess,
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
+    agent: Option<ObjectAgentPersistence>,
 ) -> Result<CoordinatorPersistence, String> {
     let components = postgres_components(storage);
     let (postgres_pool, postgres_read_pool) = open_postgres_pools(storage).await?;
-    let runtime_authority =
-        super::runtime_authority::DurableRuntimeAuthority::open_with_postgres_pools(
-            storage,
-            schema,
-            postgres_pool.clone(),
-            postgres_read_pool.clone(),
-            clock,
-        )
-        .await?;
-    use awaken_dispatch_erasure::RuntimeAuthority as _;
+    let agent_sessions = agent.as_ref().map(|agent| agent.sessions.clone());
+    let runtime_authority: std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority> =
+        if let Some(agent) = agent {
+            agent.runtime_authority()
+        } else {
+            super::runtime_authority::DurableRuntimeAuthority::open_with_postgres_pools(
+                storage,
+                schema,
+                postgres_pool.clone(),
+                postgres_read_pool.clone(),
+                clock,
+            )
+            .await?
+        };
     let run_recovery = runtime_authority.shared_recovery_source();
     let run_lifecycle = runtime_authority.shared_lifecycle_feed();
-    debug_assert_eq!(
-        run_recovery.is_some() && run_lifecycle.is_some(),
-        components.exposes_committed_run_feeds()
-    );
+    if agent_sessions.is_none() {
+        debug_assert_eq!(
+            run_recovery.is_some() && run_lifecycle.is_some(),
+            components.exposes_committed_run_feeds()
+        );
+    }
     let worker_directory = if components.dispatch {
         super::worker_registry::open_postgres_pools(
             postgres_pool
@@ -138,6 +207,7 @@ async fn open_with(
         super::worker_registry::open_sqlite(storage_dir).await?
     };
     Ok(CoordinatorPersistence {
+        agent_sessions,
         worker_directory,
         runtime_authority,
         postgres_pool,

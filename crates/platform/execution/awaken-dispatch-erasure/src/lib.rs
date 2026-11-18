@@ -28,11 +28,13 @@ mod runtime_authority;
 pub use binding::{DispatchBinding, DispatchTopology};
 pub use bundle::{Dispatch, DurableDispatch, RemoteDispatch};
 pub use local_commit::{
-    LocalCommit, LocalCommitAdapter, LocalCommitQueries, ProjectedQueries, transcript_read_error,
+    ClaimedCommitAdapter, LocalCommit, LocalCommitAdapter, LocalCommitQueries, ProjectedQueries,
+    transcript_read_error,
 };
 pub use runtime_authority::{
-    RuntimeAuthority, RuntimeAuthorityError, claimed_store_run_error, commit_claimed_operation,
-    guarded_runtime_commits, validate_claimed_operation, validate_commit_dispatch_binding,
+    RunPersistence, RuntimeAuthority, RuntimeAuthorityError, claimed_store_run_error,
+    commit_claimed_operation, guarded_runtime_commits, validate_claimed_operation,
+    validate_commit_dispatch_binding,
 };
 use std::sync::Arc;
 
@@ -417,6 +419,12 @@ impl DispatchCommitAuthority for AnyCoordinatorDispatch {
         delegate_owner!(self, worker_owns_run(identity, run_id))
     }
 
+    async fn acquire_commit_authority(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<awaken_dispatch_contract::ClaimAuthority>, DispatchError> {
+        delegate_owner!(self, acquire_commit_authority(claim))
+    }
     async fn lock_commit_epoch(
         &self,
         claim: &RunClaim,
@@ -527,6 +535,12 @@ impl SessionRunReservations for AnyCoordinatorDispatch {
 
 #[async_trait::async_trait]
 impl awaken_dispatch_contract::SessionReservationAuthority for AnyCoordinatorDispatch {
+    async fn acquire_session_run_reservation_authority(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<awaken_dispatch_contract::ClaimAuthority>, DispatchError> {
+        delegate_owner!(self, acquire_session_run_reservation_authority(claim))
+    }
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &RunClaim,
@@ -555,18 +569,27 @@ impl DispatchAttemptControl for AnyCoordinatorDispatch {
 }
 #[async_trait]
 impl DispatchControlClaims for AnyCoordinatorDispatch {
-    async fn claim_for_request(
+    async fn search_claim_request(
         &self,
         request: &awaken_dispatch_contract::ClaimRequest,
         requester: &WorkerSnapshot,
         workers: Vec<WorkerSnapshot>,
         policy: std::sync::Arc<dyn PlacementPolicy>,
         lease_ms: u64,
+        search: awaken_dispatch_contract::ClaimSearch,
     ) -> Result<awaken_dispatch_contract::ClaimRequestOutcome, DispatchError> {
         delegate_owner!(
             self,
-            claim_for_request(request, requester, workers, policy, lease_ms)
+            search_claim_request(request, requester, workers, policy, lease_ms, search)
         )
+    }
+
+    async fn claimable_shards(&self) -> Result<Option<Vec<u8>>, DispatchError> {
+        delegate_owner!(self, claimable_shards())
+    }
+
+    async fn dispatch_shard_for_run(&self, run: &RunId) -> Result<Option<u8>, DispatchError> {
+        delegate_owner!(self, dispatch_shard_for_run(run))
     }
 
     async fn claim_placed(
@@ -612,6 +635,19 @@ impl DispatchControlReads for AnyCoordinatorDispatch {
         delegate_owner!(self, physical_slot_occupied_guarded(guard))
     }
 
+    async fn completion_for_run(
+        &self,
+        run: &RunId,
+    ) -> Result<Option<DispatchCompletion>, DispatchError> {
+        delegate_owner!(self, completion_for_run(run))
+    }
+    async fn scan_completions(
+        &self,
+        cursor: Option<&awaken_dispatch_contract::DispatchScanCursor>,
+        limit: usize,
+    ) -> Result<awaken_dispatch_contract::DispatchScanPage<DispatchCompletion>, DispatchError> {
+        delegate_owner!(self, scan_completions(cursor, limit))
+    }
     async fn completion_events_after(
         &self,
         after_sequence: u64,
@@ -675,6 +711,19 @@ impl Outbox for AnyCoordinatorDispatch {
 
 #[async_trait]
 impl DispatchOperationalFeed for AnyCoordinatorDispatch {
+    async fn scan_events(
+        &self,
+        cursor: Option<&awaken_dispatch_contract::DispatchScanCursor>,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<
+        awaken_dispatch_contract::DispatchScanPage<
+            awaken_dispatch_contract::DispatchOperationalEvent,
+        >,
+        DispatchError,
+    > {
+        delegate_owner!(self, scan_events(cursor, limit, run))
+    }
     async fn events_after(
         &self,
         cursor: DispatchCursor,
@@ -733,3 +782,6 @@ impl awaken_dispatch_contract::DispatchAttemptRecordReads for AnyCoordinatorDisp
         delegate_owner!(self, attempt_closure_records_after(cursor, limit, run))
     }
 }
+
+mod runtime_persistence;
+pub use runtime_persistence::runtime_persistence_transport;

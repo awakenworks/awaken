@@ -958,6 +958,25 @@ fn activity_admission_result(
 }
 
 #[async_trait::async_trait]
+impl awaken_session_execution_contract::ConditionalSessionModelAdmission for SessionCoordination {
+    async fn admit_session_model_request_conditionally(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        thread_id: &ThreadId,
+        run_id: &RunId,
+        condition: &awaken_session_types::SessionPublicationCondition,
+    ) -> Result<bool, RunError> {
+        let commit = crate::mutation::ConditionalSessionRootCommit {
+            mutations: self.mutations.as_ref(),
+            session: session_id,
+            condition,
+        };
+        self.admit_session_model_request_with_commit(session_id, thread_id, run_id, &commit)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
 impl SessionAgentCoordination for SessionCoordination {
     async fn prepare_prepared_session_run_activity(
         &self,
@@ -983,6 +1002,22 @@ impl SessionAgentCoordination for SessionCoordination {
         mode: SessionRunActivityAdmissionMode,
         preparation: awaken_session_execution_contract::PreparedSessionRunActivity,
     ) -> Result<SessionRunActivityAdmission, RunError> {
+        if let Some(condition) = preparation.publication_condition.as_ref() {
+            let commit = crate::mutation::ConditionalSessionRootCommit {
+                mutations: self.mutations.as_ref(),
+                session: session_id,
+                condition,
+            };
+            return self
+                .admit_prepared_session_run_activity_with_commit(
+                    session_id,
+                    run_id,
+                    mode,
+                    preparation.clone(),
+                    &commit,
+                )
+                .await;
+        }
         self.admit_prepared_session_run_activity_with_commit(
             session_id,
             run_id,

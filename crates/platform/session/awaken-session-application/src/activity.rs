@@ -1049,14 +1049,26 @@ impl SessionActivities {
         projected_revision: SessionRevision,
         source: (&ThreadId, &RunId),
         admitted_after_cursor: Option<u64>,
+        publication_condition: Option<awaken_session_types::SessionPublicationCondition>,
     ) -> Result<u64, RunError> {
+        let conditional = publication_condition.as_ref().map(|condition| {
+            crate::mutation::ConditionalSessionRootCommit {
+                mutations: self.mutations.as_ref(),
+                session: session_id,
+                condition,
+            }
+        });
+        let commit: &dyn crate::SessionRootCommit = match &conditional {
+            Some(commit) => commit,
+            None => self.mutations.as_ref(),
+        };
         self.commit_prepared_run_activity_using(
             session_id,
             operation_id,
             projected_revision,
             source,
             admitted_after_cursor,
-            self.mutations.as_ref(),
+            commit,
         )
         .await
         .map_err(|error| Self::activity_operation_error(operation_id, error))

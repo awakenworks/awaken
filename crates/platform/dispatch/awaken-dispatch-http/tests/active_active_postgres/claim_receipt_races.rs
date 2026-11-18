@@ -82,6 +82,16 @@ impl Cluster {
         id: Uuid,
         run_id: Option<&RunId>,
     ) -> JoinHandle<Option<Claimed>> {
+        self.claim_wait(coordinator, id, run_id, None)
+    }
+
+    fn claim_wait(
+        &self,
+        coordinator: usize,
+        id: Uuid,
+        run_id: Option<&RunId>,
+        wait_ms: Option<u64>,
+    ) -> JoinHandle<Option<Claimed>> {
         let endpoint = format!(
             "http://127.0.0.1:{}/v1/worker/dispatch/claim_for_request",
             self.ports[coordinator]
@@ -94,6 +104,7 @@ impl Cluster {
                 "identity": self.worker,
                 "request_id": id.to_string(),
                 "run_id": run_id,
+                "wait_ms": wait_ms,
             }));
         tokio::spawn(async move {
             request
@@ -283,4 +294,45 @@ async fn receipt_sweep_is_bounded_and_skips_locked_rows() {
     assert!(remaining().await.unwrap().is_empty());
     let replay = cluster.claim(1, id, Some(&run)).await.unwrap().unwrap();
     assert_eq!(replay.lease, live.lease);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn registered_wait_finds_work_from_another_coordinator_without_notification() {
+    let Some(cluster) = Cluster::start("wait_shards").await else {
+        return;
+    };
+    let id = Uuid::now_v7();
+    let mut waiting = cluster.claim_wait(1, id, None, Some(2_000));
+    tokio::select! {
+        response = &mut waiting => panic!("idle claim returned before work arrived: {response:?}"),
+        // awaken-allow(wait): keep the queue empty across a poll interval before publishing without a wake.
+        () = tokio::time::sleep(Duration::from_millis(350)) => {}
+    }
+    let run = cluster.enqueue("wait-cross-node").await;
+    let first = waiting
+        .await
+        .unwrap()
+        .expect("fallback finds the committed shard");
+    assert_eq!(first.lease.run_id(), &run);
+    let stored: i16 =
+        sqlx::query_scalar("SELECT dispatch_shard FROM runtime_dispatch WHERE run_id = $1")
+            .bind(&run.0)
+            .fetch_one(&cluster.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        stored,
+        i16::from(awaken_dispatch_contract::dispatch_shard(
+            "",
+            "thread-wait-cross-node"
+        ))
+    );
+    let replay = cluster
+        .claim_wait(0, id, None, Some(2_000))
+        .await
+        .unwrap()
+        .expect("a live receipt replays even though its shard has no new work");
+    assert_eq!(replay.lease.run_id(), &run);
+    assert_eq!(replay.lease.epoch(), first.lease.epoch());
+    assert_eq!(cluster.receipt_count(id).await, 1);
 }

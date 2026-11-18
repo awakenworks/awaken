@@ -271,3 +271,6 @@ pub struct SessionRevision(pub u64);
 
 mod worker_lease;
 pub use worker_lease::SessionWorkLease;
+
+mod publication;
+pub use publication::SessionPublicationCondition;

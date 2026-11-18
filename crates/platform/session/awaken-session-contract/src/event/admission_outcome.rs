@@ -494,7 +494,7 @@ mod verification {
     // C1 key equality, C2 fingerprint equality and C3 closed are independent
     // bits; C4 distinguishes None/empty/one/two ordered operation ids. The 32
     // literal partitions cover absent=16, conflict=8, closed=4, accepted=4.
-    // Each retains every u64 revision and the same complete replay oracle.
+    // Each retains every u64 revision and the same replay and frame requirements.
     // Literal fixtures avoid a second owned input tree; real output Clone,
     // mutation, two-live-output replay and Drop stay intact.
     fn check_literal_frame<const CASE: u8>(proof: &DeletedSessionEventAdmissions, revision: u64) {
@@ -566,6 +566,30 @@ mod verification {
                 check_literal_frame::<CASE>(current, revision);
             },
         );
+    }
+
+    #[cfg(kani)]
+    #[inline(always)]
+    fn check_deleted_literal_replay<const CASE: u8>(revision: u64) {
+        // The key is absent. Keep the first result alive across replay
+        // and verify every field of the retained input.
+        let proof = literal_fixture::<CASE>(revision);
+        check_literal_frame::<CASE>(&proof, revision);
+        let first = resolve_deleted_event_admission(&proof, "a", "a");
+        assert!(matches!(
+            &first,
+            Ok(SessionEventAdmission::Deleted { deleted_revision })
+                if *deleted_revision == SessionRevision(revision)
+        ));
+        check_literal_frame::<CASE>(&proof, revision);
+        let replay = resolve_deleted_event_admission(&proof, "a", "a");
+        assert!(matches!(
+            &replay,
+            Ok(SessionEventAdmission::Deleted { deleted_revision })
+                if *deleted_revision == SessionRevision(revision)
+        ));
+        check_literal_frame::<CASE>(&proof, revision);
+        drop(first);
     }
 
     #[cfg(test)]
@@ -1075,7 +1099,7 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_absent_two_24() {
-        check_single_retained_literal::<24>(kani::any());
+        check_deleted_literal_replay::<24>(kani::any());
     }
 
     // CASE27: matching key/fingerprint, open retained receipt, two ordered
@@ -1117,7 +1141,7 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_absent_two_28() {
-        check_single_retained_literal::<28>(kani::any());
+        check_deleted_literal_replay::<28>(kani::any());
     }
 
     #[cfg(kani)]
@@ -1126,7 +1150,7 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_absent_two_30() {
-        check_single_retained_literal::<30>(kani::any());
+        check_deleted_literal_replay::<30>(kani::any());
     }
 
     #[cfg(kani)]
@@ -1143,7 +1167,7 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_absent_two_26() {
-        check_single_retained_literal::<26>(kani::any());
+        check_deleted_literal_replay::<26>(kani::any());
     }
     #[cfg(kani)]
     /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance

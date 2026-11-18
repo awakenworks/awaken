@@ -3,7 +3,7 @@
 // @formal reason: it requires an empty physical slot and never treats lease expiry as stop evidence.
 //! Borrow the original Dispatch exclusion for one authenticated preparation.
 
-use awaken_dispatch_contract::{CommitEpochGuard, RunDispatch};
+use awaken_dispatch_contract::{ClaimAuthority, RunDispatch};
 use awaken_session_execution_contract::{
     ClaimedSessionCredentialPreparationContext, SessionRealizationControlFailure,
 };
@@ -12,24 +12,27 @@ use awaken_sync::InvariantLock;
 struct ClaimedPreparation<'a> {
     // The store guard is Send, deliberately not Sync. This mutex exposes only
     // short read observations and is never held across an await or effect.
-    guard: InvariantLock<&'a mut CommitEpochGuard>,
+    guard: InvariantLock<&'a mut ClaimAuthority>,
     request: RunDispatch,
     claim: awaken_worker_contract::RunClaim,
     work: awaken_session_application_contract::SessionWorkAuthorityReceipt,
+    condition: Option<awaken_session_types::SessionPublicationCondition>,
 }
 
 impl<'a> ClaimedPreparation<'a> {
     fn new(
-        guard: &'a mut CommitEpochGuard,
+        guard: &'a mut ClaimAuthority,
         claim: &awaken_worker_contract::RunClaim,
         work: &awaken_session_application_contract::SessionWorkAuthorityReceipt,
     ) -> Self {
         let request = guard.request().clone();
+        let condition = guard.publication_condition().cloned();
         Self {
             guard: InvariantLock::new(guard),
             request,
             claim: claim.clone(),
             work: work.clone(),
+            condition,
         }
     }
 }
@@ -54,6 +57,9 @@ impl ClaimedSessionCredentialPreparationContext for ClaimedPreparation<'_> {
         &self,
     ) -> &awaken_session_application_contract::SessionWorkAuthorityReceipt {
         &self.work
+    }
+    fn publication_condition(&self) -> Option<&awaken_session_types::SessionPublicationCondition> {
+        self.condition.as_ref()
     }
     fn verify_at(&self, now: u64) -> Result<(), SessionRealizationControlFailure> {
         let guard = self.guard.lock().map_err(|_| {
@@ -108,7 +114,7 @@ pub fn require_worker_claimed_preparation(
 /// physical realization stays entirely behind the existing Session control.
 pub(super) async fn begin(
     control: &dyn awaken_session_execution_contract::SessionRealizationControl,
-    guard: &mut CommitEpochGuard,
+    guard: &mut ClaimAuthority,
     claim: &awaken_worker_contract::RunClaim,
     work: &awaken_session_application_contract::SessionWorkAuthorityReceipt,
     clock: &dyn awaken_time::WallClock,
@@ -126,7 +132,7 @@ pub(super) async fn begin(
 }
 
 /// Release the original backend exclusion before reporting assignment success.
-pub(super) async fn release(guard: CommitEpochGuard) -> Result<(), super::RealizationHttpError> {
+pub(super) async fn release(guard: ClaimAuthority) -> Result<(), super::RealizationHttpError> {
     guard.release().await.map_err(|message| {
         super::RealizationHttpError::Control(SessionRealizationControlFailure::Unavailable(message))
     })
@@ -135,6 +141,7 @@ pub(super) async fn release(guard: CommitEpochGuard) -> Result<(), super::Realiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_dispatch_contract::CommitEpochGuard;
 
     #[test]
     fn claimed_preparation_requires_exact_live_uncancelled_empty_physical_slot() {
@@ -161,7 +168,7 @@ mod tests {
             (PhysicalAttemptSlot::OtherClaim, false, 9, false),
             (PhysicalAttemptSlot::Corrupt, false, 9, false),
         ] {
-            let mut guard = CommitEpochGuard::new(
+            let mut guard = ClaimAuthority::Locked(CommitEpochGuard::new(
                 (),
                 awaken_dispatch_contract::CommitEpochObservation {
                     request: request.clone(),
@@ -170,7 +177,7 @@ mod tests {
                     physical_slot: slot,
                     physical_attempt: None,
                 },
-            );
+            ));
             let context = ClaimedPreparation::new(&mut guard, &claim, &work);
             assert_eq!(
                 context.verify_at(now).is_ok(),
@@ -185,7 +192,7 @@ mod tests {
         }
         let mut foreign = claim.clone();
         foreign.run_id = awaken_agent_contract::RunId("foreign".into());
-        let mut guard = CommitEpochGuard::new(
+        let mut guard = ClaimAuthority::Locked(CommitEpochGuard::new(
             (),
             awaken_dispatch_contract::CommitEpochObservation {
                 request,
@@ -194,7 +201,7 @@ mod tests {
                 physical_slot: PhysicalAttemptSlot::Empty,
                 physical_attempt: None,
             },
-        );
+        ));
         assert!(
             ClaimedPreparation::new(&mut guard, &foreign, &work)
                 .verify_at(9)
@@ -218,7 +225,7 @@ mod tests {
             "authority": {"kind": "not_required"},
         }))
         .unwrap();
-        let mut guard = CommitEpochGuard::new(
+        let mut guard = ClaimAuthority::Locked(CommitEpochGuard::new(
             (),
             awaken_dispatch_contract::CommitEpochObservation {
                 request,
@@ -227,7 +234,7 @@ mod tests {
                 physical_slot: PhysicalAttemptSlot::Empty,
                 physical_attempt: None,
             },
-        );
+        ));
         let context = ClaimedPreparation::new(&mut guard, &claim, &work);
         let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _held = context

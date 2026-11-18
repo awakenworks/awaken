@@ -117,6 +117,7 @@ pub struct DispatchWorker<S> {
     recovery_projection: Option<Arc<crate::RecoveryProjection>>,
     recovery_source: Option<Arc<dyn RunRecoverySource>>,
     recovery_history: Option<Arc<crate::RecoveryHistoryCache>>,
+    persistence: Option<Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>>,
     terminal_scan: crate::TerminalReconciliationScan,
     terminal_reads: crate::ClaimedTerminalReads,
     settlement_observer: Option<Arc<dyn crate::DispatchSettlementObserver>>,
@@ -787,18 +788,28 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
         // The immutable binding selects either the local epoch guard and its
         // optional checkpoint store or the required authenticated remote RPC.
-        let inner_checkpoint = ctx.stream_checkpoint.clone();
-        let checkpoint = match &self.ports {
-            ExecutionAuthority::Local(guard) => crate::FencedStreamCheckpointStore::new(
-                inner_checkpoint,
-                guard.clone(),
-                claim.clone(),
-            ),
-            ExecutionAuthority::Remote { checkpoints, .. } => {
-                crate::FencedStreamCheckpointStore::remote(checkpoints.clone(), claim.clone())
-            }
-        };
-        ctx = ctx.with_stream_checkpoint(Arc::new(checkpoint));
+        let persistence = self
+            .persistence
+            .as_ref()
+            .and_then(|authority| authority.bind_run_persistence(claim, ctx.stream_sink.clone()));
+        if let Some(persistence) = persistence {
+            ctx = ctx
+                .with_stream_checkpoint(persistence.checkpoint)
+                .with_stream_sink(persistence.stream);
+        } else {
+            let inner_checkpoint = ctx.stream_checkpoint.clone();
+            let checkpoint = match &self.ports {
+                ExecutionAuthority::Local(guard) => crate::FencedStreamCheckpointStore::new(
+                    inner_checkpoint,
+                    guard.clone(),
+                    claim.clone(),
+                ),
+                ExecutionAuthority::Remote { checkpoints, .. } => {
+                    crate::FencedStreamCheckpointStore::remote(checkpoints.clone(), claim.clone())
+                }
+            };
+            ctx = ctx.with_stream_checkpoint(Arc::new(checkpoint));
+        }
         Ok(match model_executor {
             Some(exec) => ctx.with_model_executor(exec.clone()),
             None => ctx,
@@ -1801,6 +1812,7 @@ fn construct_bound_dispatch_worker(
         claimed_commit,
     );
     worker.recovery_projection = projection;
+    worker.persistence = binding.runtime_authority();
     worker
 }
 
@@ -1825,6 +1837,7 @@ fn construct_dispatch_worker<S: Dispatch + 'static>(
         recovery_projection: None,
         recovery_source: None,
         recovery_history: None,
+        persistence: None,
         terminal_scan: Default::default(),
         terminal_reads: Default::default(),
         settlement_observer: None,
@@ -1843,12 +1856,14 @@ impl ExecutionAuthority {
         &self,
         claim: &RunClaim,
         required: bool,
-    ) -> Result<Option<awaken_dispatch_contract::CommitEpochGuard>, Error> {
+    ) -> Result<Option<awaken_dispatch_contract::ClaimAuthority>, Error> {
         if !required {
             return Ok(None);
         }
         match self {
-            Self::Local(store) => Ok(store.lock_session_run_reservation_epoch(claim).await?),
+            Self::Local(store) => Ok(store
+                .acquire_session_run_reservation_authority(claim)
+                .await?),
             Self::Remote { .. } => Ok(None),
         }
     }

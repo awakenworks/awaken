@@ -169,6 +169,7 @@ async fn shared_session_observer_prepares_then_admits_only_guarded_prepared_inpu
                 mode,
                 Some(
                     awaken_session_execution_contract::PreparedSessionRunActivity {
+                        publication_condition: None,
                         projected_revision: revision,
                         admitted_after_cursor: 23
                     }

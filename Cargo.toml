@@ -23,6 +23,7 @@ license = "Apache-2.0"
 sdk_semver_baseline = "50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940"
 
 [workspace.dependencies]
+awaken-object-storage = { path = "crates/platform/storage/awaken-object-storage", version = "1.0.0" }
 awaken-conversation = { path = "crates/sdk/runtime/awaken-conversation", version = "0.1.0" }
 awaken-process-win32 = { path = "crates/sdk/support/awaken-process-win32", version = "1.0.0" }
 awaken-plugin-composition = { path = "crates/apps/awaken-plugin-composition" }
@@ -136,6 +137,7 @@ awaken-store-fs = { path = "crates/platform/committed-truth/awaken-store-fs" }
 awaken-store-schema = { path = "crates/platform/committed-truth/awaken-store-schema" }
 awaken-store-sqlite = { path = "crates/platform/committed-truth/awaken-store-sqlite" }
 awaken-store-postgres = { path = "crates/platform/committed-truth/awaken-store-postgres" }
+awaken-store-s3 = { path = "crates/platform/committed-truth/awaken-store-s3" }
 awaken-work-store = { path = "crates/platform/environment/awaken-work-store" }
 awaken-ext-background-task = { path = "crates/sdk/extensions/awaken-ext-background-task", version = "2.0.0" }
 awaken-session-store = { path = "crates/platform/session/awaken-session-store" }

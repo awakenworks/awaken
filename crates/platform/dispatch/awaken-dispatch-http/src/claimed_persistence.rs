@@ -21,6 +21,7 @@ use awaken_worker_contract::RunClaim;
 #[derive(Clone)]
 pub enum WorkerClaimPersistence {
     Independent,
+    Object(awaken_dispatch_contract::ClaimedPersistence),
     Postgres {
         checkpoints: Arc<dyn ClaimedCheckpointTransport<RunError>>,
         sessions: Arc<dyn WorkerSessionClaims>,

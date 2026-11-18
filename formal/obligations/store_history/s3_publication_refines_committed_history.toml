@@ -1,0 +1,22 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = ["external.database_engine_correctness"]
+evidence = [
+  "formal/tla/StoreHistory.tla",
+  "formal/tla/S3Publication.tla",
+  "formal/tla/S3Publication.cfg",
+]
+production_entrypoints = []
+
+[[bounds]]
+text = '''The abstract checkpoint-retirement transition represents response-consuming or terminal commits. Control and state-only commits retain interrupted response checkpoints. Kani checks the production retirement decision for both Boolean inputs, and the shared PostgreSQL/S3 regression checks a reschedule receipt and its exact replay against a newer checkpoint.'''
+
+[[bounds]]
+text = '''Kani proves the production publication coordinates for every u64 Session sequence, Thread version, and message range, including exhaustion. The replay projection uses the shared proved admission and receipt kernels. The adapter compares the resulting receipt with these coordinates before writing the body or replacing the head. Immutable-object durability and the linearizability of the provider's conditional replacement are external assumptions. The abstract model and live traces cover publication interleavings and the exercised atomic checkpoint retirement schedule.'''
+
+[[bounds]]
+text = '''Two callers and two Runs in one Session, one operation per Run and one takeover. The publication action assumes atomic conditional replacement and durable immutable objects. A successful CAS refines one StoreHistory append, receipt creation and checkpoint retirement. Retry, rejection, takeover and interrupted preparation preserve the committed prefix.'''
+
+[[bounds]]
+text = '''The shared runtime scenario checks complete recovery snapshots. The captured projection checks commit coordinates, receipt identity and fencing against StoreHistory. PostgreSQL discards a successful transaction reply at the caller boundary. S3 loses a reply after a successful real head write. These traces cover the exercised schedules.'''

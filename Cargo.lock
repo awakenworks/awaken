@@ -806,6 +806,8 @@ dependencies = [
  "awaken-resource-persistence",
  "awaken-resource-store",
  "awaken-resource-worker-http",
+ "awaken-run-executor-acp",
+ "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-service-auth-contract",
@@ -816,13 +818,16 @@ dependencies = [
  "awaken-session-contract",
  "awaken-session-dream-contract",
  "awaken-session-execution-contract",
+ "awaken-session-run-delivery",
  "awaken-session-store",
  "awaken-session-types",
  "awaken-sql-storage",
  "awaken-sqlite-pool",
+ "awaken-store-conformance",
  "awaken-store-fs",
  "awaken-store-inmem",
  "awaken-store-postgres",
+ "awaken-store-s3",
  "awaken-store-sqlite",
  "awaken-sync",
  "awaken-tenancy",
@@ -1114,6 +1119,7 @@ dependencies = [
  "awaken-dispatch-testkit",
  "awaken-lease-contract",
  "awaken-lease-testkit",
+ "awaken-object-storage",
  "awaken-observability",
  "awaken-reliability-testkit",
  "awaken-runtime",
@@ -1166,6 +1172,7 @@ dependencies = [
  "awaken-tenancy",
  "awaken-time",
  "awaken-worker-contract",
+ "md-5",
  "serde",
  "serde_json",
  "thiserror",
@@ -2100,6 +2107,16 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "awaken-object-storage"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "object_store",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -3734,6 +3751,7 @@ dependencies = [
  "awaken-deployment-contract",
  "awaken-environment-contract",
  "awaken-ext-memory",
+ "awaken-object-storage",
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
  "awaken-resource-contract",
@@ -3826,6 +3844,7 @@ dependencies = [
  "awaken-lease-testkit",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
+ "awaken-runtime-contract",
  "awaken-session-configuration-contract",
  "awaken-session-contract",
  "awaken-session-dream-contract",
@@ -3885,6 +3904,47 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "awaken-store-s3"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-dispatch",
+ "awaken-dispatch-contract",
+ "awaken-dispatch-erasure",
+ "awaken-dispatch-testkit",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
+ "awaken-object-storage",
+ "awaken-reliability-testkit",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-session-contract",
+ "awaken-session-store",
+ "awaken-session-types",
+ "awaken-store-conformance",
+ "awaken-sync",
+ "awaken-time",
+ "awaken-worker-contract",
+ "bytes",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "object_store",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zstd",
 ]
 
 [[package]]
@@ -10193,6 +10253,34 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zstd"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdb02c3132d251ab1606e9fc913a7da6c6ed08cc263df15edf082e1dc497d157"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c8ea04668f5de8d8d51051714ba560c9536519cadcdb8829bba4fe2ad159b03"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.2+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
 
 [[package]]
 name = "zune-core"

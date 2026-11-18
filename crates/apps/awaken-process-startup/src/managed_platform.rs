@@ -285,6 +285,8 @@ pub(super) fn credential_rollout_target(
 /// add a Coordinator router.
 #[derive(Default)]
 pub struct CoordinatorServiceAdapters {
+    /// Paired Session and Runtime selection; never independently override their writers.
+    pub agent_persistence: Option<awaken_coordinator::ObjectAgentPersistence>,
     pub relay_destination_authenticator:
         Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
     pub worker_authenticator:

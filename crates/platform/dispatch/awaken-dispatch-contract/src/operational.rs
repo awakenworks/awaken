@@ -109,6 +109,71 @@ pub struct DispatchPage {
     pub next_cursor: DispatchCursor,
 }
 
+/// Continuation issued by the selected backend. It can represent one SQL
+/// sequence or independent positions across logical Session partitions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DispatchScanCursor(String);
+impl DispatchScanCursor {
+    pub fn new(token: String) -> Result<Self, DispatchError> {
+        if token.is_empty() || token.len() > 1024 * 1024 {
+            return Err(DispatchError::Rejected(
+                "invalid Dispatch scan cursor".into(),
+            ));
+        }
+        Ok(Self(token))
+    }
+    pub fn token(&self) -> &str {
+        &self.0
+    }
+    pub fn single_position(
+        cursor: Option<&Self>,
+        kind: &str,
+        run: Option<&RunId>,
+    ) -> Result<u64, DispatchError> {
+        let Some(cursor) = cursor else {
+            return Ok(0);
+        };
+        let token: SingleScanToken = serde_json::from_str(cursor.token())
+            .map_err(|_| DispatchError::Rejected("invalid Dispatch scan cursor".into()))?;
+        if token.format != 1
+            || token.kind != kind
+            || token.run.as_deref() != run.map(|r| r.0.as_str())
+        {
+            return Err(DispatchError::Rejected(
+                "Dispatch scan cursor belongs to another query".into(),
+            ));
+        }
+        Ok(token.position)
+    }
+    pub fn single(kind: &str, run: Option<&RunId>, position: u64) -> Result<Self, DispatchError> {
+        Self::new(
+            serde_json::to_string(&SingleScanToken {
+                format: 1,
+                kind: kind.into(),
+                run: run.map(|r| r.0.clone()),
+                position,
+            })
+            .map_err(DispatchError::unavailable)?,
+        )
+    }
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SingleScanToken {
+    format: u32,
+    kind: String,
+    run: Option<String>,
+    position: u64,
+}
+/// Sequence fields on individual events belong to their source partition.
+/// Only next_cursor is a portable checkpoint for continuing this query.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispatchScanPage<T> {
+    pub events: Vec<T>,
+    pub next_cursor: DispatchScanCursor,
+}
+
 /// Durable, replayable delivery-authority feed.
 #[async_trait]
 pub trait DispatchOperationalFeed: Send + Sync {
@@ -124,6 +189,19 @@ pub trait DispatchOperationalFeed: Send + Sync {
         limit: usize,
         run: Option<&RunId>,
     ) -> Result<DispatchPage, DispatchError>;
+    async fn scan_events(
+        &self,
+        cursor: Option<&DispatchScanCursor>,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<DispatchScanPage<DispatchOperationalEvent>, DispatchError> {
+        let after = DispatchScanCursor::single_position(cursor, "operations", run)?;
+        let page = self.events_after(DispatchCursor(after), limit, run).await?;
+        Ok(DispatchScanPage {
+            events: page.events,
+            next_cursor: DispatchScanCursor::single("operations", run, page.next_cursor.0)?,
+        })
+    }
 }
 
 #[cfg(test)]
