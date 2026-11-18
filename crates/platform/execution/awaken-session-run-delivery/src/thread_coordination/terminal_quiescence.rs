@@ -175,7 +175,7 @@ impl CoordinatedThreads {
                     awaken_time::mono::MonoDeadline::after(std::time::Duration::from_secs(10));
                 while resident.has_foreground_run()? {
                     if deadline.has_passed() {
-                        return Err(RunError::internal(format!(
+                        return Err(RunError::unavailable(format!(
                             "terminal quiescence timed out for Thread `{thread}`"
                         )));
                     }
@@ -234,7 +234,7 @@ impl CoordinatedThreads {
                                     Ok(Some(physical))
                                         if awaken_dispatch_execution::exact_expired_slot_remains(claim, Some(&physical)) =>
                                     {
-                                        return Err(RunError::internal(format!(
+                                        return Err(RunError::unavailable(format!(
                                             "terminal dispatch quiescence awaits exact retirement of an expired physical attempt for Session `{thread}`"
                                         )));
                                     }
@@ -249,7 +249,7 @@ impl CoordinatedThreads {
                         inspect_expired_physical = false;
                     }
                     if deadline.has_passed() {
-                        return Err(RunError::internal(format!(
+                        return Err(RunError::unavailable(format!(
                             "terminal dispatch quiescence timed out for Session `{thread}`"
                         )));
                     }

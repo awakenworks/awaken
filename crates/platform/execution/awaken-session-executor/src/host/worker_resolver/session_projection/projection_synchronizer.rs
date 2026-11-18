@@ -15,6 +15,96 @@ mod tests {
     use awaken_session_environment::test_support::SandboxEnvironmentAccess as _;
     use std::sync::Arc;
 
+    #[tokio::test]
+    async fn suspending_projection_installs_authority_without_reopening_environment_effects() {
+        use awaken_session_execution_contract::SessionProjectionSynchronizer as _;
+
+        // Cause/effect graph: C1 Root has committed a suspend continuation;
+        // C2 an ordinary realization renewal carries its exact frozen projection;
+        // C3 the same projection is replayed under a later lease epoch.
+        // E1 install Root's projection and lease, E2 do not adopt/rebuild the
+        // source or reopen ordinary Environment effects, E3 replay keeps the
+        // same continuation identity. Decision rules S1=C1+C2 => E1+E2;
+        // S2=C1+C2+C3 => E1+E2+E3. Resident adoption/rebuild partitions remain
+        // covered by the original recovery tests in this module. The fabricated
+        // binding cannot be adopted, so any accidental physical path fails.
+        let thread = "suspending-projection-authority-only";
+        let session_id = awaken_session_types::SessionId::from(thread);
+        let host = crate::SessionExecutorBuilder::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .build()
+            .expect("validated Host dependencies");
+        let generation = awaken_session_contract::SandboxGeneration::new(
+            &session_id,
+            1,
+            u64::MAX,
+            "environment",
+            "image",
+        );
+        let operation = awaken_session_contract::SessionEnvironmentOperation::new(
+            "workspace",
+            &session_id,
+            "suspend",
+            &generation,
+            7,
+            None,
+            None,
+        );
+        let mut projection = frozen_projection();
+        projection.environment = awaken_session_contract::SessionEnvironmentState::Suspending {
+            operation,
+            source_effect_id: Box::new("source-create".into()),
+            source_binding: "not-an-adoptable-source-binding".into(),
+            generation,
+            suspend_phase: awaken_session_contract::SuspendPhase::Quiescing,
+            checkpoint: None,
+            source_release_preparation: None,
+        };
+        for epoch in [1, 2] {
+            let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a/boot-1".into(),
+                epoch,
+                expires_at_unix_ms: u64::MAX,
+            };
+            WorkerProjectionSynchronizer {
+                execution: host.run_assembly.as_ref(),
+                claim: None,
+                published_snapshot: None,
+                rebuild_unavailable_environment: false,
+                requires_runtime_before_effects: false,
+                claimed_environment_binding: None,
+            }
+            .synchronize_session_projection(
+                &session_id,
+                &projection,
+                &awaken_session_realization::test_support::test_observed_lease(lease.clone()),
+                false,
+            )
+            .await
+            .expect("S1/S2 install continuation authority without physical adoption");
+            assert_eq!(
+                host.run_assembly
+                    .installed_sessions
+                    .realizations()
+                    .read_realization(thread, |r| r.execution().authority.lease().cloned())
+                    .expect("installed Session")
+                    .flatten(),
+                Some(lease),
+                "S1/S2 exact renewed authority",
+            );
+            assert_eq!(
+                host.run_assembly
+                    .installed_sessions
+                    .realizations()
+                    .read_realization(thread, |r| r.environment().owner.has_local_environment())
+                    .expect("installed Session"),
+                Some(false),
+                "S1/S2 no physical source adoption or replacement",
+            );
+        }
+    }
+
     /// Record an explicitly non-owning response without fabricating Root
     /// history. Ordinary Run authority must bypass this port; Managed authority
     /// must reject its response before a new physical effect.

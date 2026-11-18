@@ -114,8 +114,10 @@ tree; actual replacement and cold/fresh/adopted realization reuse the installer.
 Direct compatibility construction reuses the same bundle installer.
 The container installer transfers one atomic tree through bounded detached
 command batches, including binary bytes, empty files and executable modes.
-Small multi-file bundles use one transfer command; large bundles split by argv
-size. Final atomic publication uses a separate command so the existing execution
+Small multi-file bundles use one transfer command; large bundles split by a
+portable argv budget that reserves Kubernetes URL encoding and execution-wrapper
+headroom. File bytes and tree membership remain complete. Final atomic
+publication uses a separate command so the existing execution
 authority is checked again after transfer, before replacing the visible root.
 No per-file atomic publication runs inside that tree stage. Invalid entries
 are rejected before effects, and only the complete read-only stage is published.

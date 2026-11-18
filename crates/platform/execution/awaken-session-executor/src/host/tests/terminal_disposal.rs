@@ -1235,7 +1235,9 @@ async fn terminal_quiescence_does_not_rewait_an_expired_physical_claim() {
     // C2 its exact mutation Claim has expired; C3 no independent stop receipt
     // has retired that slot. E1 durable cancellation is retained; E2 neither
     // of two cold recovery passes waits the full normal settlement window;
-    // E3 the physical slot is never cleared or treated as a successful cleanup.
+    // E3 the physical slot is never cleared or treated as a successful cleanup;
+    // E4 pending independent retirement is Unavailable (retryable/HTTP 503),
+    // not an Internal fault (HTTP 500). A missing receipt never means success.
     // Rules Q1=C1+C2+C3=>E1+E2+E3; Q2 in the sibling test retains the
     // ordinary wait for a Claim that was live before cancellation. Expiry is
     // supplied by the Dispatch clock, not a sleep or a caller assertion.
@@ -1259,6 +1261,11 @@ async fn terminal_quiescence_does_not_rewait_an_expired_physical_claim() {
         assert!(
             failure.to_string().contains("physical attempt"),
             "Q1/E3: {failure}"
+        );
+        assert_eq!(
+            failure.kind,
+            crate::SessionExecutionErrorKind::Unavailable,
+            "Q1/E4 independent retirement is pending"
         );
         let row = dispatch.list_dispatches().await.unwrap().pop().unwrap();
         assert!(

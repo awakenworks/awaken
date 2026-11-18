@@ -12,7 +12,11 @@
 #[cfg_attr(not(test), expect(clippy::wildcard_imports))]
 use super::*;
 
-const COMMAND_BYTES: usize = 64 * 1024;
+// argv is URL-form-encoded by Kubernetes and wrapped by its runtime. A 64 KiB
+// literal command can exceed http's URI ceiling before reaching the API server.
+// Keep one portable batch budget; neither file contents nor tree membership is
+// reduced to satisfy it.
+const COMMAND_BYTES: usize = 16 * 1024;
 const SCRIPT: &str = r#"set -efu
 workspace=$1; stage=$2; root=$3; backup=$4; subdir=$5; first=$6; last=$7; shift 7
 current=$workspace; old_ifs=$IFS; IFS=/
