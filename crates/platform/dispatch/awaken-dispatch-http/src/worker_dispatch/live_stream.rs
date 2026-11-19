@@ -24,6 +24,7 @@ pub(super) async fn stream_event(
     let observation = Observation {
         event: request.request.event,
         assistant_response: request.assistant_response,
+        preview_sequence: request.preview_sequence,
     };
     respond(publish(&service, &worker, &request_identity, &claim, [observation]).await)
 }

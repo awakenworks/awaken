@@ -20,6 +20,7 @@ ROLLING_CANDIDATE_IMAGE="${ADR71_ROLLING_CANDIDATE_IMAGE:-}"
 ROLLING_LEGACY_WORKER_IMAGE="${ADR71_ROLLING_LEGACY_WORKER_IMAGE:-$ROLLING_LEGACY_IMAGE}"
 ROLLING_CANDIDATE_WORKER_IMAGE="${ADR71_ROLLING_CANDIDATE_WORKER_IMAGE:-$ROLLING_CANDIDATE_IMAGE}"
 ROLLING_REQUIRE_RELEASE="${ADR71_ROLLING_REQUIRE_RELEASE:-0}"
+PREVIEW_EVIDENCE="${ADR71_PREVIEW_EVIDENCE_DIR:-}"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
 DRIVER="$REPO_ROOT/e2e/k3d/distributed_control_driver.ts"
 API_PF_LOG="${TMPDIR:-/tmp}/${CLUSTER}_api_pf.log"
@@ -96,6 +97,15 @@ if [[ -n "$ROLLING_LEGACY_IMAGE$ROLLING_CANDIDATE_IMAGE$ROLLING_LEGACY_WORKER_IM
   source "$REPO_ROOT/e2e/k3d/distributed_rolling_upgrade.sh"
 fi
 
+if [[ -n "$PREVIEW_EVIDENCE" ]]; then
+  [[ -z "$ROLLING_LEGACY_IMAGE${ADR71_DISPATCH_WAKE_BENCHMARK:-}" ]] || {
+    err "run Session preview validation separately from the existing rollout and wake modes"; exit 2;
+  }
+  : "${ADR71_PREVIEW_BASELINE_IMAGE:?provide the prebuilt baseline role image}"
+  : "${ADR71_CACHED_SANDBOX_IMAGE:?provide a locally available unused Sandbox image reference}"
+  source "$REPO_ROOT/e2e/k3d/session_preview_topology.sh"
+fi
+
 rolling_config_if_enabled() {
   if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
     sed -e 's|^\(    control_internal_url = \)"http://control:3001"$|\1"http://rolling-observer:3001"|' \
@@ -125,11 +135,12 @@ batch_cleanup_wait_until() {
 }
 
 sample_capacity() {
+  local database_pod=${1:-postgres-standby-0}
   # Observations never change claim state. Exact current Run/owner/epoch tuples
   # count execution claims; idle Sessions and queued inputs are excluded. The
   # same DB query observes connection/wait/WAL costs without another metric owner.
   while true; do
-    timeout 15 kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+    timeout 15 kubectl -n "$NS" exec "$database_pod" -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
       "SELECT json_build_object('observed_at',clock_timestamp(),
         'claims',(SELECT COALESCE(json_agg(json_build_object('run_id',run_id,'owner',lease_owner,'epoch',lease_epoch)), '[]'::json)
           FROM runtime_dispatch WHERE status='running'
@@ -647,11 +658,15 @@ if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}$ROLLING_LEGACY_IMAGE" && -n "${ADR7
   # The dispatch-only fixture uses a Native Agent without Sandbox tools.
   SANDBOX_BUILD_IMAGE=$ADR71_CACHED_SANDBOX_IMAGE
   docker image inspect "$SANDBOX_BUILD_IMAGE" >/dev/null
+elif [[ -n "$PREVIEW_EVIDENCE" ]]; then
+  SANDBOX_BUILD_IMAGE=$ADR71_CACHED_SANDBOX_IMAGE
+  docker image inspect "$SANDBOX_BUILD_IMAGE" >/dev/null
 else
   "$REPO_ROOT/deploy/images/sandbox/build.sh" --ensure-current "$SANDBOX_BUILD_IMAGE" ""
 fi
 SANDBOX_IMAGE=$(k3d_image_digest "$SANDBOX_BUILD_IMAGE")
 echo "using immutable Sandbox image $SANDBOX_IMAGE"
+if [[ -z "$PREVIEW_EVIDENCE" ]]; then
 CONTROL_BIN=$(resolve_cargo_executable awaken-control-process awaken-control)
 COORDINATOR_BIN=$(resolve_cargo_executable awaken-coordinator-process awaken-coordinator --features container-k8s)
 WORKER_BIN=$(resolve_cargo_executable awaken-worker awaken-worker --features container-k8s)
@@ -690,6 +705,11 @@ for executable in awaken-control awaken-coordinator awaken-worker awaken-server;
     awaken-image-permission-probe "$executable" "$expected_hash"
 done
 ok "all role artifacts execute as UID 10001 with normalized mode and unchanged bytes"
+else
+  docker image inspect "$IMAGE" "$ADR71_PREVIEW_BASELINE_IMAGE" >/dev/null
+  IMAGE_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}')
+  printf 'using prebuilt Session preview role image %s\n' "$IMAGE_ID"
+fi
 # Reuse the shared nested-node reserve and actual capacity admission.
 e2e_docker_init distributed-control
 cluster_images=("$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine)
@@ -706,6 +726,9 @@ if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
 fi
 if [[ -n "${ADR71_DISPATCH_WAKE_BENCHMARK:-}" ]]; then
   cluster_images+=(nats:2)
+fi
+if [[ -n "$PREVIEW_EVIDENCE" ]]; then
+  cluster_images=("$IMAGE" "$ADR71_PREVIEW_BASELINE_IMAGE" postgres:16 nginx:1.27-alpine nats:2)
 fi
 k3d_ensure_images "${cluster_images[@]}"
 if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
@@ -731,6 +754,8 @@ kubectl -n kube-system patch configmap local-path-config --type=merge -p \
 # type contract explicitly rather than relying on its distribution-specific default.
 kubectl annotate storageclass local-path defaultVolumeType=hostPath --overwrite >/dev/null
 if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
+  k3d_import_storage_images "$CLUSTER" "${cluster_images[@]}"
+elif [[ -n "$PREVIEW_EVIDENCE" ]]; then
   k3d_import_storage_images "$CLUSTER" "${cluster_images[@]}"
 else
   k3d_import_storage_images "$CLUSTER" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
@@ -832,6 +857,9 @@ k3d_render_sandbox_image "$ROLE_OVERLAY" "$SANDBOX_IMAGE" \
 if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
   rolling_start_observer
 fi
+if [[ -n "$PREVIEW_EVIDENCE" ]]; then
+  session_preview_prepare
+fi
 # Brokered Create/RBAC decision table: C1 the exact Pod-bound Worker has only
 # read/UID-fenced disposal; C2 the Coordinator alone creates each of six
 # protected Kinds; C3 its separate control Namespace accepts only the exact
@@ -865,6 +893,11 @@ kubectl -n "$NS" wait --for=condition=complete job/control-migrate --timeout=240
 kubectl -n "$NS" wait --for=condition=complete job/coordinator-migrate --timeout=240s
 wait_roles || { diagnostics; exit 1; }
 start_public_endpoint
+
+if [[ -n "$PREVIEW_EVIDENCE" ]]; then
+  session_preview_validate
+  exit
+fi
 
 if [[ -n "$ROLLING_LEGACY_IMAGE" ]]; then
   rolling_upgrade

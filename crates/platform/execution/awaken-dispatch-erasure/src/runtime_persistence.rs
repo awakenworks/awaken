@@ -62,13 +62,12 @@ impl ClaimedCheckpointTransport for RuntimePersistence {
         &self,
         claim: &RunClaim,
     ) -> awaken_dispatch_contract::ClaimedCheckpointRead {
-        let (guard, checkpoint) =
-            if let Some(bound) = self.authority.bind_run_persistence(claim, None) {
-                (None, bound.checkpoint)
-            } else {
-                let (guard, store) = self.legacy_checkpoint(claim).await?;
-                (Some(guard), store)
-            };
+        let (guard, checkpoint) = if let Some(store) = self.authority.bind_run_checkpoint(claim) {
+            (None, store)
+        } else {
+            let (guard, store) = self.legacy_checkpoint(claim).await?;
+            (Some(guard), store)
+        };
         let result = match checkpoint.get(&claim.run_id.0).await {
             Observed::Present(value) => Ok(Some(value)),
             Observed::Absent => Ok(None),
@@ -90,8 +89,8 @@ impl ClaimedCheckpointTransport for RuntimePersistence {
         if checkpoint.run_id != claim.run_id.0 {
             return Err(DispatchError::Conflict("checkpoint Run mismatch".into()));
         }
-        let (guard, store) = if let Some(bound) = self.authority.bind_run_persistence(claim, None) {
-            (None, bound.checkpoint)
+        let (guard, store) = if let Some(store) = self.authority.bind_run_checkpoint(claim) {
+            (None, store)
         } else {
             let (guard, store) = self.legacy_checkpoint(claim).await?;
             (Some(guard), store)
@@ -110,8 +109,8 @@ impl ClaimedCheckpointTransport for RuntimePersistence {
         &self,
         claim: &RunClaim,
     ) -> Result<SettleOutcome, DispatchError> {
-        let (guard, store) = if let Some(bound) = self.authority.bind_run_persistence(claim, None) {
-            (None, bound.checkpoint)
+        let (guard, store) = if let Some(store) = self.authority.bind_run_checkpoint(claim) {
+            (None, store)
         } else {
             let (guard, store) = self.legacy_checkpoint(claim).await?;
             (Some(guard), store)

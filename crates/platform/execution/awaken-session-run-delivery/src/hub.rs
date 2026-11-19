@@ -216,13 +216,13 @@ impl ThreadEventHub {
         DeliveryLock,
     > {
         Ok(Box::new(HubLiveSubscription {
-            receiver: self.subscribe(thread_key)?,
+            receiver: Some(self.subscribe(thread_key)?),
         }))
     }
 }
 
 struct HubLiveSubscription {
-    receiver: ThreadSubscription,
+    receiver: Option<ThreadSubscription>,
 }
 
 #[async_trait::async_trait]
@@ -234,11 +234,13 @@ impl awaken_session_execution_contract::SessionThreadLiveSubscription for HubLiv
         awaken_runtime_contract::runs::RunError,
     > {
         use awaken_session_execution_contract::ThreadLiveObservation;
+        let Some(receiver) = self.receiver.as_mut() else {
+            return Ok(None);
+        };
         loop {
-            match self.receiver.recv().await {
+            match receiver.recv().await {
                 Ok(ThreadEvent::Live(observation)) => {
-                    if self
-                        .receiver
+                    if receiver
                         .claim
                         .lock()
                         .as_ref()
@@ -255,13 +257,9 @@ impl awaken_session_execution_contract::SessionThreadLiveSubscription for HubLiv
                     // Recheck attribution at dequeue: a newer publication can
                     // fence an older queued preview before this receiver sees it.
                     if live.epoch.is_some_and(|epoch| {
-                        self.receiver
-                            .claim
-                            .lock()
-                            .as_ref()
-                            .is_some_and(|(run, newest)| {
-                                run == &live.observation.event.run_id.0 && epoch.get() < *newest
-                            })
+                        receiver.claim.lock().as_ref().is_some_and(|(run, newest)| {
+                            run == &live.observation.event.run_id.0 && epoch.get() < *newest
+                        })
                     }) {
                         continue;
                     }
@@ -272,9 +270,14 @@ impl awaken_session_execution_contract::SessionThreadLiveSubscription for HubLiv
                     | ThreadEvent::StepEnded { .. }
                     | ThreadEvent::AgentLaunch { .. },
                 ) => continue,
-                // Preview is best-effort: lag drops only volatile prefixes.
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => return Ok(None),
+                // A retained suffix cannot safely extend a previously displayed
+                // prefix after lag. The committed projection will finish it.
+                Err(
+                    broadcast::error::RecvError::Lagged(_) | broadcast::error::RecvError::Closed,
+                ) => {
+                    self.receiver = None;
+                    return Ok(None);
+                }
             }
         }
     }
@@ -400,6 +403,65 @@ mod tests {
             replacement.try_recv(),
             Ok(ThreadEvent::StepEnded { awaiting: false })
         ));
+    }
+
+    #[tokio::test]
+    async fn lagged_live_subscriber_cannot_append_a_suffix_behind_a_gap() {
+        use awaken_agent_contract::agent::run::Id as RunId;
+        use awaken_agent_contract::event::{AgentEvent, Delta};
+        use awaken_agent_contract::stream::event::Event;
+
+        let hub = ThreadEventHub::new();
+        let mut slow = hub.live_subscription("thread").unwrap();
+        let publish = |text: &str| {
+            hub.publish(
+                "thread",
+                ThreadEvent::Live(
+                    Event {
+                        run_id: RunId("run".into()),
+                        kind: AgentEvent::Delta(Delta::TextDelta { delta: text.into() }),
+                    }
+                    .into(),
+                ),
+            );
+        };
+        let deadline = std::time::Duration::from_secs(5);
+        publish("prefix");
+        assert!(
+            tokio::time::timeout(deadline, slow.recv())
+                .await
+                .expect("the slow subscriber receives the prefix")
+                .unwrap()
+                .is_some()
+        );
+        for _ in 0..=HUB_CAPACITY {
+            publish("suffix");
+        }
+        assert!(
+            tokio::time::timeout(deadline, slow.recv())
+                .await
+                .expect("the slow subscriber observes the gap")
+                .unwrap()
+                .is_none(),
+            "the slow preview ends at its coherent prefix"
+        );
+        assert!(
+            tokio::time::timeout(deadline, slow.recv())
+                .await
+                .expect("the slow subscription remains closed")
+                .unwrap()
+                .is_none()
+        );
+        let mut fresh = hub.live_subscription("thread").unwrap();
+        publish("new observation");
+        assert!(
+            tokio::time::timeout(deadline, fresh.recv())
+                .await
+                .expect("the new subscriber receives a preview")
+                .unwrap()
+                .is_some(),
+            "other subscriptions can still receive previews"
+        );
     }
 
     #[tokio::test]

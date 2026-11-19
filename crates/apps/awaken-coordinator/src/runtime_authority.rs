@@ -1605,22 +1605,14 @@ impl RuntimeAuthority for ObjectRuntimeAuthority {
     fn run_commits(self: Arc<Self>) -> Arc<dyn ClaimedRunCommit<RunError>> {
         Arc::new(self.storage.canonical_commits(self.dispatch.clone()))
     }
-    fn bind_run_persistence(
+    fn bind_run_checkpoint(
         &self,
         claim: &awaken_worker_contract::RunClaim,
-        live: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Option<awaken_dispatch_erasure::RunPersistence> {
-        Some(awaken_dispatch_erasure::RunPersistence {
-            checkpoint: Arc::new(
-                self.storage
-                    .canonical_checkpoints(claim.clone(), self.dispatch.clone()),
-            ),
-            stream: Arc::new(self.storage.canonical_stream_sink(
-                claim.clone(),
-                self.dispatch.clone(),
-                live,
-            )),
-        })
+    ) -> Option<Arc<dyn StreamCheckpointStore>> {
+        Some(Arc::new(
+            self.storage
+                .canonical_checkpoints(claim.clone(), self.dispatch.clone()),
+        ))
     }
     async fn append_progress_batch(
         &self,

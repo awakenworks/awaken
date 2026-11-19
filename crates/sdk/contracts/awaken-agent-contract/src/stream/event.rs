@@ -44,6 +44,9 @@ pub struct Observation {
     pub event: Event,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant_response: Option<AssistantResponseCoordinate>,
+    /// Position within one claimed response, assigned before best-effort queues.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_sequence: Option<u64>,
 }
 
 impl Observation {
@@ -64,6 +67,7 @@ impl Observation {
                 step,
                 response,
             }),
+            preview_sequence: None,
         }
     }
 }
@@ -73,6 +77,7 @@ impl From<Event> for Observation {
         Self {
             event,
             assistant_response: None,
+            preview_sequence: None,
         }
     }
 }

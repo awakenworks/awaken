@@ -257,6 +257,8 @@ pub struct StreamObservationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant_response:
         Option<awaken_agent_contract::stream::event::AssistantResponseCoordinate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_sequence: Option<u64>,
 }
 
 /// Worker-only batch endpoint. The current claim covers all its preview deltas.
@@ -502,6 +504,7 @@ mod tests {
         let decoded: StreamObservationRequest =
             serde_json::from_value(legacy_json).expect("R1 legacy request decodes");
         assert!(decoded.assistant_response.is_none(), "R1/E1");
+        assert_eq!(decoded.preview_sequence, None);
         assert_eq!(decoded.request.event, request.event, "R1/E1 base event");
 
         let exact = StreamObservationRequest {
@@ -513,6 +516,7 @@ mod tests {
                     response: 3,
                 },
             ),
+            preview_sequence: Some(17),
         };
         let exact_json = serde_json::to_value(&exact).expect("R2 exact request serializes");
         assert_eq!(
@@ -521,6 +525,8 @@ mod tests {
             "R2/E2"
         );
         assert_eq!(exact_json["event"]["run_id"], "run-live", "R2/E2");
+        let decoded: StreamObservationRequest = serde_json::from_value(exact_json).unwrap();
+        assert_eq!(decoded.preview_sequence, Some(17));
     }
 
     /// Cause/effect decision table for the sole claimed-commit wire owner:

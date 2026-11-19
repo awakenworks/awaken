@@ -14,7 +14,7 @@ pub(super) async fn verify_signed_preview(
     live_stream: &MemoryStreamSink,
 ) {
     let live_event = |thread_id: &str| {
-        StreamObservation::assistant_delta(
+        let mut observation = StreamObservation::assistant_delta(
             claim.run_id.clone(),
             ThreadId(thread_id.into()),
             0,
@@ -22,7 +22,9 @@ pub(super) async fn verify_signed_preview(
             AgentEvent::Delta(Delta::TextDelta {
                 delta: "live".into(),
             }),
-        )
+        );
+        observation.preview_sequence = Some(2);
+        observation
     };
     live_publisher
         .publish_observation(claim, live_event("signed-thread"))
@@ -36,6 +38,11 @@ pub(super) async fn verify_signed_preview(
     .await
     .expect("T29 signed batch reached the stream sink");
     assert_eq!(live_stream.events().len(), 1, "T29");
+    assert_eq!(
+        live_stream.observations()[0].preview_sequence,
+        Some(2),
+        "T29 retains the Worker sequence"
+    );
     let path = awaken_dispatch_contract::STREAM_PREVIEW_BATCH_PATH;
     let invalid = upstream
         .authorize(

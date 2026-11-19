@@ -35,6 +35,7 @@ pub(crate) struct ThreadPreviewProjector {
     thinking_enabled: bool,
     epochs: HashMap<String, Epoch>,
     response_epochs: HashMap<String, Epoch>,
+    next_preview: HashMap<String, Option<u64>>,
     pending_bytes: usize,
     interrupted: bool,
     exhausted: bool,
@@ -83,6 +84,7 @@ impl ThreadPreviewProjector {
             thinking_enabled: false,
             epochs: HashMap::new(),
             response_epochs: HashMap::new(),
+            next_preview: HashMap::new(),
             pending_bytes: 0,
             interrupted: false,
             exhausted: false,
@@ -132,6 +134,7 @@ impl ThreadPreviewProjector {
         if !self.accept_epoch(&event.run_id.0, &id, epoch)
             || published(&id)
             || self.closed.contains(&id)
+            || !self.accept_sequence(&id, observation.preview_sequence)
         {
             return Vec::new();
         }
@@ -239,6 +242,30 @@ impl ThreadPreviewProjector {
             }
             // Only assistant text and the contentless thinking start are visible.
             (_, _) => Vec::new(),
+        }
+    }
+
+    fn accept_sequence(&mut self, id: &str, sequence: Option<u64>) -> bool {
+        if self.next_preview.len() >= MAX_PREVIEW_IDENTITIES && !self.next_preview.contains_key(id)
+        {
+            self.exhausted = true;
+            return false;
+        }
+        let expected = self
+            .next_preview
+            .entry(id.to_owned())
+            .or_insert(sequence.map(|_| 0));
+        match (*expected, sequence) {
+            (None, None) => true,
+            (Some(next), Some(received)) if received == next => {
+                *expected = Some(next.saturating_add(1));
+                true
+            }
+            (Some(next), Some(received)) if received < next => false,
+            _ => {
+                let _ = self.take_for_committed(id);
+                false
+            }
         }
     }
 
@@ -375,6 +402,36 @@ mod tests {
             response,
             kind,
         )
+    }
+
+    #[test]
+    fn numbered_previews_stop_after_a_gap_and_keep_other_responses_live() {
+        let mut projector = ThreadPreviewProjector::new("s1".into(), "s1".into());
+        let numbered = |response, position| {
+            let mut frame = observation("s1", response, text("fragment"));
+            frame.preview_sequence = Some(position);
+            frame
+        };
+        assert_eq!(projector.project(numbered(0, 0)).len(), 2);
+        assert!(projector.project(numbered(0, 0)).is_empty(), "duplicate");
+        assert_eq!(projector.project(numbered(0, 1)).len(), 1);
+        assert!(
+            projector.project(numbered(0, 3)).is_empty(),
+            "missing middle"
+        );
+        assert!(projector.project(numbered(0, 2)).is_empty(), "late fill");
+        assert!(
+            projector.project(numbered(1, 1)).is_empty(),
+            "missing prefix"
+        );
+        assert!(projector.project(numbered(1, 0)).is_empty(), "late prefix");
+        assert_eq!(projector.project(numbered(2, 0)).len(), 2);
+        assert!(
+            projector
+                .project(observation("s1", 2, text("unsequenced")))
+                .is_empty()
+        );
+        assert!(projector.project(numbered(2, 1)).is_empty());
     }
 
     /// Root projection cause/effect graph: C1 exact coordinates, C2 first or

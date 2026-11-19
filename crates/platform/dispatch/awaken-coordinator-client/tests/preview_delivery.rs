@@ -288,3 +288,93 @@ async fn mixed_peer_fallback_is_decided_per_batch_and_preserves_delta_order() {
     );
     server.abort();
 }
+
+#[tokio::test]
+async fn a_real_http_timeout_and_queue_overflow_leave_visible_sequence_gaps() {
+    let (timed_out, mut attempted) = mpsc::unbounded_channel();
+    let (accepted, mut received) = mpsc::unbounded_channel();
+    let (queue, identity, server) = spawn(Router::new().route(
+        STREAM_PREVIEW_BATCH_PATH,
+        post(move |Json(request): Json<StreamPreviewBatchRequest>| {
+            let positions: Vec<_> = request
+                .observations
+                .iter()
+                .map(|item| item.preview_sequence.unwrap())
+                .collect();
+            let accepted = accepted.clone();
+            let timed_out = timed_out.clone();
+            async move {
+                if positions.contains(&1) {
+                    timed_out.send(positions).unwrap();
+                    // The peer received the original body but gives no acknowledgement.
+                    pending::<()>().await;
+                    unreachable!();
+                }
+                accepted.send(positions).unwrap();
+                StatusCode::OK
+            }
+        }),
+    ))
+    .await;
+    let claim = claim(&identity, "gapped");
+    let offer_position = async |position| {
+        let mut observation = Observation::assistant_delta(
+            claim.run_id.clone(),
+            ThreadId("preview-thread".into()),
+            0,
+            0,
+            AgentEvent::Delta(Delta::TextDelta {
+                delta: "preview".into(),
+            }),
+        );
+        observation.preview_sequence = Some(position);
+        queue
+            .publish_observation(&claim, observation)
+            .await
+            .unwrap();
+    };
+    offer_position(0).await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), received.recv())
+            .await
+            .unwrap(),
+        Some(vec![0])
+    );
+    offer_position(1).await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(3), attempted.recv())
+            .await
+            .unwrap(),
+        Some(vec![1])
+    );
+    // The producer is on the current-thread runtime and never waits for capacity.
+    // Offer more than the complete bounded queue before allowing its drain to run.
+    const TAIL: u64 = 4096;
+    for position in 2..TAIL {
+        offer_position(position).await;
+    }
+    let positions = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut positions = received.recv().await.unwrap();
+        offer_position(TAIL).await;
+        while !positions.contains(&TAIL) {
+            positions.extend(received.recv().await.unwrap());
+        }
+        positions
+    })
+    .await
+    .expect("the real HTTP sender advances after its timed-out batch");
+    assert!(
+        positions
+            .windows(2)
+            .all(|neighbors| neighbors[0] < neighbors[1])
+    );
+    assert!(positions.iter().all(|position| *position >= 2));
+    assert!(positions.contains(&TAIL), "the network recovers");
+    assert!(
+        positions
+            .windows(2)
+            .any(|neighbors| neighbors[1] - neighbors[0] > 1),
+        "the overloaded queue really dropped observations"
+    );
+    server.abort();
+}

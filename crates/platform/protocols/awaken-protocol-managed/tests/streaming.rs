@@ -1656,7 +1656,9 @@ async fn an_open_stream_reconciles_silent_commits_from_an_independent_replica() 
     let response = router(a)
         .oneshot(
             Request::builder()
-                .uri(format!("/v1/sessions/{id}/events/stream"))
+                .uri(format!(
+                    "/v1/sessions/{id}/events/stream?event_deltas%5B%5D=agent.message"
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1675,6 +1677,10 @@ async fn an_open_stream_reconciles_silent_commits_from_an_independent_replica() 
     });
     state_send_user(&b, &runtime, &id, "commit only through B").await;
     let body = String::from_utf8(observer.await.unwrap().to_vec()).unwrap();
+    assert!(
+        !body.contains("event: event_delta"),
+        "there is no cross-replica preview relay"
+    );
     let expected = b.list_events(&id, None, Some(100), false).unwrap().data;
     assert_eq!(
         sse_committed_ids(&body),

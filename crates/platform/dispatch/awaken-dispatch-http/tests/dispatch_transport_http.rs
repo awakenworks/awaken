@@ -1888,13 +1888,14 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
         .expect("claim");
     let claim = RunClaim::from(&claimed.lease);
     let identity = fixed_identity("worker-live");
-    let event = StreamObservation::assistant_delta(
+    let mut event = StreamObservation::assistant_delta(
         claim.run_id.clone(),
         awaken_agent_contract::agent::thread::Id("thread-live".into()),
         0,
         0,
         AgentEvent::Delta(Delta::TextDelta { delta: "x".into() }),
     );
+    event.preview_sequence = Some(3);
     let request = |claim: RunClaim, observation: StreamObservation| {
         serde_json::to_value(StreamObservationRequest {
             request: StreamEventRequest {
@@ -1903,6 +1904,7 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
                 event: observation.event,
             },
             assistant_response: observation.assistant_response,
+            preview_sequence: observation.preview_sequence,
         })
         .unwrap()
     };
@@ -1920,6 +1922,7 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
         "R1"
     );
     assert_eq!(stream.events().len(), 1, "R1 forwards once");
+    assert_eq!(stream.observations()[0].preview_sequence, Some(3));
     assert_eq!(
         stream.observations()[0]
             .assistant_response

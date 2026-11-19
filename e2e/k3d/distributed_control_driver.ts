@@ -796,7 +796,7 @@ async function createFleetEnvironments(client: Anthropic, concurrency: number) {
   );
 }
 
-async function createNativeTestEnvironment(base: string, client: Anthropic, id: string) {
+export async function createNativeTestEnvironment(base: string, client: Anthropic, id: string) {
   const environment = await client.beta.environments.create({
     name: id, config: { type: 'self_hosted' }, betas: BETAS,
   });

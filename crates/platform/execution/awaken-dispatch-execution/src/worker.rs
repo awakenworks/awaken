@@ -788,14 +788,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
         // The immutable binding selects either the local epoch guard and its
         // optional checkpoint store or the required authenticated remote RPC.
-        let persistence = self
+        let checkpoint = self
             .persistence
             .as_ref()
-            .and_then(|authority| authority.bind_run_persistence(claim, ctx.stream_sink.clone()));
-        if let Some(persistence) = persistence {
-            ctx = ctx
-                .with_stream_checkpoint(persistence.checkpoint)
-                .with_stream_sink(persistence.stream);
+            .and_then(|authority| authority.bind_run_checkpoint(claim));
+        if let Some(checkpoint) = checkpoint {
+            ctx = ctx.with_stream_checkpoint(checkpoint);
         } else {
             let inner_checkpoint = ctx.stream_checkpoint.clone();
             let checkpoint = match &self.ports {

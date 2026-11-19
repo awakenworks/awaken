@@ -5,8 +5,9 @@
 //! at the transport boundary, so a remote Coordinator can fence the observation
 //! without leaking dispatch epochs into the runtime/domain contract.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
+use awaken_agent_contract::stream::event::AssistantResponseCoordinate;
 use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::{Error as StreamError, Sink as StreamSink};
@@ -45,16 +46,38 @@ impl ClaimedStreamPublisher for LocalClaimedStreamPublisher {
 pub struct ClaimBoundStreamSink {
     claim: RunClaim,
     publisher: Arc<dyn ClaimedStreamPublisher>,
+    next_preview: awaken_sync::LeafLock<HashMap<AssistantResponseCoordinate, u64>>,
 }
 
 impl ClaimBoundStreamSink {
     pub fn new(claim: RunClaim, publisher: Arc<dyn ClaimedStreamPublisher>) -> Self {
-        Self { claim, publisher }
+        Self {
+            claim,
+            publisher,
+            next_preview: Default::default(),
+        }
     }
 
-    async fn publish_observation(&self, observation: StreamObservation) -> Result<(), StreamError> {
+    async fn publish_observation(
+        &self,
+        mut observation: StreamObservation,
+    ) -> Result<(), StreamError> {
         if observation.event.run_id != self.claim.run_id {
             return Err(StreamError::Closed);
+        }
+        if let Some(response) = &observation.assistant_response {
+            // Keep the original position through queue overflow, failed HTTP
+            // and optional relays. Never reset a position within the claim.
+            let mut positions = self.next_preview.lock();
+            if positions.len() >= 1024 && !positions.contains_key(response) {
+                return Ok(());
+            }
+            let next = positions.entry(response.clone()).or_default();
+            let Some(advanced) = next.checked_add(1) else {
+                return Ok(());
+            };
+            observation.preview_sequence = Some(*next);
+            *next = advanced;
         }
         awaken_dispatch_contract::with_preview_claim_epoch(
             &self.claim,
@@ -115,16 +138,22 @@ mod tests {
 
         sink.send(event("run-a")).await.expect("R1 forwards");
         assert!(sink.send(event("run-b")).await.is_err(), "R2 rejects");
-        sink.send_observation(StreamObservation::assistant_delta(
+        let preview = StreamObservation::assistant_delta(
             RunId("run-a".into()),
             awaken_agent_contract::agent::thread::Id("thread-a".into()),
             2,
             3,
             AgentEvent::Delta(Delta::TextDelta { delta: "y".into() }),
-        ))
-        .await
-        .expect("R3 forwards exact context");
-        assert_eq!(downstream.events().len(), 2);
+        );
+        sink.send_observation(preview.clone())
+            .await
+            .expect("R3 forwards exact context");
+        sink.send_observation(preview)
+            .await
+            .expect("positions are assigned before delivery");
+        assert_eq!(downstream.events().len(), 3);
+        assert_eq!(downstream.observations()[1].preview_sequence, Some(0));
+        assert_eq!(downstream.observations()[2].preview_sequence, Some(1));
         assert_eq!(
             downstream.observations()[1]
                 .assistant_response

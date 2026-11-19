@@ -87,7 +87,7 @@ fn request() -> RunDispatch {
     RunDispatch::new(activation).with_worker_codec_requirements()
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn selected_object_authority_runs_a_real_native_worker_and_replays_streams() {
+async fn selected_object_authority_delivers_native_previews_without_persisting_them() {
     let (pair, engine) = selected().await;
     let authority = pair.runtime_authority();
     let commit = authority.open_commit("session").await.unwrap();
@@ -104,7 +104,7 @@ async fn selected_object_authority_runs_a_real_native_worker_and_replays_streams
         "native-worker",
     )
     .unwrap()
-    .with_context(RuntimeRunContext::new().with_stream_sink(live.clone()));
+    .with_stream_sink(live.clone());
     let processed = worker.run_until_idle(engine.clock()).await.unwrap();
     assert_eq!(processed.len(), 1);
     assert!(matches!(
@@ -136,12 +136,14 @@ async fn selected_object_authority_runs_a_real_native_worker_and_replays_streams
         .unwrap()
         .observations()
         .unwrap();
-    let delivered = live.0.lock().clone();
-    assert!(!delivered.is_empty());
-    assert_eq!(
-        serde_json::to_value(&delivered).unwrap(),
-        serde_json::to_value(&replay).unwrap(),
-        "durable observations precede every live notification"
+    assert!(
+        !live.0.lock().is_empty(),
+        "the preview still reaches its sink"
+    );
+    assert!(
+        replay.is_empty(),
+        "ordinary previews must not enter replay: {} persisted observations",
+        replay.len()
     );
     assert!(
         matches!(
@@ -308,6 +310,7 @@ async fn selected_object_remote_http_persists_checkpoint_stream_and_fences_takeo
                 event: observation.event.clone(),
             },
             assistant_response: observation.assistant_response.clone(),
+            preview_sequence: observation.preview_sequence,
         })
         .unwrap(),
     )
@@ -643,7 +646,7 @@ impl awaken_run_executor_acp::AgentChannelSource for AcpAgent {
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn selected_object_authority_runs_the_production_acp_executor_and_replays_progress() {
+async fn selected_object_authority_delivers_acp_previews_without_persisting_them() {
     let (pair, engine) = selected().await;
     let authority = pair.runtime_authority();
     let commit = authority.open_commit("session").await.unwrap();
@@ -663,7 +666,7 @@ async fn selected_object_authority_runs_the_production_acp_executor_and_replays_
         "acp-worker",
     )
     .unwrap()
-    .with_context(RuntimeRunContext::new().with_stream_sink(live.clone()));
+    .with_stream_sink(live.clone());
     worker.install_attempt_executor(Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(
         Arc::new(AcpAgent),
     )));
@@ -689,8 +692,15 @@ async fn selected_object_authority_runs_the_production_acp_executor_and_replays_
         .unwrap()
         .observations()
         .unwrap();
-    assert!(!replay.is_empty());
-    assert_eq!(replay, live.0.lock().clone());
+    assert!(
+        !live.0.lock().is_empty(),
+        "the ACP preview still reaches its sink"
+    );
+    assert!(
+        replay.is_empty(),
+        "ordinary ACP previews must not enter replay: {} persisted observations",
+        replay.len()
+    );
     assert_eq!(
         commit
             .authoritative_committed_messages(&ThreadId("session".into()))
@@ -1077,31 +1087,12 @@ async fn live_object_cold_restart_recovers_session_dispatch_runtime_and_checkpoi
         )
         .await
         .unwrap();
-    assert_eq!(
-        replay
-            .batches
-            .iter()
-            .map(|batch| batch.sequence)
-            .collect::<Vec<_>>(),
-        (1..=replay.watermark).collect::<Vec<_>>()
+    assert!(
+        replay.batches.is_empty(),
+        "checkpoint recovery never depends on preview replay"
     );
-    let durable = replay
-        .observations()
-        .unwrap()
-        .iter()
-        .map(|value| serde_json::to_value(value).unwrap())
-        .collect::<Vec<_>>();
-    let mut delivered = old_live.0.lock().clone();
-    delivered.extend(new_live.0.lock().clone());
-    let mut position = 0;
-    for observation in delivered {
-        let value = serde_json::to_value(observation).unwrap();
-        position += durable[position..]
-            .iter()
-            .position(|item| item == &value)
-            .expect("all live-delivered events remain in the cold durable replay")
-            + 1;
-    }
+    assert!(!old_live.0.lock().is_empty());
+    assert!(!new_live.0.lock().is_empty());
     assert!(
         cold_commit
             .authoritative_run(&RunId("run".into()))

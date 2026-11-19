@@ -500,6 +500,7 @@ impl HttpDispatchQueue {
                         event: observation.event,
                     },
                     assistant_response: observation.assistant_response,
+                    preview_sequence: observation.preview_sequence,
                 },
                 self.worker_id(),
             )

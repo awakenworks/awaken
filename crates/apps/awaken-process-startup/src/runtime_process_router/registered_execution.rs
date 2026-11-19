@@ -75,7 +75,7 @@ impl RegisteredExecution {
         let hub = Arc::new(ThreadEventHub::new());
         if let Some(relay) = &deployment.preview_relay {
             #[cfg(feature = "nats")]
-            hub.attach_nats_preview(&relay.url, &relay.subject).await?;
+            hub.attach_nats_preview(&relay.url, &relay.subject)?;
             #[cfg(not(feature = "nats"))]
             {
                 let _ = relay;

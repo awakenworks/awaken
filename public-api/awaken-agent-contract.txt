@@ -1095,6 +1095,7 @@ pub fn awaken_agent_contract::stream::event::Observation::from(awaken_agent_cont
 pub struct awaken_agent_contract::stream::event::Observation
 pub awaken_agent_contract::stream::event::Observation::assistant_response: core::option::Option<awaken_agent_contract::stream::event::AssistantResponseCoordinate>
 pub awaken_agent_contract::stream::event::Observation::event: awaken_agent_contract::stream::event::Event
+pub awaken_agent_contract::stream::event::Observation::preview_sequence: core::option::Option<u64>
 impl awaken_agent_contract::stream::event::Observation
 pub fn awaken_agent_contract::stream::event::Observation::assistant_delta(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, usize, usize, awaken_agent_contract::event::agent::AgentEvent) -> Self
 impl core::convert::From<awaken_agent_contract::stream::event::Event> for awaken_agent_contract::stream::event::Observation

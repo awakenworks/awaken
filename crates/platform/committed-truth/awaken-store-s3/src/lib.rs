@@ -17,9 +17,7 @@ mod stream_index;
 mod streams;
 
 pub use bound::{ClaimedSession, SessionProjection};
-pub use canonical::{
-    CanonicalCheckpoints, CanonicalProgressSink, CanonicalRunCommits, ReadOnlyCheckpoints,
-};
+pub use canonical::{CanonicalCheckpoints, CanonicalRunCommits, ReadOnlyCheckpoints};
 pub use maintenance::GcReport;
 pub use model::{
     BlobRef, Claim, CommitDescriptor, HeadView, Limits, ObjectRef, ReadCursor, RunPhase,

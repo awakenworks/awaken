@@ -44,12 +44,6 @@ pub fn claimed_store_run_error(
     }
 }
 
-/// Run-scoped persistence selected after scheduling from the same authority
-/// as commit_operation. The engine wraps live delivery with durable ingestion.
-pub struct RunPersistence {
-    pub checkpoint: Arc<dyn StreamCheckpointStore>,
-    pub stream: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-}
 /// The complete durable capability injected into one Coordinator Runtime Host.
 ///
 /// Source-owner rule A3: composition consumes this original canonical declaration;
@@ -127,13 +121,12 @@ pub trait RuntimeAuthority: Send + Sync {
         false
     }
 
-    /// None preserves the existing lock-fenced checkpoint and live stream path.
-    /// A conditional engine supplies both ports bound to the exact captured claim.
-    fn bind_run_persistence(
+    /// Bind recovery checkpoints to the exact claim for conditional publication.
+    /// None uses the existing lock-fenced checkpoint path.
+    fn bind_run_checkpoint(
         &self,
         _claim: &awaken_worker_contract::RunClaim,
-        _live: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Option<RunPersistence> {
+    ) -> Option<Arc<dyn StreamCheckpointStore>> {
         None
     }
 
