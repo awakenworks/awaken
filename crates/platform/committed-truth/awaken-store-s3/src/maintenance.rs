@@ -9,13 +9,17 @@ use futures::TryStreamExt;
 use object_store::ObjectStoreExt;
 use std::collections::BTreeSet;
 
+/// Whether a listed object may be swept: an object the sealed mark reached
+/// (`reachable`) or a head is never swept, and an object is swept only when its
+/// known generation is at or before the sealed cutoff. Root membership arrives
+/// as a predicate so the rule is the same for whatever the mark phase holds.
 fn sweep_candidate(
     generation: Option<u64>,
     cutoff: u64,
-    roots: &BTreeSet<String>,
+    reachable: impl Fn(&str) -> bool,
     path: &str,
 ) -> bool {
-    !roots.contains(path)
+    !reachable(path)
         && !path.ends_with("/head.json")
         && generation.is_some_and(|generation| generation <= cutoff)
 }
@@ -39,17 +43,24 @@ fn sweep_spares_marked_objects_and_admitted_blob_pins() {
     let marked: bool = kani::any();
     let is_head: bool = kani::any();
 
-    let path = if is_head {
-        "session/head.json"
-    } else {
-        "session/record"
+    // Each branch hands production a concrete listed path, so the head rule
+    // and root membership are derived by production code on that path while
+    // only the generation arithmetic and the mark stay symbolic. Membership
+    // is the predicate production builds over the sealed root set, here
+    // marking exactly that object or nothing.
+    let sweep = |path: &'static str| {
+        sweep_candidate(
+            known.then_some(generation),
+            cutoff,
+            |candidate| marked && candidate == path,
+            path,
+        )
     };
-    let roots = if marked {
-        BTreeSet::from([path.to_string()])
+    let delete = if is_head {
+        sweep("session/head.json")
     } else {
-        BTreeSet::new()
+        sweep("session/record")
     };
-    let delete = sweep_candidate(known.then_some(generation), cutoff, &roots, path);
     if !known || marked || is_head || generation > cutoff {
         assert!(!delete);
     } else {
@@ -60,6 +71,41 @@ fn sweep_spares_marked_objects_and_admitted_blob_pins() {
     assert_eq!(pin, generation == open_generation || marked);
     if pin && open_generation > cutoff {
         assert!(!delete);
+    }
+}
+
+#[cfg(test)]
+mod sweep_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn sweep_candidate_reads_the_sealed_root_set_and_the_head_suffix() {
+        // The production adapter over the sealed BTreeSet: every (marked,
+        // path shape, generation side of the cutoff) combination.
+        for path in [
+            "session/record",
+            "session/head.json",
+            "a/b/head.json",
+            "head.json.bak",
+        ] {
+            for marked in [false, true] {
+                let roots = if marked {
+                    BTreeSet::from([path.to_string(), "other".to_string()])
+                } else {
+                    BTreeSet::from(["other".to_string()])
+                };
+                for generation in [None, Some(4), Some(5), Some(6)] {
+                    let expected = !marked
+                        && !path.ends_with("/head.json")
+                        && generation.is_some_and(|generation| generation <= 5);
+                    assert_eq!(
+                        sweep_candidate(generation, 5, |candidate| roots.contains(candidate), path),
+                        expected,
+                        "{path} marked={marked} generation={generation:?}",
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -207,7 +253,7 @@ impl SessionStorage {
                 .next()
                 .and_then(|file| file.split_once('-'))
                 .and_then(|(epoch, _)| epoch.parse::<u64>().ok());
-            if !sweep_candidate(epoch, cutoff, &roots, relative) {
+            if !sweep_candidate(epoch, cutoff, |path| roots.contains(path), relative) {
                 continue;
             }
             self.inner.count_delete();

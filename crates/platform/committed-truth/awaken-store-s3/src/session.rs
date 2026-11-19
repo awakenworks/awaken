@@ -24,40 +24,46 @@ fn retires_stream_checkpoint(
     !messages.is_empty() || matches!(state, RunState::Ended(_))
 }
 
-#[cfg(kani)]
-/// @obligation checkpoint.crash_preserves_durable_truth
-/// @obligation store_history.s3_publication_refines_committed_history
-#[kani::proof]
-fn control_commits_retain_checkpoints_until_conversation_advances_or_run_ends() {
-    let has_messages: bool = kani::any();
-    let is_terminal: bool = kani::any();
-    use awaken_agent_contract::agent::message::{Id, Message, Role};
-    let messages = if has_messages {
-        vec![Message::text(
-            Id("proof".into()),
-            Role::Assistant,
-            "partial",
-        )]
-    } else {
-        Vec::new()
-    };
-    let terminal = awaken_agent_contract::agent::run::EndCause::NaturalEnd;
-    let state = if is_terminal {
-        RunState::Ended(terminal)
-    } else {
-        RunState::Running
-    };
-    let retire = retires_stream_checkpoint(&messages, &state);
-    if !has_messages && !is_terminal {
-        assert!(!retire);
+#[cfg(test)]
+mod checkpoint_retirement_tests {
+    use super::*;
+
+    /// @exhaustive conversation_advanced(2) x run_ended(2) = 4
+    /// @obligation checkpoint.crash_preserves_durable_truth
+    /// @obligation store_history.s3_publication_refines_committed_history
+    #[test]
+    fn control_commits_retain_checkpoints_until_conversation_advances_or_run_ends() {
+        use awaken_agent_contract::agent::message::{Id, Message, Role};
+        let mut visited = 0;
+        for has_messages in [false, true] {
+            for is_terminal in [false, true] {
+                visited += 1;
+                let messages = if has_messages {
+                    vec![Message::text(
+                        Id("proof".into()),
+                        Role::Assistant,
+                        "partial",
+                    )]
+                } else {
+                    Vec::new()
+                };
+                let state = if is_terminal {
+                    RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd)
+                } else {
+                    RunState::Running
+                };
+                // A control commit (no new messages, Run still live) keeps the
+                // stream checkpoint; a conversation advance or a Run end
+                // retires it.
+                assert_eq!(
+                    retires_stream_checkpoint(&messages, &state),
+                    has_messages || is_terminal,
+                    "messages={has_messages} terminal={is_terminal}",
+                );
+            }
+        }
+        assert_eq!(visited, 4, "the whole domain is enumerated");
     }
-    if has_messages {
-        assert!(retire);
-    }
-    if is_terminal {
-        assert!(retire);
-    }
-    kani::cover!(!has_messages && !is_terminal);
 }
 
 /// A scope-bound application port. Authentication resolves the key before opening it.
