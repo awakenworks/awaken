@@ -513,7 +513,7 @@ mod tests {
             let applied = runner.run_bundle(&full).await.unwrap();
             assert_eq!(
                 applied.iter().map(|row| row.version).collect::<Vec<_>>(),
-                [7, 8, 9, 10, 11, 12],
+                [7, 8, 9, 10, 11, 12, 13],
                 "I1"
             );
             let observed: (i64, String, i64) = sqlx::query_as(
@@ -681,7 +681,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
             "S1/E1"
         );
         for (table, column) in [
@@ -1215,7 +1215,7 @@ mod tests {
                     .iter()
                     .map(|migration| migration.version)
                     .collect::<Vec<_>>(),
-                [11, 12],
+                [11, 12, 13],
                 "U3 follows the published V10 ledger in order"
             );
             let latest: Vec<(String,i64,String)> = sqlx::query_as("SELECT bundle_id,version,checksum FROM runtime_schema_migrations ORDER BY bundle_id,version").fetch_all(&conn).await.unwrap();
@@ -1336,7 +1336,7 @@ mod tests {
                     .iter()
                     .map(|migration| migration.version)
                     .collect::<Vec<_>>(),
-                [11, 12],
+                [11, 12, 13],
                 "U3 follows the published V10 ledger in order"
             );
             let latest: Vec<(String, i64, String)> =

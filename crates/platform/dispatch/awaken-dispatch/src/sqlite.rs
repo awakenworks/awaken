@@ -643,7 +643,7 @@ mod migration_history_tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-            assert_eq!(receipts, 12, "E3 exact replay");
+            assert_eq!(receipts, 13, "E3 exact replay");
             let closed_columns: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM pragma_table_info('runtime_dispatch') WHERE name='active_attempt_closing'",
             )
@@ -746,8 +746,8 @@ mod migration_history_tests {
         .expect("Q2 convergence receipt");
         assert_eq!(published_max, 29, "Q2 expanded terminal");
         assert_eq!(
-            converged_count, 12,
-            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline, entry closure, operation index, completion cancel fact, retained Task source and SQLite no-op receipts for Session membership and replayable Worker claims"
+            converged_count, 13,
+            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline, entry closure, operation index, completion cancel fact, retained Task source and SQLite no-op receipts for Session membership, replayable Worker claims and Session-shard candidates"
         );
     }
 }
