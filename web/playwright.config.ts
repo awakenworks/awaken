@@ -1,11 +1,27 @@
 import { defineConfig, devices } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const backendPort = Number(process.env.AWAKEN_E2E_BACKEND_PORT ?? "38080");
-const webPort = Number(process.env.AWAKEN_E2E_WEB_PORT ?? "3002");
+// A fixed port collides with whatever else the host already serves (another
+// worktree's gate, a long-lived container), so unset ports are allocated by
+// the kernel once and exported: Playwright re-evaluates this file in every
+// worker, and the inherited environment keeps all of them on the same ports.
+function allocatedPort(name: string): number {
+  const assigned = process.env[name];
+  if (assigned) return Number(assigned);
+  const port = execFileSync(process.execPath, [
+    "-e",
+    'const s=require("node:net").createServer();s.listen(0,"127.0.0.1",()=>{process.stdout.write(String(s.address().port));s.close();});',
+  ], { encoding: "utf8" }).trim();
+  process.env[name] = port;
+  return Number(port);
+}
+
+const backendPort = allocatedPort("AWAKEN_E2E_BACKEND_PORT");
+const webPort = allocatedPort("AWAKEN_E2E_WEB_PORT");
 const backendUrl = `http://127.0.0.1:${backendPort}`;
 const webUrl = `http://127.0.0.1:${webPort}`;
 const cargoTargetDir = process.env.AWAKEN_E2E_CARGO_TARGET_DIR
@@ -14,11 +30,10 @@ const cargoTargetDir = process.env.AWAKEN_E2E_CARGO_TARGET_DIR
 const backendDataDir = process.env.AWAKEN_E2E_OWNED_DATA_DIR
   ?? mkdtempSync(join(tmpdir(), "awaken-console-e2e."));
 process.env.AWAKEN_E2E_OWNED_DATA_DIR = backendDataDir;
-process.env.AWAKEN_E2E_BACKEND_PORT = String(backendPort);
 process.env.AWAKEN_E2E_CARGO_TARGET_DIR = cargoTargetDir;
 
-// UI e2e: drives the real console (vite dev on :3002, proxying /v1 to a real
-// awaken-server in management mode on :38080). Both are launched as
+// UI e2e: drives the real console (vite dev, proxying /v1 to a real
+// awaken-server in management mode), each on its allocated loopback port. Both are launched as
 // webServers; set AWAKEN_HTTP_URL to point vite's proxy at an existing backend.
 export default defineConfig({
   testDir: "./e2e",
@@ -75,7 +90,7 @@ export default defineConfig({
     {
       // Preview reuses Vite's same API proxy and serves the built release assets.
       // Acceptance callers build first; ordinary development tests keep HMR.
-      command: `pnpm exec vite ${process.env.AWAKEN_UIUX_PREVIEW === "1" ? "preview " : ""}--host 127.0.0.1 --port ${webPort}`,
+      command: `pnpm exec vite ${process.env.AWAKEN_UIUX_PREVIEW === "1" ? "preview " : ""}--host 127.0.0.1 --port ${webPort} --strictPort`,
       env: { AWAKEN_HTTP_URL: backendUrl },
       url: webUrl,
       timeout: 60_000,
