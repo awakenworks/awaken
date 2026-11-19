@@ -97,7 +97,7 @@ fn guard_capacity_counts_each_possible_claim_and_consumes_only_its_target() {
     state.seal_group("worker-group").unwrap();
     let before = future_capacity(&state).unwrap();
     let guard = request("pods", "awaken-first");
-    state.admit_terminal_pod_guard(&guard, NONCE).unwrap();
+    state.admit_terminal_pod_guard(&guard, NONCE, None).unwrap();
     let pending = future_capacity(&state).unwrap();
     assert!(pending.data_growth < before.data_growth);
     state.start_isolation(&guard).unwrap();

@@ -18,7 +18,7 @@ pub const SESSION_MCP_CREDENTIAL_VALIDITY_CAPABILITY: &str = "session-mcp-creden
 pub const SESSION_ENVIRONMENT_CONTINUATION_CAPABILITY: &str = "session-environment-continuation/v2";
 /// Terminal preparation decodes and enforces Control's source-I/O admission.
 pub const SESSION_TERMINAL_SOURCE_ADMISSION_CAPABILITY: &str =
-    "session-terminal-source-admission/v1";
+    "session-terminal-source-admission/v2";
 /// Worker decodes the prepared Session dispatch identity carried by every
 /// claimed request, independently of its Native, ACP or A2A executor backend.
 /// This is codec support, not permission to execute or replay a Run.

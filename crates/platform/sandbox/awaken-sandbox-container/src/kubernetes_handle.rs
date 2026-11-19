@@ -2,7 +2,7 @@
 // @formal reason: Pure original-result wire values belong to the same Container codec; both the codec
 // @formal reason: and the physical adapter consume this sole definition. No runtime or state service is introduced.
 //! Original projected Kubernetes-object wire facts owned by the Container codec.
-use awaken_container_contract::{CreateTicket, TicketResult, TicketStatus};
+use awaken_container_contract::{CreateTicket, TicketStatus};
 use awaken_provisioning_contract as pc;
 use serde::{Deserialize, Serialize};
 
@@ -297,8 +297,7 @@ impl KubernetesGuardedClaimHandle {
             || guard.isolation_pending
             || !matches!(
                 &guard.status,
-                TicketStatus::Finished(TicketResult::Isolated { uid })
-                    if !uid.trim().is_empty() && uid.trim() == uid
+                TicketStatus::Finished(result) if result.isolated_uid().is_some()
             )
         {
             return Err(awaken_container_contract::RuntimeError::Backend(
@@ -341,9 +340,7 @@ impl KubernetesGuardedClaimHandle {
     #[must_use]
     pub fn guard_uid(&self) -> Option<&str> {
         match &self.guard.status {
-            TicketStatus::Finished(TicketResult::Isolated { uid }) if !uid.trim().is_empty() => {
-                Some(uid)
-            }
+            TicketStatus::Finished(result) => result.isolated_uid(),
             _ => None,
         }
     }

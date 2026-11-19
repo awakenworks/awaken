@@ -99,60 +99,114 @@ impl K8sCreateBrokerEffects for K8sWorkerCreateLedger {
         let RequestJoin::Complete(tickets) = &joined else {
             return Ok(RequestJoin::Unknown);
         };
-        // Runtime owns the realization-namespace projection. Re-encoding raw
-        // scope here would target another Pod/PVC name after process loss.
+        // Join the whole Worker before selecting this Session. Other finished
+        // canonical Pod/PVC identities confer no membership or disposal right.
+        let scoped = scoped_terminal_tickets(tickets, &self.sandbox_namespace, expected_pod_name)?;
         let claim_name = crate::managed_names::continuation_claim_for_pod(expected_pod_name)?;
-        let mut claim_uid = None;
-        for ticket in tickets {
-            match &ticket.status {
-                TicketStatus::Finished(TicketResult::Created { uid })
-                    if ticket.request.resource == "persistentvolumeclaims"
-                        && ticket.request.namespace == self.sandbox_namespace
-                        && ticket.request.name == claim_name
-                        && claim_uid.is_none() =>
-                {
-                    claim_uid = Some(uid.clone());
+        let claim_uid = scoped.iter().find_map(|ticket| match &ticket.status {
+            TicketStatus::Finished(TicketResult::Created { uid })
+                if ticket.request.resource == "persistentvolumeclaims"
+                    && ticket.request.namespace == self.sandbox_namespace
+                    && ticket.request.name == claim_name =>
+            {
+                Some(uid.clone())
+            }
+            _ => None,
+        });
+        let Some(claim_uid) = claim_uid else {
+            return Ok(RequestJoin::Complete(scoped));
+        };
+        // An unclassified projected participant must reach its ordinary owner;
+        // a claim reservation cannot silently discard its writeback obligation.
+        if scoped.iter().any(|ticket| {
+            matches!(
+                ticket.status,
+                TicketStatus::Finished(
+                    TicketResult::Created { .. }
+                        | TicketResult::Isolated { .. }
+                        | TicketResult::CreatedThenIsolated { .. }
+                )
+            ) && !matches!(
+                ticket.request.resource.as_str(),
+                "pods" | "persistentvolumeclaims"
+            )
+        }) {
+            return Ok(RequestJoin::Complete(scoped));
+        }
+        let original_pod = scoped.iter().find(|ticket| {
+            ticket.request.resource == "pods"
+                && ticket.request.namespace == self.sandbox_namespace
+                && ticket.request.name == expected_pod_name
+        });
+        let mut absent_created_uid = None;
+        let request = match original_pod {
+            Some(ticket) => match &ticket.status {
+                TicketStatus::Finished(TicketResult::Created { uid }) => {
+                    // The ticket remembers creation, not continued existence.
+                    // Keep a live/foreign original with its ordinary owner. Only
+                    // a successful strong 404 admits same-name reisolation.
+                    let api: kube::Api<k8s_openapi::api::core::v1::Pod> =
+                        kube::Api::namespaced(self.client.clone(), &self.sandbox_namespace);
+                    if crate::get_optional(&api, expected_pod_name)
+                        .await?
+                        .is_some()
+                    {
+                        return Ok(RequestJoin::Complete(scoped));
+                    }
+                    if uid.len() > 256 || ticket.isolation_id.is_empty() {
+                        return Ok(RequestJoin::Unknown);
+                    }
+                    absent_created_uid = Some(uid.clone());
+                    ticket.request.clone()
                 }
                 TicketStatus::Finished(
-                    TicketResult::Created { .. } | TicketResult::Isolated { .. },
-                ) => {
-                    // The ordinary Pod/PVC owner or an unclassified participant
-                    // must decide its own cleanup. Never fabricate a guard for it.
-                    return Ok(joined.clone());
+                    TicketResult::Isolated { .. } | TicketResult::CreatedThenIsolated { .. },
+                ) => return Ok(RequestJoin::Complete(scoped)),
+                TicketStatus::Finished(TicketResult::RejectedNoEffect { .. }) => {
+                    ticket.request.clone()
                 }
-                TicketStatus::Finished(TicketResult::RejectedNoEffect { .. }) => {}
                 TicketStatus::InFlight => return Ok(RequestJoin::Unknown),
+            },
+            None => {
+                let digest = blake3::hash(
+                    &serde_json::to_vec(&(
+                        "k8s-terminal-claim-pod-v1",
+                        group,
+                        scope,
+                        expected_pod_name,
+                        &claim_uid,
+                    ))
+                    .map_err(backend)?,
+                )
+                .to_hex()
+                .to_string();
+                CreateTicketRequest::new(
+                    group,
+                    "pods",
+                    &self.sandbox_namespace,
+                    expected_pod_name,
+                    digest,
+                )?
             }
-        }
-        let Some(claim_uid) = claim_uid else {
-            return Ok(joined);
         };
-        let digest = blake3::hash(
-            &serde_json::to_vec(&(
-                "k8s-terminal-claim-pod-v1",
-                group,
-                scope,
-                expected_pod_name,
-                &claim_uid,
-            ))
-            .map_err(backend)?,
-        )
-        .to_hex()
-        .to_string();
-        let request = CreateTicketRequest::new(
-            group,
-            "pods",
-            &self.sandbox_namespace,
-            expected_pod_name,
-            digest,
-        )?;
         let isolation_id = uuid::Uuid::new_v4().simple().to_string();
         self.mutate(binding, |state| {
-            let changed = state.admit_terminal_pod_guard(&request, &isolation_id)?;
+            let changed = state.admit_terminal_pod_guard(
+                &request,
+                &isolation_id,
+                absent_created_uid.as_deref(),
+            )?;
             Ok(((), changed))
         })
         .await?;
-        self.isolate_sealed_group_and_join(binding, group).await
+        match self.isolate_sealed_group_and_join(binding, group).await? {
+            RequestJoin::Complete(tickets) => Ok(RequestJoin::Complete(scoped_terminal_tickets(
+                &tickets,
+                &self.sandbox_namespace,
+                expected_pod_name,
+            )?)),
+            RequestJoin::Unknown => Ok(RequestJoin::Unknown),
+        }
     }
 
     async fn seal_worker(&self, binding: K8sLedgerBinding<'_>) -> Result<(), RuntimeError> {
@@ -207,4 +261,31 @@ impl K8sCreateBrokerEffects for K8sWorkerCreateLedger {
             .map_err(|_| RawCreateFailurePhase::Capture)?;
         Ok((status, bytes))
     }
+}
+
+/// A projection of one already-complete group, never a second admission store.
+fn scoped_terminal_tickets(
+    tickets: &[CreateTicket],
+    namespace: &str,
+    pod: &str,
+) -> Result<Vec<CreateTicket>, RuntimeError> {
+    let claim = crate::managed_names::continuation_claim_for_pod(pod)?;
+    Ok(tickets
+        .iter()
+        .filter(|ticket| {
+            if ticket.request.namespace != namespace {
+                return true;
+            }
+            match ticket.request.resource.as_str() {
+                "pods" => ticket.request.name == pod || !ticket.request.name.starts_with("awaken-"),
+                "persistentvolumeclaims" => {
+                    ticket.request.name == claim
+                        || crate::managed_names::pod_for_continuation_claim(&ticket.request.name)
+                            .is_none()
+                }
+                _ => true,
+            }
+        })
+        .cloned()
+        .collect())
 }

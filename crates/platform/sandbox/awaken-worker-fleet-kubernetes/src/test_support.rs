@@ -44,6 +44,7 @@ pub struct IsolationApi {
     pub delete_denied: bool,
     pub denial_code: u16,
     pub creates: usize,
+    pub pod_create_response_lost: bool,
 }
 
 /// One in-flight Pod Create ticket awaiting isolation.
@@ -167,6 +168,12 @@ async fn create_pod(state: &State, request: Request<Body>) -> Response<Body> {
         let mut pod: Pod = serde_json::from_slice(&bytes).unwrap();
         pod.metadata.uid = Some("sentinel-uid".into());
         state.pod = Some(pod.clone());
+        if std::mem::take(&mut state.pod_create_response_lost) {
+            return response(
+                500,
+                json!({"apiVersion":"v1","kind":"Status","status":"Failure","reason":"InternalError","message":"owned fixture lost the Create response","code":500}),
+            );
+        }
         response(201, serde_json::to_value(pod).unwrap())
     }
 }

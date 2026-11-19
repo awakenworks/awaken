@@ -561,6 +561,7 @@ impl K8sWorkerCreateLedger {
 #[cfg(test)]
 mod tests {
     mod finite_policy;
+    mod terminal_claim;
     use super::*;
     use awaken_container_contract::{
         CreateTicketRequest, K8sCreateBrokerEffects, TicketAdmission, TicketResult,
@@ -578,9 +579,18 @@ mod tests {
         conflict: Arc<AtomicBool>,
         conflicting_data: Arc<Mutex<Option<Value>>>,
         lose_finish_reply: Arc<AtomicBool>,
+        isolation: Arc<awaken_sync::LeafLock<crate::test_support::IsolationApi>>,
     }
 
     fn fixture(lose_first_response: bool) -> Fixture {
+        let isolation = Arc::new(awaken_sync::LeafLock::new(
+            crate::test_support::IsolationApi {
+                policy: true,
+                delete_denied: true,
+                ..Default::default()
+            },
+        ));
+        let isolation_client = crate::test_support::isolation_api(isolation.clone());
         let stored = Arc::new(Mutex::new(None::<Value>));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let lost = Arc::new(Mutex::new(false));
@@ -588,6 +598,7 @@ mod tests {
         let conflicting_data = Arc::new(Mutex::new(None::<Value>));
         let lose_finish_reply = Arc::new(AtomicBool::new(false));
         let service = tower::service_fn({
+            let isolation_client = isolation_client.clone();
             let (stored, calls, lost, conflict, lose_finish_reply, conflicting_data) = (
                 stored.clone(),
                 calls.clone(),
@@ -597,6 +608,7 @@ mod tests {
                 conflicting_data.clone(),
             );
             move |request: Request<Body>| {
+                let isolation_client = isolation_client.clone();
                 let (stored, calls, lost, conflict, lose_finish_reply, conflicting_data) = (
                     stored.clone(),
                     calls.clone(),
@@ -607,6 +619,12 @@ mod tests {
                 );
                 async move {
                     let path = request.uri().path().to_owned();
+                    if !path.starts_with("/api/v1/namespaces/awaken-control/configmaps") {
+                        return isolation_client
+                            .send(request)
+                            .await
+                            .map_err(std::io::Error::other);
+                    }
                     assert!(path.starts_with("/api/v1/namespaces/awaken-control/configmaps"));
                     let method = request.method().as_str().to_owned();
                     calls.lock().unwrap().push(method.clone());
@@ -700,6 +718,7 @@ mod tests {
             conflict,
             conflicting_data,
             lose_finish_reply,
+            isolation,
         }
     }
 

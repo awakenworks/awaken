@@ -58,11 +58,39 @@ quiescence of its resident Hand. Until that Hand supplies a qualified quiescence
 proof, its Environment advertises no checkpoint format; admission refuses
 checkpoint-and-release before committing a suspend intent. Resident execution
 and durable request recovery retain their existing behavior.
+
 The byte store may remain installed without an advertised checkpoint format:
 terminal recovery still needs its existing read/delete port for checkpoints or
 uploads already owned by the root. Store presence alone grants no capture or
 restore placement capability. Advertising a format still requires both byte
 custody and the matching restoration rung.
+
+Terminal recovery is selected by unfinished lifecycle obligations, including
+an Environment, retained claim, or interrupted materialization without active
+Resource inputs. Every terminal root without its verified cleanup completion
+reaches the existing Resource/terminal driver. The driver still joins Run
+settlement and freezes targets before physical effects; candidate selection
+itself grants neither disposal authority nor an absence receipt. Verified
+completion is absorbing, while hidden Delete roots remain eligible for their
+existing tombstone compaction.
+
+The original Create ticket retains its Created UID when a closed source Pod
+has disappeared but its retained claim survives. The same ledger may record a
+`CreatedThenIsolated` result containing that historical UID and the independently
+verified reservation UID. A strong read of the original name precedes guard
+admission, and the existing reservation POST, policy attestation, pending marker
+and CAS replay still fence late requests. A live or foreign Pod cannot become
+an absence witness. The Session-scoped join selects only its exact Pod/claim
+after the entire Worker group has joined; unrelated finished Pod/claim tickets
+stay unchanged in the ledger. Unclassified projected participants remain
+unresolved rather than being silently dropped.
+
+This new terminal result is advertised through the existing
+`session-terminal-source-admission/v2` hard capability. Older retained Created
+results remain readable, while peers unable to decode the richer result are
+not assigned this cleanup. There is no parallel ticket, ledger or disposal
+implementation, and neither reservation nor candidate selection is a cleanup
+completion receipt.
 
 Disposal seals admission, observes existing execs stop, then harvests mutable
 bytes. An unquiet seal skips optional unattached Memory harvest without replacing

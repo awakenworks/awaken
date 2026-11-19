@@ -108,7 +108,12 @@ pub(in crate::create_ledger) fn future_capacity(
             ticket.status,
             TicketStatus::Finished(TicketResult::RejectedNoEffect { .. })
         ) && (ticket.isolation_pending || covered.contains(key));
-        if ticket.status == TicketStatus::InFlight || rejected_guard {
+        let historical_guard = covered.contains(key)
+            && matches!(
+                ticket.status,
+                TicketStatus::Finished(TicketResult::Created { .. })
+            );
+        if ticket.status == TicketStatus::InFlight || rejected_guard || historical_guard {
             let current = measure(&ticket.status)?;
             growth.data_growth = add(
                 growth.data_growth,

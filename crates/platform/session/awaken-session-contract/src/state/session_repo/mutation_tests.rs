@@ -635,6 +635,13 @@ fn terminal_preparation_and_physical_disposal_retire_one_aggregate_atomically() 
     assert!(aggregate.terminal_cleanup.is_completed(), "A5/E3");
     assert!(aggregate.resources.active.inputs().is_empty(), "A5/E3");
     assert!(aggregate.environment.binding().is_none(), "A5/E3");
+    // R6: verified terminal completion + no remaining Resources -> no recovery
+    // candidate. The existing exact preparation/disposal receipts above own
+    // completion; an empty input list or a missing binding cannot substitute.
+    assert!(
+        !aggregate.needs_resource_reconciliation(),
+        "R6 absorbing completion"
+    );
     aggregate.realization = None;
     assert!(
         !aggregate
@@ -1500,7 +1507,7 @@ fn disposition_is_orthogonal_to_execution_and_delete_is_idempotent() {
 /// | L4 | idle | false | true | false | false |
 /// | L5 | idle | true | any | false | true |
 /// | L6 | terminated | false | true | true | true |
-/// | L7 | terminated | false | false | true | false |
+/// | L7 | terminated, cleanup unfinished | false | false | true | true |
 /// | L8 | deleted | false | false | true | true |
 /// | L9 | activation_failed | false | true | true | true |
 #[test]
@@ -1573,7 +1580,7 @@ fn terminal_state_classification_follows_the_decision_table() {
             false,
             false,
             true,
-            false,
+            true,
         ),
         (
             "L8",
@@ -1632,6 +1639,48 @@ fn terminal_state_classification_follows_the_decision_table() {
             resource_reconcile,
             "{rule}"
         );
+    }
+}
+
+#[test]
+fn terminal_cleanup_selection_does_not_depend_on_resource_membership() {
+    // Cause/effect graph: C1 terminal execution; C2 no active/pending Resource
+    // input; C3 Environment absent/resident; C4 cleanup NotRequested/Fenced/
+    // Requested. R1 C1+C2+any(C3,C4) -> select the one terminal driver; its
+    // domain instruction remains ReleaseTerminal. No effect is executed here.
+    // R2 nonterminal+C2 -> do not reclaim its Environment. Constraints: every
+    // request freezes the same root identity/cursor, never an invented receipt.
+    // R6 verified completion is covered beside the actual disposal transition
+    // above; deleting/deleted compaction remains covered by L8.
+    for resident in [false, true] {
+        for phase in ["not_requested", "fenced", "requested"] {
+            let mut root = session("terminal-empty-inputs", SessionRevision(1));
+            if resident {
+                root.environment.set_resident("retained-original-binding");
+            }
+            assert!(
+                !root.needs_resource_reconciliation(),
+                "R2 active/{resident}"
+            );
+            root.execution = SessionExecutionState::Terminated;
+            if phase != "not_requested" {
+                assert!(root.ensure_terminal_cleanup_fence());
+            }
+            if phase == "requested" {
+                assert!(root.freeze_terminal_cleanup_targets([], 0, 0).unwrap());
+            }
+            assert!(root.resources.active.inputs().is_empty());
+            assert!(root.resources.pending.is_none());
+            assert_eq!(
+                crate::state::SessionResourceReconciliationInstruction::decide(&root),
+                crate::state::SessionResourceReconciliationInstruction::ReleaseTerminal,
+                "R1 instruction/{resident}/{phase}"
+            );
+            assert!(
+                root.needs_resource_reconciliation(),
+                "R1 selection/{resident}/{phase}"
+            );
+        }
     }
 }
 

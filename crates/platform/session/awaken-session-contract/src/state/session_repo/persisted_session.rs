@@ -1341,15 +1341,18 @@ impl PersistedSession {
     ///
     /// A running or rescheduling Session with an active manifest is deliberately
     /// excluded: its resident Environment is live execution state, not terminal
-    /// cleanup work. Keeping this predicate beside [`Self::is_terminal`] prevents
-    /// reconcilers from recreating lifecycle status lists with string comparisons.
+    /// cleanup work. A terminal root may still own an Environment, claim, or
+    /// interrupted Create without active Resource inputs. Its verified cleanup
+    /// completion, rather than Resource membership, closes that obligation.
+    /// Keeping this predicate beside [`Self::is_terminal`] prevents reconcilers
+    /// from recreating lifecycle status lists with string comparisons.
     #[must_use]
     pub fn needs_resource_reconciliation(&self) -> bool {
         matches!(
             self.disposition,
             SessionDisposition::Deleting | SessionDisposition::Deleted
         ) || self.resources.needs_reconciliation()
-            || (self.is_terminal() && self.resources.has_active())
+            || (self.is_terminal() && !self.has_verified_completed_cleanup())
     }
 
     /// Whether this durable aggregate must be revisited by any Coordinator

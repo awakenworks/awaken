@@ -780,6 +780,38 @@ fn guarded_claim_handle_keeps_one_typed_terminal_incarnation() {
     assert_eq!(guarded.claim_uid, "claim-uid", "H1");
     assert_eq!(guarded.predecessor, predecessor, "H1");
 
+    // H3 historical Created Pod is absent and the original closed Worker
+    // ticket later reserved its name. Roundtrip preserves BOTH identities;
+    // only the reservation is the terminal physical incarnation.
+    let mut historical = ticket.clone();
+    historical.origin = TicketOrigin::Worker;
+    historical.status = TicketStatus::Finished(TicketResult::CreatedThenIsolated {
+        created_uid: "original-pod-uid".into(),
+        uid: "guard-uid".into(),
+    });
+    let historical =
+        KubernetesGuardedClaimHandle::new("scope", &predecessor, historical, "claim-uid").unwrap();
+    let historical_handle = pc::SandboxHandle::container_v2(
+        "scope",
+        container_v2(
+            Some(ContainerContinuationHandle::KubernetesGuardedClaim(
+                Box::new(historical.clone()),
+            )),
+            Vec::new(),
+        ),
+    );
+    let replay: pc::SandboxHandle =
+        serde_json::from_str(&serde_json::to_string(&historical_handle).unwrap()).unwrap();
+    assert_eq!(replay, historical_handle, "H3 complete wire");
+    assert_eq!(
+        replay.container_physical_incarnation().unwrap(),
+        "guard-uid",
+        "H3 terminal reservation"
+    );
+    assert!(
+        matches!(historical.guard.status, TicketStatus::Finished(TicketResult::CreatedThenIsolated {created_uid, ..}) if created_uid == "original-pod-uid")
+    );
+
     let mut in_flight = ticket.clone();
     in_flight.status = TicketStatus::InFlight;
     assert!(

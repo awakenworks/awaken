@@ -612,9 +612,11 @@ impl K8sCreateBroker {
                     profile,
                 )
             }
-            TicketAdmission::Finished(TicketResult::Isolated { .. }) => Err(
-                ApplicationError::unavailable("isolated Create cannot replay an original object"),
-            ),
+            TicketAdmission::Finished(
+                TicketResult::Isolated { .. } | TicketResult::CreatedThenIsolated { .. },
+            ) => Err(ApplicationError::unavailable(
+                "isolated Create cannot replay an original object",
+            )),
             TicketAdmission::Finished(TicketResult::RejectedNoEffect { code }) => {
                 BrokerCreateReply::new(status_response(code, "Rejected"), profile)
             }

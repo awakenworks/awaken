@@ -84,17 +84,20 @@ pub(super) fn joined_original_tickets(
             {
                 joined.created_claim_uid = Some(uid.clone());
             }
-            TicketStatus::Finished(TicketResult::Isolated { uid })
-                if ticket.request.resource == "pods"
-                    && ticket.request.namespace == namespace
-                    && ticket.request.name == pod_name
-                    && joined.created_pod.is_none()
-                    && joined.isolated_pod.is_none() =>
+            TicketStatus::Finished(
+                TicketResult::Isolated { uid } | TicketResult::CreatedThenIsolated { uid, .. },
+            ) if ticket.request.resource == "pods"
+                && ticket.request.namespace == namespace
+                && ticket.request.name == pod_name
+                && joined.created_pod.is_none()
+                && joined.isolated_pod.is_none() =>
             {
                 joined.isolated_pod = Some((ticket.clone(), uid.clone()));
             }
             TicketStatus::Finished(
-                TicketResult::Created { .. } | TicketResult::Isolated { .. },
+                TicketResult::Created { .. }
+                | TicketResult::Isolated { .. }
+                | TicketResult::CreatedThenIsolated { .. },
             ) => {
                 // A duplicate own-root/claim result is contradictory evidence,
                 // never another Session's closed request.

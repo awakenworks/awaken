@@ -27,9 +27,26 @@ pub enum TicketResult {
     Isolated {
         uid: String,
     },
+    /// The original Created Pod is gone and the same admitted name is now
+    /// occupied by an independently verified terminal reservation. Preserve
+    /// the historical result instead of rewriting its UID as a fresh Create.
+    CreatedThenIsolated {
+        created_uid: String,
+        uid: String,
+    },
 }
 
 impl TicketResult {
+    /// The independently observed reservation identity, never the historical
+    /// Created incarnation retained alongside it.
+    pub fn isolated_uid(&self) -> Option<&str> {
+        self.validate().ok()?;
+        match self {
+            Self::Isolated { uid } | Self::CreatedThenIsolated { uid, .. } => Some(uid),
+            _ => None,
+        }
+    }
+
     /// Validate the existing definitive-result shape. This does not establish
     /// original request identity, isolation purpose or physical closure; those
     /// remain with the caller and the ledger's controlled transitions.
@@ -37,6 +54,17 @@ impl TicketResult {
         match self {
             Self::Created { uid } | Self::Isolated { uid }
                 if !uid.trim().is_empty() && uid.trim() == uid =>
+            {
+                Ok(())
+            }
+            Self::CreatedThenIsolated { created_uid, uid }
+                if !created_uid.trim().is_empty()
+                    && created_uid.trim() == created_uid
+                    && !uid.trim().is_empty()
+                    && uid.trim() == uid
+                    && created_uid != uid
+                    && created_uid.len() <= 256
+                    && uid.len() <= 256 =>
             {
                 Ok(())
             }

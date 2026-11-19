@@ -15,6 +15,9 @@ use awaken_container_contract::{
     TicketStatus,
 };
 mod capacity;
+
+#[cfg(test)]
+mod terminal_guard_tests;
 pub(super) use capacity::future_capacity;
 
 use std::collections::BTreeMap;
@@ -137,7 +140,9 @@ impl WorkerCreateLedgerState {
                     || matches!(
                         ticket.status,
                         TicketStatus::Finished(
-                            TicketResult::Created { .. } | TicketResult::RejectedNoEffect { .. }
+                            TicketResult::Created { .. }
+                                | TicketResult::RejectedNoEffect { .. }
+                                | TicketResult::CreatedThenIsolated { .. }
                         )
                     ))
             {
@@ -150,7 +155,10 @@ impl WorkerCreateLedgerState {
                     || !self.worker_group_is_sealed(&ticket.request.group)
                     || matches!(
                         ticket.status,
-                        TicketStatus::Finished(TicketResult::Isolated { .. })
+                        TicketStatus::Finished(
+                            TicketResult::Isolated { .. }
+                                | TicketResult::CreatedThenIsolated { .. }
+                        )
                     ))
             {
                 return Err(backend(
@@ -162,11 +170,22 @@ impl WorkerCreateLedgerState {
                 if self.capture_policy.is_some() {
                     super::capture::validate_fresh_result(result)?;
                 }
-                if matches!(result, TicketResult::Isolated { .. })
-                    && !valid_isolation_id(&ticket.isolation_id)
+                if matches!(
+                    result,
+                    TicketResult::Isolated { .. } | TicketResult::CreatedThenIsolated { .. }
+                ) && !valid_isolation_id(&ticket.isolation_id)
                 {
                     return Err(backend(
                         "Kubernetes Create isolation lacks its exact admitted identity",
+                    ));
+                }
+                if matches!(result, TicketResult::CreatedThenIsolated { .. })
+                    && (ticket.request.resource != "pods"
+                        || ticket.origin != TicketOrigin::Worker
+                        || !self.worker_group_is_sealed(&ticket.request.group))
+                {
+                    return Err(backend(
+                        "historical Pod isolation requires its original sealed ticket",
                     ));
                 }
             }
@@ -276,7 +295,32 @@ impl WorkerCreateLedgerState {
                 "Kubernetes Create completion lacks its original authority",
             ));
         }
-        let next = TicketStatus::Finished(result);
+        let historical_isolation = match (&ticket.status, &result) {
+            (
+                TicketStatus::Finished(TicketResult::Created { uid: original }),
+                TicketResult::Isolated { uid },
+            ) if isolation
+                && ticket.isolation_pending
+                && ticket.request.resource == "pods"
+                && ticket.origin == TicketOrigin::Worker =>
+            {
+                let retained = TicketResult::CreatedThenIsolated {
+                    created_uid: original.clone(),
+                    uid: uid.clone(),
+                };
+                retained.validate()?;
+                Some(retained)
+            }
+            (
+                TicketStatus::Finished(
+                    retained @ TicketResult::CreatedThenIsolated { uid: old_guard, .. },
+                ),
+                TicketResult::Isolated { uid },
+            ) if isolation && old_guard == uid => Some(retained.clone()),
+            _ => None,
+        };
+        let historical_reservation_won = historical_isolation.is_some();
+        let next = TicketStatus::Finished(historical_isolation.unwrap_or(result));
         let same = ticket.status == next;
         if same && !(isolation && ticket.isolation_pending) {
             return Ok(false);
@@ -288,7 +332,10 @@ impl WorkerCreateLedgerState {
             )
             && matches!(next, TicketStatus::Finished(TicketResult::Isolated { .. }));
         if (isolation && !ticket.isolation_pending)
-            || (!same && ticket.status != TicketStatus::InFlight && !reservation_won)
+            || (!same
+                && ticket.status != TicketStatus::InFlight
+                && !reservation_won
+                && !historical_reservation_won)
         {
             return Err(backend(
                 "Kubernetes Create completion conflicts with durable completion",
@@ -384,6 +431,7 @@ impl WorkerCreateLedgerState {
         &mut self,
         request: &CreateTicketRequest,
         isolation_id: &str,
+        absent_created_uid: Option<&str>,
     ) -> Result<bool, RuntimeError> {
         request.validate()?;
         if request.resource != "pods"
@@ -409,6 +457,12 @@ impl WorkerCreateLedgerState {
             if matches!(
                 existing.status,
                 TicketStatus::Finished(TicketResult::RejectedNoEffect { .. })
+            ) || matches!(
+                &existing.status,
+                TicketStatus::Finished(TicketResult::Created { uid })
+                    if absent_created_uid == Some(uid.as_str())
+                        && uid.len() <= 256
+                        && existing.request == *request
             ) {
                 let changed = !existing.isolation_pending;
                 existing.isolation_pending = true;
@@ -498,7 +552,10 @@ mod tests {
         // Decision rows below cover C6 x C7. Constraints: Worker cannot report
         // isolation or complete a terminal guard; provider requires C3+C4,
         // cannot report a rejection, and a guard accepts only Isolated. Without
-        // C5 provider may only replay identical accepted results. Invalid
+        // C5 provider may only replay identical accepted results. H3 extends
+        // Created(a)+pending+Isolated(b), a!=b, to retained CreatedThenIsolated;
+        // the provider alone owns the marker after exact absence observation.
+        // Isolated(a) cannot reclassify the same UID as a reservation. Invalid
         // contexts are deliberate negative controls, never persisted fixtures.
         let created = |uid: &str| TicketResult::Created { uid: uid.into() };
         let isolated = |uid: &str| TicketResult::Isolated { uid: uid.into() };
@@ -524,7 +581,7 @@ mod tests {
         ];
         let provider = [
             [Some(true), Some(true), None, Some(true), Some(true)],
-            [Some(true), None, None, None, None],
+            [Some(true), None, None, None, Some(true)],
             [None, None, None, Some(true), Some(true)],
             [None, None, None, Some(true), None],
         ];
@@ -563,7 +620,14 @@ mod tests {
                                                     || column >= 3) =>
                                         {
                                             if pending {
-                                                provider[row][column]
+                                                if row == 1
+                                                    && column == 4
+                                                    && origin != TicketOrigin::Worker
+                                                {
+                                                    None
+                                                } else {
+                                                    provider[row][column]
+                                                }
                                             } else {
                                                 (provider[row][column].is_some()
                                                     && *status
@@ -585,9 +649,21 @@ mod tests {
                                         assert_eq!(state, before, "E2/E3");
                                     } else {
                                         let ticket = state.tickets.get(&candidate.key()).unwrap();
+                                        let expected_result = if source
+                                            == CompletionSource::Isolation
+                                            && row == 1
+                                            && column == 4
+                                        {
+                                            TicketResult::CreatedThenIsolated {
+                                                created_uid: "a".into(),
+                                                uid: "b".into(),
+                                            }
+                                        } else {
+                                            result.clone()
+                                        };
                                         assert_eq!(
                                             ticket.status,
-                                            TicketStatus::Finished(result.clone()),
+                                            TicketStatus::Finished(expected_result),
                                             "E1"
                                         );
                                         assert_eq!(
@@ -660,7 +736,7 @@ mod tests {
         let mut state = WorkerCreateLedgerState::default();
         assert!(
             state
-                .admit_terminal_pod_guard(&guard, ISOLATION_ID)
+                .admit_terminal_pod_guard(&guard, ISOLATION_ID, None)
                 .is_err(),
             "G4"
         );
@@ -668,13 +744,13 @@ mod tests {
         state.seal_worker();
         assert!(
             state
-                .admit_terminal_pod_guard(&guard, ISOLATION_ID)
+                .admit_terminal_pod_guard(&guard, ISOLATION_ID, None)
                 .unwrap(),
             "G1"
         );
         assert!(
             !state
-                .admit_terminal_pod_guard(&guard, "f".repeat(32).as_str())
+                .admit_terminal_pod_guard(&guard, "f".repeat(32).as_str(), None)
                 .unwrap(),
             "G1 replay keeps first nonce"
         );
@@ -738,7 +814,7 @@ mod tests {
         let replacement_digest = request("pod-b", 'b');
         assert!(
             rejected
-                .admit_terminal_pod_guard(&replacement_digest, "f".repeat(32).as_str())
+                .admit_terminal_pod_guard(&replacement_digest, "f".repeat(32).as_str(), None)
                 .unwrap(),
             "G2"
         );
@@ -784,7 +860,7 @@ mod tests {
         created.seal_worker();
         assert!(
             !created
-                .admit_terminal_pod_guard(&replacement_digest, ISOLATION_ID)
+                .admit_terminal_pod_guard(&replacement_digest, ISOLATION_ID, None)
                 .unwrap(),
             "G3"
         );
@@ -801,7 +877,7 @@ mod tests {
             .clear();
         assert!(
             created
-                .admit_terminal_pod_guard(&replacement_digest, ISOLATION_ID)
+                .admit_terminal_pod_guard(&replacement_digest, ISOLATION_ID, None)
                 .is_err(),
             "G4 historical missing nonce"
         );
