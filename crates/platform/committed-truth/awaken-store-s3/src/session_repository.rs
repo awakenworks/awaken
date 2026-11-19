@@ -146,7 +146,6 @@ impl crate::objects::Inner {
 
 #[derive(Clone)]
 pub struct S3ComponentStore {
-    claim_routes: std::sync::Arc<claim_routes::Maintenance>,
     storage: S3Storage,
     component: String,
 }
@@ -160,7 +159,6 @@ type RecordIndex = BTreeMap<String, StoredRecord>;
 impl S3Storage {
     fn managed_component(&self) -> S3ComponentStore {
         S3ComponentStore {
-            claim_routes: Default::default(),
             storage: self.clone(),
             component: MANAGED.into(),
         }
@@ -173,7 +171,6 @@ impl S3Storage {
             return Err(Error::Invalid("invalid storage component".into()));
         }
         Ok(S3ComponentStore {
-            claim_routes: Default::default(),
             storage: self.clone(),
             component: name.into(),
         })
@@ -739,7 +736,6 @@ impl SessionObjectStore for S3ComponentStore {
         &self,
         _due_at_ms: u64,
     ) -> std::result::Result<Option<Vec<u8>>, PublicationError> {
-        self.maintain_claim_requests().await;
         let inner = &self.storage.inner;
         let prefix = inner.path(&self.candidate_prefix());
         // The top-level survey returns at most the 256 shard prefixes,

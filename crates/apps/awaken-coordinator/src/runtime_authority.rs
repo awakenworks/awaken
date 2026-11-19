@@ -1396,27 +1396,24 @@ pub(crate) struct ObjectRuntimeAuthority {
 impl ObjectRuntimeAuthority {
     pub(crate) fn new(
         storage: awaken_store_s3::S3Storage,
+        dispatch_objects: Arc<awaken_store_s3::S3ComponentStore>,
         default_scope: &str,
-    ) -> Result<Self, String> {
+    ) -> Self {
         let queue = awaken_dispatch::ObjectDispatchStore::new(
-            Arc::new(
-                storage
-                    .component_store("dispatch")
-                    .map_err(|error| error.to_string())?,
-            ),
+            dispatch_objects,
             default_scope.into(),
             storage.clock(),
         );
         let dispatch = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
             queue,
         )));
-        Ok(Self {
+        Self {
             storage,
             dispatch,
             local_commits: Arc::new(LocalCommitInitialization::new(
                 MAX_CONCURRENT_LOCAL_COMMIT_INITIALIZATIONS,
             )),
-        })
+        }
     }
 }
 type ObjectReadAdapter =

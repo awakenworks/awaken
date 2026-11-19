@@ -105,11 +105,11 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         )?),
         (None, None) => None,
     };
-    let persistence = if let Some(agent) = agent {
+    let persistence = if let Some(agent) = &agent {
         awaken_coordinator::open_object_coordinator_persistence(
             &storage,
             clock.clone(),
-            agent,
+            agent.clone(),
             deployment.mode == config::OperatingMode::Server,
         )
         .await?
@@ -341,6 +341,9 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         },
     )
     .await?;
+    if let Some(agent) = agent {
+        agent.install_claim_route_maintenance(&prepared.service_lifecycle);
+    }
     managed_platform::install_background_services(
         &prepared.service_lifecycle,
         &background_services,

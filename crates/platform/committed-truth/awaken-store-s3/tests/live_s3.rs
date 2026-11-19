@@ -213,16 +213,18 @@ async fn concurrent_claim_requests_replay_the_same_epoch_after_cold_restart() {
     let (seconds, nanos) = request_id.get_timestamp().unwrap().to_unix();
     let now = seconds * 1_000 + u64::from(nanos / 1_000_000);
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(now));
-    let open = || {
-        let engine = awaken_store_s3::S3Storage::new(
+    let open_engine = || {
+        awaken_store_s3::S3Storage::new(
             live::connect(&live::endpoint()),
             &fixture.prefix,
             clock.clone(),
             Limits::default(),
         )
-        .unwrap();
+        .unwrap()
+    };
+    let open = || {
         ObjectDispatchStore::new(
-            Arc::new(engine.component_store("dispatch").unwrap()),
+            Arc::new(open_engine().component_store("dispatch").unwrap()),
             "tenant".into(),
             clock.clone(),
         )
@@ -323,18 +325,11 @@ async fn concurrent_claim_requests_replay_the_same_epoch_after_cold_restart() {
             .len(),
         1
     );
-    clock.advance(16 * 60 * 1_000);
-    let sweeper = open();
-    sweeper.claimable_shards().await.unwrap();
-    assert!(
-        fixture
-            .store
-            .list(Some(&path))
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    let expires_at = now + 15 * 60 * 1_000;
+    clock.set(expires_at);
+    let sweeper = open_engine().component_store("dispatch").unwrap();
+    assert_eq!(sweeper.retire_claim_requests().await.unwrap(), expires_at);
+
     clock.set(now);
     assert!(matches!(
         open()
@@ -349,5 +344,70 @@ async fn concurrent_claim_requests_replay_the_same_epoch_after_cold_restart() {
             .unwrap(),
         ClaimRequestOutcome::Empty
     ));
+    // Refusal is proven before physical collection, while the old route exists.
+    assert_eq!(
+        fixture
+            .store
+            .list(Some(&path))
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(!sweeper.collect_retired_claim_requests().await.unwrap());
+    assert!(
+        fixture
+            .store
+            .list(Some(&path))
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        open()
+            .claim_for_request(
+                &request,
+                requester,
+                workers.clone(),
+                Arc::new(LeastLoadedPolicy),
+                1000
+            )
+            .await
+            .unwrap(),
+        ClaimRequestOutcome::Empty
+    ));
+
+    // The exact same slow clock can claim unused compatible work with a new ID
+    // whose deadline lies beyond the durable cutoff.
+    let issued = now + 1;
+    let timestamp = uuid::Timestamp::from_unix(
+        uuid::NoContext,
+        issued / 1_000,
+        (issued % 1_000) as u32 * 1_000_000,
+    );
+    let unused = if left.run_id().0 == "run" {
+        "other-run"
+    } else {
+        "run"
+    };
+    let fresh = ClaimRequest {
+        request_id: uuid::Uuid::new_v7(timestamp).to_string(),
+        run_id: Some(RunId(unused.into())),
+    };
+    let claimed = claim(
+        open()
+            .claim_for_request(
+                &fresh,
+                requester,
+                workers.clone(),
+                Arc::new(LeastLoadedPolicy),
+                1000,
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(claimed.run_id().0, unused);
     fixture.cleanup().await;
 }

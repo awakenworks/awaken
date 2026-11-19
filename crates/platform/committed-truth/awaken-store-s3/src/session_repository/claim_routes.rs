@@ -8,13 +8,11 @@ use awaken_time::WallClockExt as _;
 use futures::{StreamExt as _, TryStreamExt as _};
 use object_store::UpdateVersion;
 use std::time::Duration;
-use tokio::{sync::Mutex, time::Instant};
 
 const BATCH: usize = 1_000;
 const INTERVAL: Duration = Duration::from_secs(15);
-
-#[derive(Default)]
-pub(super) struct Maintenance(Mutex<Option<Instant>>);
+const NEXT_BATCH: Duration = Duration::from_millis(250);
+const OPERATION_BUDGET: Duration = Duration::from_secs(5);
 
 impl S3ComponentStore {
     fn claim_routes_prefix(&self) -> Path {
@@ -108,7 +106,9 @@ impl S3ComponentStore {
         }
     }
 
-    async fn advance_claim_cutoff(&self, now: u64) -> Result<u64> {
+    /// Publish and confirm the durable fence for expired claim request IDs.
+    pub async fn retire_claim_requests(&self) -> Result<u64> {
+        let now = self.storage.inner.clock.now_ms();
         loop {
             let (cutoff, version) = self.claim_cutoff().await?;
             if cutoff >= now {
@@ -134,14 +134,22 @@ impl S3ComponentStore {
                     object_store::Error::AlreadyExists { .. }
                     | object_store::Error::Precondition { .. },
                 ) => {}
-                Err(error) => return Err(Error::OutcomeUnknown(error.to_string())),
+                Err(error) => {
+                    // The conditional PUT may have applied before the response was lost.
+                    return match self.claim_cutoff().await {
+                        Ok((observed, _)) if observed >= now => Ok(observed),
+                        _ => Err(Error::OutcomeUnknown(error.to_string())),
+                    };
+                }
             }
         }
     }
 
-    async fn sweep_claim_requests(&self) -> Result<bool> {
+    /// Remove one bounded batch of routes below the persisted fence. A full
+    /// batch signals that another pass may be needed.
+    pub async fn collect_retired_claim_requests(&self) -> Result<bool> {
         let inner = &self.storage.inner;
-        let cutoff = self.advance_claim_cutoff(inner.clock.now_ms()).await?;
+        let (cutoff, _) = self.claim_cutoff().await?;
         let prefix = self.claim_routes_prefix();
         let mut routes = inner.store.list(Some(&prefix));
         let mut expired = Vec::new();
@@ -167,30 +175,47 @@ impl S3ComponentStore {
         }
         let saturated = expired.len() == BATCH;
         if !expired.is_empty() {
-            inner
+            let mut deleted = inner
                 .store
-                .delete_stream(futures::stream::iter(expired.into_iter().map(Ok)).boxed())
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(storage_error)?;
+                .delete_stream(futures::stream::iter(expired.into_iter().map(Ok)).boxed());
+            while let Some(result) = deleted.next().await {
+                match result {
+                    Ok(_) | Err(object_store::Error::NotFound { .. }) => (),
+                    Err(error) => return Err(storage_error(error)),
+                }
+            }
         }
         Ok(saturated)
     }
 
-    pub(super) async fn maintain_claim_requests(&self) {
-        let Ok(mut scheduled) = self.claim_routes.0.try_lock() else {
-            return;
-        };
-        let now = awaken_time::mono::now();
-        if scheduled.is_some_and(|next| next > now) {
-            return;
-        }
-        *scheduled = Some(now + INTERVAL);
-        match tokio::time::timeout(Duration::from_millis(250), self.sweep_claim_requests()).await {
-            Ok(Ok(true)) => *scheduled = Some(now + Duration::from_millis(250)),
-            Ok(Ok(false)) => (),
-            Ok(Err(error)) => tracing::warn!(%error, "S3 claim route sweep will retry"),
-            Err(_) => tracing::debug!("S3 claim route sweep reached its budget"),
+    /// Run on a Coordinator-owned service task. Dropping the task future
+    /// cancels its current pass and leaves any published fence recoverable.
+    pub async fn maintain_claim_requests(&self) {
+        loop {
+            match tokio::time::timeout(OPERATION_BUDGET, self.retire_claim_requests()).await {
+                Ok(Ok(_)) => (),
+                Ok(Err(error)) => tracing::warn!(%error, "S3 claim request retirement will retry"),
+                Err(_) => tracing::warn!("S3 claim request retirement reached its budget"),
+            }
+
+            // Collection can still use the last durable fence when retirement
+            // could not confirm a newer one.
+            let delay =
+                match tokio::time::timeout(OPERATION_BUDGET, self.collect_retired_claim_requests())
+                    .await
+                {
+                    Ok(Ok(true)) => NEXT_BATCH,
+                    Ok(Ok(false)) => INTERVAL,
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, "S3 claim route collection will retry");
+                        INTERVAL
+                    }
+                    Err(_) => {
+                        tracing::warn!("S3 claim route collection reached its budget");
+                        INTERVAL
+                    }
+                };
+            tokio::time::sleep(delay).await;
         }
     }
 }

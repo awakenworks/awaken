@@ -121,7 +121,13 @@ pub(crate) struct FaultStore {
     pub hold_next_head: AtomicBool,
     pub head_entered: tokio::sync::Notify,
     pub head_resume: tokio::sync::Notify,
+    pub hold_next_cutoff: AtomicBool,
+    pub lose_cutoff_response: AtomicBool,
+    pub hold_next_claim_route: AtomicBool,
+    pub claim_write_entered: tokio::sync::Notify,
+    pub claim_write_resume: tokio::sync::Notify,
     pub hold_next_delete: AtomicBool,
+    pub fail_delete_after_first: AtomicBool,
     pub delete_entered: Arc<tokio::sync::Notify>,
     pub delete_resume: Arc<tokio::sync::Notify>,
     pub ranges: awaken_sync::LeafLock<Vec<(String, GetRange)>>,
@@ -135,7 +141,13 @@ impl Default for FaultStore {
             hold_next_head: AtomicBool::new(false),
             head_entered: tokio::sync::Notify::new(),
             head_resume: tokio::sync::Notify::new(),
+            hold_next_cutoff: AtomicBool::new(false),
+            lose_cutoff_response: AtomicBool::new(false),
+            hold_next_claim_route: AtomicBool::new(false),
+            claim_write_entered: Default::default(),
+            claim_write_resume: Default::default(),
             hold_next_delete: AtomicBool::new(false),
+            fail_delete_after_first: AtomicBool::new(false),
             delete_entered: Default::default(),
             delete_resume: Default::default(),
             ranges: Default::default(),
@@ -167,6 +179,14 @@ impl ObjectStore for FaultStore {
             self.head_entered.notify_one();
             self.head_resume.notified().await;
         }
+        let cutoff = path.as_ref().contains("/v1/routing/claim-retention/");
+        if (cutoff && self.hold_next_cutoff.swap(false, Ordering::SeqCst))
+            || (path.as_ref().contains("/v1/routing/claim-requests/")
+                && self.hold_next_claim_route.swap(false, Ordering::SeqCst))
+        {
+            self.claim_write_entered.notify_one();
+            self.claim_write_resume.notified().await;
+        }
         if path.as_ref().ends_with("/head.json")
             && self
                 .cas_conflicts
@@ -189,7 +209,7 @@ impl ObjectStore for FaultStore {
             return Err(fault_error());
         }
         let result = self.inner.put_opts(path, payload, options).await?;
-        if fault == 1 {
+        if fault == 1 || (cutoff && self.lose_cutoff_response.swap(false, Ordering::SeqCst)) {
             Err(fault_error())
         } else {
             Ok(result)
@@ -215,10 +235,16 @@ impl ObjectStore for FaultStore {
         &self,
         locations: BoxStream<'static, object_store::Result<Path>>,
     ) -> BoxStream<'static, object_store::Result<Path>> {
+        use futures::StreamExt;
+        if self.fail_delete_after_first.swap(false, Ordering::SeqCst) {
+            let first = self.inner.delete_stream(locations.take(1).boxed());
+            return first
+                .chain(futures::stream::iter([Err(fault_error())]))
+                .boxed();
+        }
         if !self.hold_next_delete.swap(false, Ordering::SeqCst) {
             return self.inner.delete_stream(locations);
         }
-        use futures::StreamExt;
         let inner = self.inner.clone();
         let entered = self.delete_entered.clone();
         let resume = self.delete_resume.clone();

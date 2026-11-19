@@ -54,6 +54,7 @@ pub async fn migrate_postgres_schema(storage: &CoordinatorStorage) -> Result<(),
 pub struct ObjectAgentPersistence {
     sessions: std::sync::Arc<awaken_session_store::ObjectManagedSessionRepository>,
     runtime: std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority>,
+    claim_routes: std::sync::Arc<awaken_store_s3::S3ComponentStore>,
 }
 impl ObjectAgentPersistence {
     pub fn sessions(&self) -> std::sync::Arc<dyn awaken_session_application::SessionStore> {
@@ -71,6 +72,20 @@ impl ObjectAgentPersistence {
     ) -> std::sync::Arc<dyn awaken_dispatch_erasure::RuntimeAuthority> {
         self.runtime.clone()
     }
+
+    pub fn install_claim_route_maintenance(
+        &self,
+        lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    ) {
+        let routes = self.claim_routes.clone();
+        lifecycle.spawn("s3-claim-route-maintenance", move |cancellation| async move {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => Ok(()),
+                () = routes.maintain_claim_requests() => Err("S3 claim route maintenance exited unexpectedly".into()),
+            }
+        });
+    }
 }
 /// One concrete production selection for Session roots, Run scheduling,
 /// committed Thread truth, range history and claim-scoped streaming ports.
@@ -86,11 +101,21 @@ pub fn object_agent_persistence(
                 .map_err(|error| error.to_string())?,
         ),
     ));
+    let claim_routes = std::sync::Arc::new(
+        storage
+            .component_store("dispatch")
+            .map_err(|error| error.to_string())?,
+    );
     let runtime = std::sync::Arc::new(super::runtime_authority::ObjectRuntimeAuthority::new(
         storage,
+        claim_routes.clone(),
         default_scope,
-    )?);
-    Ok(ObjectAgentPersistence { sessions, runtime })
+    ));
+    Ok(ObjectAgentPersistence {
+        sessions,
+        runtime,
+        claim_routes,
+    })
 }
 
 /// Operational migration reuses the composition's one bounded pool. Scope SQL
