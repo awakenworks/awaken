@@ -3497,7 +3497,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
     // alternate causes.
     use awaken_agent_contract::agent::content::ContentBlock;
 
-    struct HauntedRuntime;
+    struct HauntedRuntime(Arc<awaken_sync::LeafLock<Vec<String>>>);
     #[async_trait::async_trait]
     impl SessionRuns for HauntedRuntime {
         async fn run(
@@ -3642,8 +3642,10 @@ async fn minting_namespace_cannot_alias_committed_truth() {
             &self,
             thread: &str,
         ) -> Result<bool, awaken_runtime_contract::runs::RunError> {
-            // A previous process persisted threads sesn_0 and sesn_1.
-            Ok(thread == "sesn_0" || thread == "sesn_1")
+            let mut candidates = self.0.lock();
+            candidates.push(thread.to_owned());
+            // Force real collisions without depending on the ID generator.
+            Ok(candidates.len() <= 2)
         }
 
         // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -3790,7 +3792,8 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         }
     }
 
-    let state = support::state(HauntedRuntime).await;
+    let candidates = Arc::new(awaken_sync::LeafLock::new(Vec::new()));
+    let state = support::state(HauntedRuntime(candidates.clone())).await;
     let session = state
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
@@ -3807,9 +3810,14 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         )
         .await
         .expect("create skips haunted ids");
-    assert!(session.id.starts_with("sesn_fnv1a64:"));
-    assert_ne!(session.id, "sesn_0");
-    assert_ne!(session.id, "sesn_1");
+    let suffix = session.id.strip_prefix("sesn_").unwrap();
+    assert_eq!(suffix.len(), 32);
+    assert_eq!(uuid::Uuid::parse_str(suffix).unwrap().get_version_num(), 7);
+    let candidates = candidates.lock();
+    assert!(candidates.len() >= 3);
+    assert_eq!(session.id, candidates[2]);
+    assert_ne!(session.id, candidates[0]);
+    assert_ne!(session.id, candidates[1]);
 }
 
 /// ADR-0048 / S10: Session creation commits the lifecycle fact and Session in

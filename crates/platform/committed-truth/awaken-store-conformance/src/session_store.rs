@@ -1649,20 +1649,22 @@ pub async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed
 
 /// Reconciliation-index cause/effect rules: C1=Resource/MCP durable work is
 /// pending -> E1=index the Session; C2=all work and retention references are
-/// terminal -> E2=remove it; C3=only the durable Environment identity is
-/// resident -> E3=index it through the same aggregate scan for environment
-/// restoration; C4=an active Resource manifest still owns retention references
+/// terminal and cleanup is verified -> E2=remove it; C3=only the durable
+/// Environment identity is resident -> E3=index it through the same aggregate
+/// scan for environment restoration; C4=an active Resource manifest still owns retention references
 /// -> E4=keep it indexed even after MCP work becomes terminal, so a lost
 /// ResourceReference projection can be repaired. Constraint: this opaque binding
 /// is not Hand activity/process state; Hand inactivity remains solely in the
-/// Worker-local Runtime Host and adds no second repository predicate.
+/// Worker-local Runtime Host and adds no second repository predicate. Resource
+/// release without verified cleanup remains a terminal recovery obligation.
 ///
-/// | Rule | Resource work | MCP work | References | Environment | Effect |
-/// |---|---|---|---|---|---|
-/// | I1 | pending | active | yes | absent | E1 indexed |
-/// | I2 | settled | failed | yes | absent | E4 indexed for reference repair |
-/// | I3 | terminal | failed | no | absent | E2 absent |
-/// | I4 | terminal | failed | no | resident | E3 indexed for restoration |
+/// | Rule | Resource work | MCP work | References | Cleanup | Environment | Effect |
+/// |---|---|---|---|---|---|---|
+/// | I1 | pending | active | yes | none | absent | E1 indexed |
+/// | I2 | settled | failed | yes | none | absent | E4 indexed for reference repair |
+/// | I3 | released | failed | no | unverified | absent | E1 indexed for cleanup |
+/// | I4 | terminal | failed | no | verified | absent | E2 absent |
+/// | I5 | settled, live | failed | no | none | resident | E3 indexed for restoration |
 pub async fn pending_resource_activation_index_is_durable<
     R: awaken_session_contract::SessionRepository + awaken_session_contract::LifecycleOutbox,
 >(
@@ -1709,21 +1711,38 @@ pub async fn pending_resource_activation_index_is_durable<
         .resources
         .complete_terminal_release("conformance cleanup");
     pending = replace_session(r, "ws_a", pending, "test:resource-released", Vec::new()).await;
+    assert_eq!(
+        r.reconciliation_scan(None).await.unwrap().sessions,
+        vec![ScopedPersistedSession {
+            workspace_id: "ws_a".into(),
+            session: pending.clone(),
+        }],
+        "I3: terminal release without verified cleanup remains recoverable"
+    );
+
+    complete_terminal_cleanup(&mut pending);
+    replace_session(r, "ws_a", pending, "test:cleanup-completed", Vec::new()).await;
     assert!(
         r.reconciliation_scan(None)
             .await
             .unwrap()
             .sessions
-            .is_empty()
+            .is_empty(),
+        "I4/E2: verified cleanup closes the final recovery obligation"
     );
 
-    pending.environment.set_resident("worker-owned-binding");
-    pending = replace_session(r, "ws_a", pending, "test:resident-environment", Vec::new()).await;
+    let mut resident = session("sesn_resident", "resident");
+    resident.resources = Default::default();
+    resident.mcp.attachments[0].state =
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Failed;
+    assert!(!resident.needs_reconciliation());
+    resident.environment.set_resident("worker-owned-binding");
+    resident = create_session(r, "ws_a", resident, Vec::new()).await;
     assert_eq!(
         r.reconciliation_scan(None).await.unwrap().sessions,
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
-            session: pending,
+            session: resident,
         }],
         "C3/E3: restore durable Environment identity without persisting Hand activity"
     );

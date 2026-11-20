@@ -693,18 +693,9 @@ fn run_error(error: StateError) -> RunError {
 
 #[async_trait::async_trait]
 impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol<'_> {
-    // Mint from the process-incarnation namespace so active-active peers and
-    // restarted processes cannot choose the same Session id.
+    // UUIDv7 keeps candidates independent of runtime incarnation and local state.
     fn session_id_candidate(&self) -> String {
-        let sequence = self.state.session_seq.fetch_add(1, Ordering::SeqCst);
-        format!(
-            "sesn_{}",
-            awaken_agent_contract::stable_fingerprint(&(
-                "managed-session",
-                self.state.roles.creation.runtime_incarnation(),
-                sequence,
-            ))
-        )
+        format!("sesn_{}", uuid::Uuid::now_v7().simple())
     }
 
     fn initial_event_plan(

@@ -7,7 +7,6 @@
 //! command boundary can reverse to the Runtime's batch-local call id.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use tokio::sync::broadcast;
 

@@ -9,7 +9,6 @@
 use awaken_credential_contract::{CredentialMaterialIngress, SessionCredentialSource};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 #[cfg(any(test, feature = "test-support"))]
 use awaken_environment_application::execution::EnvironmentExecutionApplication;
@@ -113,7 +112,6 @@ impl ManagedState {
             application,
             sessions: Arc::new(InvariantLock::new(HashMap::new())),
             sse_refreshes: Default::default(),
-            session_seq: Arc::new(AtomicU64::new(0)),
             live: Arc::new(LeafLock::new(HashMap::new())),
             inference_geo_policy: None,
             capture_policy,
@@ -166,7 +164,6 @@ impl ManagedState {
             mut application,
             sessions,
             sse_refreshes,
-            session_seq,
             live,
             inference_geo_policy,
             capture_policy,
@@ -187,7 +184,6 @@ impl ManagedState {
             application,
             sessions,
             sse_refreshes,
-            session_seq,
             live,
             inference_geo_policy,
             capture_policy,

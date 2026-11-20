@@ -1,3 +1,7 @@
+#[path = "session_repository/identities.rs"]
+mod identities;
+#[path = "session_repository/recovery.rs"]
+mod recovery;
 mod support;
 use awaken_lease_testkit::ManualClock;
 use awaken_session_contract::SessionConditionalPublication as _;

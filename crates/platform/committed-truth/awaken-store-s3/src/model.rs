@@ -44,7 +44,7 @@ impl SessionKey {
                 || value.len() > 200
                 || !value
                     .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-:".contains(&b))
             {
                 return Err(Error::Invalid(
                     "scope and Session require safe opaque IDs".into(),

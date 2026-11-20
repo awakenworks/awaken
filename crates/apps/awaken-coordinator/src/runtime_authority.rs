@@ -1640,3 +1640,7 @@ impl RuntimeAuthority for ObjectRuntimeAuthority {
 #[cfg(test)]
 #[path = "runtime_authority_object_tests.rs"]
 mod object_tests;
+
+#[cfg(test)]
+#[path = "runtime_authority/tests/session_identity.rs"]
+mod session_identity_tests;

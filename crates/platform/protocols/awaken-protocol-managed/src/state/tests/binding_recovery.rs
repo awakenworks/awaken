@@ -176,7 +176,12 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     refresh
         .fail
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let sequence = state.session_seq.load(std::sync::atomic::Ordering::SeqCst);
+    let roots = state
+        .roles
+        .roots
+        .sessions_by_owner(awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap();
     let rejected = serde_json::from_value(serde_json::json!({
         "agent":"coordinator", "environment_id":"env_local"
     }))
@@ -189,9 +194,14 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
         "D4"
     );
     assert_eq!(
-        state.session_seq.load(std::sync::atomic::Ordering::SeqCst),
-        sequence,
-        "D4 no id mint"
+        state
+            .roles
+            .roots
+            .sessions_by_owner(awaken_tenancy::DEFAULT_WORKSPACE_ID)
+            .await
+            .unwrap(),
+        roots,
+        "D4 failed refresh publishes no Session"
     );
 }
 
@@ -1130,19 +1140,21 @@ async fn session_id_mint_namespaces_restart_away_from_repository_truth() {
         .await
         .expect("mint after restart");
     assert_ne!(created.id, "sesn_0");
-    assert!(created.id.starts_with("sesn_fnv1a64:"));
+    let suffix = created.id.strip_prefix("sesn_").unwrap();
+    assert_eq!(suffix.len(), 32);
+    assert_eq!(uuid::Uuid::parse_str(suffix).unwrap().get_version_num(), 7);
 }
 
 #[tokio::test]
 async fn active_active_session_id_mint_is_collision_free() {
-    // Cause/effect graph: each Coordinator owns a distinct process
-    // incarnation but both start their local sequence at zero and share one
-    // Session repository.
+    // Independent Coordinator projections mint UUIDs against the same durable
+    // repository; neither process-local counters nor Runtime incarnations are
+    // required for uniqueness.
     //
-    // | Rule | incarnations | local sequence | shared repo | Effect |
-    // |---|---|---|---|---|
-    // | S1 | different | both zero | yes | two distinct committed Sessions |
-    // | S2 | same process object | increasing | yes | distinct Sessions |
+    // | Rule | projections | shared repo | Effect |
+    // |---|---|---|---|
+    // | S1 | independent | yes | two distinct committed Sessions |
+    // | S2 | same projection | yes | distinct Sessions |
     let repo: Arc<dyn awaken_session_application::SessionStore> =
         Arc::new(ephemeral_session_repo().await);
     let left = {

@@ -212,7 +212,23 @@ async fn frozen_pages_nested_fork_and_source_append_are_isolated() {
 #[tokio::test]
 async fn scope_and_thread_references_never_escape_partition() {
     let (_, _, engine, session) = setup().await;
-    assert!(SessionKey::new("../bad", "session").is_err());
+    for value in ["", "../bad", "a/b", "a\\b", "a%2fb", "a?b", "a#b", "a\0b"] {
+        assert!(
+            SessionKey::new(value, "session").is_err(),
+            "scope {value:?}"
+        );
+        assert!(
+            SessionKey::new("tenant", value).is_err(),
+            "Session {value:?}"
+        );
+        assert!(
+            serde_json::from_value::<SessionKey>(serde_json::json!({
+                "scope": "tenant", "session": value,
+            }))
+            .is_err(),
+            "persisted Session {value:?}"
+        );
+    }
     let claim = activate(&session, "run", "session").await.run_claim();
     session
         .commit(&claim, operation("run", "session", 0, 0, "private"))

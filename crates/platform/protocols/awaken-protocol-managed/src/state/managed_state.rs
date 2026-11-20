@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 use awaken_sync::{InvariantLock, LeafLock};
 use tokio::sync::broadcast;
@@ -79,7 +78,6 @@ pub struct ManagedState {
     /// Disposable record→wire projection; durable truth lives in the application repository.
     pub(super) sessions: Arc<InvariantLock<HashMap<String, SessionRecord>>>,
     pub(crate) sse_refreshes: super::sse_refresh::SseRefreshes,
-    pub(super) session_seq: Arc<AtomicU64>,
     /// Per-Session committed wire-event channels. Runtime live observations use
     /// the ThreadEventHub subscription and never enter this map.
     pub(super) live: Arc<LeafLock<HashMap<String, broadcast::Sender<Event>>>>,

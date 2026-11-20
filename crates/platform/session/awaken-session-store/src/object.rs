@@ -605,7 +605,9 @@ impl SessionReconciliation for ObjectManagedSessionRepository {
                 continue;
             }
             let state = State::decode(&object)?;
-            if !state.reconcilable {
+            // The persisted hint was computed by the writer's domain version.
+            // Inspect every live root so upgrades cannot hide newly required work.
+            if state.root.is_none() {
                 continue;
             }
             if examined == RECOVERY_BATCH_SIZE as usize {
@@ -618,9 +620,16 @@ impl SessionReconciliation for ObjectManagedSessionRepository {
                     return Err(busy());
                 }
                 let mut state = State::decode(&object)?;
+                if state.root.is_none() {
+                    break;
+                }
                 match state.session(&object.session_id) {
                     Ok(session) => {
-                        if state.quarantined.take().is_some()
+                        let reconcilable = session.needs_reconciliation();
+                        let repair = state.quarantined.take().is_some()
+                            || state.reconcilable != reconcilable;
+                        state.reconcilable = reconcilable;
+                        if repair
                             && !self
                                 .persist(
                                     Some(&object),
@@ -637,10 +646,12 @@ impl SessionReconciliation for ObjectManagedSessionRepository {
                                 .ok_or(SessionRepositoryError::NotFound)?;
                             continue;
                         }
-                        page.sessions.push(ScopedPersistedSession {
-                            workspace_id: object.owner_scope.clone(),
-                            session,
-                        });
+                        if reconcilable {
+                            page.sessions.push(ScopedPersistedSession {
+                                workspace_id: object.owner_scope.clone(),
+                                session,
+                            });
+                        }
                     }
                     Err(error) => {
                         let reason = error.to_string();
