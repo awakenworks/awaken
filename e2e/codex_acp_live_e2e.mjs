@@ -142,10 +142,10 @@ async function startHostLoginProfile() {
     process.platform === 'win32' ? 'awaken.exe' : 'awaken'));
   cargoExecutable({
     cwd: ROOT, packageName: 'awaken-sandbox', targetName: 'awaken-sandbox',
-    // Scoped Repository I/O runs in this companion, not the Control binary.
-    // Give only this fixture build the SAME local-Git test aperture; production
-    // companion builds continue to reject anonymous non-HTTPS transports.
-    features: ['hand', ...(scopedHost ? ['awaken-sandbox-local/test-support'] : [])],
+    // Repository staging runs in the companion on Windows Workdir as well as
+    // Linux scoped execution. Every resource fixture uses a local bare remote;
+    // qualify only this test companion for that transport.
+    features: ['hand', 'awaken-sandbox-local/test-support'],
     snapshotDestination: path.join(path.dirname(binary), process.platform === 'win32' ? 'awaken-sandbox.exe' : 'awaken-sandbox'),
   });
   const environment = profile === 'host-fixture' || standaloneWorker
@@ -352,9 +352,15 @@ try {
       session.id,
       receipt.id,
       BETAS,
-      ({ delta }) => JSON.stringify(delta).includes(marker)
-        && delta.some((event) => event.type === 'session.thread_status_running')
-        && delta.some((event) => event.type === 'session.thread_status_idle'),
+      ({ delta }) => {
+        const exhausted = delta.find((event) => event.type === 'session.error'
+          && event.error?.retry_status?.type === 'exhausted');
+        assert.equal(exhausted, undefined,
+          'real ACP request failed: ' + JSON.stringify(exhausted?.error));
+        return JSON.stringify(delta).includes(marker)
+          && delta.some((event) => event.type === 'session.thread_status_running')
+          && delta.some((event) => event.type === 'session.thread_status_idle');
+      },
       'real Codex ACP marker and running-to-idle lifecycle',
       { timeoutMs: 600_000, pollMs: 200 },
     ));

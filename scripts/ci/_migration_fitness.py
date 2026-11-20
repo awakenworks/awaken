@@ -124,7 +124,7 @@ def _conditional_errors(path: Path, source: str, root: Path) -> list[str]:
     for label, pattern in CONDITIONAL_MIGRATION_SQL:
         if pattern.search(source):
             errors.append(
-                f"{path.relative_to(root)}: migration SQL uses conditional `{label}`; "
+                f"{path.relative_to(root).as_posix()}: migration SQL uses conditional `{label}`; "
                 "the scoped ledger must be the only apply/skip decision"
             )
     return errors
@@ -210,12 +210,12 @@ def check_all(repo_root: Path) -> list[str]:
         owners = [source_path for source_path, source in rust_sources.items() if include in source]
         if len(owners) != 1:
             errors.append(
-                f"{path.relative_to(repo_root)}: versioned SQL must be registered by exactly "
+                f"{path.relative_to(repo_root).as_posix()}: versioned SQL must be registered by exactly "
                 f"one Migration declaration (found {len(owners)})"
             )
         if path.parent.name != "migrations" or not VERSIONED_SQL.fullmatch(path.name):
             errors.append(
-                f"{path.relative_to(repo_root)}: SQL schema file is not a versioned "
+                f"{path.relative_to(repo_root).as_posix()}: SQL schema file is not a versioned "
                 "migrations/Vdddd__slug.sql authority or a paired dialect migration"
             )
             continue
@@ -225,7 +225,7 @@ def check_all(repo_root: Path) -> list[str]:
         if missing:
             present = next(iter(pair.values()))
             errors.append(
-                f"{present.relative_to(repo_root)}: dialect migration {identity} is missing "
+                f"{present.relative_to(repo_root).as_posix()}: dialect migration {identity} is missing "
                 f"{', '.join(sorted(missing))} sibling"
             )
             continue
@@ -247,7 +247,7 @@ def check_all(repo_root: Path) -> list[str]:
         ]
         if len(exact_owners) != 1:
             errors.append(
-                f"{postgres.relative_to(repo_root)}: paired dialect migration {identity} must "
+                f"{postgres.relative_to(repo_root).as_posix()}: paired dialect migration {identity} must "
                 "be included together by exactly one Migration::per_dialect declaration"
             )
 
@@ -260,7 +260,7 @@ def check_all(repo_root: Path) -> list[str]:
         owns_migration = bool(migration_source)
         if DDL.search(source) and not owns_migration:
             errors.append(
-                f"{path.relative_to(repo_root)}: production DDL is not owned by a versioned Migration"
+                f"{path.relative_to(repo_root).as_posix()}: production DDL is not owned by a versioned Migration"
             )
         if owns_migration:
             errors.extend(_conditional_errors(path, migration_source, repo_root))
@@ -271,7 +271,7 @@ def check_all(repo_root: Path) -> list[str]:
                     not in PUBLISHED_LEGACY_RUST_AUTHORITIES
                 ):
                     errors.append(
-                        f"{path.relative_to(repo_root)}: `{constructor[:-1]}` is a parallel "
+                        f"{path.relative_to(repo_root).as_posix()}: `{constructor[:-1]}` is a parallel "
                         "unreleased-history path; use Migration::new/per_dialect"
                     )
             relative = _crate_boundary_workspace.repository_path(path, repo_root)
@@ -313,7 +313,7 @@ def check_all(repo_root: Path) -> list[str]:
         for match in registration.finditer(source):
             if match.group("registered") != match.group("included"):
                 errors.append(
-                    f"{path.relative_to(repo_root)}: registered migration "
+                    f"{path.relative_to(repo_root).as_posix()}: registered migration "
                     f"{match.group('registered')} includes {match.group('included')}"
                 )
     return errors

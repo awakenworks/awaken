@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_acp_contract::{
-    AcpCapabilityHandshake, AcpCapabilityNegotiator, AcpCapabilityProbeConfig,
+    AcpCapabilityHandshake, AcpCapabilityNegotiator, AcpCapabilityProbeConfig, AcpCommand,
     NegotiatedAcpCapabilities,
 };
 use awaken_agent_channel::{AgentChannel, SplitChannel};
@@ -22,6 +22,7 @@ pub struct EffectiveAcpCapabilityProfile {
     pub observed_at_unix_ms: u64,
     pub fingerprint: String,
     pub negotiated: NegotiatedAcpCapabilities,
+    pub runtime_identity: Option<awaken_acp_contract::AcpExecutableIdentity>,
 }
 
 impl EffectiveAcpCapabilityProfile {
@@ -42,6 +43,7 @@ impl EffectiveAcpCapabilityProfile {
             observed_at_unix_ms,
             fingerprint,
             negotiated,
+            runtime_identity: None,
         }
     }
 }
@@ -50,13 +52,24 @@ impl EffectiveAcpCapabilityProfile {
 /// no prompt and kills/waits for the short-lived adapter after negotiation.
 pub struct HostAcpCapabilityNegotiator {
     timeout: Duration,
+    phase_timeout: Option<Duration>,
     handshake: std::sync::Arc<dyn AcpCapabilityHandshake>,
 }
 
 impl HostAcpCapabilityNegotiator {
     #[must_use]
     pub fn new(timeout: Duration, handshake: std::sync::Arc<dyn AcpCapabilityHandshake>) -> Self {
-        Self { timeout, handshake }
+        Self {
+            timeout,
+            phase_timeout: None,
+            handshake,
+        }
+    }
+
+    #[must_use]
+    pub fn with_phase_timeout(mut self, timeout: Duration) -> Self {
+        self.phase_timeout = Some(timeout);
+        self
     }
 }
 
@@ -102,12 +115,19 @@ impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
         clippy::disallowed_methods,
         reason = "the ACP launcher resolves the CLI on the host PATH and passes host variables through to the child process"
     )]
-    async fn negotiate(
+    async fn negotiate_command(
         &self,
-        argv: &[String],
+        launch: &AcpCommand,
         cwd: &Path,
         auth_method_id: Option<&str>,
     ) -> Result<NegotiatedAcpCapabilities, String> {
+        if let Some(expected) = &launch.runtime {
+            let cli = crate::acp_cli(&expected.cli_id).ok_or("ACP_RUNTIME_UNKNOWN")?;
+            if super::inspect_host_runtime(cli, launch).await? != *expected {
+                return Err("ACP_RUNTIME_CHANGED_DURING_PREPARATION".into());
+            }
+        }
+        let argv = &launch.argv;
         let (program, args) = argv
             .split_first()
             .ok_or_else(|| "ACP capability probe requires a non-empty argv".to_string())?;
@@ -119,9 +139,10 @@ impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         super::npm_launch::inherit_host_environment(&mut command);
+        command.envs(&launch.env);
         let mut child = LocalProcess::spawn(&mut command)
             .map_err(|error| format!("spawn ACP capability probe `{program}`: {error}"))?;
         let stdout = child
@@ -134,18 +155,38 @@ impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
         let config = AcpCapabilityProbeConfig {
             session_cwd: Some(cwd.to_string_lossy().into_owned()),
             auth_method_id: auth_method_id.map(str::to_string),
+            phase_timeout: self.phase_timeout,
         };
-        let negotiated = tokio::time::timeout(
-            self.timeout,
-            self.handshake.negotiate(channel.as_mut(), &config),
-        )
-        .await
-        .map_err(|_| format!("ACP capability probe `{program}` timed out"))
-        .and_then(|result| result);
-        drop(channel);
-        let _ = child.signal(Signal::Kill).await;
-        let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
-        negotiated
+        let stderr = child.take_stderr();
+        let negotiation = async {
+            let negotiated = tokio::time::timeout(
+                self.timeout,
+                self.handshake.negotiate(channel.as_mut(), &config),
+            )
+            .await
+            .map_err(|_| format!("ACP capability probe `{program}` timed out"))
+            .and_then(|result| result);
+            drop(channel);
+            let _ = child.signal(Signal::Kill).await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+            negotiated
+        };
+        let reading = tokio::time::timeout(
+            self.timeout.saturating_add(Duration::from_secs(2)),
+            super::process_output::read_pipe(stderr),
+        );
+        let (negotiated, stderr) = tokio::join!(negotiation, reading);
+        negotiated.map_err(|error| {
+            let summary = stderr
+                .ok()
+                .and_then(Result::ok)
+                .map(|bytes| super::diagnostic_summary(&String::from_utf8_lossy(&bytes)))
+                .filter(|summary| !summary.is_empty());
+            match summary {
+                Some(summary) => format!("{error}; stderr: {summary}"),
+                None => error,
+            }
+        })
     }
 }
 

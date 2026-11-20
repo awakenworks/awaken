@@ -62,49 +62,8 @@ impl AcpProbeOutput {
     }
 }
 
-/// Extract the first `major.minor.patch` triple from vendor-decorated version
-/// output such as `codex-cli 0.146.0` or `Hermes Agent v0.19.0 (...)`.
 fn parse_semver_triple(input: &str) -> Option<AcpVersion> {
-    let bytes = input.as_bytes();
-    let mut start = 0;
-    while start < bytes.len() {
-        if !bytes[start].is_ascii_digit() || start > 0 && bytes[start - 1].is_ascii_digit() {
-            start += 1;
-            continue;
-        }
-        let Some((major, first_dot)) = parse_number(bytes, start) else {
-            start += 1;
-            continue;
-        };
-        if bytes.get(first_dot) != Some(&b'.') {
-            start += 1;
-            continue;
-        }
-        let Some((minor, second_dot)) = parse_number(bytes, first_dot + 1) else {
-            start += 1;
-            continue;
-        };
-        if bytes.get(second_dot) != Some(&b'.') {
-            start += 1;
-            continue;
-        }
-        let Some((patch, _end)) = parse_number(bytes, second_dot + 1) else {
-            start += 1;
-            continue;
-        };
-        return Some(AcpVersion::new(major, minor, patch));
-    }
-    None
-}
-
-fn parse_number(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
-    let mut end = start;
-    let mut value = 0_u64;
-    while let Some(byte) = bytes.get(end).copied().filter(u8::is_ascii_digit) {
-        value = value.checked_mul(10)?.checked_add(u64::from(byte - b'0'))?;
-        end += 1;
-    }
-    (end > start).then_some((value, end))
+    awaken_acp_catalog::parse_version(input)
 }
 
 fn version_is_compatible(version: Option<&str>, minimum: AcpVersion) -> bool {
@@ -225,10 +184,23 @@ impl TokioAcpProcessProbe {
 
 #[async_trait]
 impl AcpProcessProbe for TokioAcpProcessProbe {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "trusted host launch resolves only operator-owned executable locations"
+    )]
     async fn run(&self, probe: AcpProbeCommand) -> Result<AcpProbeOutput, AcpProcessProbeError> {
-        let mut command = Command::new(probe.executable);
+        let argv = super::command::resolve(
+            probe.executable,
+            probe.args,
+            std::env::var_os("PATH").as_deref(),
+        )
+        .map_err(|_| AcpProcessProbeError::ExecutableNotFound {
+            executable: probe.executable.to_string(),
+        })?
+        .argv;
+        let mut command = Command::new(&argv[0]);
         command
-            .args(probe.args)
+            .args(&argv[1..])
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

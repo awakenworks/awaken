@@ -38,6 +38,9 @@ where
     Fut: Future<Output = T>,
     T: Send,
 {
+    #[cfg(windows)]
+    awaken_process_win32::supervise_current_process_children()
+        .expect("establish Windows service child-process lifetime");
     const SERVICE_ROOT_STACK_BYTES: usize = 32 * 1024 * 1024;
     const SERVICE_WORKER_STACK_BYTES: usize = 8 * 1024 * 1024;
     const { assert!(SERVICE_ROOT_STACK_BYTES >= SERVICE_WORKER_STACK_BYTES) };

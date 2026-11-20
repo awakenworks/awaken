@@ -49,7 +49,9 @@ impl<T> LeafLock<T> {
     }
 }
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::{AcpCli, acp_cli};
@@ -57,7 +59,7 @@ use async_trait::async_trait;
 pub use awaken_acp_contract::AcpCapabilityNegotiator;
 use awaken_acp_contract::{
     AcpCapabilityObservation, AcpCapabilityObservationSource, AcpCapabilityObservationState,
-    AcpDetectionState, AcpHostObservation, AcpLocalCredentialBinding,
+    AcpCommand, AcpDetectionState, AcpHostObservation, AcpLocalCredentialBinding,
 };
 use awaken_agent_contract::credential::CredentialRef;
 use awaken_credential_contract::{
@@ -66,128 +68,42 @@ use awaken_credential_contract::{
 };
 use awaken_time::{WallClock, WallClockExt};
 
+mod acquisition;
 mod capability_probe;
+mod command;
+mod diagnostics;
+mod runtime;
+pub use runtime::inspect_host_runtime;
 mod host_discovery;
 mod npm_launch;
 mod process_output;
 mod projected_bindings;
 pub use capability_probe::{EffectiveAcpCapabilityProfile, HostAcpCapabilityNegotiator};
+pub use diagnostics::diagnostic_summary;
 pub use host_discovery::{AcpDiscovery, AcpHostDiscovery};
 pub use projected_bindings::ProjectedAcpCredentials;
 
-/// Acquisition port for an ACP protocol wrapper declared by the canonical catalog.
-#[async_trait]
-pub trait AcpWrapperInstaller: Send + Sync {
-    async fn resolved_argv(&self, cli: &AcpCli, root: &Path)
-    -> Result<Option<Vec<String>>, String>;
-}
-
-/// Production acquisition adapter for direct host executables and pinned npm wrappers.
-pub struct NpmWrapperInstaller;
-
-#[async_trait]
-impl AcpWrapperInstaller for NpmWrapperInstaller {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the ACP launcher resolves the CLI on the host PATH and passes host variables through to the child process"
-    )]
-    async fn resolved_argv(
-        &self,
-        cli: &AcpCli,
-        root: &Path,
-    ) -> Result<Option<Vec<String>>, String> {
-        let (installer, package, bin) = match cli.acquisition {
-            crate::AcpAcquisition::Direct { executable, args } => {
-                // Discovery and the capability handshake saw this host PATH.
-                // Freeze its executable into the Worker profile now: the
-                // sandbox's restricted PATH is not an acquisition authority.
-                let executable = capability_probe::executable_on_path(
-                    executable,
-                    std::env::var_os("PATH").as_deref(),
-                );
-                return canonical_launch_argv(&executable, args).map(Some);
-            }
-            crate::AcpAcquisition::PinnedNpmWrapper {
-                installer,
-                package,
-                bin,
-            } => (installer, package, bin),
-        };
-        let prefix = root.join(cli.id);
-        let executable = prefix.join("node_modules").join(".bin").join(bin);
-        if executable.is_file() && installed_wrapper_matches(&prefix, package) {
-            return npm_launch::wrapper_argv(&prefix, package, bin).map(Some);
-        }
-        std::fs::create_dir_all(&prefix).map_err(|error| {
-            format!("create ACP wrapper directory {}: {error}", prefix.display())
-        })?;
-        let mut command = npm_launch::installer_command(installer)?;
-        command
-            .args([
-                "install",
-                "--no-audit",
-                "--no-fund",
-                "--save-exact",
-                "--prefix",
-            ])
-            .arg(&prefix)
-            .arg(package)
-            .env_clear()
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        npm_launch::inherit_host_environment(&mut command);
-        let output = process_output::output(&mut command, std::time::Duration::from_secs(120))
-            .await
-            .map_err(|error| format!("start {installer} for {}: {error}", cli.id))?;
-        if output.exit_code != Some(0) {
-            return Err(format!(
-                "install pinned ACP wrapper for {} failed (exit {:?})",
-                cli.id, output.exit_code,
-            ));
-        }
-        if !installed_wrapper_matches(&prefix, package) {
-            return Err(format!(
-                "installed ACP wrapper for {} does not match pinned package {package}",
-                cli.id
-            ));
-        }
-        npm_launch::wrapper_argv(&prefix, package, bin).map(Some)
+/// Apply the configured selection before starting any host process and bind
+/// every reply to the exact requested catalog identity.
+pub async fn discover_selected(
+    discovery: &dyn AcpDiscovery,
+    selected: Option<&BTreeSet<String>>,
+) -> Vec<AcpHostObservation> {
+    let mut observations = Vec::new();
+    for cli in crate::known_acp_clis()
+        .iter()
+        .filter(|cli| selected.is_none_or(|selected| selected.contains(cli.id)))
+    {
+        observations.push(host_discovery::discover_scoped(discovery, cli).await);
     }
+    observations
 }
 
-fn installed_wrapper_matches(prefix: &Path, package: &str) -> bool {
-    let Some((name, version)) = package.rsplit_once('@') else {
-        return false;
-    };
-    if name.is_empty() || version.is_empty() {
-        return false;
-    }
-    let Ok(bytes) = std::fs::read(prefix.join("package.json")) else {
-        return false;
-    };
-    let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return false;
-    };
-    manifest
-        .get("dependencies")
-        .and_then(|dependencies| dependencies.get(name))
-        .and_then(serde_json::Value::as_str)
-        == Some(version)
-}
-
-fn canonical_launch_argv(executable: &Path, args: &[&str]) -> Result<Vec<String>, String> {
-    let executable = executable.canonicalize().map_err(|error| {
-        format!(
-            "local ACP executable {} is unavailable: {error}",
-            executable.display()
-        )
-    })?;
-    Ok(std::iter::once(executable.to_string_lossy().into_owned())
-        .chain(args.iter().map(|arg| (*arg).to_string()))
-        .collect())
-}
+pub use acquisition::{
+    AcpWrapperInstaller, NpmWrapperInstaller, prepared_host_argv, prepared_host_command,
+};
+#[cfg(test)]
+use acquisition::{canonical_launch_argv, installed_wrapper_matches};
 
 /// Worker-owned inputs for discovery/acquisition, without any authoring store.
 pub struct HostAcpPreparation {
@@ -209,12 +125,14 @@ impl HostAcpAdapters {
     #[must_use]
     pub fn production(handshake: Arc<dyn awaken_acp_contract::AcpCapabilityHandshake>) -> Self {
         Self {
-            discovery: Arc::new(AcpHostDiscovery::local(std::time::Duration::from_secs(3))),
+            discovery: Arc::new(AcpHostDiscovery::local(std::time::Duration::from_secs(10))),
             installer: Arc::new(NpmWrapperInstaller),
-            negotiator: Arc::new(HostAcpCapabilityNegotiator::new(
-                std::time::Duration::from_secs(10),
-                handshake,
-            )),
+            negotiator: Arc::new(
+                // Use the same per-step budget as actual ACP turns. Cold
+                // session/new may populate the CLI's model/config caches.
+                HostAcpCapabilityNegotiator::new(std::time::Duration::from_secs(70), handshake)
+                    .with_phase_timeout(std::time::Duration::from_secs(30)),
+            ),
         }
     }
 }
@@ -223,6 +141,7 @@ impl HostAcpAdapters {
 pub struct PreparedHostAcpCapabilities {
     pub observations: Vec<AcpHostObservation>,
     pub launch_argv: BTreeMap<String, Vec<String>>,
+    pub launch_commands: BTreeMap<String, AcpCommand>,
     pub effective_profiles: BTreeMap<String, EffectiveAcpCapabilityProfile>,
     pub resolver: Arc<AcpLocalCredentialResolver>,
     selected_cli_ids: BTreeSet<String>,
@@ -242,8 +161,10 @@ pub async fn prepare_host_acp_capabilities_with(
             input.probe_cwd.display()
         )
     })?;
-    let mut observations = discovery.discover_all().await;
+    let mut observations =
+        discover_selected(discovery.as_ref(), input.selected_cli_ids.as_ref()).await;
     let mut launch_argv = BTreeMap::new();
+    let mut launch_commands = BTreeMap::new();
     for observation in observations.iter_mut().filter(|observation| {
         observation.detected()
             && input
@@ -252,12 +173,14 @@ pub async fn prepare_host_acp_capabilities_with(
                 .is_none_or(|selected| selected.contains(&observation.cli_id))
     }) {
         let cli = acp_cli(&observation.cli_id).expect("discovery returns catalog ids");
-        match installer.resolved_argv(cli, &input.wrapper_root).await {
-            Ok(Some(argv)) => {
-                launch_argv.insert(observation.cli_id.clone(), argv);
+        match installer.prepared_command(cli, &input.wrapper_root).await {
+            Ok(Some(command)) => {
+                launch_argv.insert(observation.cli_id.clone(), command.argv.clone());
+                launch_commands.insert(observation.cli_id.clone(), command);
             }
             Ok(None) => {}
-            Err(_) => {
+            Err(error) => {
+                warn_preparation(cli.id, "wrapper preparation failed", &error);
                 observation.detection = AcpDetectionState::ProbeFailed;
                 observation.credential_state = Some(CredentialObservationState::ProbeFailed);
                 observation.reason_code = Some("acp_wrapper_install_failed".to_string());
@@ -276,27 +199,43 @@ pub async fn prepare_host_acp_capabilities_with(
         // Provider-routed execution supplies its own admitted credential later;
         // this prompt-free probe neither grants nor materializes that authority.
         let cli = acp_cli(&observation.cli_id).expect("discovery returns catalog ids");
-        let argv = launch_argv
+        let command = launch_commands
             .get(&observation.cli_id)
             .cloned()
-            .unwrap_or_else(|| cli.acquisition.local_argv());
-        match negotiator
-            .negotiate(&argv, &input.probe_cwd, cli.auth_method_id)
-            .await
-        {
+            .unwrap_or_else(|| AcpCommand::new(cli.acquisition.local_argv()));
+        let mut negotiated = negotiator
+            .negotiate_command(&command, &input.probe_cwd, cli.auth_method_id)
+            .await;
+        if let Err(error) = &negotiated {
+            warn_preparation(cli.id, "capability probe failed; retrying once", error);
+            // A fresh, prompt-free process may recover a transient cold-start
+            // failure. Never retry a model turn or dispatch any tool here.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            negotiated = negotiator
+                .negotiate_command(&command, &input.probe_cwd, cli.auth_method_id)
+                .await;
+        }
+        match negotiated {
             Ok(negotiated) => {
-                let profile = EffectiveAcpCapabilityProfile::verified(
+                let mut profile = EffectiveAcpCapabilityProfile::verified(
                     &observation.cli_id,
-                    observation.version.as_deref().unwrap_or("unknown"),
+                    command
+                        .runtime
+                        .as_ref()
+                        .map(|runtime| runtime.cli_version.as_str())
+                        .or(observation.version.as_deref())
+                        .unwrap_or("unknown"),
                     negotiated,
                     input.clock.now_ms(),
                 );
+                profile.runtime_identity = command.runtime.clone();
                 observation.capability_state = Some(AcpCapabilityObservationState::Verified);
                 observation.capability_fingerprint = Some(profile.fingerprint.clone());
                 observation.capability_reason_code = None;
                 effective_profiles.insert(observation.cli_id.clone(), profile);
             }
-            Err(_) => {
+            Err(error) => {
+                warn_preparation(cli.id, "capability negotiation failed", &error);
                 observation.capability_state = Some(AcpCapabilityObservationState::ProbeFailed);
                 observation.capability_fingerprint = None;
                 observation.capability_reason_code =
@@ -319,24 +258,35 @@ pub async fn prepare_host_acp_capabilities_with(
         .iter()
         .map(|cli_id| {
             let cli = acp_cli(cli_id).expect("discovery returns catalog ids");
-            let argv = launch_argv
+            let command = launch_commands
                 .get(cli_id)
                 .cloned()
-                .unwrap_or_else(|| cli.acquisition.local_argv());
-            (cli_id.clone(), argv)
+                .unwrap_or_else(|| AcpCommand::new(cli.acquisition.local_argv()));
+            (cli_id.clone(), command)
         })
         .collect();
     let resolver = Arc::new(
         AcpLocalCredentialResolver::from_bindings(discovery, [], input.clock.clone())?
-            .with_capability_observations(negotiator, capability_routes, input.probe_cwd),
+            .with_capability_commands(negotiator, capability_routes, input.probe_cwd),
     );
     Ok(PreparedHostAcpCapabilities {
         observations,
         launch_argv,
+        launch_commands,
         effective_profiles,
         resolver,
         selected_cli_ids,
     })
+}
+
+fn warn_preparation(cli: &str, stage: &str, error: &str) {
+    let summary = diagnostic_summary(error);
+    tracing::warn!(cli, stage, error = %summary, "Host ACP preparation failed");
+    // AllInOne prepares local executors before the service tracing subscriber
+    // starts. Preserve a bounded, redacted diagnostic at that startup boundary.
+    if !tracing::dispatcher::has_been_set() {
+        eprintln!("ACP {cli}: {stage}: {summary}");
+    }
 }
 
 impl PreparedHostAcpCapabilities {
@@ -365,6 +315,16 @@ impl PreparedHostAcpCapabilities {
             .iter()
             .filter(|(cli_id, _)| routable.contains(*cli_id))
             .map(|(cli_id, argv)| (cli_id.clone(), argv.clone()))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn routable_launch_commands(&self) -> BTreeMap<String, AcpCommand> {
+        let routable: BTreeSet<_> = self.routable_cli_ids().into_iter().collect();
+        self.launch_commands
+            .iter()
+            .filter(|(id, _)| routable.contains(*id))
+            .map(|(id, command)| (id.clone(), command.clone()))
             .collect()
     }
 }
@@ -483,7 +443,7 @@ pub struct AcpLocalCredentialResolver {
 
 struct CapabilityObservationConfig {
     negotiator: Arc<dyn AcpCapabilityNegotiator>,
-    launch_argv: BTreeMap<String, Vec<String>>,
+    launch_commands: BTreeMap<String, AcpCommand>,
     cwd: PathBuf,
 }
 
@@ -530,14 +490,31 @@ impl AcpLocalCredentialResolver {
 
     #[must_use]
     pub fn with_capability_observations(
-        mut self,
+        self,
         negotiator: Arc<dyn AcpCapabilityNegotiator>,
         launch_argv: BTreeMap<String, Vec<String>>,
         cwd: PathBuf,
     ) -> Self {
+        self.with_capability_commands(
+            negotiator,
+            launch_argv
+                .into_iter()
+                .map(|(id, argv)| (id, AcpCommand::new(argv)))
+                .collect(),
+            cwd,
+        )
+    }
+
+    #[must_use]
+    pub fn with_capability_commands(
+        mut self,
+        negotiator: Arc<dyn AcpCapabilityNegotiator>,
+        launch_commands: BTreeMap<String, AcpCommand>,
+        cwd: PathBuf,
+    ) -> Self {
         self.capability = Some(CapabilityObservationConfig {
             negotiator,
-            launch_argv,
+            launch_commands,
             cwd,
         });
         self
@@ -578,7 +555,7 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
         // Protocol capabilities belong to a configured host backend, not to
         // any Workspace credential. One backend gets one observation even if
         // many Workspaces use it, or no host-login binding is active at all.
-        for (cli_id, argv) in &capability.launch_argv {
+        for (cli_id, command) in &capability.launch_commands {
             let cli = acp_cli(cli_id)
                 .ok_or_else(|| format!("ACP capability route names unknown CLI `{cli_id}`"))?;
             let observed_at_ms = self.clock.now_ms();
@@ -599,18 +576,31 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
                 );
                 continue;
             }
-            match capability
-                .negotiator
-                .negotiate(argv, &capability.cwd, cli.auth_method_id)
-                .await
-            {
+            let mut command = command.clone();
+            let result = async {
+                if command.runtime.is_some() {
+                    command.runtime = Some(inspect_host_runtime(cli, &command).await?);
+                }
+                capability
+                    .negotiator
+                    .negotiate_command(&command, &capability.cwd, cli.auth_method_id)
+                    .await
+            }
+            .await;
+            match result {
                 Ok(negotiated) => {
-                    let profile = EffectiveAcpCapabilityProfile::verified(
+                    let mut profile = EffectiveAcpCapabilityProfile::verified(
                         cli.id,
-                        host.version.as_deref().unwrap_or("unknown"),
+                        command
+                            .runtime
+                            .as_ref()
+                            .map(|runtime| runtime.cli_version.as_str())
+                            .or(host.version.as_deref())
+                            .unwrap_or("unknown"),
                         negotiated,
                         observed_at_ms,
                     );
+                    profile.runtime_identity = command.runtime.clone();
                     observations.push(
                         AcpCapabilityObservation::verified(
                             format!("acp:{}", cli.id),

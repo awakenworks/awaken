@@ -32,6 +32,14 @@ export async function installHostResourceFixture(root, temp, data, runtime) {
   const wrapper = path.join(prefix, 'node_modules', '.bin', wrapperName);
   fs.copyFileSync(executable, wrapper);
   if (suffix) fs.copyFileSync(executable, wrapper + suffix);
+  const packageDirectory = path.join(prefix, 'node_modules', packagePin.slice(0, split));
+  fs.mkdirSync(packageDirectory, { recursive: true });
+  const nativeEntry = wrapperName + suffix;
+  fs.copyFileSync(executable, path.join(packageDirectory, nativeEntry));
+  fs.writeFileSync(path.join(packageDirectory, 'package.json'), JSON.stringify({
+    name: packagePin.slice(0, split), version: packagePin.slice(split + 1),
+    bin: { [wrapperName]: nativeEntry },
+  }));
   fs.writeFileSync(path.join(prefix, 'package.json'), JSON.stringify({
     dependencies: { [packagePin.slice(0, split)]: packagePin.slice(split + 1) },
   }));
@@ -179,7 +187,10 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
     });
     assert.ok(events.some((event) => event.type === 'agent.message'
       && JSON.stringify(event.content).includes(`RESOURCE_OK ${marker} ${attempt}`)),
-      'R1 current receipt read exact File bytes, not a prior successful turn');
+      'R1 current receipt read exact File bytes, not a prior successful turn; events='
+        + JSON.stringify(events.map((event) => ({ type: event.type,
+          ...(event.type === 'session.error' ? { code: event.code, retry_status: event.retry_status?.type } : {}),
+        }))));
     const artifact = await waitForValue(async () => {
       const files = [];
       for await (const file of client.beta.files.list({ scope_id: session.id, betas })) files.push(file);
@@ -310,24 +321,22 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
     }
   };
   await assertSharedTruth();
-  // R8 present-base same-content and different-content stale updates each
-  // preserve a candidate with its original base in Memory, NOT Files and NOT
-  // a new winning version. Both survive Worker restart after reclamation.
+  // R8 ADR-0104: an identical losing copy adopts the durable head without
+  // another version or proposal. A different losing copy preserves its exact
+  // candidate and original base in Memory; both outcomes survive restart.
   const winner = shared.data.find((entry) => entry.path === '/shared-z-conflict.md');
   const loser = cases.find(({ expected }) => expected !== winner.content);
   assert.ok(loser);
   const proposals = () => client.get(
     `/v1/awaken/memory-stores/${memory.id}/copy-conflicts?view=full`, { headers: memoryHeaders });
   const retained = await waitForValue(proposals,
-    (page) => page.data.length === 2 && page.next_page === null
-      && page.data.some((entry) => entry.path === '/shared-a-identical.md'
-        && entry.content === `${memoryBytes}\n${contention}`)
-      && page.data.some((entry) => entry.path === '/shared-z-conflict.md'
-        && entry.content === loser.expected),
-    'R8 both exact stale-base proposals persisted', { timeoutMs: 20_000 });
+    (page) => page.data.length === 1 && page.next_page === null
+      && page.data[0].path === '/shared-z-conflict.md'
+      && page.data[0].content === loser.expected,
+    'R8 identical content converges and the different stale-base proposal persists', { timeoutMs: 20_000 });
   for (const candidate of retained.data) {
     const original = sharedHeads.find((entry) => entry.path === candidate.path);
-    assert.ok(original, 'R8 only the two shared paths may retain proposals');
+    assert.ok(original, 'R8 only a different-content loser retains a proposal');
     assert.equal(candidate.base.id, original.id);
     assert.equal(candidate.base.content_sha256, original.content_sha256);
   }

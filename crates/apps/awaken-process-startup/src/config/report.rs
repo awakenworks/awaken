@@ -175,6 +175,12 @@ impl ResolvedDeployment {
     /// deployment. Provider and model validation remains Console-owned because
     /// it requires authenticated product state after startup.
     pub async fn doctor_report(&self, json: bool) -> String {
+        self.doctor_diagnostics(json).await.output
+    }
+
+    /// Keep the machine-readable verdict alongside its presentation so callers
+    /// do not mistake a successfully rendered blocked report for readiness.
+    pub async fn doctor_diagnostics(&self, json: bool) -> DoctorReport {
         let mut data_directory = data_directory_readiness(&self.data_dir);
         let postgres_installation = if data_directory.ready {
             match crate::installation_binding::admit_ordinary_start(self).await {
@@ -212,26 +218,29 @@ impl ResolvedDeployment {
         };
         let ready = data_directory.ready && postgres_installation.ready && listener.ready;
         if json {
-            return serde_json::to_string_pretty(&serde_json::json!({
-                "ready": ready,
-                "configuration": {
-                    "status": "ready",
-                    "path": self.config_path,
-                    "exists": self.config_file_exists,
-                },
-                "data_directory": data_directory.as_json(),
-                "postgres_installation": postgres_installation.as_json(),
-                "listener": listener.as_json(),
-                "next": if ready {
-                    "start Awaken, then validate a model or provider in Console"
-                } else {
-                    "resolve blocked checks, then run awaken doctor again"
-                },
-            }))
-            .expect("doctor report is serializable");
+            return DoctorReport {
+                ready,
+                output: serde_json::to_string_pretty(&serde_json::json!({
+                    "ready": ready,
+                    "configuration": {
+                        "status": "ready",
+                        "path": self.config_path,
+                        "exists": self.config_file_exists,
+                    },
+                    "data_directory": data_directory.as_json(),
+                    "postgres_installation": postgres_installation.as_json(),
+                    "listener": listener.as_json(),
+                    "next": if ready {
+                        "start Awaken, then validate a model or provider in Console"
+                    } else {
+                        "resolve blocked checks, then run awaken doctor again"
+                    },
+                }))
+                .expect("doctor report is serializable"),
+            };
         }
 
-        format!(
+        let output = format!(
             "Awaken doctor\n\n  configuration       ready ({config})\n  data directory      {data_status} ({data_detail})\n  PostgreSQL identity {postgres_status} ({postgres_detail})\n  listener            {listener_status} ({listener_detail})\n\nResult: {result}\nNext: {next}\n",
             config = self.config_path.display(),
             data_status = data_directory.status,
@@ -246,8 +255,15 @@ impl ResolvedDeployment {
             } else {
                 "resolve blocked checks, then run `awaken doctor` again"
             },
-        )
+        );
+        DoctorReport { ready, output }
     }
+}
+
+/// One prerequisite verdict and its redacted operator report.
+pub struct DoctorReport {
+    pub ready: bool,
+    pub output: String,
 }
 
 struct Readiness {
@@ -354,8 +370,9 @@ mod tests {
         let mut deployment = crate::config::local_test_deployment(directory.path().to_path_buf());
         deployment.bind = "127.0.0.1:0".to_owned();
 
-        let ready: serde_json::Value =
-            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        let report = deployment.doctor_diagnostics(true).await;
+        assert!(report.ready, "R1 machine verdict");
+        let ready: serde_json::Value = serde_json::from_str(&report.output).unwrap();
         assert_eq!(ready["ready"], true, "R1");
         assert_eq!(ready["data_directory"]["status"], "ready", "R1");
 
@@ -394,8 +411,9 @@ mod tests {
             awaken_control::StoreBackend::Sqlite(directory.path().join("sessions.db"));
         let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         deployment.bind = occupied.local_addr().unwrap().to_string();
-        let blocked_listener: serde_json::Value =
-            serde_json::from_str(&deployment.doctor_report(true).await).unwrap();
+        let report = deployment.doctor_diagnostics(true).await;
+        assert!(!report.ready, "R4 machine verdict");
+        let blocked_listener: serde_json::Value = serde_json::from_str(&report.output).unwrap();
         assert_eq!(blocked_listener["ready"], false, "R4");
         assert_eq!(blocked_listener["listener"]["status"], "blocked", "R4");
     }

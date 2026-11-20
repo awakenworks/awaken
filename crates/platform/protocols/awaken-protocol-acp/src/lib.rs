@@ -385,6 +385,12 @@ pub struct TurnConfig<'a> {
     /// Exact publication-time profile that the live initialize/session
     /// handshake must reproduce before any configured option or prompt is sent.
     pub expected_capability: Option<AcpCapabilityExpectation>,
+    /// Actual executable identity supplied by the process owner.
+    pub runtime_identity: Option<awaken_acp_contract::AcpExecutableIdentity>,
+    /// Existing private-session binding; checked before session/load.
+    pub expected_runtime: Option<awaken_acp_contract::AcpSessionBinding>,
+    /// Output: set only after all prompt-free setup has succeeded.
+    pub verified_runtime: Option<awaken_acp_contract::AcpSessionBinding>,
     /// Per-step wall-clock bound for the prompt-free ACP handshake. This is not
     /// the turn/job deadline: it fences `initialize` (including optional auth),
     /// `session/new|load`, and every selected Session configuration step so a live
@@ -421,6 +427,9 @@ impl<'a> TurnConfig<'a> {
             session_cwd: None,
             auth_method_id: None,
             expected_capability: None,
+            runtime_identity: None,
+            expected_runtime: None,
+            verified_runtime: None,
             handshake_step_deadline: std::time::Duration::from_secs(30),
             permission_settle_deadline: std::time::Duration::from_secs(5),
         }

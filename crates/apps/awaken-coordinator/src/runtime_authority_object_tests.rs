@@ -641,6 +641,7 @@ impl awaken_run_executor_acp::AgentChannelSource for AcpAgent {
             tool_aliases: Default::default(),
             session_config_options: vec![],
             expected_capability: None,
+            runtime_identity: None,
             instructions: Default::default(),
         })
     }

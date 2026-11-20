@@ -61,14 +61,44 @@ async fn run(command: Command) -> Result<(), String> {
                 },
                 awaken_time::system_clock(),
             )?;
-            println!("{}", deployment.doctor_report(json).await.trim_end());
-            Ok(())
+            let report = deployment.doctor_diagnostics(json).await;
+            println!("{}", report.output.trim_end());
+            if report.ready {
+                Ok(())
+            } else {
+                Err("deployment readiness checks failed".into())
+            }
         }
-        Command::DoctorAcp { json } => {
-            println!(
-                "{}",
-                awaken_cli::local_acp_diagnostics(json).await.trim_end()
-            );
+        Command::DoctorAcp {
+            json,
+            probe,
+            config_path,
+        } => {
+            let report = if probe || config_path.is_some() {
+                let deployment = ResolvedDeployment::load(
+                    ConfigOverrides {
+                        config_path,
+                        ..Default::default()
+                    },
+                    awaken_time::system_clock(),
+                )?;
+                let report = awaken_cli::local_acp_diagnostics_with_options(
+                    json,
+                    probe,
+                    &deployment.data_dir.join("acp-wrappers"),
+                    deployment.configured_acp_clis.as_deref(),
+                )
+                .await?;
+                println!("{}", report.output.trim_end());
+                return if report.ready {
+                    Ok(())
+                } else {
+                    Err("ACP protocol readiness probe failed".into())
+                };
+            } else {
+                awaken_cli::local_acp_diagnostics(json).await
+            };
+            println!("{}", report.trim_end());
             Ok(())
         }
         Command::DatabaseMigrate(args) => {

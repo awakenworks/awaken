@@ -183,12 +183,13 @@ mod tests {
 
     #[async_trait]
     impl AcpCapabilityNegotiator for Probe {
-        async fn negotiate(
+        async fn negotiate_command(
             &self,
-            argv: &[String],
+            argv: &awaken_acp_contract::AcpCommand,
             _cwd: &Path,
             _auth_method_id: Option<&str>,
         ) -> Result<NegotiatedAcpCapabilities, String> {
+            let argv = &argv.argv;
             (argv[0] == "verified")
                 .then(negotiated_capabilities)
                 .ok_or_else(|| "probe failed".to_string())
@@ -267,12 +268,13 @@ mod tests {
 
     #[async_trait]
     impl AcpCapabilityNegotiator for FailingPeerProbe {
-        async fn negotiate(
+        async fn negotiate_command(
             &self,
-            argv: &[String],
+            argv: &awaken_acp_contract::AcpCommand,
             _cwd: &Path,
             _auth_method_id: Option<&str>,
         ) -> Result<NegotiatedAcpCapabilities, String> {
+            let argv = &argv.argv;
             self.started.wait().await;
             if argv[0] == "fail" {
                 return Err("injected peer failure".into());
@@ -326,9 +328,9 @@ mod tests {
 
     #[async_trait]
     impl AcpCapabilityNegotiator for ConcurrentProbe {
-        async fn negotiate(
+        async fn negotiate_command(
             &self,
-            _argv: &[String],
+            _argv: &awaken_acp_contract::AcpCommand,
             _cwd: &Path,
             _auth_method_id: Option<&str>,
         ) -> Result<NegotiatedAcpCapabilities, String> {
@@ -373,9 +375,9 @@ mod tests {
 
     #[async_trait]
     impl AcpCapabilityNegotiator for CountingLifecycleProbe {
-        async fn negotiate(
+        async fn negotiate_command(
             &self,
-            _argv: &[String],
+            _argv: &awaken_acp_contract::AcpCommand,
             _cwd: &Path,
             _auth_method_id: Option<&str>,
         ) -> Result<NegotiatedAcpCapabilities, String> {

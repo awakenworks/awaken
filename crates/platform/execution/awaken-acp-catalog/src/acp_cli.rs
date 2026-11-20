@@ -122,6 +122,12 @@ pub struct AcpCli {
     pub acquisition: AcpAcquisition,
     /// Host installation, version, and provider-owned login probes.
     pub discovery: AcpDiscoverySpec,
+    /// Optional non-secret binding of a qualified adapter to the host runtime.
+    pub host_executable_env: Option<&'static str>,
+    /// Wrapper passthrough that reports the CLI actually used by its SDK.
+    pub runtime_version_args: Option<&'static [&'static str]>,
+    /// Known incompatible CLI releases. Empty means no additional blacklist.
+    pub incompatible_versions: &'static [AcpVersion],
     /// Exact packages required by the production execution image. The image
     /// contract generator combines this with the row's canonical argv/auth data.
     pub image_requirements: &'static [AcpImageRequirement],

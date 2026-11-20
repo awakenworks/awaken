@@ -72,12 +72,14 @@ async-trait.workspace = true
 axum = "0.8"
 serde.workspace = true
 serde_json.workspace = true
+tempfile = "3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "process", "signal", "sync"] }
 
 [features]
 # Volatile startup helpers used by integration/scenario harnesses.
 test-support = [
     "awaken-process-startup/test-support",
+    "awaken-execution-composition/test-support",
     "dep:awaken-service-lifecycle",
     "dep:awaken-provisioning-contract",
 ]
@@ -98,7 +100,6 @@ awaken-provisioning-contract.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-observability.workspace = true
 awaken-tool-contract.workspace = true
-tempfile = "3"
 
 [lints]
 workspace = true

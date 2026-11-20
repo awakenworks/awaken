@@ -105,6 +105,7 @@ pub struct AgentSession {
     pub tool_aliases: std::collections::BTreeMap<String, String>,
     pub session_config_options: Vec<awaken_protocol_acp::SessionConfigOptionSelection>,
     pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
+    pub runtime_identity: Option<awaken_acp_contract::AcpExecutableIdentity>,
     /// Where the frozen Agent instructions reach this adapter. When they are
     /// already in its system prompt the first Step does not repeat them.
     pub instructions: AcpInstructions,
@@ -802,7 +803,11 @@ impl AcpRunExecutor {
         // Step reloads the CLI's own session (`session/load`) instead of starting
         // fresh — context survives the relaunch (the newline stand-in leaves it
         // `None`, so it always starts fresh, unchanged from before).
-        let mut acp_session_id = restored_session_id(context, &activation.thread_id, &backend_ref)?;
+        let prior = restored_session_reference(context, &activation.thread_id, &backend_ref)?;
+        let mut acp_runtime = prior
+            .as_ref()
+            .and_then(|reference| reference.runtime.clone());
+        let mut acp_session_id = prior.map(|reference| reference.session_id);
         // The Run's token usage, accumulated across Steps and committed as Thread
         // state at the terminal state (matching the native engine's `__usage`).
         let mut run_usage = TokenUsage::default();
@@ -920,6 +925,8 @@ impl AcpRunExecutor {
                 .map(|observer| LaunchSink::new(observer, &scope));
             config.session_config_options = session.session_config_options.clone();
             config.expected_capability = session.expected_capability.clone();
+            config.runtime_identity = session.runtime_identity.clone();
+            config.expected_runtime = acp_runtime.clone();
             config.session_cwd = session.workspace_cwd.clone();
             config.auth_method_id = match Backend::from_ref(&backend_ref) {
                 Backend::Acp(backend) => acp_cli(backend.cli())
@@ -964,6 +971,9 @@ impl AcpRunExecutor {
             // Keep the negotiated session id for the next relaunched Step, and fold
             // this Step's token usage into the Run total.
             acp_session_id = config.session_id.take();
+            if let Some(verified) = config.verified_runtime.take() {
+                acp_runtime = Some(verified);
+            }
             run_usage = run_usage.saturating_add(appender.usage);
             next_assistant_step = appender.next_assistant_step;
 
@@ -980,6 +990,7 @@ impl AcpRunExecutor {
                     &model_ref,
                     &backend_ref,
                     acp_session_id.as_deref(),
+                    acp_runtime.as_ref(),
                 )?;
                 let handoff = self
                     .handoff_runtime_tool(
@@ -1116,6 +1127,7 @@ impl AcpRunExecutor {
                             &model_ref,
                             &backend_ref,
                             acp_session_id.as_deref(),
+                            acp_runtime.as_ref(),
                         )?,
                     )
                     .await?;
@@ -1152,6 +1164,7 @@ impl AcpRunExecutor {
                             &model_ref,
                             &backend_ref,
                             acp_session_id.as_deref(),
+                            acp_runtime.as_ref(),
                         )?,
                     )
                     .await?;
@@ -1193,6 +1206,7 @@ impl AcpRunExecutor {
                         &model_ref,
                         &backend_ref,
                         acp_session_id.as_deref(),
+                        acp_runtime.as_ref(),
                     )?,
                 )
                 .await?;
@@ -1233,6 +1247,7 @@ impl AcpRunExecutor {
                         &model_ref,
                         &backend_ref,
                         acp_session_id.as_deref(),
+                        acp_runtime.as_ref(),
                     )?,
                 )
                 .await?;
@@ -1280,6 +1295,7 @@ impl AcpRunExecutor {
                                     &model_ref,
                                     &backend_ref,
                                     acp_session_id.as_deref(),
+                                    acp_runtime.as_ref(),
                                 )?,
                             )
                             .await?;
@@ -1314,6 +1330,7 @@ impl AcpRunExecutor {
                             &model_ref,
                             &backend_ref,
                             acp_session_id.as_deref(),
+                            acp_runtime.as_ref(),
                         )?,
                     )
                     .await?;
@@ -1339,6 +1356,7 @@ impl AcpRunExecutor {
                             &model_ref,
                             &backend_ref,
                             acp_session_id.as_deref(),
+                            acp_runtime.as_ref(),
                         )?,
                     )
                     .await?;
@@ -1441,6 +1459,8 @@ const ACP_SESSION_ID_STATE_KEY: &str = "__acp_session_id";
 struct AcpSessionReference {
     backend_ref: String,
     session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime: Option<awaken_acp_contract::AcpSessionBinding>,
 }
 
 fn acp_session_cell() -> StateCell<AcpSessionReference> {
@@ -1458,6 +1478,7 @@ fn run_state(
     model_ref: &str,
     backend_ref: &str,
     session_id: Option<&str>,
+    runtime: Option<&awaken_acp_contract::AcpSessionBinding>,
 ) -> Result<Vec<StateCommand>> {
     let mut state = usage_state(context, thread_id, usage, model_ref)?;
     if let Some(session_id) = session_id.filter(|id| !id.is_empty()) {
@@ -1466,6 +1487,7 @@ fn run_state(
                 .write(&AcpSessionReference {
                     backend_ref: backend_ref.to_owned(),
                     session_id: session_id.to_owned(),
+                    runtime: runtime.cloned(),
                 })
                 .map_err(|error| Error::Execution(error.to_string()))?,
         );
@@ -1473,11 +1495,11 @@ fn run_state(
     Ok(state)
 }
 
-fn restored_session_id(
+fn restored_session_reference(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
     backend_ref: &str,
-) -> Result<Option<String>> {
+) -> Result<Option<AcpSessionReference>> {
     let Some(reader) = &context.reader else {
         return Ok(None);
     };
@@ -1493,7 +1515,17 @@ fn restored_session_id(
             "ACP session reference contains an empty durable identity".to_string(),
         ));
     }
-    Ok((reference.backend_ref == backend_ref).then_some(reference.session_id))
+    Ok((reference.backend_ref == backend_ref).then_some(reference))
+}
+
+#[cfg(test)]
+fn restored_session_id(
+    context: &RuntimeRunContext,
+    thread_id: &ThreadId,
+    backend_ref: &str,
+) -> Result<Option<String>> {
+    Ok(restored_session_reference(context, thread_id, backend_ref)?
+        .map(|reference| reference.session_id))
 }
 
 /// A no-tool awaiting ticket for an operator pause (ADR-0054): the ACP run awaits
@@ -1791,7 +1823,7 @@ fn tool_use_id(run_id: &RunId, acp_id: &str, seq: u64) -> String {
     }
 }
 
-pub use acp_cli::{ProcessSecretRequirement, ResolvedModel};
+pub use acp_cli::{ProcessSecretRequirement, ProviderConfigFile, ResolvedModel};
 pub use awaken_runtime_contract::resolved::{
     AcpMcpServer as McpServerConfig, AcpMcpTransport as McpTransport,
 };
@@ -1809,8 +1841,8 @@ pub use session_home::DirSessionHome;
 pub use subprocess::{
     AcpLaunch, AcpLaunchIdentity, BrokeredAcpModelAccessMaterializer, LaunchResolver,
     ProjectingChannelSource, ResolvedLaunch, SubprocessChannelSource, admit_mcp_session_servers,
-    mcp_session_servers_from_routes, project_launch, with_backend_owned_host_environment,
-    with_local_host_launch_environment,
+    mcp_session_servers_from_routes, project_launch, project_launch_with_command,
+    with_backend_owned_host_environment, with_local_host_launch_environment,
 };
 
 use tool_continuation::ensure_pending_tool_use;

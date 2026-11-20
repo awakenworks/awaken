@@ -175,6 +175,11 @@ EOF
 done
 WRAPPER
 /bin/chmod 755 "$prefix/node_modules/.bin/codex-acp" || exit 23
+/bin/mkdir -p "$prefix/node_modules/@agentclientprotocol/codex-acp" || exit 24
+/bin/cp "$prefix/node_modules/.bin/codex-acp" "$prefix/node_modules/@agentclientprotocol/codex-acp/adapter" || exit 25
+/bin/cat > "$prefix/node_modules/@agentclientprotocol/codex-acp/package.json" <<'PACKAGE'
+{"name":"@agentclientprotocol/codex-acp","version":"1.10.0","bin":{"codex-acp":"adapter"}}
+PACKAGE
 /bin/cat > "$prefix/package.json" <<'MANIFEST'
 {"dependencies":{"@agentclientprotocol/codex-acp":"1.10.0"}}
 MANIFEST

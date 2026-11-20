@@ -25,6 +25,7 @@
     ]
   },
   "scripts": {
+    "test:acp-cli-versions": "node acp_cli_versions_e2e.mjs",
     "test:full-chain": "node managed_full_chain_e2e.mjs",
     "pretest": "node harness_process_lifecycle_e2e.mjs && node managed_skill_bundle_pin_e2e.mjs",
     "test:deterministic": "../scripts/ci/_provider_environment.sh --exec node deterministic_runner.mjs",
@@ -48,7 +49,7 @@
     "test:sdk-service-differential": "node sdk_differential_e2e.mjs && node sdk_interruption_recovery_e2e.mjs",
     "test:control-coordinator-postgres": "node control_coordinator_disconnect_postgres_e2e.mjs",
     "test:worker-resources": "SESSION_ENVIRONMENT_TIER=${AWAKEN_E2E_CONTAINER_ENGINE:-docker} AWAKEN_E2E_REQUIRE_CONTAINER=1 tsx remote_worker_resource_stage_e2e.ts",
-    "test:inference-truth": "node management_admin_e2e.mjs && node managed_config_e2e.mjs && node awaken_cli_e2e.mjs && tsx credential_materialization_worker_e2e.ts && tsx credential_reference_worker_e2e.ts",
+    "test:inference-truth": "node acp_doctor_e2e.mjs && node management_admin_e2e.mjs && node managed_config_e2e.mjs && node awaken_cli_e2e.mjs && tsx credential_materialization_worker_e2e.ts && tsx credential_reference_worker_e2e.ts",
     "test:agent-publication": "tsx agent_publication_truth_e2e.ts",
     "test:runtime-stages": "tsx stage_change_coverage_e2e.ts && tsx hand_brain_lazy_e2e.ts && tsx hand_brain_remote_worker_e2e.ts && SESSION_ENVIRONMENT_TIER=namespace tsx hand_brain_remote_worker_e2e.ts && npm run test:hand-brain-container",
     "test:hand-brain": "tsx hand_brain_lazy_e2e.ts && tsx hand_brain_remote_worker_e2e.ts && SESSION_ENVIRONMENT_TIER=namespace tsx hand_brain_remote_worker_e2e.ts && npm run test:hand-brain-container",

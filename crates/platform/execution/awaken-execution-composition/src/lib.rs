@@ -369,12 +369,12 @@ pub fn with_acp_from_deployment(
             (
                 cli,
                 resolver as Arc<dyn awaken_run_executor_acp::LaunchResolver>,
-                profile.launch_argv(id).map(<[String]>::to_vec),
+                profile.launch_command(id).cloned(),
             )
         })
         .collect();
     let source = LaunchSource::Projected(
-        AcpLaunchRegistry::with_resolved_argv(routes)
+        AcpLaunchRegistry::with_resolved_commands(routes)
             .unwrap_or_else(|error| panic!("configure ACP launch routes: {error}")),
     );
     let host = install_acp_source(host, deployment, source, None);

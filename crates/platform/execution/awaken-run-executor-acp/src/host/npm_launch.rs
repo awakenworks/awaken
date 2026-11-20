@@ -1,10 +1,8 @@
 //! Resolve pinned npm entry points without executing a shell shim on Windows.
 use std::path::Path;
-#[cfg(any(windows, test))]
 use std::path::PathBuf;
 use tokio::process::Command;
 
-#[cfg(any(windows, test))]
 pub(super) fn package_entry(prefix: &Path, package: &str, bin: &str) -> Result<PathBuf, String> {
     let (name, version) = package
         .rsplit_once('@')
@@ -19,7 +17,7 @@ pub(super) fn package_entry(prefix: &Path, package: &str, bin: &str) -> Result<P
             .map_err(|error| format!("read pinned npm wrapper manifest: {error}"))?,
     )
     .map_err(|error| format!("decode pinned npm wrapper manifest: {error}"))?;
-    if document["version"].as_str() != Some(version) {
+    if document["name"].as_str() != Some(name) || document["version"].as_str() != Some(version) {
         return Err("installed npm wrapper version does not match the exact catalog pin".into());
     }
     let entry = document["bin"]
@@ -55,19 +53,23 @@ fn node() -> Result<PathBuf, String> {
 }
 
 pub(super) fn wrapper_argv(prefix: &Path, package: &str, bin: &str) -> Result<Vec<String>, String> {
+    let entry = package_entry(prefix, package, bin)?;
     #[cfg(windows)]
     {
+        if entry
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+        {
+            return super::acquisition::canonical_launch_argv(&entry, &[]);
+        }
         Ok(vec![
             node()?.to_string_lossy().into_owned(),
-            package_entry(prefix, package, bin)?
-                .to_string_lossy()
-                .into_owned(),
+            entry.to_string_lossy().into_owned(),
         ])
     }
     #[cfg(not(windows))]
     {
-        let _ = package;
-        super::canonical_launch_argv(&prefix.join("node_modules/.bin").join(bin), &[])
+        super::acquisition::canonical_launch_argv(&entry, &[])
     }
 }
 
@@ -121,6 +123,33 @@ pub(super) fn inherit_host_environment(command: &mut Command) {
     }
 }
 
+/// Installer settings are operator-owned. Never inherit a Session's credential
+/// material into package acquisition.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "pass explicit operator npm settings to the installer"
+)]
+pub(super) fn inherit_installer_environment(command: &mut Command) {
+    inherit_host_environment(command);
+    for key in [
+        "NPM_CONFIG_CACHE",
+        "npm_config_cache",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "NODE_EXTRA_CA_CERTS",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,7 +167,8 @@ mod tests {
         ] {
             std::fs::write(
                 &manifest,
-                serde_json::json!({"version":"1.2.3","bin":bin}).to_string(),
+                serde_json::json!({"name":"@fixture/adapter","version":"1.2.3","bin":bin})
+                    .to_string(),
             )
             .unwrap();
             assert_eq!(
@@ -155,7 +185,8 @@ mod tests {
         for bin in ["../foreign.js", "absent.js"] {
             std::fs::write(
                 &manifest,
-                serde_json::json!({"version":"1.2.3","bin":bin}).to_string(),
+                serde_json::json!({"name":"@fixture/adapter","version":"1.2.3","bin":bin})
+                    .to_string(),
             )
             .unwrap();
             assert!(package_entry(root.path(), "@fixture/adapter@1.2.3", "adapter").is_err());

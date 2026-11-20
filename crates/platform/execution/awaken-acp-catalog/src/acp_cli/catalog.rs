@@ -18,6 +18,7 @@ const CLAUDE: AcpCli = AcpCli {
         bin: "claude-agent-acp",
     },
     discovery: AcpDiscoverySpec {
+        npm_package: Some("@anthropic-ai/claude-code"),
         version: AcpProbeCommand {
             executable: "claude",
             args: &["--version"],
@@ -50,6 +51,10 @@ const CLAUDE: AcpCli = AcpCli {
         },
         install_remediation: "Install Claude Code and Node.js/npm, then rerun discovery.",
     },
+    // Preserve the SDK's qualified stdin-only MCP credential transport.
+    host_executable_env: None,
+    runtime_version_args: Some(&["--cli", "--version"]),
+    incompatible_versions: &[],
     image_requirements: &[
         AcpImageRequirement {
             manager: "npm",
@@ -118,6 +123,7 @@ const CODEX: AcpCli = AcpCli {
         bin: "codex-acp",
     },
     discovery: AcpDiscoverySpec {
+        npm_package: Some("@openai/codex"),
         version: AcpProbeCommand {
             executable: "codex",
             args: &["--version"],
@@ -144,6 +150,9 @@ const CODEX: AcpCli = AcpCli {
         },
         install_remediation: "Install Codex and Node.js/npm, then rerun discovery.",
     },
+    host_executable_env: Some("CODEX_PATH"),
+    runtime_version_args: None,
+    incompatible_versions: &[],
     image_requirements: &[
         AcpImageRequirement {
             manager: "npm",
@@ -221,6 +230,7 @@ const GEMINI: AcpCli = AcpCli {
         args: &["--acp"],
     },
     discovery: AcpDiscoverySpec {
+        npm_package: Some("@google/gemini-cli"),
         version: AcpProbeCommand {
             executable: "gemini",
             args: &["--version"],
@@ -250,6 +260,9 @@ const GEMINI: AcpCli = AcpCli {
         },
         install_remediation: "Install Gemini CLI, then rerun discovery.",
     },
+    host_executable_env: None,
+    runtime_version_args: None,
+    incompatible_versions: &[],
     image_requirements: &[AcpImageRequirement {
         manager: "npm",
         requirement: "@google/gemini-cli@0.53.1",
@@ -317,6 +330,7 @@ const OPENCODE: AcpCli = AcpCli {
         args: &["acp"],
     },
     discovery: AcpDiscoverySpec {
+        npm_package: Some("opencode-ai"),
         version: AcpProbeCommand {
             executable: "opencode",
             args: &["--version"],
@@ -343,6 +357,9 @@ const OPENCODE: AcpCli = AcpCli {
         },
         install_remediation: "Install OpenCode, then rerun discovery.",
     },
+    host_executable_env: None,
+    runtime_version_args: None,
+    incompatible_versions: &[],
     image_requirements: &[AcpImageRequirement {
         manager: "npm",
         requirement: "opencode-ai@1.18.12",
@@ -420,6 +437,7 @@ const HERMES: AcpCli = AcpCli {
         args: &[],
     },
     discovery: AcpDiscoverySpec {
+        npm_package: None,
         version: AcpProbeCommand {
             executable: "hermes",
             args: &["version"],
@@ -439,9 +457,12 @@ const HERMES: AcpCli = AcpCli {
         },
         install_remediation: "Install hermes-agent with its ACP extra, then rerun discovery.",
     },
+    host_executable_env: None,
+    runtime_version_args: None,
+    incompatible_versions: &[],
     image_requirements: &[AcpImageRequirement {
         manager: "pip",
-        requirement: "hermes-agent[acp,bedrock]==0.19.0",
+        requirement: "hermes-agent[acp,mcp,bedrock]==0.19.0",
     }],
     container_argv: &["hermes-acp"],
     container_probe_argv: Some(&[
@@ -463,9 +484,18 @@ const HERMES: AcpCli = AcpCli {
     }),
     model_api_dialects: &["open_ai_chat"],
     backend_model_interface: BackendModelInterface::Unsupported,
-    managed_model_interface: ManagedModelInterface::SessionModel,
+    // Hermes 0.19 rebuilds the agent on session/set_model, dropping the ACP MCP
+    // toolsets registered by new/load. Select the frozen model before startup.
+    managed_model_interface: ManagedModelInterface::Environment,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
-    managed_provider_config: None,
+    managed_provider_config: Some(ManagedProviderConfigDelivery {
+        config_env: "AWAKEN_ACP_PROVIDER_CONFIG",
+        provider_env: "",
+        provider_id: "deepseek",
+        wire_api: "chat",
+        requires_openai_auth: true,
+        codec: ManagedProviderConfigCodec::Hermes,
+    }),
     auth_method_id: None,
     mcp_client_credential_injection: false,
     supports_tool_aliases: false,

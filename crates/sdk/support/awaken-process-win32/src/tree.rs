@@ -7,6 +7,29 @@ use process_wrap::tokio::{
 use std::{any::Any, io, process::ExitStatus, time::Duration};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 
+/// Install the outermost service process lifetime before it starts children.
+/// Windows inherits this Job during CreateProcess, including the interval before
+/// a new suspended child receives its own supervision Job. The process-lifetime
+/// handle intentionally remains in static storage until Windows closes it at
+/// owner exit; SDK users opt in only at their service entry point.
+pub fn supervise_current_process_children() -> io::Result<()> {
+    static OWNER: std::sync::OnceLock<io::Result<super::sys::Job>> = std::sync::OnceLock::new();
+    OWNER
+        .get_or_init(|| {
+            let job = super::sys::Job::new()?;
+            job.assign_current_process()?;
+            Ok(job)
+        })
+        .as_ref()
+        .map(|_| ())
+        .map_err(|error| {
+            error.raw_os_error().map_or_else(
+                || io::Error::new(error.kind(), error.to_string()),
+                io::Error::from_raw_os_error,
+            )
+        })
+}
+
 /// Control for the one original supervision Job, independent of child waiting.
 #[derive(Clone, Debug)]
 pub struct ProcessTreeControl(super::sys::Job);

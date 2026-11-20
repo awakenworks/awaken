@@ -213,6 +213,21 @@ impl AgentChannelSource for BoundLocalChannelSource {
         // final argv/env/options after projection and before any instruction,
         // credential, MCP or process side effect.
         launch.check_tool_narrowing(self.codec, &context.tool_capability_narrowing)?;
+        if let Some(file) = cli
+            .map(|cli| launch.provider_config_file(cli))
+            .transpose()?
+            .flatten()
+        {
+            let logical = format!(
+                "{}/{}",
+                self.sandbox.config_home_logical().trim_end_matches('/'),
+                file.relative_path
+            );
+            self.sandbox
+                .materialize_inline(&logical, file.contents.as_bytes())
+                .await
+                .map_err(|error| OpenError(format!("materialize ACP provider config: {error}")))?;
+        }
         // A file-routed instruction lives in the Session-owned config home:
         // HOME itself for a managed launch, a private directory beside the
         // user's untouched home for a backend-owned one.
@@ -327,6 +342,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
             tool_aliases: launch.tool_aliases,
             session_config_options: launch.session_config_options,
             expected_capability: launch.expected_capability,
+            runtime_identity: launch.runtime_identity,
             instructions: launch.instructions,
         })
     }
@@ -1073,6 +1089,17 @@ mod tests {
         .expect("provision Codex credential artifact");
 
         let files = sandbox.materialized.lock().unwrap();
+        let (_, startup) = files
+            .iter()
+            .find(|(path, _)| path == "/acp-config/.codex/config.toml")
+            .expect("managed provider is selected before the app-server starts");
+        let startup = std::str::from_utf8(startup).unwrap();
+        assert!(startup.contains("awaken-managed"));
+        assert!(startup.contains("http://model.invalid"));
+        assert!(
+            !startup.contains("secret"),
+            "startup config contains no credential bytes"
+        );
         let (_, bytes) = files
             .iter()
             .find(|(path, _)| path == "/acp-config/.codex/auth.json")

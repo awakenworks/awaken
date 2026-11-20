@@ -40,3 +40,5 @@ pub struct SessionHomeKey {
     pub thread_id: String,
     pub adapter: String,
 }
+
+pub use discovery_spec::parse_version;

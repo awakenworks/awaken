@@ -224,11 +224,11 @@ fn managed_credential_delivery_is_catalog_data() {
 
 #[test]
 fn managed_model_interface_is_catalog_driven() {
-    // Environment-based adapters retain their ordinary projection while a
-    // protocol-owned adapter carries the exact id to the ACP Session. The
-    // executor therefore needs no adapter-name branch.
+    // C1 managed routes select the model before the Session opens. C2 Hermes
+    // rebuilds its agent on session/set_model and loses registered MCP toolsets.
+    // E1 its private startup config freezes the exact model without that call.
     let route = resolved();
-    for id in ["claude", "codex", "gemini", "opencode"] {
+    for id in ["claude", "codex", "gemini", "opencode", "hermes"] {
         assert_eq!(
             acp_cli(id).unwrap().managed_model_interface,
             ManagedModelInterface::Environment,
@@ -238,7 +238,18 @@ fn managed_model_interface_is_catalog_driven() {
     let hermes = acp_cli("hermes")
         .unwrap()
         .project(&route, Some(1_000_000), &[]);
-    assert_eq!(hermes.session_model.as_deref(), Some("MiniMax-M3[1m]"));
+    assert!(
+        hermes.session_model.is_none(),
+        "managed model is selected before MCP registration"
+    );
+    let startup = hermes
+        .provider_config_file(acp_cli("hermes").unwrap())
+        .unwrap()
+        .unwrap();
+    let config: serde_json::Value = serde_json::from_str(&startup.contents).unwrap();
+    assert_eq!(startup.relative_path, "config.yaml");
+    assert_eq!(config["model"]["default"], "MiniMax-M3[1m]");
+    assert_eq!(config["model"]["provider"], "deepseek");
     assert_eq!(
         env_of(&hermes, "HERMES_CONTEXT_WINDOW").as_deref(),
         Some("1000000"),
@@ -787,6 +798,13 @@ fn capability_probe_credentials_never_change_the_agent_launch_argv() {
 
     let hermes = acp_cli("hermes").unwrap();
     assert_eq!(hermes.container_argv, ["hermes-acp"]);
+    assert!(
+        hermes
+            .image_requirements
+            .iter()
+            .any(|requirement| requirement.requirement == "hermes-agent[acp,mcp,bedrock]==0.19.0"),
+        "ACP MCP capability also requires Hermes' separate MCP SDK extra"
+    );
     assert_eq!(
         hermes.container_probe_argv.unwrap(),
         [

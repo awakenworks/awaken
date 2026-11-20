@@ -101,6 +101,13 @@ DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {
         "None describes a truthful unqualified wake from an adapter that does "
         "not carry shard hints. The caller refreshes from durable readiness."
     ),
+    "AcpCapabilityNegotiator::negotiate": (
+        "not a degrade: the legacy argv-only spelling forwards every supplied "
+        "argument to the required negotiate_command method via AcpCommand::new. "
+        "Its signature supplies no environment or runtime binding to discard. "
+        "The command-aware method has no default, so implementations must handle "
+        "or reject those additional coordinates explicitly."
+    ),
     "Runs::run_streaming": (
         "Live observation is best effort; without a live producer the same Run "
         "command settles and returns the authoritative outcome. AG-UI and AI SDK "

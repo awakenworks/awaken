@@ -57,6 +57,7 @@ fn fixture_session(
         tool_aliases: Default::default(),
         session_config_options: Vec::new(),
         expected_capability: None,
+        runtime_identity: None,
         instructions: crate::AcpInstructions::default(),
     }
 }
@@ -1150,6 +1151,7 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
             .write(&AcpSessionReference {
                 backend_ref: "acp:other".into(),
                 session_id: "session-7".into(),
+                runtime: None,
             })
             .expect("C3 fixture serializes"),
         acp_session_cell().remove(),
@@ -1183,6 +1185,7 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
         "model",
         activation.snapshot.resolved_spec.model_binding.identity().2,
         Some("session-7"),
+        None,
     )
     .expect("C2 fixture serializes");
     coordinator.commits.lock().push(ThreadCommit {
@@ -5591,3 +5594,56 @@ async fn absent_step_limit_does_not_cap_opaque_acp_calls() {
 
 #[path = "tool_continuation/tests.rs"]
 mod tool_continuation_cases;
+
+#[test]
+fn runtime_binding_round_trips_in_existing_thread_checkpoint() {
+    use awaken_acp_contract::{AcpExecutableIdentity, AcpExecutableSource, AcpSessionBinding};
+    let activation = activation();
+    let coordinator = Arc::new(RecordingCoordinator::default());
+    let context = RuntimeRunContext::new().with_reader(coordinator.clone());
+    let backend = activation.snapshot.resolved_spec.model_binding.identity().2;
+    let binding = AcpSessionBinding {
+        identity: AcpExecutableIdentity {
+            cli_id: "codex".into(),
+            cli_version: "codex-cli 0.167.0".into(),
+            adapter_package: Some("@agentclientprotocol/codex-acp@1.10.0".into()),
+            source: AcpExecutableSource::Host,
+        },
+        protocol_version: "1".into(),
+        capability_fingerprint: "verified-profile".into(),
+    };
+    let state = run_state(
+        &context,
+        &activation.thread_id,
+        &TokenUsage::default(),
+        "model",
+        backend,
+        Some("private-1"),
+        Some(&binding),
+    )
+    .unwrap();
+    coordinator.commits.lock().push(ThreadCommit {
+        thread_id: activation.thread_id.clone(),
+        run: awaken_agent_contract::thread::commit::RunDisposition::running(
+            activation.run_id.clone(),
+        ),
+        messages: vec![],
+        state,
+        events: vec![],
+    });
+    let restored = restored_session_reference(&context, &activation.thread_id, backend)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.session_id, "private-1");
+    assert_eq!(restored.runtime, Some(binding));
+    // Old serialized references remain readable and explicitly unqualified.
+    let legacy: AcpSessionReference =
+        serde_json::from_str(r#"{"backend_ref":"acp:codex","session_id":"old"}"#).unwrap();
+    assert!(legacy.runtime.is_none());
+    assert!(
+        serde_json::from_str::<AcpSessionReference>(
+            r#"{"backend_ref":"acp:codex","session_id":"old","runtime":{}}"#
+        )
+        .is_err()
+    );
+}

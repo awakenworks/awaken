@@ -23,6 +23,7 @@ mod file_schema;
 mod file_support;
 mod local_product;
 mod report;
+pub use report::DoctorReport;
 mod resolve;
 mod role;
 mod runtime_settings;

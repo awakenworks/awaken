@@ -11,16 +11,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use awaken_acp_catalog::AcpCli;
+use awaken_acp_contract::AcpCommand;
 use awaken_run_executor_acp::{AcpLaunch, LaunchResolver, OpenError, ResolvedLaunch};
 use awaken_runtime_contract::activation::RunActivation;
 
+type ResolvedCommandRoute = (AcpCli, Arc<dyn LaunchResolver>, Option<AcpCommand>);
 type ResolvedRoute = (AcpCli, Arc<dyn LaunchResolver>, Option<Vec<String>>);
 
 #[derive(Clone)]
 pub(super) struct ProjectedLaunch {
     pub(super) cli: AcpCli,
     resolver: Arc<dyn LaunchResolver>,
-    launch_argv: Option<Vec<String>>,
+    launch_command: Option<AcpCommand>,
 }
 
 /// Exact `acp:<cli>` launch routes installed on one Worker.
@@ -44,14 +46,23 @@ impl AcpLaunchRegistry {
     /// Process composition supplies the source; this constructor still owns the
     /// one duplicate/id/argv validation before any Session is served.
     pub fn with_resolved_argv(routes: Vec<ResolvedRoute>) -> Result<Self, String> {
+        Self::with_resolved_commands(
+            routes
+                .into_iter()
+                .map(|(cli, resolver, argv)| (cli, resolver, argv.map(AcpCommand::new)))
+                .collect(),
+        )
+    }
+
+    pub fn with_resolved_commands(routes: Vec<ResolvedCommandRoute>) -> Result<Self, String> {
         let mut indexed = BTreeMap::new();
-        for (cli, resolver, launch_argv) in routes {
+        for (cli, resolver, launch_command) in routes {
             if cli.id.trim().is_empty() {
                 return Err("ACP launch route id must not be empty".into());
             }
-            if launch_argv
+            if launch_command
                 .as_ref()
-                .is_some_and(|argv| argv.is_empty() || argv[0].trim().is_empty())
+                .is_some_and(|command| command.argv.is_empty() || command.argv[0].trim().is_empty())
             {
                 return Err(format!(
                     "ACP launch argv for `{}` must not be empty",
@@ -65,7 +76,7 @@ impl AcpLaunchRegistry {
                     ProjectedLaunch {
                         cli,
                         resolver,
-                        launch_argv,
+                        launch_command,
                     },
                 )
                 .is_some()
@@ -198,12 +209,12 @@ impl LaunchSource {
             }),
             LaunchSource::Projected(registry) => {
                 let selected = registry.selected(backend)?;
-                awaken_run_executor_acp::project_launch(
+                awaken_run_executor_acp::project_launch_with_command(
                     &selected.cli,
                     selected.resolver.as_ref(),
                     activation,
                     context,
-                    selected.launch_argv.as_deref(),
+                    selected.launch_command.as_ref(),
                 )
                 .await
             }
@@ -296,7 +307,10 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(
-            selected.launch_argv.as_deref(),
+            selected
+                .launch_command
+                .as_ref()
+                .map(|command| command.argv.as_slice()),
             Some(["/opt/awaken/claude-agent-acp".to_string()].as_slice())
         );
 

@@ -115,6 +115,7 @@ pub async fn run_turn_with_config(
     config: &mut TurnConfig<'_>,
     launch_sink: Option<LaunchSink<'_>>,
 ) -> Result<TerminationReason, AcpError> {
+    config.verified_runtime = None;
     let resolver = config.resolver;
     let mut wire = Wire::new(channel);
     let mut seq = 0u64;
@@ -286,6 +287,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsupported_protocol_is_rejected_before_auth_session_or_prompt() {
+        // ACP's fallback string version is v0; unsupported numeric versions
+        // must also stop at initialize, even when a peer advertises auth.
+        for version in [
+            serde_json::json!(0),
+            serde_json::json!(2),
+            serde_json::json!("1"),
+        ] {
+            let (mut ours, theirs) = channel();
+            let agent = tokio::spawn(async move {
+                let mut io = AgentIo::new(theirs);
+                let request = io.read().await.unwrap();
+                assert_eq!(request["method"], "initialize");
+                assert_eq!(request["params"]["protocolVersion"], 1);
+                io.write_line(
+                    &serde_json::json!({
+                        "jsonrpc":"2.0", "id":request["id"], "result":{
+                            "protocolVersion":version, "agentCapabilities":{},
+                            "authMethods":[{"id":"api-key","name":"API key"}]
+                        }
+                    })
+                    .to_string(),
+                )
+                .await;
+                assert!(
+                    io.read().await.is_none(),
+                    "no authenticate/session/new/prompt after incompatible initialize"
+                );
+            });
+            let result = negotiate_capabilities(
+                ours.as_mut(),
+                &AcpCapabilityProbeConfig {
+                    auth_method_id: Some("api-key".into()),
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("ACP_PROTOCOL_UNSUPPORTED")
+            );
+            drop(ours);
+            agent.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn capability_probe_reuses_the_handshake_and_sends_no_prompt() {
         // Cause graph:
         // C1 initialize capabilities -> E1 neutral protocol flags.
@@ -331,6 +381,7 @@ mod tests {
             &AcpCapabilityProbeConfig {
                 session_cwd: Some("/probe".into()),
                 auth_method_id: None,
+                phase_timeout: None,
             },
         )
         .await
@@ -360,6 +411,58 @@ mod tests {
             option.choices[1].description.as_deref(),
             Some("More reasoning")
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn capability_probe_gives_each_phase_its_own_budget_and_names_stalls() {
+        use std::time::Duration;
+        // Two individually healthy six-second phases exceed the old ten-second
+        // total. Each stalled phase must instead fail by its own name, without
+        // any prompt crossing the protocol boundary.
+        for stalled in [None, Some("initialize"), Some("session/new")] {
+            let (mut ours, theirs) = channel();
+            let agent = tokio::spawn(async move {
+                let mut io = AgentIo::new(theirs);
+                assert_eq!(io.read().await.unwrap()["method"], "initialize");
+                if stalled == Some("initialize") {
+                    assert!(io.read().await.is_none());
+                    return;
+                }
+                // awaken-allow(wait): Virtual initialize latency verifies its independent ten-second phase budget.
+                tokio::time::sleep(Duration::from_secs(6)).await;
+                io.write_line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#).await;
+                assert_eq!(io.read().await.unwrap()["method"], "session/new");
+                if stalled == Some("session/new") {
+                    assert!(io.read().await.is_none());
+                    return;
+                }
+                // awaken-allow(wait): Virtual session/new latency exceeds the old shared deadline while staying inside its own budget.
+                tokio::time::sleep(Duration::from_secs(6)).await;
+                io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"probe"}}"#)
+                    .await;
+                assert!(
+                    io.read().await.is_none(),
+                    "diagnostics must never send a prompt"
+                );
+            });
+            let result = negotiate_capabilities(
+                ours.as_mut(),
+                &AcpCapabilityProbeConfig {
+                    session_cwd: Some("/probe".into()),
+                    auth_method_id: None,
+                    phase_timeout: Some(Duration::from_secs(10)),
+                },
+            )
+            .await;
+            match stalled {
+                None => {
+                    result.expect("each healthy phase owns a fresh budget");
+                }
+                Some(stage) => assert!(result.unwrap_err().to_string().contains(stage)),
+            }
+            drop(ours);
+            agent.await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -517,6 +620,111 @@ mod tests {
                     "H1/H2/E3"
                 );
                 assert!(sink.events.is_empty(), "H1/H2/E3");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn private_session_binding_blocks_runtime_and_capability_drift_before_prompt() {
+        use awaken_acp_contract::{AcpExecutableIdentity, AcpExecutableSource, AcpSessionBinding};
+        let init =
+            serde_json::json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true}});
+        let opened = serde_json::json!({"sessionId":"private-1"});
+        let capabilities = crate::capabilities::project(
+            serde_json::from_value(init.clone()).unwrap(),
+            serde_json::from_value(opened.clone()).unwrap(),
+        );
+        let identity = AcpExecutableIdentity {
+            cli_id: "codex".into(),
+            cli_version: "codex-cli 0.167.0".into(),
+            adapter_package: Some("@agentclientprotocol/codex-acp@1.10.0".into()),
+            source: AcpExecutableSource::Host,
+        };
+        let binding = AcpSessionBinding::verified(identity.clone(), &capabilities);
+        // Same/new runtime; private-format drift; lost identity; legacy adoption;
+        // protocol/capability drift. Every rejection asserts the wire boundary.
+        for case in [
+            "same",
+            "new",
+            "cli",
+            "adapter",
+            "missing",
+            "legacy",
+            "protocol",
+            "capability",
+        ] {
+            let (mut ours, theirs) = channel();
+            let init = init.clone();
+            let opened = opened.clone();
+            let agent = tokio::spawn(async move {
+                let mut io = AgentIo::new(theirs);
+                let mut methods = Vec::new();
+                while let Some(request) = io.read().await {
+                    let method = request["method"].as_str().unwrap().to_string();
+                    methods.push(method.clone());
+                    let result = match method.as_str() {
+                        "initialize" => init.clone(),
+                        "session/new" | "session/load" => opened.clone(),
+                        "session/prompt" => serde_json::json!({"stopReason":"end_turn"}),
+                        other => panic!("unexpected {other}"),
+                    };
+                    io.write_line(
+                        &serde_json::json!({"jsonrpc":"2.0", "id":request["id"], "result":result})
+                            .to_string(),
+                    )
+                    .await;
+                }
+                methods
+            });
+            let resolver = RecordingResolver::default();
+            let mut config = TurnConfig::new(&resolver);
+            config.runtime_identity = Some(identity.clone());
+            config.session_id = (case != "new").then(|| "private-1".into());
+            config.expected_runtime = (case != "new" && case != "legacy").then(|| binding.clone());
+            match case {
+                "cli" => {
+                    config.runtime_identity.as_mut().unwrap().cli_version =
+                        "codex-cli 0.168.0".into()
+                }
+                "adapter" => {
+                    config.runtime_identity.as_mut().unwrap().adapter_package =
+                        Some("adapter@next".into())
+                }
+                "missing" => config.runtime_identity = None,
+                "protocol" => {
+                    config.expected_runtime.as_mut().unwrap().protocol_version = "2".into()
+                }
+                "capability" => {
+                    config
+                        .expected_runtime
+                        .as_mut()
+                        .unwrap()
+                        .capability_fingerprint = "changed".into()
+                }
+                _ => {}
+            }
+            let mut sink = RecordingSink::default();
+            let result =
+                run_turn_with_config(ours.as_mut(), "hello", &mut sink, &mut config, None).await;
+            drop(ours);
+            let methods = agent.await.unwrap();
+            let success = matches!(case, "same" | "new");
+            assert_eq!(result.is_ok(), success, "{case}: {result:?}");
+            assert_eq!(config.verified_runtime.is_some(), success, "{case}");
+            assert_eq!(
+                methods.iter().any(|m| m == "session/prompt"),
+                success,
+                "{case}"
+            );
+            if !success && case != "capability" {
+                assert_eq!(
+                    methods,
+                    ["initialize"],
+                    "{case}: zero private-session dispatch"
+                );
+            }
+            if success {
+                assert_eq!(config.verified_runtime, Some(binding.clone()));
             }
         }
     }

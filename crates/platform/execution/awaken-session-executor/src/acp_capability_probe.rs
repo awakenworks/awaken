@@ -342,6 +342,7 @@ impl AcpProbe {
             let config = AcpCapabilityProbeConfig {
                 session_cwd: Some(cwd.to_string_lossy().into_owned()),
                 auth_method_id: auth_method_id.map(str::to_string),
+                phase_timeout: None,
             };
             let handshake = tokio::time::timeout(
                 self.timeout,
@@ -383,12 +384,16 @@ impl AcpProbe {
 
 #[async_trait]
 impl AcpCapabilityNegotiator for SessionAcpCapabilityNegotiator {
-    async fn negotiate(
+    async fn negotiate_command(
         &self,
-        argv: &[String],
+        argv: &awaken_acp_contract::AcpCommand,
         cwd: &Path,
         auth_method_id: Option<&str>,
     ) -> Result<NegotiatedAcpCapabilities, String> {
+        if !argv.env.is_empty() || argv.runtime.is_some() {
+            return Err("host launcher coordinates cannot run in a Session environment".into());
+        }
+        let argv = &argv.argv;
         if self.scope_owner.trim().is_empty() {
             return Err("ACP probe requires its runtime incarnation discovery coordinate".into());
         }

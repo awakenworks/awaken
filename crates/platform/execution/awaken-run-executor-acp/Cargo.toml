@@ -31,9 +31,11 @@ async-trait.workspace = true
 # `McpServerConfig` rides the config plane into `plugin_config` (derive Serde).
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+toml.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "time", "process", "io-util", "fs"] }
 tracing = "0.1"
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -52,8 +54,6 @@ awaken-session-configuration-contract.workspace = true
 loom = "0.7"
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "time", "sync"] }
 serde_json.workspace = true
-# dev-only: the session-home reference impl's recovery tests use temp dirs.
-tempfile = "3"
 
 [target.'cfg(windows)'.dev-dependencies]
 winsafe = { version = "=0.0.19", features = ["kernel"] }

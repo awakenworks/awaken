@@ -2823,6 +2823,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "toml",
  "tracing",
  "winsafe",
 ]
@@ -3282,6 +3283,7 @@ dependencies = [
 name = "awaken-service-lifecycle"
 version = "1.0.0"
 dependencies = [
+ "awaken-process-win32",
  "awaken-sync",
  "awaken-time",
  "tokio",

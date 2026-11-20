@@ -21,6 +21,9 @@ awaken-time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+awaken-process-win32.workspace = true
+
 [lints]
 workspace = true
 

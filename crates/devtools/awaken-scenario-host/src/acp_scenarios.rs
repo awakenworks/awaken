@@ -407,6 +407,7 @@ const FAKE_ACP_GATEWAY_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
 
 const FAKE_ACP_DISCOVERY: awaken_acp_catalog::AcpDiscoverySpec =
     awaken_acp_catalog::AcpDiscoverySpec {
+        npm_package: None,
         version: awaken_acp_catalog::AcpProbeCommand {
             executable: "/bin/true",
             args: &[],

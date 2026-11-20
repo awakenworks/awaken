@@ -18,4 +18,4 @@ mod sys;
 #[cfg(windows)]
 mod tree;
 #[cfg(windows)]
-pub use tree::{OwnedProcessTree, ProcessTreeControl};
+pub use tree::{OwnedProcessTree, ProcessTreeControl, supervise_current_process_children};

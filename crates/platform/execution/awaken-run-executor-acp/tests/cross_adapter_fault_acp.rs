@@ -171,6 +171,7 @@ impl AgentChannelSource for ScriptedAgent {
             tool_aliases: Default::default(),
             session_config_options: Vec::new(),
             expected_capability: None,
+            runtime_identity: None,
             instructions: AcpInstructions::default(),
         })
     }

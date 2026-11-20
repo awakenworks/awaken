@@ -52,6 +52,7 @@ pub struct AcpLaunch {
     pub session_config_options: Vec<awaken_protocol_acp::SessionConfigOptionSelection>,
     pub session_working_directory: Option<String>,
     pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
+    pub runtime_identity: Option<awaken_acp_contract::AcpExecutableIdentity>,
     /// Source-owned validation of the actual launch, wire and Run restriction.
     /// Custom/catalog launches remain opaque unless their owning code supplies
     /// a concrete check for a proven fixed program. This never grants tools.
@@ -100,6 +101,7 @@ impl AcpLaunch {
             session_config_options: Vec::new(),
             session_working_directory: None,
             expected_capability: None,
+            runtime_identity: None,
             tool_narrowing_check: AcpLaunch::opaque_tool_narrowing,
             instructions: crate::AcpInstructions::default(),
         }
@@ -342,6 +344,7 @@ async fn spawn(
         tool_aliases: launch.tool_aliases.clone(),
         session_config_options: launch.session_config_options.clone(),
         expected_capability: launch.expected_capability.clone(),
+        runtime_identity: launch.runtime_identity.clone(),
         // A plain subprocess has no Session-owned home to write into, so a
         // file route stays pending and reports its first-prompt fallback.
         instructions: launch.instructions.clone(),
@@ -514,15 +517,41 @@ pub async fn project_launch(
     context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     launch_argv: Option<&[String]>,
 ) -> std::result::Result<ResolvedLaunch, OpenError> {
+    let command = launch_argv.map(|argv| awaken_acp_contract::AcpCommand::new(argv.to_vec()));
+    project_launch_with_command(cli, resolver, activation, context, command.as_ref()).await
+}
+
+pub async fn project_launch_with_command(
+    cli: &AcpCli,
+    resolver: &dyn LaunchResolver,
+    activation: &RunActivation,
+    context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    command: Option<&awaken_acp_contract::AcpCommand>,
+) -> std::result::Result<ResolvedLaunch, OpenError> {
     let model = resolver.model(activation, context).await?;
     let credential_artifact = model.credential_artifact().cloned();
-    let extra_env = resolver.extra_env(activation)?;
+    let mut extra_env = resolver.extra_env(activation)?;
+    if let Some(command) = command {
+        extra_env.extend(command.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
     let window = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
         &activation.snapshot.resolved_spec.plugin_config,
     )
     .compact_window;
-    let mut launch =
-        AcpLaunch::from_catalog_with_argv(cli, &model, window, &extra_env, launch_argv)?;
+    let mut launch = AcpLaunch::from_catalog_with_argv(
+        cli,
+        &model,
+        window,
+        &extra_env,
+        command.map(|command| command.argv.as_slice()),
+    )?;
+    if let Some(command) = command.filter(|command| command.runtime.is_some()) {
+        launch.runtime_identity = Some(
+            crate::host::inspect_host_runtime(cli, command)
+                .await
+                .map_err(OpenError)?,
+        );
+    }
     if let Some(timezone) = &context.request_timezone {
         launch.env.retain(|entry| entry.name != "TZ");
         launch.env.push(pc::EnvVar {
@@ -1107,6 +1136,7 @@ mod tests {
             session_config_options: Vec::new(),
             session_working_directory: None,
             expected_capability: None,
+            runtime_identity: None,
             tool_narrowing_check: AcpLaunch::opaque_tool_narrowing,
             instructions: crate::AcpInstructions::default(),
         };

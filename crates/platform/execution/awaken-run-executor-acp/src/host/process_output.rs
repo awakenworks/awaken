@@ -13,7 +13,7 @@ pub(super) struct HostProcessOutput {
     pub stderr: Vec<u8>,
 }
 
-async fn read_pipe<P: AsyncRead + Unpin>(pipe: Option<P>) -> io::Result<Vec<u8>> {
+pub(super) async fn read_pipe<P: AsyncRead + Unpin>(pipe: Option<P>) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     if let Some(pipe) = pipe {
         pipe.take(65_537).read_to_end(&mut bytes).await?;

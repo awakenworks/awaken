@@ -14,8 +14,12 @@
 #![warn(unreachable_pub)]
 
 mod a2a_attempt;
+mod acp_diagnostics;
 mod acp_local_credentials;
 pub use a2a_attempt::a2a_attempt_executor;
+pub use acp_diagnostics::{
+    AcpDiagnosticReport, local_acp_diagnostics, local_acp_diagnostics_with_options,
+};
 mod coordinator_execution;
 mod local_execution;
 pub use coordinator_execution::{CoordinatorExecutionError, coordinator_execution};
@@ -37,8 +41,7 @@ pub use local_execution::LocalExecution;
 pub use memory_data_plane::with_platform_memory_data_plane;
 
 pub use acp_local_credentials::{
-    PreparedLocalAcp, PreparedLocalWorker, local_acp_diagnostics, prepare_local_acp,
-    prepare_local_worker,
+    PreparedLocalAcp, PreparedLocalWorker, prepare_local_acp, prepare_local_worker,
 };
 use awaken_process_startup::config::ResolvedDeployment;
 use awaken_process_startup::console::ServiceArgs;

@@ -69,6 +69,15 @@ impl Job {
         })))
     }
 
+    pub(super) fn assign_current_process(&self) -> io::Result<()> {
+        // SAFETY: the current-process pseudo handle is always valid in this
+        // process, is borrowed only for assignment, and must never be closed.
+        let current = unsafe {
+            BorrowedHandle::borrow_raw(windows_sys::Win32::System::Threading::GetCurrentProcess())
+        };
+        self.assign(current)
+    }
+
     pub(super) fn assign(&self, process: BorrowedHandle<'_>) -> io::Result<()> {
         // SAFETY: both handles remain alive throughout this synchronous call.
         // The caller supplies the newly spawned still-suspended native child,
@@ -196,3 +205,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "sys/lifetime_tests.rs"]
+mod lifetime_tests;

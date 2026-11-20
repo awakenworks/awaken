@@ -9,6 +9,27 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::AcpAdapterPolicy;
 
+/// One resolved program and its non-secret, fixed launcher coordinates.
+/// Session credentials and per-turn environment are supplied separately.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpCommand {
+    pub argv: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    /// Observed runtime, never a replacement for the live ACP handshake.
+    pub runtime: Option<crate::AcpExecutableIdentity>,
+}
+
+impl AcpCommand {
+    #[must_use]
+    pub fn new(argv: Vec<String>) -> Self {
+        Self {
+            argv,
+            env: BTreeMap::new(),
+            runtime: None,
+        }
+    }
+}
+
 /// The ACP adapters one Worker can actually launch.
 ///
 /// This value is shared by Worker capability advertisement and Host launch
@@ -17,7 +38,7 @@ use crate::AcpAdapterPolicy;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcpWorkerProfile {
     cli_ids: BTreeSet<String>,
-    launch_argv: BTreeMap<String, Vec<String>>,
+    launch_commands: BTreeMap<String, AcpCommand>,
 }
 
 impl AcpWorkerProfile {
@@ -53,7 +74,7 @@ impl AcpWorkerProfile {
         }
         Ok(Self {
             cli_ids: normalized,
-            launch_argv: BTreeMap::new(),
+            launch_commands: BTreeMap::new(),
         })
     }
 
@@ -65,13 +86,24 @@ impl AcpWorkerProfile {
     /// acquisition evidence, not another adapter definition; model/MCP/env
     /// projection continues to come only from the canonical AcpCli row.
     pub fn set_launch_argv(&mut self, cli_id: &str, argv: Vec<String>) -> Result<(), String> {
+        self.set_launch_command(cli_id, AcpCommand::new(argv))
+    }
+
+    pub fn set_launch_command(&mut self, cli_id: &str, command: AcpCommand) -> Result<(), String> {
         if !self.cli_ids.contains(cli_id) {
             return Err(format!("ACP launch argv names unadvertised CLI `{cli_id}`"));
         }
-        if argv.is_empty() || argv[0].trim().is_empty() {
+        if command.argv.is_empty() || command.argv[0].trim().is_empty() {
             return Err(format!("ACP launch argv for `{cli_id}` must not be empty"));
         }
-        self.launch_argv.insert(cli_id.to_string(), argv);
+        if command.env.iter().any(|(key, value)| {
+            key.is_empty()
+                || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                || value.contains('\0')
+        }) {
+            return Err("invalid fixed ACP launcher environment".into());
+        }
+        self.launch_commands.insert(cli_id.to_string(), command);
         Ok(())
     }
 
@@ -86,13 +118,32 @@ impl AcpWorkerProfile {
         for (cli_id, argv) in launch_argv {
             projected.set_launch_argv(cli_id, argv.clone())?;
         }
-        self.launch_argv = projected.launch_argv;
+        self.launch_commands = projected.launch_commands;
+        Ok(())
+    }
+
+    pub fn apply_launch_commands(
+        &mut self,
+        commands: &BTreeMap<String, AcpCommand>,
+    ) -> Result<(), String> {
+        let mut projected = self.clone();
+        for (cli_id, command) in commands {
+            projected.set_launch_command(cli_id, command.clone())?;
+        }
+        self.launch_commands = projected.launch_commands;
         Ok(())
     }
 
     #[must_use]
+    pub fn launch_command(&self, cli_id: &str) -> Option<&AcpCommand> {
+        self.launch_commands.get(cli_id)
+    }
+
+    #[must_use]
     pub fn launch_argv(&self, cli_id: &str) -> Option<&[String]> {
-        self.launch_argv.get(cli_id).map(Vec::as_slice)
+        self.launch_commands
+            .get(cli_id)
+            .map(|command| command.argv.as_slice())
     }
 }
 
@@ -131,6 +182,36 @@ mod tests {
     }
 
     static TEST_ACP_POLICY: TestAcpAdapterPolicy = TestAcpAdapterPolicy;
+
+    #[test]
+    fn fixed_launch_environment_is_atomic_and_legacy_argv_resets_it() {
+        let mut profile = AcpWorkerProfile::new(["codex".into()], &TEST_ACP_POLICY).unwrap();
+        let mut command = AcpCommand::new(vec!["node".into(), "adapter.js".into()]);
+        command
+            .env
+            .insert("CODEX_PATH".into(), "/host/codex".into());
+        profile
+            .set_launch_command("codex", command.clone())
+            .unwrap();
+        let initial = profile.clone();
+        let mut invalid = command.clone();
+        invalid.env.insert("bad=name".into(), "value".into());
+        assert!(
+            profile
+                .apply_launch_commands(&BTreeMap::from([("codex".into(), invalid)]))
+                .is_err()
+        );
+        assert_eq!(
+            profile, initial,
+            "invalid batch must not partially mutate launch evidence"
+        );
+        assert_eq!(profile.launch_command("codex"), Some(&command));
+        profile
+            .set_launch_argv("codex", vec!["legacy".into()])
+            .unwrap();
+        assert!(profile.launch_command("codex").unwrap().env.is_empty());
+        assert_eq!(profile.launch_argv("codex").unwrap(), ["legacy"]);
+    }
 
     #[test]
     fn acp_worker_profile_has_only_exact_routes() {

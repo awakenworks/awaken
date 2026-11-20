@@ -475,7 +475,7 @@ impl WorkerDaemonConfig {
                 selected.clone(),
                 awaken_acp_catalog::acp_adapter_policy(),
             )?;
-            profile.apply_launch_argv(&prepared.routable_launch_argv())?;
+            profile.apply_launch_commands(&prepared.routable_launch_commands())?;
             runtime.acp = Some(profile);
             if let Some(path) = &self.local_credential_bindings_file {
                 let projected = Arc::new(ProjectedAcpCredentials::new(
@@ -997,9 +997,9 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl awaken_acp_contract::AcpCapabilityNegotiator for HostFixture {
-        async fn negotiate(
+        async fn negotiate_command(
             &self,
-            _: &[String],
+            _: &awaken_acp_contract::AcpCommand,
             _: &Path,
             _: Option<&str>,
         ) -> Result<awaken_acp_contract::NegotiatedAcpCapabilities, String> {

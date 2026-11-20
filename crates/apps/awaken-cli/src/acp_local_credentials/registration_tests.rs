@@ -91,9 +91,9 @@ impl AcpWrapperInstaller for CapabilityFixture {
 
 #[async_trait]
 impl AcpCapabilityNegotiator for CapabilityFixture {
-    async fn negotiate(
+    async fn negotiate_command(
         &self,
-        _: &[String],
+        _: &awaken_acp_contract::AcpCommand,
         _: &Path,
         _: Option<&str>,
     ) -> Result<awaken_acp_contract::NegotiatedAcpCapabilities, String> {
@@ -478,7 +478,8 @@ async fn protocol_capability_does_not_grant_backend_owned_login() {
             )
             .await
             .unwrap();
-            assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+            let startup_calls = if success { 1 } else { 2 };
+            assert_eq!(fixture.calls.load(Ordering::SeqCst), startup_calls);
             assert_eq!(prepared.effective_profiles.contains_key("claude"), success);
             let credentials = prepared.resolver.credential_observations().await.unwrap();
             assert_eq!(credentials.len(), 1);
@@ -498,7 +499,7 @@ async fn protocol_capability_does_not_grant_backend_owned_login() {
             let capabilities = prepared.resolver.capability_observations().await.unwrap();
             assert_eq!(capabilities.len(), 1);
             assert_eq!(capabilities[0].negotiated().is_some(), success);
-            assert_eq!(fixture.calls.load(Ordering::SeqCst), 2);
+            assert_eq!(fixture.calls.load(Ordering::SeqCst), startup_calls + 1);
             discovery.detected.store(false, Ordering::SeqCst);
             prepared.resolver.credential_observations().await.unwrap();
             assert!(
@@ -506,7 +507,7 @@ async fn protocol_capability_does_not_grant_backend_owned_login() {
                     .negotiated()
                     .is_none()
             );
-            assert_eq!(fixture.calls.load(Ordering::SeqCst), 2);
+            assert_eq!(fixture.calls.load(Ordering::SeqCst), startup_calls + 1);
             discovery.detected.store(true, Ordering::SeqCst);
             prepared
                 .resolver
@@ -523,7 +524,7 @@ async fn protocol_capability_does_not_grant_backend_owned_login() {
                     .is_some(),
                 success
             );
-            assert_eq!(fixture.calls.load(Ordering::SeqCst), 3);
+            assert_eq!(fixture.calls.load(Ordering::SeqCst), startup_calls + 2);
             assert_eq!(
                 prepared
                     .resolver

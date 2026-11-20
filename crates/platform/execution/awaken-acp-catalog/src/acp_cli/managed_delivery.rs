@@ -27,6 +27,8 @@ pub struct ModelDelivery {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagedProviderConfigCodec {
     Codex,
+    /// JSON (also valid YAML) in the Session-owned Hermes config home.
+    Hermes,
     OpenCode {
         provider_package: &'static str,
         credential_env: &'static str,

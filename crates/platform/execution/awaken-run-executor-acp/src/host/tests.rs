@@ -308,10 +308,106 @@ fn worker_route_admission_follows_the_capability_decision_table() {
                 "codex".to_string(),
                 vec!["/wrapper/codex".to_string()],
             )]),
+            launch_commands: BTreeMap::new(),
             effective_profiles: BTreeMap::new(),
             resolver: resolver.clone(),
             selected_cli_ids: ["codex".to_string()].into_iter().collect(),
         };
         assert_eq!(prepared.routable_launch_argv(), expected, "{rule}");
+    }
+}
+
+#[tokio::test]
+async fn discovery_starts_only_explicitly_selected_programs() {
+    struct SelectedOnly;
+    #[async_trait]
+    impl AcpDiscovery for SelectedOnly {
+        async fn discover(&self, cli: &AcpCli) -> AcpHostObservation {
+            assert_eq!(cli.id, "codex", "disabled CLIs must not be executed");
+            observation("codex", AcpDetectionState::Detected, None, None)
+        }
+    }
+    let selected = BTreeSet::from(["codex".to_string()]);
+    assert_eq!(
+        discover_selected(&SelectedOnly, Some(&selected))
+            .await
+            .len(),
+        1
+    );
+    assert!(
+        discover_selected(&SelectedOnly, Some(&BTreeSet::new()))
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn startup_retries_only_prompt_free_negotiation_and_permanent_failure_stays_unroutable() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Installed;
+    #[async_trait]
+    impl AcpWrapperInstaller for Installed {
+        async fn resolved_argv(&self, _: &AcpCli, _: &Path) -> Result<Option<Vec<String>>, String> {
+            Ok(Some(vec!["/prepared/codex".into()]))
+        }
+    }
+    struct Negotiator {
+        failures: usize,
+        calls: AtomicUsize,
+    }
+    #[async_trait]
+    impl AcpCapabilityNegotiator for Negotiator {
+        async fn negotiate_command(
+            &self,
+            _: &awaken_acp_contract::AcpCommand,
+            _: &Path,
+            _: Option<&str>,
+        ) -> Result<awaken_acp_contract::NegotiatedAcpCapabilities, String> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) < self.failures {
+                return Err("session/new temporarily unavailable".into());
+            }
+            Ok(awaken_acp_contract::NegotiatedAcpCapabilities {
+                protocol_version: "1".into(),
+                load_session: false,
+                prompt_image: false,
+                prompt_audio: false,
+                prompt_embedded_context: false,
+                mcp_http: false,
+                mcp_sse: false,
+                session_list: false,
+                modes: vec![],
+                config_options: vec![],
+            })
+        }
+    }
+    for (failures, ready, calls) in [(0, true, 1), (1, true, 2), (usize::MAX, false, 2)] {
+        let root = tempfile::tempdir().unwrap();
+        let negotiator = Arc::new(Negotiator {
+            failures,
+            calls: AtomicUsize::new(0),
+        });
+        let prepared = prepare_host_acp_capabilities_with(
+            HostAcpPreparation {
+                probe_cwd: root.path().join("probe"),
+                wrapper_root: root.path().join("wrappers"),
+                selected_cli_ids: Some(BTreeSet::from(["codex".into()])),
+                clock: Arc::new(ManualClock::new(1000)),
+            },
+            Arc::new(AvailableDiscovery),
+            Arc::new(Installed),
+            negotiator.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(negotiator.calls.load(Ordering::SeqCst), calls);
+        assert_eq!(!prepared.routable_cli_ids().is_empty(), ready);
+        assert_eq!(
+            prepared.observations[0].capability_state,
+            Some(if ready {
+                AcpCapabilityObservationState::Verified
+            } else {
+                AcpCapabilityObservationState::ProbeFailed
+            })
+        );
     }
 }

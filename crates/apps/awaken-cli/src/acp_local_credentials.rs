@@ -12,14 +12,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use awaken_acp_application::{ensure_workspace_bindings, project_local_credential_sources};
+#[cfg(test)]
 use awaken_acp_catalog::acp_cli;
+#[cfg(test)]
 use awaken_acp_contract::AcpHostObservation;
 use awaken_credential_contract::CredentialObservationState;
 use awaken_credential_vault::{CredentialSource, repo::CredentialRepo};
 use awaken_run_executor_acp::host::{
-    AcpCapabilityNegotiator, AcpDiscovery, AcpHostDiscovery, AcpLocalCredentialResolver,
-    AcpWrapperInstaller, HostAcpPreparation, PreparedHostAcpCapabilities,
-    prepare_host_acp_capabilities_with,
+    AcpCapabilityNegotiator, AcpDiscovery, AcpLocalCredentialResolver, AcpWrapperInstaller,
+    HostAcpPreparation, PreparedHostAcpCapabilities, prepare_host_acp_capabilities_with,
 };
 
 /// Local CLI composition inputs; the Worker preparation has no repository.
@@ -372,12 +373,12 @@ async fn prepare_local_acp_with(
     )
     .await?;
     let routable_cli_ids = prepared.routable_cli_ids();
-    let routable_launch_argv = prepared.routable_launch_argv();
+    let routable_commands = prepared.routable_launch_commands();
     deployment.apply_local_acp_observations(prepared.observations, routable_cli_ids)?;
     let Some(profile) = deployment.runtime.acp.as_mut() else {
         return Ok(None);
     };
-    profile.apply_launch_argv(&routable_launch_argv)?;
+    profile.apply_launch_commands(&routable_commands)?;
     // The registered Worker becomes the sole local execution pool. Keeping the
     // anonymous coordinator pool active would create two overlapping claimers
     // for ordinary runs, while only one can publish credential liveness.
@@ -522,53 +523,8 @@ impl PreparedLocalWorker {
     }
 }
 
-/// Run the same canonical discovery service as startup and render its
-/// secret-free observations. No diagnostic state is persisted.
-pub async fn local_acp_diagnostics(json: bool) -> String {
-    let discovery = AcpHostDiscovery::local(std::time::Duration::from_secs(3));
-    render_diagnostics(&discovery.discover_all().await, json)
-}
-
-fn render_diagnostics(observations: &[AcpHostObservation], json: bool) -> String {
-    let rows: Vec<_> = observations
-        .iter()
-        .filter_map(|observation| {
-            let cli = acp_cli(&observation.cli_id)?;
-            Some(serde_json::json!({
-                "id": observation.cli_id,
-                "name": observation.display_name,
-                "supported": true,
-                "detected": observation.detected(),
-                "version": observation.version,
-                "login_state": observation.credential_state.map(credential_state_name),
-                "reason_code": observation.reason_code,
-                "remediation": cli.remediation(observation.reason_code.as_deref()),
-            }))
-        })
-        .collect();
-    if json {
-        return serde_json::to_string_pretty(&serde_json::json!({ "acp": rows }))
-            .expect("ACP diagnostics serialize");
-    }
-    let mut output = String::from("Awaken ACP diagnostics\n\n");
-    for row in rows {
-        let status = if row["detected"] == true {
-            row["login_state"].as_str().unwrap_or("probe_failed")
-        } else {
-            "not_detected"
-        };
-        output.push_str(&format!(
-            "  {:<12} {:<16} {}\n",
-            row["id"].as_str().unwrap_or("unknown"),
-            status,
-            row["version"].as_str().unwrap_or("-")
-        ));
-        if let Some(remediation) = row["remediation"].as_str() {
-            output.push_str(&format!("    {remediation}\n"));
-        }
-    }
-    output
-}
+#[cfg(test)]
+use crate::acp_diagnostics::render_diagnostics;
 
 pub(crate) fn credential_state_name(state: CredentialObservationState) -> &'static str {
     match state {
@@ -730,9 +686,9 @@ mod tests {
 
     #[async_trait]
     impl AcpCapabilityNegotiator for FixedNegotiator {
-        async fn negotiate(
+        async fn negotiate_command(
             &self,
-            _argv: &[String],
+            _argv: &awaken_acp_contract::AcpCommand,
             cwd: &Path,
             _auth_method_id: Option<&str>,
         ) -> Result<NegotiatedAcpCapabilities, String> {
@@ -1433,7 +1389,7 @@ mod tests {
         // with the configured platform tier projected by the sole Host owner.
         // P2 repeated startup   -> same binding, no duplicate
         // P3 missing rows       -> diagnostics only, no route or binding
-        // P4 explicitly unselected detected row -> diagnostic only, no acquisition
+        // P4 explicitly unselected row -> no process probe or acquisition
         let directory = tempfile::tempdir().unwrap();
         let mut deployment = awaken_process_startup::config::local_test_deployment_at(
             directory.path().into(),
@@ -1567,8 +1523,8 @@ mod tests {
             deployment
                 .local_acp_observations
                 .iter()
-                .any(|row| row.cli_id == "claude" && row.detected()),
-            "P4 diagnostics retain the unselected detected row"
+                .all(|row| row.cli_id != "claude"),
+            "P4 disabled backends are never probed"
         );
         let codex_observation = deployment
             .local_acp_observations
@@ -1632,7 +1588,6 @@ mod tests {
         )
         .unwrap();
 
-        #[cfg(windows)]
         let entry = {
             let package = directory
                 .path()
@@ -1640,7 +1595,7 @@ mod tests {
             std::fs::create_dir_all(&package).unwrap();
             std::fs::write(
                 package.join("package.json"),
-                r#"{"version":"1.10.0","bin":{"codex-acp":"main.js"}}"#,
+                r#"{"name":"@agentclientprotocol/codex-acp","version":"1.10.0","bin":{"codex-acp":"main.js"}}"#,
             )
             .unwrap();
             let entry = package.join("main.js");
@@ -1660,10 +1615,7 @@ mod tests {
             .expect("R2 wrapper argv");
         assert_eq!(first, restarted, "R2");
         #[cfg(not(windows))]
-        assert_eq!(
-            first,
-            vec![executable.canonicalize().unwrap().to_string_lossy()]
-        );
+        assert_eq!(first, vec![entry.canonicalize().unwrap().to_string_lossy()]);
         #[cfg(windows)]
         {
             assert_eq!(first.len(), 2);

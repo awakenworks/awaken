@@ -17,3 +17,4 @@ impl awaken_process_win32::ProcessTreeControl
 pub fn awaken_process_win32::ProcessTreeControl::is_quiescent(&self) -> core::io::error::Result<bool>
 pub fn awaken_process_win32::ProcessTreeControl::start_kill(&self) -> core::io::error::Result<()>
 pub async fn awaken_process_win32::ProcessTreeControl::wait_for_quiescence(&self) -> core::io::error::Result<()>
+pub fn awaken_process_win32::supervise_current_process_children() -> core::io::error::Result<()>

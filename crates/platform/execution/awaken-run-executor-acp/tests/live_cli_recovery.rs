@@ -158,6 +158,12 @@ impl AgentChannelSource for LiveSource {
                 .write(&file.relative_path, file.contents.as_bytes())
                 .map_err(|e| OpenError(e.to_string()))?;
         }
+        if let Some(file) = resolved.launch.provider_config_file(cli)? {
+            self.resolver
+                .home
+                .write(file.relative_path, file.contents.as_bytes())
+                .map_err(|e| OpenError(e.to_string()))?;
+        }
         if let Some(artifact) = resolved.credential_artifact {
             let bytes = pc::SecretBroker::materialize(&FileBroker, artifact.reference())
                 .await

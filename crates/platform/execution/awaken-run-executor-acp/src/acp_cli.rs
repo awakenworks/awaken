@@ -14,8 +14,10 @@ use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::BackendModelSelection;
 
 mod managed_delivery;
+mod provider_config;
 use managed_delivery::project_acp_session;
 pub use managed_delivery::{ProcessSecretRequirement, ResolvedModel};
+pub use provider_config::ProviderConfigFile;
 
 impl From<awaken_acp_catalog::ProviderServerToolRefusal> for OpenError {
     fn from(refusal: awaken_acp_catalog::ProviderServerToolRefusal) -> Self {
@@ -174,6 +176,7 @@ impl AcpLaunch {
                     .collect(),
                 session_working_directory,
                 expected_capability: Some(capability.clone()),
+                runtime_identity: None,
                 instructions: crate::AcpInstructions::default(),
             });
         }
@@ -253,6 +256,7 @@ impl AcpLaunch {
                 session_config_options,
                 session_working_directory,
                 expected_capability,
+                runtime_identity: None,
                 instructions: crate::AcpInstructions::default(),
             });
         };
@@ -289,6 +293,9 @@ impl AcpLaunch {
                     }
                     document
                 }
+                ManagedProviderConfigCodec::Hermes => serde_json::json!({
+                    "model": { "default": model, "provider": config.provider_id },
+                }),
                 ManagedProviderConfigCodec::OpenCode {
                     provider_package,
                     credential_env,
@@ -370,6 +377,7 @@ impl AcpLaunch {
             session_config_options,
             session_working_directory,
             expected_capability,
+            runtime_identity: None,
             instructions: crate::AcpInstructions::default(),
         })
     }

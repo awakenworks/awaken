@@ -25,16 +25,18 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 mod adapter_policy;
+mod executable;
 mod host_observation;
 pub mod managed_credential;
 mod session;
 mod worker_profile;
 pub use adapter_policy::AcpAdapterPolicy;
+pub use executable::{AcpExecutableIdentity, AcpExecutableSource, AcpSessionBinding};
 pub use host_observation::{AcpDetectionState, AcpHostObservation, AcpLocalCredentialBinding};
 pub use session::{
     AcpLaunchEvent, AcpLaunchStage, LaunchObserver, McpExecutionContext, SessionMcpServer,
 };
-pub use worker_profile::AcpWorkerProfile;
+pub use worker_profile::{AcpCommand, AcpWorkerProfile};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NegotiatedAcpCapabilities {
@@ -81,6 +83,8 @@ pub struct AcpSessionConfigChoice {
 pub struct AcpCapabilityProbeConfig {
     pub session_cwd: Option<String>,
     pub auth_method_id: Option<String>,
+    /// Optional per-phase limit, inside the process owner's overall deadline.
+    pub phase_timeout: Option<std::time::Duration>,
 }
 
 #[async_trait]
@@ -97,9 +101,22 @@ pub trait AcpCapabilityHandshake: Send + Sync {
 /// the application service consumes it without owning either process boundary.
 #[async_trait]
 pub trait AcpCapabilityNegotiator: Send + Sync {
+    /// Environment-free compatibility entry point for existing callers.
     async fn negotiate(
         &self,
         argv: &[String],
+        cwd: &Path,
+        auth_method_id: Option<&str>,
+    ) -> Result<NegotiatedAcpCapabilities, String> {
+        self.negotiate_command(&AcpCommand::new(argv.to_vec()), cwd, auth_method_id)
+            .await
+    }
+
+    /// Implementations must consume or explicitly reject fixed launcher
+    /// coordinates. No default can silently discard a runtime binding.
+    async fn negotiate_command(
+        &self,
+        command: &AcpCommand,
         cwd: &Path,
         auth_method_id: Option<&str>,
     ) -> Result<NegotiatedAcpCapabilities, String>;

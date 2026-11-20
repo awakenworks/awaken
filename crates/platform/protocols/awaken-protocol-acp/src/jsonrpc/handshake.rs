@@ -118,12 +118,20 @@ pub(super) async fn initialize_agent(
     wire.send_request(
         ID_INITIALIZE,
         AGENT_METHOD_NAMES.initialize,
-        InitializeRequest::new(ProtocolVersion::LATEST)
+        InitializeRequest::new(ProtocolVersion::V1)
             .client_capabilities(ClientCapabilities::default()),
     )
     .await?;
     let init: InitializeResponse =
         parse(pump_to_response(wire, ID_INITIALIZE, sink, seq, resolver).await?)?;
+    // The codec implements ACP v1. A future SDK's LATEST constant must not
+    // silently opt this implementation into an unimplemented major version.
+    if init.protocol_version != ProtocolVersion::V1 {
+        return Err(AcpError::Frame(format!(
+            "ACP_PROTOCOL_UNSUPPORTED: peer selected {}, supported: 1",
+            init.protocol_version
+        )));
+    }
     if let Some(method_id) = auth_method_id {
         if !init
             .auth_methods
@@ -189,6 +197,21 @@ pub(super) async fn open_or_restore_session(
     use super::{RpcResponse, is_missing_session_error, pump_response};
     use crate::{AcpLaunchEvent, AcpLaunchStage, notify_launch};
     use agent_client_protocol::{LoadSessionRequest, LoadSessionResponse};
+    if let Some(expected) = &config.expected_runtime {
+        if config.runtime_identity.as_ref() != Some(&expected.identity) {
+            return Err(AcpError::Frame("ACP_SESSION_RUNTIME_CHANGED: private session requires its original CLI and adapter".into()));
+        }
+        if expected.protocol_version != init.protocol_version.to_string() {
+            return Err(AcpError::Frame("ACP_SESSION_PROTOCOL_CHANGED".into()));
+        }
+    } else if config.session_id.is_some() && config.runtime_identity.is_some() {
+        // Legacy references have no evidence about their private on-disk format.
+        // Preserve them; an operator can start a new Thread instead of silently
+        // adopting or deleting a possibly incompatible CLI session.
+        return Err(AcpError::Frame(
+            "ACP_SESSION_RUNTIME_UNBOUND: start a new Thread to qualify this runtime".into(),
+        ));
+    }
     let cwd = config
         .session_cwd
         .clone()
@@ -371,28 +394,50 @@ pub async fn negotiate_capabilities(
     let mut sink = crate::DiscardRunFacts;
     let mut seq = 0;
     let mut wire = Wire::new(channel);
-    let init = initialize_agent(
-        &mut wire,
-        &mut sink,
-        &mut seq,
-        &resolver,
-        config.auth_method_id.as_deref(),
+    let init = probe_phase(
+        "initialize",
+        config.phase_timeout,
+        initialize_agent(
+            &mut wire,
+            &mut sink,
+            &mut seq,
+            &resolver,
+            config.auth_method_id.as_deref(),
+        ),
     )
     .await?;
-    let session = open_new_session(
-        &mut wire,
-        &mut sink,
-        &mut seq,
-        &resolver,
-        NewSessionConfig {
-            cwd,
-            mcp_servers: &[],
-            mcp_execution_context: None,
-            meta: None,
-        },
+    let session = probe_phase(
+        "session/new",
+        config.phase_timeout,
+        open_new_session(
+            &mut wire,
+            &mut sink,
+            &mut seq,
+            &resolver,
+            NewSessionConfig {
+                cwd,
+                mcp_servers: &[],
+                mcp_execution_context: None,
+                meta: None,
+            },
+        ),
     )
     .await?;
     Ok(crate::capabilities::project(init, session))
+}
+
+async fn probe_phase<T>(
+    stage: &str,
+    limit: Option<std::time::Duration>,
+    work: impl std::future::Future<Output = Result<T, AcpError>>,
+) -> Result<T, AcpError> {
+    let result = match limit {
+        Some(limit) => tokio::time::timeout(limit, work)
+            .await
+            .map_err(|_| AcpError::Frame(format!("capability {stage} timed out")))?,
+        None => work.await,
+    };
+    result.map_err(|error| AcpError::Frame(format!("capability {stage} failed: {error}")))
 }
 
 // Handshake deadlines share the setup module. The full driver tests retain
@@ -441,6 +486,15 @@ pub(super) async fn configure_session(
                 "ACP capability fingerprint changed after publication".into(),
             ));
         }
+    }
+    let runtime = config
+        .runtime_identity
+        .clone()
+        .map(|identity| awaken_acp_contract::AcpSessionBinding::verified(identity, negotiated));
+    if let Some(expected) = &config.expected_runtime
+        && runtime.as_ref() != Some(expected)
+    {
+        return Err(AcpError::Frame("ACP_SESSION_CAPABILITIES_CHANGED".into()));
     }
     let available_modes = negotiated
         .modes
@@ -539,7 +593,9 @@ pub(super) async fn configure_session(
         .await?;
     }
 
-    progress.configured()?.into_prompt_ready()
+    let ready = progress.configured()?.into_prompt_ready()?;
+    config.verified_runtime = runtime;
+    Ok(ready)
 }
 
 #[cfg(test)]
