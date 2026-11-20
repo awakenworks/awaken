@@ -483,6 +483,10 @@ struct ProjectionProbe {
 
 #[async_trait::async_trait]
 impl awaken_provisioning_contract::SandboxReadiness for ProjectionProbe {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
         awaken_provisioning_contract::SandboxCapabilities {
             isolation: awaken_provisioning_contract::IsolationClass::Container,

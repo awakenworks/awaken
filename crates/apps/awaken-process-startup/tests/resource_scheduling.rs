@@ -35,6 +35,10 @@ fn recording_provider_cannot_advertise_process_stop_evidence() {
 
 #[async_trait]
 impl awaken_provisioning_contract::SandboxReadiness for RecordingProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
             isolation: pc::IsolationClass::Container,

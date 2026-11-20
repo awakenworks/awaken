@@ -198,16 +198,9 @@ impl crate::terminal_effects::TerminalEffects {
             .filter(|prepared| prepared.environment.permits_live_io())
             .and_then(|prepared| prepared.environment.environment.as_ref())
         {
-            environment
-                .lifecycle()
-                .stop_bound_processes()
-                .await
-                .map_err(|error| {
-                    RealizationError::pending(
-                        PendingState::TerminalHandNotQuiescent,
-                        error.to_string(),
-                    )
-                })?;
+            environment.lifecycle().quiesce().await.map_err(|error| {
+                RealizationError::pending(PendingState::TerminalHandNotQuiescent, error.to_string())
+            })?;
         }
         self.effect_fence(&effect)?;
         let artifact_capture_mode = root_environment

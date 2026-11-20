@@ -10,6 +10,10 @@ use awaken_provisioning_contract as pc;
 
 #[async_trait]
 impl pc::SandboxReadiness for NamespaceProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         Self::capabilities()
     }

@@ -131,12 +131,15 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
         process,
         mut channel,
     } = environment
-        .spawn_agent_process(pc::Command {
-            argv: agent_argv(),
-            cwd: String::new(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Piped,
-        })
+        .spawn_agent_process(
+            pc::SessionProcessPurpose::Session,
+            pc::Command {
+                argv: agent_argv(),
+                cwd: String::new(),
+                env: Vec::new(),
+                stdio: pc::Stdio::Piped,
+            },
+        )
         .await
         .expect("canonical Environment starts its agent process");
 

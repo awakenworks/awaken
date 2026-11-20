@@ -184,10 +184,26 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         // returned rather than dropped because the workspace reads that follow
         // are exactly what it makes sound.
         let seal = self.execs.seal();
-        if !seal.any_started() {
+        if !seal.any_started() && self.resident_hand.is_none() {
             return seal;
         }
-        match self.runtime.reap_exec_orphans(&self.container_id).await {
+        let result = if let Some(hand) = &self.resident_hand {
+            async {
+                let handle = pc::Sandbox::handle(self);
+                let decoded = crate::DecodedContainerHandle::decode(&handle)
+                    .map_err(|e| awaken_container_contract::RuntimeError::Backend(e.to_string()))?;
+                let mut expectation =
+                    crate::ContainerObservationExpectation::from_decoded(&decoded);
+                expectation.retained_attempt = self.retained_attempt.as_ref();
+                self.runtime
+                    .quiesce_resident(expectation, handle.restoration(), &hand.bin)
+                    .await
+            }
+            .await
+        } else {
+            self.runtime.reap_exec_orphans(&self.container_id).await
+        };
+        match result {
             Ok(()) => {
                 self.execs.clear_orphans();
                 seal

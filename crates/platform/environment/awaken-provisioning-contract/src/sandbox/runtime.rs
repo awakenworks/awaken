@@ -682,6 +682,11 @@ pub trait SandboxReadiness: Send + Sync {
     /// is maintained on `SandboxCapabilities`.
     fn checkpoint_formats(&self) -> Vec<String>;
 
+    /// Whether the installed physical owner can quiesce a resident Hand and
+    /// all container writers without losing the source filesystem. This is
+    /// computed by that owner, never a second checkpoint-format registry.
+    fn supports_resident_quiescence(&self) -> bool;
+
     /// A cheap liveness probe run at selection time: `Ok` iff this backend is
     /// actually usable *right now* — bwrap/unprivileged-userns available, a
     /// container daemon reachable, a provider base qualified. Required, so a

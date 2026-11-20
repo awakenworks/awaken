@@ -345,12 +345,15 @@ async fn exchange(
     argv: Vec<String>,
 ) -> Result<String, pc::SandboxError> {
     let process = sandbox
-        .spawn_agent_process(pc::Command {
-            argv,
-            cwd: String::new(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Piped,
-        })
+        .spawn_agent_process(
+            pc::SessionProcessPurpose::Session,
+            pc::Command {
+                argv,
+                cwd: String::new(),
+                env: Vec::new(),
+                stdio: pc::Stdio::Piped,
+            },
+        )
         .await?;
     let mut channel = process.channel;
     channel.write_all(b"hello\n").await.map_err(|error| {

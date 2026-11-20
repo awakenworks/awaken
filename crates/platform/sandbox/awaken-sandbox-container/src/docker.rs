@@ -631,6 +631,53 @@ impl DockerRuntime {
 
 #[async_trait]
 impl ContainerRuntime for DockerRuntime {
+    fn supports_resident_quiescence(&self) -> bool {
+        true
+    }
+
+    async fn protect_resident_source(
+        &self,
+        expectation: crate::ContainerObservationExpectation<'_>,
+        restoration: Option<&pc::SandboxRestorationEvidence>,
+    ) -> Result<(), RuntimeError> {
+        if expectation.container_id.len() != 64
+            || !expectation
+                .container_id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+            || (restoration.is_none()
+                && (expectation.adoption_fingerprint.is_none()
+                    || expectation.realization_fingerprint.is_none()))
+        {
+            return Err(backend(
+                "resident quiescence requires the original immutable Docker ID and realization",
+            ));
+        }
+        if let Some(restoration) = restoration {
+            let info = self
+                .docker
+                .inspect_container(expectation.container_id, None)
+                .await
+                .map_err(backend)?;
+            if info.id.as_deref() != Some(expectation.container_id)
+                || Self::restoration_evidence_from_info(&info)?.as_ref() != Some(restoration)
+                || Self::restoration_plan_fingerprint_from_info(&info).is_none()
+                || info.state.as_ref().is_none_or(|s| s.running != Some(true))
+            {
+                return Err(backend(
+                    "restored resident Docker source differs from its exact target",
+                ));
+            }
+            return Ok(());
+        }
+        match self.observe(expectation).await? {
+            pc::SandboxObservation::Ready => Ok(()),
+            _ => Err(backend(
+                "resident Docker source is not its exact live realization",
+            )),
+        }
+    }
+
     fn realization_configuration(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {

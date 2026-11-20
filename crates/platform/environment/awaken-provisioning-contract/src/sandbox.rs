@@ -42,7 +42,7 @@ pub use restore_contract::{
 };
 pub use restore_wire::SandboxRestorationEvidence;
 pub use runtime::*;
-pub use session_sandbox::{AgentProcess, SandboxFile, SessionSandbox};
+pub use session_sandbox::{AgentProcess, SandboxFile, SessionProcessPurpose, SessionSandbox};
 
 #[cfg(test)]
 mod restore_wire_tests;
@@ -176,6 +176,10 @@ mod tests {
 
     #[async_trait]
     impl SandboxReadiness for FakeProvider {
+        fn supports_resident_quiescence(&self) -> bool {
+            false
+        }
+
         fn capabilities(&self) -> SandboxCapabilities {
             SandboxCapabilities {
                 process_tree_supervision: false,
@@ -491,6 +495,10 @@ mod tests {
     }
     #[async_trait]
     impl SandboxReadiness for ProbeProvider {
+        fn supports_resident_quiescence(&self) -> bool {
+            false
+        }
+
         fn capabilities(&self) -> SandboxCapabilities {
             self.caps.clone()
         }

@@ -11,7 +11,9 @@ use awaken_sandbox_control::SandboxControlServiceKind;
 use crate::ContainerPlan;
 use crate::egress::EgressRealizationIdentity;
 use crate::podman_plan::RootfsPlan;
-use crate::provider_contract::{PreparedContainer, PreparedContainerDisposition};
+use crate::provider_contract::{
+    ContainerObservationExpectation, PreparedContainer, PreparedContainerDisposition,
+};
 use crate::resident_hand::ResidentHandConfig;
 
 use awaken_provisioning_contract::SandboxEffectFence;
@@ -1425,6 +1427,38 @@ pub enum ContainerTerminalHistory {
 /// or the test fake. It owns no Session or application policy.
 #[async_trait]
 pub trait ContainerRuntime: Send + Sync {
+    /// Computed from the installed backend; no source is quiescent merely
+    /// because this code path exists. Its guard is rechecked for every call.
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
+    async fn protect_resident_source(
+        &self,
+        _expectation: ContainerObservationExpectation<'_>,
+        _restoration: Option<&pc::SandboxRestorationEvidence>,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::Backend(
+            "runtime has no exact protected resident source".into(),
+        ))
+    }
+
+    async fn quiesce_resident(
+        &self,
+        expectation: ContainerObservationExpectation<'_>,
+        restoration: Option<&pc::SandboxRestorationEvidence>,
+        hand_bin: &str,
+    ) -> Result<(), RuntimeError> {
+        self.protect_resident_source(expectation, restoration)
+            .await?;
+        crate::exec_attempts::run_quiescence_command(
+            self,
+            expectation.container_id,
+            crate::exec_attempts::resident_hand_quiescence_command(hand_bin),
+        )
+        .await?;
+        self.protect_resident_source(expectation, restoration).await
+    }
     /// Submit best-effort node-cache preparation, never a Sandbox/Ready receipt.
     async fn prewarm_images(&self, _images: &[String]) -> Result<(), RuntimeError> {
         Ok(())
@@ -1834,39 +1868,12 @@ pub trait ContainerRuntime: Send + Sync {
     /// cannot drift from its own naming; one that cannot exec never started an
     /// exec, so its inherited failure is unreachable rather than fail-open.
     async fn reap_exec_orphans(&self, container_id: &str) -> Result<(), RuntimeError> {
-        // The reaper's own exec is the sweep, not something the sweep must
-        // find, so it is admitted without a ledger entry of its own.
-        let reaper = self
-            .spawn(
-                crate::AdmittedExec::unrecorded(container_id),
-                crate::exec_orphan_reaper_command(),
-            )
-            .await?;
-        let status =
-            match tokio::time::timeout(std::time::Duration::from_secs(30), reaper.wait()).await {
-                Ok(Ok(status)) => status,
-                Ok(Err(error)) => return Err(RuntimeError::Backend(error.to_string())),
-                Err(_) => {
-                    // Unknown completion is never a quiescence receipt. Limit the
-                    // cleanup request too; the owning disposal will remove the
-                    // container while skipping in-container harvest.
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(2),
-                        reaper.signal(pc::Signal::Kill),
-                    )
-                    .await;
-                    return Err(RuntimeError::Backend(
-                        "container exec orphan reaping timed out".into(),
-                    ));
-                }
-            };
-        if status.code == Some(0) {
-            return Ok(());
-        }
-        Err(RuntimeError::Backend(format!(
-            "container exec orphan reaping exited with {:?}",
-            status.code
-        )))
+        crate::exec_attempts::run_quiescence_command(
+            self,
+            container_id,
+            crate::exec_orphan_reaper_command(),
+        )
+        .await
     }
 
     /// Remove one never-used capacity object addressed only by the logical

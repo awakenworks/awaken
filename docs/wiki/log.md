@@ -1,5 +1,14 @@
 # Wiki Update Log
 
+## 2026-11-20 — Keep resident source quiescence with its physical provider
+
+- The [Sandbox provider contract](../design/sandbox-provider-contract.md#lifecycle-resource-safety-2026-11-18)
+  keeps Session admission, physical process observation and bounded maintenance
+  distinct while reusing the original provider/reaper. Existing Hand images
+  require no protocol upgrade; durable Session receipts still authorize removal.
+- [ADR-0073](../adr/0073-session-environment-owned-hand-and-worker-capability-placement.md#2026-11-20-amendment-provider-owned-resident-quiescence)
+  separates retained Worker handoff from strict source capture quiescence.
+
 ## 2026-10-15 — Project original execution closure through the existing read boundary
 
 - [Session and Dispatch roles](../design/session-aggregate-and-dispatch-capabilities.md)

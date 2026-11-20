@@ -797,6 +797,73 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
 }
 
 #[tokio::test]
+async fn resident_quiescence_uses_the_physical_owner_even_without_a_local_binding() {
+    // E1 no binding after replacement / E2 an opened resident channel: both
+    // must reach the SAME physical provider; local vacancy proves no stop.
+    // E3 provider failure -> no proof, original handle/binding retained, late
+    // tools refused; E4 success + replay -> repeat physical observation, never
+    // forget the source before owning disposal. Worker retirement keeps its
+    // separate retained-process semantics and does not call this capture edge.
+    for bound in [false, true] {
+        for failed in [false, true] {
+            let provider = Arc::new(FakeContainerProvider::default());
+            provider.resident_quiescence.store(true, Ordering::SeqCst);
+            if failed {
+                provider
+                    .shared
+                    .lock()
+                    .insert("__fail_resident_quiescence".into(), Vec::new());
+            }
+            let environment = SandboxEnvironmentProvider::container_with_hand_idle_and_residency(
+                provider.clone(),
+                Vec::new(),
+                ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
+                "/usr/local/bin/awaken-sandbox",
+                std::time::Duration::ZERO,
+                awaken_session_environment_contract::ContainerHandResidency::Resident,
+                awaken_time::system_clock(),
+            )
+            .into_provider_roles()
+            .realizer()
+            .create_unattached(&spec())
+            .await
+            .unwrap();
+            if bound {
+                environment
+                    .agent_tools()
+                    .tool_executor()
+                    .invoke(&ToolCall {
+                        call_id: "open".into(),
+                        tool_id: "read".into(),
+                        arguments: serde_json::Value::Null,
+                    })
+                    .await
+                    .unwrap();
+            }
+            let handle = environment.lifecycle().handle();
+            for _ in 0..2 {
+                assert_eq!(environment.lifecycle().quiesce().await.is_ok(), !failed);
+            }
+            assert_eq!(provider.resident_quiescence_calls.load(Ordering::SeqCst), 2);
+            assert_eq!(environment.lifecycle().handle(), handle);
+            assert_eq!(provider.disposals.load(Ordering::SeqCst), 0);
+            assert!(
+                environment
+                    .agent_tools()
+                    .tool_executor()
+                    .invoke(&ToolCall {
+                        call_id: "late".into(),
+                        tool_id: "read".into(),
+                        arguments: serde_json::Value::Null
+                    })
+                    .await
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn cancelled_checkpoint_quiescence_retains_the_attached_hand_owner() {
     // Cause/effect graph: C2=attached process; C6=quiescence Future is
     // cancelled during bounded reap. C2+C6 -> E1=no receipt and E2=the same
@@ -1123,6 +1190,8 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         resident_channel_opens: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         fail_hand_spawn_at: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         shared: shared.clone(),
+        resident_quiescence: Default::default(),
+        resident_quiescence_calls: Default::default(),
     };
 
     // Container Repository path rule: C1 a plan carries `/repo`; E1 reject

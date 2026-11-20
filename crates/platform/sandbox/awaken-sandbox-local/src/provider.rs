@@ -1193,6 +1193,10 @@ impl LocalProvider {
 
 #[async_trait]
 impl pc::SandboxReadiness for LocalProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         Self::capabilities()
     }

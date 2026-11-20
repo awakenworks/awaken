@@ -41,7 +41,7 @@ use awaken_provisioning_contract as pc;
 /// previous docker name was keyed by a process-local counter, so nothing — not
 /// a later call, not a restarted Worker, not the container itself — could name
 /// it.
-pub(crate) const EXEC_PID_DIR: &str = "/tmp/awaken-exec";
+pub const EXEC_PID_DIR: &str = "/tmp/awaken-exec";
 const EXEC_PID_START_SUFFIX: &str = ".start";
 
 /// The environment variable each exec wrapper exports so a started process
@@ -88,25 +88,23 @@ pub fn exec_pid_file_prelude() -> String {
 /// identity to disappear or become a zombie, escalates to KILL within a bounded
 /// interval, and reports failure otherwise. Disposal then removes the container
 /// without reading mutable Secret or Memory bytes from an unquiet workspace.
-pub(crate) fn exec_orphan_reaper_command() -> pc::MaterializedCommand {
-    let script = format!(
-        r#"read_identity() {{
+const PROCESS_IDENTITY_SHELL: &str = r#"read_identity() {
   [ -e "/proc/$pid/stat" ] || return 1
-  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || {{
+  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || {
     [ -e "/proc/$pid/stat" ] && return 2
     return 1
-  }}
-  stat=${{stat##*) }}
+  }
+  stat=${stat##*) }
   set -- $stat
-  [ "$#" -ge 20 ] || {{
+  [ "$#" -ge 20 ] || {
     [ -e "/proc/$pid/stat" ] && return 2
     return 1
-  }}
+  }
   state=$1
   shift 19
   current_start=$1
-}}
-quiet_or_stale() {{
+}
+quiet_or_stale() {
   read_identity
   result=$?
   case "$result" in
@@ -115,8 +113,8 @@ quiet_or_stale() {{
     *) return 2 ;;
   esac
   [ "$current_start" != "$started" ] || [ "$state" = Z ]
-}}
-wait_for_quiet() {{
+}
+wait_for_quiet() {
   attempts=0
   while [ "$attempts" -lt 50 ]; do
     if quiet_or_stale; then
@@ -129,7 +127,12 @@ wait_for_quiet() {{
     attempts=$((attempts + 1))
   done
   return 1
-}}
+}
+"#;
+
+pub(crate) fn exec_orphan_reaper_command() -> pc::MaterializedCommand {
+    let script = format!(
+        r#"{PROCESS_IDENTITY_SHELL}
 for pid_file in {EXEC_PID_DIR}/*.pid; do
   [ -f "$pid_file" ] || continue
   if [ "$pid_file" = "${{{EXEC_PID_FILE_ENV}:-}}" ]; then continue; fi
@@ -388,6 +391,118 @@ impl ExecAttempts {
     /// clearing the whole set is the honest projection of that.
     pub(crate) fn clear_orphans(&self) {
         self.orphaned.lock().clear();
+    }
+}
+
+/// The same PID/starttime reader over a provider-protected container scope.
+/// Freezing the existing Hand works with immutable older images too; there is
+/// no control-protocol upgrade or second lifecycle marker in checkpoint bytes.
+pub(crate) fn resident_hand_quiescence_command(hand_bin: &str) -> pc::MaterializedCommand {
+    let script = format!(
+        r#"{PROCESS_IDENTITY_SHELL}
+hand_bin=$1
+init_exe=$(readlink /proc/1/exe) || exit 125
+case "$init_exe" in /usr/bin/tini|/sbin/docker-init|/usr/sbin/docker-init) ;; *) exit 125;; esac
+init_args=$(tr '\000' '\n' < /proc/1/cmdline) || exit 125
+set -- $init_args
+[ "$#" -eq 6 ] && [ "$2" = -- ] && [ "$3" = "$hand_bin" ] && [ "$4" = hand ] || exit 125
+case "$5" in --listen|--unix) ;; *) exit 125;; esac
+expected_mode=$5; expected_endpoint=$6
+pid=1; read_identity || exit 125; init_start=$current_start
+hand_pid=''; hand_start=''
+children=$(cat /proc/1/task/1/children) || exit 125
+for candidate in $children; do
+  [ "$(readlink "/proc/$candidate/exe" 2>/dev/null || :)" = "$hand_bin" ] || continue
+  args=$(tr '\000' '\n' < "/proc/$candidate/cmdline") || exit 125
+  set -- $args
+  [ "$#" -eq 4 ] && [ "$1" = "$hand_bin" ] && [ "$2" = hand ] || continue
+  [ "$3" = "$expected_mode" ] && [ "$4" = "$expected_endpoint" ] || continue
+  [ -z "$hand_pid" ] || exit 125
+  pid=$candidate; read_identity || exit 125
+  hand_pid=$candidate; hand_start=$current_start
+done
+[ -n "$hand_pid" ] && [ "$hand_pid" -gt 1 ] || exit 125
+pid=$hand_pid; read_identity || exit 125
+[ "$current_start" = "$hand_start" ] || exit 125
+kill -STOP "$hand_pid" 2>/dev/null || exit 125
+assert_frozen() {{
+  pid=1; read_identity || return 1
+  [ "$current_start" = "$init_start" ] || return 1
+  pid=$hand_pid; read_identity || return 1
+  [ "$current_start" = "$hand_start" ] && [ "$state" = T ]
+}}
+attempt=0
+while ! assert_frozen; do
+  attempt=$((attempt + 1)); [ "$attempt" -lt 50 ] || exit 125
+  sleep 0.1 || exit 125
+done
+attempt=0
+while [ "$attempt" -lt 100 ]; do
+  assert_frozen || exit 125
+  unquiet=0
+  for proc in /proc/[0-9]*/stat; do
+    pid=${{proc%/stat}}; pid=${{pid##*/}}
+    if [ "$pid" = 1 ] || [ "$pid" = "$$" ] || [ "$pid" = "$hand_pid" ]; then continue; fi
+    if read_identity; then
+      case "$state" in Z|X) continue;; esac
+      unquiet=1
+      target_pid=$pid
+      assert_frozen || exit 125
+      if [ "$attempt" -lt 20 ]; then kill -TERM "$target_pid" 2>/dev/null || :
+      else kill -KILL "$target_pid" 2>/dev/null || :; fi
+    else
+      result=$?; [ "$result" -eq 1 ] || exit 125
+    fi
+  done
+  if [ "$unquiet" -eq 0 ]; then assert_frozen || exit 125; exit 0; fi
+  attempt=$((attempt + 1)); sleep 0.1 || exit 125
+done
+exit 125"#
+    );
+    let mut command = pc::MaterializedCommand::new([
+        "sh",
+        "-ec",
+        script.as_str(),
+        "awaken-resident-quiescence",
+        hand_bin,
+    ]);
+    command.stdio = pc::Stdio::Null;
+    command
+}
+
+/// One bounded runner for both existing reaper modes. Exit observation, rather
+/// than signal acceptance or EOF, is the only successful result.
+pub(crate) async fn run_quiescence_command<R: crate::ContainerRuntime + ?Sized>(
+    runtime: &R,
+    container_id: &str,
+    command: pc::MaterializedCommand,
+) -> Result<(), awaken_container_contract::RuntimeError> {
+    use awaken_container_contract::RuntimeError;
+    let process = runtime
+        .spawn(AdmittedExec::unrecorded(container_id), command)
+        .await?;
+    let status =
+        match tokio::time::timeout(std::time::Duration::from_secs(30), process.wait()).await {
+            Ok(Ok(status)) => status,
+            Ok(Err(error)) => return Err(RuntimeError::Backend(error.to_string())),
+            Err(_) => {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    process.signal(pc::Signal::Kill),
+                )
+                .await;
+                return Err(RuntimeError::Backend(
+                    "container process quiescence reaping timed out".into(),
+                ));
+            }
+        };
+    if status.code == Some(0) {
+        Ok(())
+    } else {
+        Err(RuntimeError::Backend(format!(
+            "container process quiescence reaping exited with {:?}",
+            status.code
+        )))
     }
 }
 

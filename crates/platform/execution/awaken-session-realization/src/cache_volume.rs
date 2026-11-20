@@ -538,6 +538,12 @@ mod tests {
 
     #[async_trait]
     impl awaken_provisioning_contract::SessionSandbox for RecordingEnvironment {
+        async fn quiesce_resident(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "fixture has no physical resident quiescence",
+            ))
+        }
+
         async fn owned_process_binding(
             &self,
         ) -> Result<Option<String>, awaken_provisioning_contract::SandboxError> {
@@ -589,6 +595,7 @@ mod tests {
 
         async fn spawn_agent_process(
             &self,
+            _purpose: pc::SessionProcessPurpose,
             _command: pc::Command,
         ) -> Result<awaken_provisioning_contract::AgentProcess, pc::SandboxError> {
             Err(pc::SandboxError::unsupported("unused"))
@@ -625,6 +632,10 @@ mod tests {
 
     #[async_trait]
     impl awaken_provisioning_contract::SandboxReadiness for RecordingProvider {
+        fn supports_resident_quiescence(&self) -> bool {
+            false
+        }
+
         fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
             Default::default()
         }

@@ -22,6 +22,15 @@ pub struct AgentProcess {
     pub channel: Box<dyn AgentChannel>,
 }
 
+/// Admission purpose on the one attached-process port. Maintenance is an
+/// internal provider role for bounded source capture, restore and publication;
+/// it is not exposed through Agent execution and grants no lifecycle authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionProcessPurpose {
+    Session,
+    Maintenance,
+}
+
 /// One file harvested from a live Sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxFile {
@@ -39,6 +48,11 @@ pub trait SessionSandbox: Sandbox + SandboxControlServicePublisher {
     /// this opaque reference before invoking an executable. Required like
     /// every capability below: a Sandbox states its own absence.
     async fn owned_process_binding(&self) -> Result<Option<String>, SandboxError>;
+
+    /// Freeze the exact provider-owned resident Hand and drain remaining
+    /// writers, retaining the source for capture. A missing implementation is
+    /// an explicit refusal; dropping channels or sending signals is no proof.
+    async fn quiesce_resident(&self) -> Result<(), SandboxError>;
 
     /// Persist/replay the exact upload within this provider's physical owner.
     /// Does not capture bytes, upload objects, dispose, or commit Session state.
@@ -78,7 +92,11 @@ pub trait SessionSandbox: Sandbox + SandboxControlServicePublisher {
     /// provider's current V2 durable-handle evidence.
     fn record_owned_path(&self, path: &str) -> Result<(), SandboxError>;
 
-    async fn spawn_agent_process(&self, command: Command) -> Result<AgentProcess, SandboxError>;
+    async fn spawn_agent_process(
+        &self,
+        purpose: SessionProcessPurpose,
+        command: Command,
+    ) -> Result<AgentProcess, SandboxError>;
 
     /// Open the resident agent's byte channel, when this Sandbox keeps one.
     async fn open_agent_channel(&self) -> Result<Box<dyn AgentChannel>, SandboxError>;

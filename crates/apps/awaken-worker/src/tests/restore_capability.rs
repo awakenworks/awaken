@@ -48,6 +48,10 @@ impl CountingRestoreProvider {
 
 #[async_trait::async_trait]
 impl pc::SandboxReadiness for CountingRestoreProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         Default::default()
     }

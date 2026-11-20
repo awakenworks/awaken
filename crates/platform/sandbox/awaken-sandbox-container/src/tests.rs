@@ -23,6 +23,7 @@ use tokio::io::AsyncWriteExt;
 
 mod effect_gate_window;
 mod memory_reservation;
+mod resident_quiescence;
 mod restore_acquisition;
 mod staging_removal;
 mod stale_identity;
@@ -2929,6 +2930,11 @@ struct FakeState {
     /// Makes every exec refuse, so a test can drive the reaper's failure edge
     /// against a container the fake still reports as running.
     fail_spawn: bool,
+    resident_quiescence: bool,
+    resident_guard_calls: usize,
+    resident_guard_fail_at: Option<usize>,
+    exec_outcome: Option<pc::ExitStatus>,
+    exec_wait_forever: bool,
     may_have_committed_create: bool,
     expire_effect_fence_once: bool,
     creation_response_gate: Option<(&'static str, Arc<tokio::sync::Semaphore>)>,
@@ -3128,6 +3134,8 @@ async fn container_checkpoint_projection_preserves_exact_handle_and_current_auth
 
 struct FakeExecProcess {
     id: String,
+    outcome: Option<pc::ExitStatus>,
+    wait_forever: bool,
 }
 
 #[async_trait]
@@ -3137,19 +3145,21 @@ impl pc::ProcessHandle for FakeExecProcess {
     }
 
     async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-        Ok(pc::ExitStatus {
-            code: Some(0),
-            signaled: false,
-        })
-    }
-
-    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
-        Ok(Some(pc::ExitStatus {
+        if self.wait_forever {
+            return std::future::pending().await;
+        }
+        Ok(self.outcome.clone().unwrap_or(pc::ExitStatus {
             code: Some(0),
             signaled: false,
         }))
     }
-
+    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+        if self.wait_forever {
+            Ok(None)
+        } else {
+            Ok(Some(self.wait().await?))
+        }
+    }
     async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
         Ok(())
     }
@@ -3252,6 +3262,24 @@ impl FakeRuntime {
 
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
+    fn supports_resident_quiescence(&self) -> bool {
+        self.st.lock().unwrap().resident_quiescence
+    }
+    async fn protect_resident_source(
+        &self,
+        _: crate::ContainerObservationExpectation<'_>,
+        _: Option<&pc::SandboxRestorationEvidence>,
+    ) -> Result<(), RuntimeError> {
+        let mut state = self.st.lock().unwrap();
+        state.resident_guard_calls += 1;
+        if !state.resident_quiescence
+            || state.resident_guard_fail_at == Some(state.resident_guard_calls)
+        {
+            return Err(RuntimeError::Backend("unproved exact source".into()));
+        }
+        Ok(())
+    }
+
     fn realization_configuration(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {
@@ -3974,7 +4002,11 @@ impl ContainerRuntime for FakeRuntime {
             runtime_path("XDG_CACHE_HOME"),
         ));
         state.spawned.push((container_id.to_string(), command.argv));
-        Ok(Box::new(FakeExecProcess { id }))
+        Ok(Box::new(FakeExecProcess {
+            id,
+            outcome: state.exec_outcome.clone(),
+            wait_forever: state.exec_wait_forever,
+        }))
     }
 
     async fn spawn_agent(
@@ -4012,6 +4044,8 @@ impl ContainerRuntime for FakeRuntime {
         }
         Ok(Box::new(FakeExecProcess {
             id: process_id.to_string(),
+            outcome: None,
+            wait_forever: false,
         }))
     }
     async fn open_channel(
@@ -5801,87 +5835,6 @@ async fn process_secret_decision_table_fences_container_runtime_invocation() {
 }
 
 #[tokio::test]
-async fn resident_hand_is_the_only_pid1_path_and_receives_no_platform_credential() {
-    /*
-     * Resident placement cause/effect graph and decision table.
-     * Causes: C1 resident config absent/present; C2 executable blank; C3 port
-     * zero; C4 Session spec contains a Process secret; C5 resource limits are
-     * positive/zero; C6 the resident Hand executes Bash without an attached
-     * process boundary. Effects: E1 legacy
-     * keepalive PID1; E2 exactly one `hand --listen` PID1; E3 durable ledger
-     * path only in base env; E4 reject invalid config before runtime; E5 never
-     * serialize Process/platform credentials into Pod base env; E6 the existing
-     * runtime-owned project, output, HOME, and XDG paths reach resident tools.
-     * Rules: RP1 !C1=>E1; RP2 C1+!C2+!C3=>E2+E3+E5;
-     * RP3 C2||C3||zero(C5)=>E4; RP4 C1+C6=>E6. FMECA: duplicate Hand placement would permit concurrent
-     * side effects (severity 5); selecting one command in ContainerProvider is
-     * the mitigation. Credential disclosure through environment serialization
-     * is severity 5; the existing Process-secret materialization boundary and
-     * this negative assertion mitigate/detect it.
-     */
-    assert!(ResidentHandConfig::new(" ", 7777).is_err());
-    assert!(ResidentHandConfig::new("awaken-sandbox", 0).is_err());
-    assert!(
-        ResidentHandConfig::new("awaken-sandbox", 7777)
-            .unwrap()
-            .with_resource_limits(0, 1)
-            .is_err()
-    );
-
-    let runtime = Arc::new(FakeRuntime::default());
-    provider(runtime.clone())
-        .with_resident_hand(ResidentHandConfig::new("/opt/awaken-sandbox", 7777).unwrap())
-        .create_container(&spec("resident"))
-        .await
-        .unwrap();
-
-    let state = runtime.st.lock().unwrap();
-    assert_eq!(
-        state.created_command.get("cid-resident").unwrap(),
-        &vec![
-            "/opt/awaken-sandbox".to_string(),
-            "hand".to_string(),
-            "--listen".to_string(),
-            "127.0.0.1:7777".to_string(),
-        ]
-    );
-    let env = state.created_env.get("cid-resident").unwrap();
-    assert!(env.iter().any(|(name, value)| {
-        name == "AWAKEN_HAND_LEDGER_DIR" && value == "/tmp/.awaken-hand-operations"
-    }));
-    assert!(
-        env.iter()
-            .any(|(name, value)| { name == "AWAKEN_HAND_LEDGER_MAX_ENTRIES" && value == "4096" })
-    );
-    assert!(
-        env.iter()
-            .any(|(name, value)| name == "AWAKEN_HAND_MAX_CONNECTIONS" && value == "16")
-    );
-    for (name, value) in [
-        ("AWAKEN_PROJECT_DIR", "/workspace"),
-        ("AWAKEN_OUTPUTS_DIR", "/mnt/session/outputs"),
-        ("HOME", "/workspace"),
-        ("XDG_CONFIG_HOME", "/workspace/.config"),
-        ("XDG_CACHE_HOME", "/workspace/.cache"),
-    ] {
-        assert_eq!(
-            env.iter()
-                .filter(|(candidate, _)| candidate == name)
-                .map(|(_, value)| value.as_str())
-                .collect::<Vec<_>>(),
-            [value],
-            "RP4/E6"
-        );
-    }
-    assert!(env.iter().all(|(name, value)| {
-        name != "API_KEY"
-            && !name.contains("TOKEN")
-            && !name.contains("SECRET")
-            && value != "container-process-secret"
-    }));
-}
-
-#[tokio::test]
 async fn full_lifecycle_create_channel_process_artifacts_lease_dispose() {
     let rt =
         Arc::new(FakeRuntime::default().with_artifact("a1", "/mnt/session/outputs/o.txt", b"hi"));
@@ -6429,12 +6382,15 @@ async fn canonical_environment_spawns_agent_without_process_owning_terminal_clea
     .expect("L1 canonical Environment creation");
     let handle = environment.handle();
     let AgentProcess { process, channel } = environment
-        .spawn_agent_process(pc::Command {
-            argv: command_of(&requested),
-            cwd: String::new(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Piped,
-        })
+        .spawn_agent_process(
+            pc::SessionProcessPurpose::Session,
+            pc::Command {
+                argv: command_of(&requested),
+                cwd: String::new(),
+                env: Vec::new(),
+                stdio: pc::Stdio::Piped,
+            },
+        )
         .await
         .expect("L1 canonical agent exec");
 
@@ -6752,12 +6708,15 @@ async fn durable_writable_secret_waits_for_explicit_environment_disposal() {
         process,
         channel: _channel,
     } = environment
-        .spawn_agent_process(pc::Command {
-            argv: command_of(&spec),
-            cwd: String::new(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Piped,
-        })
+        .spawn_agent_process(
+            pc::SessionProcessPurpose::Session,
+            pc::Command {
+                argv: command_of(&spec),
+                cwd: String::new(),
+                env: Vec::new(),
+                stdio: pc::Stdio::Piped,
+            },
+        )
         .await
         .expect("W1 canonical child process");
     #[cfg(unix)]
@@ -6857,12 +6816,15 @@ async fn remote_runtime_harvests_live_credential_only_at_environment_disposal() 
         process,
         channel: _channel,
     } = environment
-        .spawn_agent_process(pc::Command {
-            argv: command_of(&requested),
-            cwd: String::new(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Piped,
-        })
+        .spawn_agent_process(
+            pc::SessionProcessPurpose::Session,
+            pc::Command {
+                argv: command_of(&requested),
+                cwd: String::new(),
+                env: Vec::new(),
+                stdio: pc::Stdio::Piped,
+            },
+        )
         .await
         .expect("S1 canonical child process");
     process.signal(pc::Signal::Term).await.unwrap();

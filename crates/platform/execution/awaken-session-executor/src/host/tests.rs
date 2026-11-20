@@ -1625,6 +1625,10 @@ impl TerminalFenceRefreshProbe {
 
 #[async_trait::async_trait]
 impl awaken_provisioning_contract::SandboxReadiness for TerminalRecoveryProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         managed_test_container_capabilities()
     }
@@ -2203,6 +2207,12 @@ impl awaken_sandbox_control::SandboxControlServicePublisher for TerminalRecovery
 
 #[async_trait::async_trait]
 impl awaken_provisioning_contract::SessionSandbox for TerminalRecoveryEnvironment {
+    async fn quiesce_resident(&self) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "fixture has no physical resident quiescence",
+        ))
+    }
+
     async fn owned_process_binding(
         &self,
     ) -> Result<Option<String>, awaken_provisioning_contract::SandboxError> {
@@ -2279,6 +2289,7 @@ impl awaken_provisioning_contract::SessionSandbox for TerminalRecoveryEnvironmen
 
     async fn spawn_agent_process(
         &self,
+        _purpose: pc::SessionProcessPurpose,
         _command: pc::Command,
     ) -> Result<awaken_provisioning_contract::AgentProcess, pc::SandboxError> {
         self.events.lock().unwrap().push("agent-live-io");

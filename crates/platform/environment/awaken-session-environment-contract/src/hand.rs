@@ -76,9 +76,14 @@ impl ContainerHandResidency {
     /// A codec is usable only when the complete Environment can quiesce its
     /// Hand. Registration and realization share this exact format projection.
     #[must_use]
-    pub fn checkpoint_formats(self, formats: Vec<String>) -> Vec<String> {
+    pub fn checkpoint_formats(
+        self,
+        formats: Vec<String>,
+        resident_quiescence: bool,
+    ) -> Vec<String> {
         match self {
             Self::AttachedExec => formats,
+            Self::Resident if resident_quiescence => formats,
             Self::Resident => Vec::new(),
         }
     }

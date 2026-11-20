@@ -275,6 +275,10 @@ impl awaken_session_environment_contract::HandExecutorFactory for NoHandFactory 
 
 #[async_trait::async_trait]
 impl awaken_provisioning_contract::SandboxReadiness for ExternalSessionProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
         let control_services = self.repository_control.then(|| {
             std::collections::BTreeSet::from([

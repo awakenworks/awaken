@@ -867,6 +867,10 @@ impl<R: ContainerRuntime + 'static> SandboxCapacity for WarmContainerPool<R> {
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> pc::SandboxReadiness for WarmContainerPool<R> {
+    fn supports_resident_quiescence(&self) -> bool {
+        self.inner.supports_resident_quiescence()
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         self.inner.capabilities()
     }

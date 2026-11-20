@@ -180,6 +180,7 @@ impl crate::ContainerRuntime for ExecRuntime {
 
 fn sandbox(runtime: Arc<ExecRuntime>) -> ContainerSandbox<ExecRuntime> {
     ContainerSandbox {
+        resident_hand: None,
         retained_attempt: None,
         runtime,
         id: "exec-sandbox".into(),

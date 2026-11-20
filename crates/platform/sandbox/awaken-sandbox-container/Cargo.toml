@@ -75,7 +75,7 @@ axum.workspace = true
 # Self dev-dependency so the integration suites — which drive the runtime port
 # directly and own their containers — can admit an exec no environment ledger
 # records. Dependants never see this feature.
-awaken-sandbox-container = { path = ".", features = ["unrecorded-exec"] }
+awaken-sandbox-container = { path = ".", features = ["unrecorded-exec", "test-support"] }
 awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time", "test-util"] }
 awaken-tool-relay.workspace = true

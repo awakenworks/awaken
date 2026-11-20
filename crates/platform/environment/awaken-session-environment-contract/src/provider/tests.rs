@@ -81,6 +81,10 @@ fn effect_name(effect: &SandboxEffect<'_>) -> &'static str {
 
 #[async_trait]
 impl pc::SandboxReadiness for RecordingAdapter {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         self.record("capabilities".into());
         pc::SandboxCapabilities::default()

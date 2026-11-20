@@ -736,6 +736,10 @@ mod actuator_tests {
 
     #[async_trait]
     impl crate::SandboxReadiness for FakeProvider {
+        fn supports_resident_quiescence(&self) -> bool {
+            false
+        }
+
         fn capabilities(&self) -> SandboxCapabilities {
             SandboxCapabilities {
                 process_tree_supervision: false,

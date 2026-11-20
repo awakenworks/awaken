@@ -272,3 +272,20 @@ Recovery after dispatch remains unchanged: a surviving resident Hand can join
 the stable request, while loss of the Hand process or its result is
 `Indeterminate` and is never converted into a replay merely to preserve
 availability.
+
+## 2026-11-20 amendment: provider-owned resident quiescence
+
+The existing Environment quiescence role uses its one physical provider's
+exec/reaper boundary. It closes local execution admission, freezes the exact
+canonical resident Hand under its `tini` parent, drains other container writers,
+and requires independent stopped/exit observations before live-data capture.
+The physical UID, immutable realization, namespace and existing held-name
+protection remain with the provider. No new Hand protocol, durable seal marker,
+Session state, cleanup service or scheduling authority is added; frozen older
+Sandbox images use the same provider path. A new restored process is not frozen.
+
+Worker retirement continues to retain the running Hand for adoption. Strict
+quiescence applies to checkpoint and terminal live-data capture, not that
+handoff. Unsupported or unproved physical scopes retain source data and refuse
+capture. The one provider capability gates resident checkpoint advertisement;
+the Session's existing durable receipts remain the deletion authority.

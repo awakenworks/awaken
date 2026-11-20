@@ -1960,6 +1960,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl awaken_provisioning_contract::SandboxReadiness for ProbeProvider {
+        fn supports_resident_quiescence(&self) -> bool {
+            false
+        }
+
         fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
             Default::default()
         }

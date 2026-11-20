@@ -216,6 +216,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             ),
         )?;
         Ok(ContainerSandbox {
+            resident_hand: self.resident_hand.clone(),
             retained_attempt: None,
             runtime: self.runtime.clone(),
             id: spec.scope.clone(),
@@ -334,6 +335,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .map_err(pc::SandboxError::from)?;
 
         Ok(ContainerSandbox {
+            resident_hand: self.resident_hand.clone(),
             retained_attempt: None,
             runtime: self.runtime.clone(),
             id: handle.sandbox_id.clone(),

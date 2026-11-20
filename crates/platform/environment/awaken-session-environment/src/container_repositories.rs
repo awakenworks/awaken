@@ -200,7 +200,8 @@ async fn run_repository_command(
     command: pc::Command,
     limit: usize,
 ) -> Result<(pc::ExitStatus, Result<RepositoryObservation, ()>), pc::SandboxError> {
-    let mut process = sandbox.spawn_agent_process(command).await?;
+    let purpose = pc::SessionProcessPurpose::Maintenance;
+    let mut process = sandbox.spawn_agent_process(purpose, command).await?;
     let (observation, status) = tokio::join!(
         read_repository_observation(&mut process.channel, limit),
         process.process.wait()

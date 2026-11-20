@@ -23,6 +23,10 @@ struct RecordingCapacity {
 
 #[async_trait]
 impl pc::SandboxReadiness for RecordingCapacity {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         self.inner.readiness().capabilities()
     }

@@ -76,7 +76,7 @@ impl SessionAgentLauncher {
             Self::Workdir(sandbox) => sandbox.spawn_agent(command).await,
             Self::Namespace(sandbox) => sandbox.spawn_agent(command).await,
             Self::Container { sandbox } => sandbox
-                .spawn_agent_process(command)
+                .spawn_agent_process(pc::SessionProcessPurpose::Session, command)
                 .await
                 .map(|process| (process.process, process.channel)),
         }
@@ -878,7 +878,13 @@ impl SessionHandExecutor {
     pub(super) async fn quiesce(&self) -> Result<HandStopProof, pc::SandboxError> {
         self.lifecycle.close();
         if self.mode == HandMode::Resident {
-            return Ok(HandStopProof::ResidentProcessRetained);
+            let SessionAgentLauncher::Container { sandbox } = self.launcher.as_ref() else {
+                return Err(pc::SandboxError::unsupported(
+                    "resident quiescence requires its physical provider",
+                ));
+            };
+            sandbox.quiesce_resident().await?;
+            return Ok(HandStopProof::ResidentProcessFrozenAndWritersReaped);
         }
         self.finish_stop("checkpoint_quiesce").await
     }

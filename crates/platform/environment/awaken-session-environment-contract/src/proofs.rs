@@ -8,6 +8,7 @@ pub enum HandStopProof {
     NoBinding,
     AttachedProcessReaped,
     ResidentProcessRetained,
+    ResidentProcessFrozenAndWritersReaped,
 }
 
 /// What stopping an environment's bound processes proved. Consumer: the

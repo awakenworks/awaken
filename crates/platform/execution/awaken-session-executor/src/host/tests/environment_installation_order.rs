@@ -58,6 +58,10 @@ impl RecordingInstallation {
 
 #[async_trait]
 impl pc::SandboxReadiness for RecordingInstallation {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         self.inner.readiness().capabilities()
     }

@@ -962,6 +962,13 @@ impl SandboxEnvironmentProvider {
 
 #[async_trait::async_trait]
 impl pc::SandboxReadiness for SandboxEnvironmentProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        match self {
+            Self::Container { provider, .. } => provider.supports_resident_quiescence(),
+            _ => false,
+        }
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         match self {
             Self::Workdir { provider, .. } => pc::SandboxReadiness::capabilities(provider),
@@ -978,7 +985,10 @@ impl pc::SandboxReadiness for SandboxEnvironmentProvider {
                 provider,
                 hand_residency,
                 ..
-            } => hand_residency.checkpoint_formats(provider.checkpoint_formats()),
+            } => hand_residency.checkpoint_formats(
+                provider.checkpoint_formats(),
+                provider.supports_resident_quiescence(),
+            ),
         }
     }
 

@@ -9,7 +9,7 @@
 //! every engine. Nothing in this module is a composition-root concern.
 
 pub use crate::cache_volume::PVC_BIND_REF_PREFIX;
-pub use crate::exec_attempts::{exec_pid_file, exec_pid_file_prelude};
+pub use crate::exec_attempts::{EXEC_PID_DIR, exec_pid_file, exec_pid_file_prelude};
 pub use crate::fresh_create_attempt;
 pub use crate::live_inputs::manages_live_input;
 pub use crate::process_env::environment_keepalive_command;

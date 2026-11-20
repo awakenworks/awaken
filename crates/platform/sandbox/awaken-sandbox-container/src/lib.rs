@@ -1209,6 +1209,7 @@ pub use provider::ContainerProvider;
 /// returned together with the exact exec process by [`SessionSandbox::spawn_agent_process`].
 pub struct ContainerSandbox<R: ContainerRuntime> {
     retained_attempt: Option<SandboxCreateAttempt>,
+    resident_hand: Option<ResidentHandConfig>,
     runtime: Arc<R>,
     id: String,
     container_id: String,
@@ -1264,6 +1265,19 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> SessionSandbox for ContainerSandbox<R> {
+    async fn quiesce_resident(&self) -> Result<(), pc::SandboxError> {
+        if self.resident_hand.is_none() {
+            return Err(pc::SandboxError::unsupported(
+                "this physical source has no configured resident Hand",
+            ));
+        }
+        let seal = self.reap_exec_orphans().await;
+        match seal.unquiet() {
+            None => Ok(()),
+            Some(why) => Err(pc::SandboxError::backend("resident_quiescence", why)),
+        }
+    }
+
     async fn owned_process_binding(&self) -> Result<Option<String>, pc::SandboxError> {
         self.runtime
             .owned_process_binding(&self.container_id, self.runtime_handle.as_ref())
@@ -1325,9 +1339,13 @@ impl<R: ContainerRuntime + 'static> SessionSandbox for ContainerSandbox<R> {
 
     async fn spawn_agent_process(
         &self,
+        purpose: pc::SessionProcessPurpose,
         command: pc::Command,
     ) -> Result<AgentProcess, pc::SandboxError> {
-        self.spawn_agent(command).await
+        match purpose {
+            pc::SessionProcessPurpose::Session => self.spawn_agent(command).await,
+            pc::SessionProcessPurpose::Maintenance => self.spawn_machinery_agent(command).await,
+        }
     }
 
     async fn open_agent_channel(&self) -> Result<Box<dyn AgentChannel>, pc::SandboxError> {

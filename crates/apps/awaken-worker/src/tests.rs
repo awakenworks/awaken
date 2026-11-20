@@ -133,10 +133,16 @@ struct ExternalCredentialResolver;
 
 pub(crate) struct UnusedContainerProvider;
 
-struct CheckpointContainerProvider;
+struct CheckpointContainerProvider {
+    resident_quiescence: bool,
+}
 
 #[async_trait::async_trait]
 impl awaken_provisioning_contract::SandboxReadiness for CheckpointContainerProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        self.resident_quiescence
+    }
+
     fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
         Default::default()
     }
@@ -353,6 +359,10 @@ impl awaken_provisioning_contract::SandboxCheckpointStore for UnusedCheckpointSt
 
 #[async_trait::async_trait]
 impl awaken_provisioning_contract::SandboxReadiness for UnusedContainerProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
         Default::default()
     }
@@ -1188,17 +1198,22 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
     // R1 C1+!C2 => reject before registration; R2 C1+C2 => exact format appears
     // in the existing WorkerManifest authority; R3 C1+C2+C3 => the decoration
     // seam has identical admission semantics and creates no second capability.
-    let base = || {
+    let base = |resident_quiescence| {
         WorkerNodeBuilder::new(
             awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
             awaken_time::system_clock(),
         )
-        .with_session_container_provider("hosted", Arc::new(CheckpointContainerProvider))
+        .with_session_container_provider(
+            "hosted",
+            Arc::new(CheckpointContainerProvider {
+                resident_quiescence,
+            }),
+        )
         .with_hand_executor_factory(awaken_tool_relay::relay_hand_executor_factory())
         .with_standard_manifest(Default::default())
     };
     assert_eq!(
-        base()
+        base(false)
             .build()
             .err()
             .expect("R1 must fail closed")
@@ -1206,7 +1221,7 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
         "checkpoint-capable Session provider requires a checkpoint store",
         "R1"
     );
-    let worker = base()
+    let worker = base(false)
         .with_environment_checkpoint_store(Arc::new(UnusedCheckpointStore))
         .build()
         .expect("R2");
@@ -1225,7 +1240,9 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
     .with_session_container_environment_components(
         "hosted",
         awaken_execution_composition::ContainerEnvironmentComponents {
-            provider: Arc::new(CheckpointContainerProvider),
+            provider: Arc::new(CheckpointContainerProvider {
+                resident_quiescence: false,
+            }),
             capacity: None,
             extra_mounts: Vec::new(),
             cache_volume_initializer: None,
@@ -1251,7 +1268,7 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
         let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
         deployment.sandbox.container_hand_residency =
             awaken_session_environment_contract::ContainerHandResidency::Resident;
-        let builder = base().with_deployment_config(deployment, false);
+        let builder = base(false).with_deployment_config(deployment, false);
         if store {
             let worker = builder
                 .with_environment_checkpoint_store(Arc::new(UnusedCheckpointStore))
@@ -1277,6 +1294,30 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
                     .contains("hosted-csi-v1"),
                 "R5"
             );
+        }
+    }
+    // R6 a qualified resident provider + byte custody advertises its exact
+    // format, while R7 missing custody rejects before registration. This uses
+    // the SAME provider fixture/manifest builder as R1-R5; a relay factory or
+    // mere codec presence cannot stand in for physical quiescence support.
+    for store in [false, true] {
+        let mut deployment = awaken_deployment_config::DeploymentConfig::ephemeral();
+        deployment.sandbox.container_hand_residency =
+            awaken_session_environment_contract::ContainerHandResidency::Resident;
+        let builder = base(true).with_deployment_config(deployment, false);
+        if store {
+            let worker = builder
+                .with_environment_checkpoint_store(Arc::new(UnusedCheckpointStore))
+                .build()
+                .expect("R6");
+            assert!(
+                worker
+                    .manifest()
+                    .checkpoint_formats
+                    .contains("hosted-csi-v1")
+            );
+        } else {
+            assert!(builder.build().is_err(), "R7");
         }
     }
 }

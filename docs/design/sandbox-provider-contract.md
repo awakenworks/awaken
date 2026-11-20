@@ -59,6 +59,34 @@ proof, its Environment advertises no checkpoint format; admission refuses
 checkpoint-and-release before committing a suspend intent. Resident execution
 and durable request recovery retain their existing behavior.
 
+The existing provider exec/reaper path supplies resident quiescence. The
+Environment closes its local admission, and the provider validates the exact
+physical source before and after its bounded in-container operation. For
+Kubernetes the original Pod UID, immutable realization and existing original
+Create finalizer are required: the held name cannot be reallocated while the
+operation runs. The canonical `tini` child must be the configured Hand, with
+the same PID/starttime before and after an observed stopped state. The reaper
+then stops every other live writer in that container's PID namespace, except
+its own trusted machinery, and observes total quiescence before returning.
+TERM/KILL delivery alone is not a receipt. Unsupported shapes, foreign identity,
+failed observation and response loss preserve the original data source.
+
+This uses the existing `SessionSandbox`, `ContainerRuntime` and exec-attempt
+owner rather than another Hand protocol or cleanup service. The provider's
+computed resident-quiescence capability gates the existing checkpoint format
+projection in both Worker registration and Environment realization. Kernel
+stopped state is not serialized; restore starts a fresh Hand while the existing
+durable operation claims continue to prevent replay. Worker retirement retains
+the running resident Hand; checkpoint and terminal live-data capture instead
+require strict quiescence. The Session still persists verified checkpoint and
+disposal preparation receipts before authorizing Pod/PVC removal.
+
+The existing attached-process port distinguishes Session execution from trusted
+source maintenance. Session admission stays sealed after quiescence; checkpoint
+capture/restore and repository publication reuse the existing machinery exec
+claim and PID bookkeeping rather than reopening that gate or adding a second
+spawner. This process purpose carries no lifecycle or deletion authority.
+
 The byte store may remain installed without an advertised checkpoint format:
 terminal recovery still needs its existing read/delete port for checkpoints or
 uploads already owned by the root. Store presence alone grants no capture or

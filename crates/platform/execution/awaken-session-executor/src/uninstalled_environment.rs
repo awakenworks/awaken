@@ -53,6 +53,10 @@ fn not_installed() -> pc::SandboxError {
 
 #[async_trait]
 impl pc::SandboxReadiness for UninstalledSandboxProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        false
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         // Nothing is enforced because nothing can be realized.
         awaken_session_environment_contract::workdir_capabilities()

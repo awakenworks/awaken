@@ -49,6 +49,8 @@ pub struct FakeContainerProvider {
     pub resident_channel_opens: Arc<std::sync::atomic::AtomicUsize>,
     pub fail_hand_spawn_at: Arc<std::sync::atomic::AtomicUsize>,
     pub shared: Arc<awaken_sync::LeafLock<std::collections::HashMap<String, Vec<u8>>>>,
+    pub resident_quiescence: Arc<std::sync::atomic::AtomicBool>,
+    pub resident_quiescence_calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 pub struct FakeContainer {
@@ -59,6 +61,8 @@ pub struct FakeContainer {
     pub resident_channel_opens: Arc<std::sync::atomic::AtomicUsize>,
     pub fail_hand_spawn_at: Arc<std::sync::atomic::AtomicUsize>,
     pub shared: Arc<awaken_sync::LeafLock<std::collections::HashMap<String, Vec<u8>>>>,
+    pub resident_quiescence: Arc<std::sync::atomic::AtomicBool>,
+    pub resident_quiescence_calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 pub struct DoneProcess {
@@ -181,6 +185,11 @@ impl pc::ProcessHandle for SlowReapProcess {
 
 #[async_trait]
 impl awaken_provisioning_contract::SandboxReadiness for FakeContainerProvider {
+    fn supports_resident_quiescence(&self) -> bool {
+        self.resident_quiescence
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         // Synthetic provider admission for lifecycle tests. Actual containment
         // is validated by the separate Namespace/Docker/Podman service journeys.
@@ -319,6 +328,8 @@ impl awaken_provisioning_contract::SandboxProvider for FakeContainerProvider {
                     resident_channel_opens: self.resident_channel_opens.clone(),
                     fail_hand_spawn_at: self.fail_hand_spawn_at.clone(),
                     shared: self.shared.clone(),
+                    resident_quiescence: self.resident_quiescence.clone(),
+                    resident_quiescence_calls: self.resident_quiescence_calls.clone(),
                 }))
             }
             awaken_provisioning_contract::SandboxEffect::Fenced { fence, authority } => {
@@ -392,6 +403,8 @@ impl FakeContainerProvider {
             resident_channel_opens: self.resident_channel_opens.clone(),
             fail_hand_spawn_at: self.fail_hand_spawn_at.clone(),
             shared: self.shared.clone(),
+            resident_quiescence: self.resident_quiescence.clone(),
+            resident_quiescence_calls: self.resident_quiescence_calls.clone(),
         }))
     }
 }
@@ -663,6 +676,29 @@ pub fn restart_disposal_authorization(
 
 #[async_trait]
 impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
+    async fn quiesce_resident(&self) -> Result<(), pc::SandboxError> {
+        if !self
+            .resident_quiescence
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(pc::SandboxError::unsupported(
+                "fixture has no physical resident quiescence",
+            ));
+        }
+        self.resident_quiescence_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self
+            .shared
+            .lock()
+            .contains_key("__fail_resident_quiescence")
+        {
+            return Err(pc::SandboxError::backend(
+                "quiesce",
+                "unproved physical writer",
+            ));
+        }
+        Ok(())
+    }
     async fn owned_process_binding(&self) -> Result<Option<String>, pc::SandboxError> {
         let shared = self.shared.lock();
         if shared.contains_key("__process_binding_error") {
@@ -716,6 +752,7 @@ impl awaken_provisioning_contract::SessionSandbox for FakeContainer {
 
     async fn spawn_agent_process(
         &self,
+        _purpose: pc::SessionProcessPurpose,
         command: pc::Command,
     ) -> Result<awaken_provisioning_contract::AgentProcess, pc::SandboxError> {
         let (ours, theirs) = tokio::io::duplex(64 * 1024);

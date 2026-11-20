@@ -25,6 +25,9 @@ use awaken_sandbox_container::{MissingHandleTerminalEvidence, PreparedContainer}
 use awaken_sandbox_control::SandboxControlServiceKind;
 use std::sync::atomic::Ordering;
 
+#[cfg(test)]
+mod resident_quiescence_tests;
+
 /// Reuse the canonical physical observer after a strict read-purpose preflight.
 /// Prepared source data needs only the existing participant-disposal replay;
 /// unprepared data still needs the independent retained claim checked below.
@@ -161,6 +164,86 @@ pub(super) fn deletion_incarnation(
 
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
+    fn supports_resident_quiescence(&self) -> bool {
+        self.create_transport.is_some()
+    }
+
+    async fn protect_resident_source(
+        &self,
+        expectation: ContainerObservationExpectation<'_>,
+        restoration: Option<&pc::SandboxRestorationEvidence>,
+    ) -> Result<(), RuntimeError> {
+        let Some((expected_uid, claim_uid)) = expectation.runtime_handle.and_then(
+            awaken_sandbox_container::ContainerContinuationHandle::kubernetes_incarnation,
+        ) else {
+            return Err(backend("resident quiescence requires its original Pod UID"));
+        };
+        if expectation
+            .runtime_handle
+            .is_some_and(awaken_sandbox_container::ContainerContinuationHandle::terminal_only)
+            || (restoration.is_none()
+                && (expectation.adoption_fingerprint.is_none()
+                    || expectation.realization_fingerprint.is_none()))
+        {
+            return Err(backend(
+                "resident quiescence has no complete live-source identity",
+            ));
+        }
+        let pod = self
+            .pods()
+            .get(expectation.container_id)
+            .await
+            .map_err(backend)?;
+        let protected = pod.metadata.finalizers.as_ref().is_some_and(|values| {
+            values
+                .iter()
+                .any(|v| v == awaken_container_contract::ORIGINAL_GUARD_FINALIZER)
+        });
+        let spec = pod
+            .spec
+            .as_ref()
+            .ok_or_else(|| backend("resident source has no Pod specification"))?;
+        if pod.metadata.uid.as_deref() != Some(expected_uid)
+            || pod.metadata.name.as_deref() != Some(expectation.container_id)
+            || pod.metadata.namespace.as_deref() != Some(self.namespace.as_str())
+            || pod.metadata.deletion_timestamp.is_some()
+            || !protected
+            || spec.host_pid == Some(true)
+            || spec.share_process_namespace == Some(true)
+            || continuation::observed_pod_cleanup_authorization(&pod)?.is_some()
+            || claim_uid.is_some_and(|uid| continuation::bound_claim_uid(&pod) != Some(uid))
+        {
+            return Err(backend(
+                "resident source is foreign, deleting or lacks its original held-name protection",
+            ));
+        }
+        if let Some(restoration) = restoration {
+            super::realization::verify_restoration(&pod, restoration)?;
+            if super::realization::restoration_plan_fingerprint(&pod).is_none() {
+                return Err(backend(
+                    "restored resident source has no exact plan evidence",
+                ));
+            }
+            return Ok(());
+        }
+        let observed = super::observed_pod(&pod)?;
+        // Freeze can intentionally make readiness false; identity, not a
+        // readiness timeout, guards this non-destructive source operation.
+        match awaken_sandbox_container::engine::sandbox_observation(
+            Some(expected_uid),
+            expectation.adoption_fingerprint,
+            expectation.realization_fingerprint,
+            expectation.effect_fence,
+            &[observed],
+            expectation.retained_attempt,
+        )? {
+            pc::SandboxObservation::Ready | pc::SandboxObservation::Provisioning { .. } => Ok(()),
+            _ => Err(backend(
+                "resident source does not match its frozen realization",
+            )),
+        }
+    }
+
     async fn owned_process_binding(
         &self,
         container_id: &str,

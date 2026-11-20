@@ -771,6 +771,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
     #[async_trait::async_trait]
     impl awaken_provisioning_contract::SandboxReadiness for SecureExternalProvider {
+        fn supports_resident_quiescence(&self) -> bool {
+            false
+        }
+
         fn capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
             managed_test_container_capabilities()
         }

@@ -822,6 +822,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .collect();
         let parts = staging.into_parts()?;
         Ok(ContainerSandbox {
+            resident_hand: self.resident_hand.clone(),
             retained_attempt: Some(create_attempt),
             runtime: self.runtime.clone(),
             id: spec.scope.clone(),
@@ -1015,6 +1016,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let control_publication = ContainerControlPublicationRegistry::for_adoption(purpose).await;
         admit()?;
         Ok(ContainerSandbox {
+            resident_hand: self.resident_hand.clone(),
             retained_attempt: None,
             runtime: self.runtime.clone(),
             id: handle.sandbox_id.clone(),
@@ -1201,6 +1203,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> pc::SandboxReadiness for ContainerProvider<R> {
+    fn supports_resident_quiescence(&self) -> bool {
+        self.resident_hand.is_some() && self.runtime.supports_resident_quiescence()
+    }
+
     fn capabilities(&self) -> pc::SandboxCapabilities {
         self.runtime_sandbox_capabilities()
     }

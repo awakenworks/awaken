@@ -155,7 +155,8 @@ impl SandboxEnvironment {
             EnvironmentStopProof::ExecutionTreeQuiescent => Ok(EnvironmentQuiescenceProof),
             EnvironmentStopProof::NoBoundProcesses
             | EnvironmentStopProof::Hand(HandStopProof::NoBinding)
-            | EnvironmentStopProof::Hand(HandStopProof::AttachedProcessReaped) => {
+            | EnvironmentStopProof::Hand(HandStopProof::AttachedProcessReaped)
+            | EnvironmentStopProof::Hand(HandStopProof::ResidentProcessFrozenAndWritersReaped) => {
                 Ok(EnvironmentQuiescenceProof)
             }
             EnvironmentStopProof::Hand(HandStopProof::ResidentProcessRetained) => {

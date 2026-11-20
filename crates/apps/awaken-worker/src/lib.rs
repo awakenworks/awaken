@@ -900,7 +900,10 @@ impl WorkerNodeBuilder {
                 .deployment
                 .sandbox
                 .container_hand_residency
-                .checkpoint_formats(installed.provider.checkpoint_formats())
+                .checkpoint_formats(
+                    installed.provider.checkpoint_formats(),
+                    installed.provider.supports_resident_quiescence(),
+                )
                 .into_iter()
                 .collect(),
             // A local provider always knows its format; it promises restore
