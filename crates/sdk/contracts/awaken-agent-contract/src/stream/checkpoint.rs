@@ -62,9 +62,11 @@ pub struct StreamCheckpoint {
     pub retry_count: u32,
 }
 
-/// A write (`put`/`delete`) that did not take effect. Writes keep a `Result`:
-/// unlike a read, a failed write has no third outcome to confuse — it simply did
-/// not happen, and the caller is told so.
+/// A checkpoint write (`put`/`delete`) that could not be confirmed.
+/// A storage error may follow a durable change whose acknowledgement was lost.
+/// `Ok(())` confirms the change; an error establishes neither presence nor
+/// absence. Recovery that depends on the stored state observes it through
+/// [`StreamCheckpointStore::get`] and retains an `Unknown` read as uncertainty.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StreamCheckpointError {
     #[error("stream checkpoint storage unavailable: {0}")]
@@ -98,8 +100,10 @@ pub trait StreamCheckpointStore: Send + Sync {
     /// fenced read is the fail-open defect this signature exists to prevent.
     async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint>;
     /// Persist (overwriting any prior) the in-flight partial for its `run_id`.
+    /// An error is not evidence that the partial was never saved.
     async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError>;
     /// Remove the checkpoint for `run_id`; a no-op if absent.
+    /// An error does not confirm retirement of resumable state.
     async fn delete(&self, run_id: &str) -> Result<(), StreamCheckpointError>;
 }
 

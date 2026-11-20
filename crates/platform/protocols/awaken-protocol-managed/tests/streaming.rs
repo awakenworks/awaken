@@ -21,6 +21,9 @@
 
 mod support;
 
+#[path = "streaming/durability_boundaries.rs"]
+mod durability_boundaries;
+
 use std::sync::Arc;
 
 use awaken_protocol_managed::ManagedState;

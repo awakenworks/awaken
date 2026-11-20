@@ -34,6 +34,9 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink};
 
+#[path = "checkpoint/durability_boundaries.rs"]
+mod durability_boundaries;
+
 /// Streams `first` then confirms remote termination on its first call; streams `rest` and
 /// succeeds on any later call. Continuation stitches `first + rest`.
 struct DropOnceLlm {

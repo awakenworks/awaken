@@ -7,6 +7,7 @@
 //! the launched CLI — no daemon, no network.
 
 mod channel_entry;
+mod durability_boundaries;
 mod permission_narrowing;
 mod prompt;
 
@@ -1747,45 +1748,6 @@ async fn observer_sees_failed_when_the_launch_faults() {
         stages,
         vec![AcpLaunchStage::Launching, AcpLaunchStage::Failed],
         "a spawn fault surfaces a Failed state"
-    );
-}
-
-/// Cause/effect design: C1 ACP emits `working`, `done`, then a natural terminal;
-/// C2 the activation supplies user input `do it`. Effects: E1 the Run ends
-/// NaturalEnd; E2 one commit contains the user message plus one assistant message
-/// with concatenated text; E3 that commit carries the terminal state. Decision
-/// rule D1=C1+C2=>E1+E2+E3.
-#[tokio::test]
-async fn drives_a_step_commits_messages_and_returns_natural_end() {
-    // Causes: the fixtures below establish `drives a step commits messages and` with the concrete
-    // inputs, state, dependencies, and failure triggers used by this case.
-    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
-    // remote protocol state cannot become a parallel Run or transcript truth.
-    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
-    let e = exec(vec![
-        r#"{"type":"message","text":"working"}"#.into(),
-        r#"{"type":"message","text":"done"}"#.into(),
-        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
-    ]);
-    let coord = Arc::new(RecordingCoordinator::default());
-    let state = e
-        .execute(
-            activation(),
-            RuntimeRunContext::new().with_commit(coord.clone()),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
-    let commits = coord.settled_commits();
-    assert_eq!(commits.len(), 1);
-    assert_eq!(commits[0].messages.len(), 2);
-    assert_eq!(commits[0].messages[0].text_content(), "do it");
-    assert_eq!(commits[0].messages[1].text_content(), "workingdone");
-    assert_eq!(
-        commits[0].run_state(),
-        RunState::Ended(EndCause::NaturalEnd)
     );
 }
 

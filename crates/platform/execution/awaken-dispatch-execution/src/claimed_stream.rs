@@ -105,6 +105,80 @@ mod tests {
     use awaken_agent_contract::event::{AgentEvent, Delta};
     use awaken_store_inmem::MemoryStreamSink;
 
+    #[derive(Default)]
+    struct FailFirstObservation {
+        attempts: std::sync::atomic::AtomicUsize,
+        received: awaken_sync::LeafLock<Vec<StreamObservation>>,
+    }
+
+    #[async_trait::async_trait]
+    impl StreamSink for FailFirstObservation {
+        async fn send(&self, event: StreamEvent) -> Result<(), StreamError> {
+            self.send_observation(event.into()).await
+        }
+
+        async fn send_observation(
+            &self,
+            observation: StreamObservation,
+        ) -> Result<(), StreamError> {
+            if self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                return Err(StreamError::Closed);
+            }
+            self.received.lock().push(observation);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_preview_keeps_its_position_and_a_foreign_run_consumes_none() {
+        // W1 publication of position zero fails; W2 the same response resumes;
+        // W3 a foreign Run is refused before publication. The retained gap is
+        // visible as [1,2], never renumbered into an apparently complete [0,1].
+        let downstream = Arc::new(FailFirstObservation::default());
+        let sink = ClaimBoundStreamSink::new(
+            RunClaim {
+                run_id: RunId("run-a".into()),
+                owner: "worker-a".into(),
+                epoch: 3,
+            },
+            Arc::new(LocalClaimedStreamPublisher::new(downstream.clone())),
+        );
+        let preview = |run: &str| {
+            StreamObservation::assistant_delta(
+                RunId(run.into()),
+                awaken_agent_contract::agent::thread::Id("thread-a".into()),
+                2,
+                3,
+                AgentEvent::Delta(Delta::TextDelta {
+                    delta: "fragment".into(),
+                }),
+            )
+        };
+        assert!(sink.send_observation(preview("run-a")).await.is_err());
+        sink.send_observation(preview("run-a")).await.unwrap();
+        assert!(sink.send_observation(preview("foreign-run")).await.is_err());
+        sink.send_observation(preview("run-a")).await.unwrap();
+        assert_eq!(
+            downstream
+                .attempts
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+        let received = downstream.received.lock();
+        assert_eq!(
+            received
+                .iter()
+                .map(|item| item.preview_sequence)
+                .collect::<Vec<_>>(),
+            vec![Some(1), Some(2)]
+        );
+        assert!(received.iter().all(|item| item.event.run_id.0 == "run-a"));
+    }
+
     /// Cause/effect and decision table for the claim adapter.
     /// Causes: C1 the Runtime event names the claimed Run; C2 it names another
     /// Run; C3 it carries an exact assistant-response coordinate. Effects: E1
