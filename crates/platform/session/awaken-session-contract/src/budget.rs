@@ -225,10 +225,67 @@ fn accepted_managed_budget_cost_never_wraps() {
     }
 }
 
+/// Billable server-tool dimensions, not an authorization vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ManagedServerTool {
+    WebFetch,
+    WebSearch,
+}
+
+/// Read the existing frozen Agent tool policy; same-named MCP tools are not
+/// Native server-tool capabilities. Union every exact accepted delegate.
+pub fn required_managed_server_tools<'a>(
+    policies: impl IntoIterator<Item = &'a [awaken_agent_contract::ToolsetPolicy]>,
+) -> std::collections::BTreeSet<ManagedServerTool> {
+    use awaken_agent_contract::ToolsetSource;
+    use awaken_session_configuration_contract::{BuiltinToolsetMember, toolset_default_policy};
+    let mut required = std::collections::BTreeSet::new();
+    for policies in policies {
+        let agent = policies
+            .iter()
+            .find(|policy| policy.source == ToolsetSource::Agent);
+        for (member, cost) in [
+            (BuiltinToolsetMember::WebFetch, ManagedServerTool::WebFetch),
+            (
+                BuiltinToolsetMember::WebSearch,
+                ManagedServerTool::WebSearch,
+            ),
+        ] {
+            let enabled = agent.map_or_else(
+                || toolset_default_policy(&ToolsetSource::Agent, None, None).enabled,
+                |policy| policy.policy_for(member.as_str()).enabled,
+            );
+            if enabled {
+                required.insert(cost);
+            }
+        }
+    }
+    required
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedListPriceRequest {
     pub occurred_at_unix_ms: u64,
     pub model_refs: Vec<String>,
+    required_server_tools: std::collections::BTreeSet<ManagedServerTool>,
+}
+
+impl ManagedListPriceRequest {
+    pub fn new(
+        occurred_at_unix_ms: u64,
+        model_refs: Vec<String>,
+        required_server_tools: std::collections::BTreeSet<ManagedServerTool>,
+    ) -> Self {
+        Self {
+            occurred_at_unix_ms,
+            model_refs,
+            required_server_tools,
+        }
+    }
+
+    pub fn required_server_tools(&self) -> &std::collections::BTreeSet<ManagedServerTool> {
+        &self.required_server_tools
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -650,6 +707,82 @@ fn public_list_cost_minor(numerator: u128) -> Result<u64, ManagedListPriceError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn required_server_tool_prices_follow_frozen_policy_and_delegate_union() {
+        // Cause-effect table: P1 Agent default off -> no tool price; P2 default
+        // on/unspecified -> both; P3 off + named enable -> that class only;
+        // P4 on + named disable -> the other class; P5 same-named MCP -> no
+        // Agent capability; P6 root/delegate policies -> union of each exact
+        // accepted publication. This projects policy, never grants tools.
+        use awaken_agent_contract::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+        let policy = |enabled| ToolExecutionPolicy {
+            enabled,
+            permission: ToolPermissionRequirement::AlwaysAllow,
+        };
+        let agent = |enabled, overrides| ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: policy(enabled),
+            overrides,
+        };
+        let named = |name, enabled| {
+            ToolPolicyOverride::with_optional_configuration(name, policy(enabled), None)
+        };
+        let off = vec![agent(false, vec![])];
+        assert!(
+            required_managed_server_tools([off.as_slice()]).is_empty(),
+            "P1"
+        );
+        let on = vec![agent(true, vec![])];
+        let both = std::collections::BTreeSet::from([
+            ManagedServerTool::WebFetch,
+            ManagedServerTool::WebSearch,
+        ]);
+        assert_eq!(
+            required_managed_server_tools([on.as_slice()]),
+            both,
+            "P2 explicit"
+        );
+        assert_eq!(
+            required_managed_server_tools([&[][..]]),
+            both,
+            "P2 neutral default"
+        );
+        let fetch = vec![agent(false, vec![named("web_fetch", true)])];
+        assert_eq!(
+            required_managed_server_tools([fetch.as_slice()]),
+            std::collections::BTreeSet::from([ManagedServerTool::WebFetch]),
+            "P3"
+        );
+        let search = vec![agent(true, vec![named("web_fetch", false)])];
+        assert_eq!(
+            required_managed_server_tools([search.as_slice()]),
+            std::collections::BTreeSet::from([ManagedServerTool::WebSearch]),
+            "P4"
+        );
+        let mcp = vec![
+            agent(false, vec![]),
+            ToolsetPolicy {
+                source: ToolsetSource::Mcp {
+                    server_name: "external".into(),
+                },
+                default: policy(true),
+                overrides: vec![named("web_search", true)],
+            },
+        ];
+        assert!(
+            required_managed_server_tools([mcp.as_slice()]).is_empty(),
+            "P5"
+        );
+        assert_eq!(
+            required_managed_server_tools([off.as_slice(), fetch.as_slice(), search.as_slice()]),
+            both,
+            "P6"
+        );
+    }
 
     #[test]
     fn thread_usage_has_one_lossless_session_projection() {

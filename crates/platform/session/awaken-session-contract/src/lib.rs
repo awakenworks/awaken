@@ -66,8 +66,8 @@ mod state;
 pub use budget::{
     BudgetReachTransition, ManagedBudgetUsageCursor, ManagedListPriceError,
     ManagedListPriceProvider, ManagedListPriceRequest, ManagedListPriceSnapshot,
-    ManagedModelUsageCursor, ManagedRuntimeListRates, ManagedTokenListRates, SessionBudgetState,
-    SessionModelUsage, SessionUsage,
+    ManagedModelUsageCursor, ManagedRuntimeListRates, ManagedServerTool, ManagedTokenListRates,
+    SessionBudgetState, SessionModelUsage, SessionUsage, required_managed_server_tools,
 };
 pub use event::{
     CompositeLifecycleFactDelivery, DeletedSessionEventAdmissions, LifecycleFactDelivery,

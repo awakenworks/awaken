@@ -636,10 +636,17 @@ impl SessionCreationCommands {
                     budget_model_refs.expect("a budgeted Session compiled its exact model roster");
                 let snapshot = self
                     .resolve_managed_list_price_snapshot(
-                        awaken_session_contract::ManagedListPriceRequest {
-                            occurred_at_unix_ms: self.clock.now_ms(),
+                        awaken_session_contract::ManagedListPriceRequest::new(
+                            self.clock.now_ms(),
                             model_refs,
-                        },
+                            awaken_session_contract::required_managed_server_tools(
+                                std::iter::once(tools.toolsets.as_slice()).chain(
+                                    accepted_delegates
+                                        .iter()
+                                        .map(|(_, profile)| profile.toolsets.as_slice()),
+                                ),
+                            ),
+                        ),
                     )
                     .await
                     .map_err(|error| match error {

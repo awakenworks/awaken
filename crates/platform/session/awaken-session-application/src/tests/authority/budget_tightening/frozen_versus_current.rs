@@ -109,10 +109,14 @@ async fn frozen_pins_survive_a_moved_price_catalog_through_later_commands() {
     // NC: the current authority really answers a different version.
     let moved = awaken_session_contract::ManagedListPriceProvider::resolve_snapshot(
         prices.as_ref(),
-        ManagedListPriceRequest {
-            occurred_at_unix_ms: 3,
-            model_refs: vec![model.clone()],
-        },
+        ManagedListPriceRequest::new(
+            3,
+            vec![model.clone()],
+            std::collections::BTreeSet::from([
+                awaken_session_contract::ManagedServerTool::WebFetch,
+                awaken_session_contract::ManagedServerTool::WebSearch,
+            ]),
+        ),
     )
     .await
     .expect("current catalog");

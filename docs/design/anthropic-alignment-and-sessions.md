@@ -448,3 +448,14 @@ For a Managed Agents-compatible product slice:
 ## Guardrails
 
 G1, G10, and G11 in [INVARIANTS](../INVARIANTS.md).
+
+
+## 2026-11-22: budget prices follow the frozen tool roster
+
+The existing Session creation path projects both the exact published model roster
+and the effective root/delegate tool policies into `ManagedListPriceRequest`.
+The consumer-owned request states which metered server-tool classes can execute.
+It grants no capability and creates no price authority. A missing Agent toolset
+retains the existing neutral default; explicit disabled membership needs no price.
+Cloud resolves only the requested classes from its existing Billing authority.
+Enabled-but-unpriced remains a refusal, distinct from an explicitly free rate.
