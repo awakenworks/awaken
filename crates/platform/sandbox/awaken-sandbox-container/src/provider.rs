@@ -378,9 +378,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         effect: SandboxEffect<'_>,
         intent: ContainerRealizationIntent,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
-        let effect_fence = effect.fence();
-        if let Some(effect_fence) = effect_fence {
-            effect_fence.validate_live_at(self.effect_clock_ms()?)?;
+        let mut current_effect_fence = effect.fence().cloned();
+        if let Some(asserted) = current_effect_fence.as_ref() {
+            let now = self.effect_clock_ms()?;
+            if asserted.expired_at(now) {
+                // The copy can expire between Session admission and Provider
+                // entry. Only the captured authority can renew this effect.
+                current_effect_fence = Some(refresh_effect_fence(asserted, effect, now)?);
+            }
         }
         // The copied durable fence is identity, not current admission. The
         // fenced creation port carries the original captured authority here;
@@ -422,7 +427,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let initial_realization_context = ContainerRealizationContext::new(
             &spec.scope,
             &adoption_fingerprint,
-            effect_fence,
+            current_effect_fence.as_ref(),
             &intent,
             &create_attempt,
         );
@@ -504,7 +509,6 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )?;
         }
         let mounter = self.memory_mounter.read().clone();
-        let mut current_effect_fence = effect_fence.cloned();
         let prepared = loop {
             admit()?;
             let realization_context = ContainerRealizationContext::new(

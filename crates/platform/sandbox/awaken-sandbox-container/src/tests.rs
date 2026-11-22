@@ -2944,6 +2944,7 @@ struct FakeState {
     active_reservations: std::collections::HashSet<String>,
     activation_calls: usize,
     activation_failure: Option<ActivationFailure>,
+    preflight_effect_fences: Vec<SandboxEffectFence>,
     effect_fences: Vec<SandboxEffectFence>,
     attempted_binds: Vec<BindPlan>,
     refreshed_credential: Option<Vec<u8>>,
@@ -3512,10 +3513,17 @@ impl ContainerRuntime for FakeRuntime {
 
     async fn preflight_create_for_effect(
         &self,
-        _context: &ContainerRealizationContext<'_>,
+        context: &ContainerRealizationContext<'_>,
         _plan: &ContainerPlan,
         realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
     ) -> Result<(), RuntimeError> {
+        if let Some(fence) = context.effect_fence {
+            self.st
+                .lock()
+                .unwrap()
+                .preflight_effect_fences
+                .push(fence.clone());
+        }
         self.creation_response(if realization_fingerprint.is_some() {
             "resolved-preflight"
         } else {
@@ -4147,35 +4155,139 @@ impl ContainerRuntime for FakeRuntime {
 
 #[tokio::test]
 async fn expired_effect_fence_rejects_before_runtime_or_mount_materialization() {
-    /* Provider-effect cause/effect table. Causes: C1 fence live/expired; C2 a
-     * spec that would otherwise require BlobSource staging and runtime create.
-     * Effects: E1 expired rejects at the one provider boundary; E2 no runtime
-     * observation/create and no materialized Sandbox is published. The live row
-     * is covered by the fenced runtime decision tests; this test locks the
-     * time-bound zero-effect rejection rather than accepting a later adapter
-     * error as equivalent evidence. */
-    let runtime = Arc::new(FakeRuntime::default());
-    let provider = ContainerProvider::for_test(runtime.clone(), "agent:test");
+    // C1 carried proof expired at entry. C2 current proof absent, belongs to a
+    // different effect identity, or still expired. Each row fails closed
+    // before any observation, mount staging, or physical create.
+    // The live same-effect row is proven by the next test.
     let expired =
         pc::SandboxEffectFence::new("operation-expired", "owner-1", "runtime-1", 1, 0).unwrap();
-    let error = match provider
+    for (rule, current) in [
+        ("revoked", None),
+        ("unchanged expiry", Some(expired.clone())),
+        (
+            "foreign operation",
+            Some(
+                pc::SandboxEffectFence::new(
+                    "another-operation",
+                    "owner-1",
+                    "runtime-1",
+                    1,
+                    u64::MAX,
+                )
+                .unwrap(),
+            ),
+        ),
+        (
+            "new holder",
+            Some(
+                pc::SandboxEffectFence::new(
+                    "operation-expired",
+                    "owner-2",
+                    "runtime-1",
+                    1,
+                    u64::MAX,
+                )
+                .unwrap(),
+            ),
+        ),
+        (
+            "new incarnation",
+            Some(
+                pc::SandboxEffectFence::new(
+                    "operation-expired",
+                    "owner-1",
+                    "runtime-2",
+                    1,
+                    u64::MAX,
+                )
+                .unwrap(),
+            ),
+        ),
+        (
+            "new epoch",
+            Some(
+                pc::SandboxEffectFence::new(
+                    "operation-expired",
+                    "owner-1",
+                    "runtime-1",
+                    2,
+                    u64::MAX,
+                )
+                .unwrap(),
+            ),
+        ),
+        (
+            "expired successor",
+            Some(
+                expired
+                    .with_persisted(|wire| wire.expires_at_unix_ms = 1)
+                    .unwrap(),
+            ),
+        ),
+    ] {
+        let runtime = Arc::new(FakeRuntime::default());
+        let provider = ContainerProvider::for_test(runtime.clone(), "agent:test");
+        let authority = current.as_ref().map_or_else(
+            pc::test_support::EffectAuthority::denied,
+            pc::test_support::EffectAuthority::new,
+        );
+        let result = provider
+            .create_container_for_effect(
+                &spec("expired-fence"),
+                awaken_provisioning_contract::SandboxEffect::Fenced {
+                    fence: &expired,
+                    authority: &authority,
+                },
+                ContainerRealizationIntent::Create,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(pc::SandboxError::FenceRejected(_))),
+            "{rule}"
+        );
+        let state = runtime.st.lock().unwrap();
+        assert_eq!(state.observations, 0, "{rule}: no observation");
+        assert!(
+            state.preflight_effect_fences.is_empty(),
+            "{rule}: no preflight"
+        );
+        assert!(state.effect_fences.is_empty(), "{rule}: no provider call");
+        assert!(state.alive.is_empty(), "{rule}: no Sandbox");
+    }
+}
+
+#[tokio::test]
+async fn create_uses_live_same_effect_renewal_when_carried_fence_has_expired() {
+    // C1 copied expiry elapsed × C2 Session authority renewed the same
+    // operation and generation. R1: one create with the current fence.
+    let runtime = Arc::new(FakeRuntime::default());
+    let provider = ContainerProvider::for_test(runtime.clone(), "agent:test");
+    let (live, authority) = pc::test_support::fixture_effect("create-after-lease-renewal");
+    let expired = live
+        .with_persisted(|wire| wire.expires_at_unix_ms = 0)
+        .unwrap();
+    let mut spec = spec("create-after-lease-renewal");
+    spec.mounts.clear();
+    spec.env.clear();
+    provider
         .create_container_for_effect(
-            &spec("expired-fence"),
+            &spec,
             awaken_provisioning_contract::SandboxEffect::Fenced {
                 fence: &expired,
-                authority: &pc::test_support::EffectAuthority::denied(),
+                authority: &authority,
             },
             ContainerRealizationIntent::Create,
         )
         .await
-    {
-        Ok(_) => panic!("E1 expired fence must reject"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("expired"), "E1");
+        .expect("R1 current authority still permits this exact effect");
     let state = runtime.st.lock().unwrap();
-    assert_eq!(state.observations, 0, "E2 observation");
-    assert!(state.alive.is_empty(), "E2 create");
+    assert_eq!(
+        state.preflight_effect_fences,
+        vec![live.clone(); 2],
+        "R1 both preflights use current proof"
+    );
+    assert_eq!(state.effect_fences, vec![live], "R1 no stale provider call");
+    assert_eq!(state.alive.len(), 1, "R1 one Sandbox");
 }
 
 // Inject response loss of authority at an existing dependency, without
