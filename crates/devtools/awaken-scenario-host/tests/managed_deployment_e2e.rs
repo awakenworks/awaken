@@ -102,10 +102,10 @@ impl awaken_session_contract::ManagedListPriceProvider for DeploymentPriceProvid
         Ok(awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "deployment-budget-test".into(),
             version: 1,
-            effective_at_unix_ms: request.occurred_at_unix_ms,
+            effective_at_unix_ms: request.occurred_at_unix_ms(),
             arithmetic_version: 1,
             model_rates: request
-                .model_refs
+                .model_refs()
                 .into_iter()
                 .map(|model| (model, rate))
                 .collect(),

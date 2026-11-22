@@ -64,7 +64,7 @@ mod repository;
 mod state;
 
 pub use budget::{
-    BudgetReachTransition, ManagedBudgetUsageCursor, ManagedListPriceError,
+    BudgetReachTransition, ManagedBudgetUsageCursor, ManagedListPriceError, ManagedListPriceModel,
     ManagedListPriceProvider, ManagedListPriceRequest, ManagedListPriceSnapshot,
     ManagedModelUsageCursor, ManagedRuntimeListRates, ManagedServerTool, ManagedTokenListRates,
     SessionBudgetState, SessionModelUsage, SessionUsage, required_managed_server_tools,

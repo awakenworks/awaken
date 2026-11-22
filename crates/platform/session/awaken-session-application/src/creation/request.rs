@@ -497,10 +497,10 @@ impl SessionCreationCommands {
             profile.as_ref().map(|profile| profile.backend_ref.as_str()),
             &resolved_model_id,
         );
-        let budget_model_refs = budget_request
+        let budget_models = budget_request
             .as_ref()
             .map(|_| {
-                self.managed_session_model_refs(
+                self.managed_session_price_models(
                     &owner_scope,
                     &agent_id,
                     profile.as_ref(),
@@ -632,13 +632,13 @@ impl SessionCreationCommands {
                         return Err(RunError::bad_request(message).into());
                     }
                 };
-                let model_refs =
-                    budget_model_refs.expect("a budgeted Session compiled its exact model roster");
+                let models =
+                    budget_models.expect("a budgeted Session compiled its exact model roster");
                 let snapshot = self
                     .resolve_managed_list_price_snapshot(
                         awaken_session_contract::ManagedListPriceRequest::new(
                             self.clock.now_ms(),
-                            model_refs,
+                            models,
                             awaken_session_contract::required_managed_server_tools(
                                 std::iter::once(tools.toolsets.as_slice()).chain(
                                     accepted_delegates

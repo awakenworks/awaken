@@ -44,6 +44,18 @@ impl SessionConfigurationOperations<'_> {
         {
             return Err(SessionAggregateCommandError::FrozenTools);
         }
+        if self.aggregate.state.budget.max_list_cost_minor().is_some() {
+            let before = crate::budget::required_managed_server_tools([self
+                .aggregate
+                .state
+                .tools
+                .toolsets
+                .as_slice()]);
+            let after = crate::budget::required_managed_server_tools([tools.toolsets.as_slice()]);
+            if !after.is_subset(&before) {
+                return Err(SessionAggregateCommandError::BudgetToolExpansion);
+            }
+        }
         self.aggregate.state.tools = tools;
         Ok(())
     }

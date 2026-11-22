@@ -263,24 +263,58 @@ pub fn required_managed_server_tools<'a>(
     required
 }
 
+/// One existing model authority: a full frozen publication, or the exact model
+/// reference of an unprofiled Native session. No provider identity is invented.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ManagedListPriceModel {
+    Frozen(Box<awaken_runtime_contract::resolved::ResolvedModelCandidate>),
+    Exact(String),
+}
+
+impl ManagedListPriceModel {
+    pub fn model_ref(&self) -> &str {
+        match self {
+            Self::Frozen(candidate) => candidate.binding().identity().1,
+            Self::Exact(model_ref) => model_ref,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedListPriceRequest {
-    pub occurred_at_unix_ms: u64,
-    pub model_refs: Vec<String>,
+    occurred_at_unix_ms: u64,
+    models: Vec<ManagedListPriceModel>,
     required_server_tools: std::collections::BTreeSet<ManagedServerTool>,
 }
 
 impl ManagedListPriceRequest {
     pub fn new(
         occurred_at_unix_ms: u64,
-        model_refs: Vec<String>,
+        models: Vec<ManagedListPriceModel>,
         required_server_tools: std::collections::BTreeSet<ManagedServerTool>,
     ) -> Self {
         Self {
             occurred_at_unix_ms,
-            model_refs,
+            models,
             required_server_tools,
         }
+    }
+
+    pub fn occurred_at_unix_ms(&self) -> u64 {
+        self.occurred_at_unix_ms
+    }
+
+    pub fn models(&self) -> &[ManagedListPriceModel] {
+        &self.models
+    }
+
+    pub fn model_refs(&self) -> Vec<String> {
+        self.models
+            .iter()
+            .map(|candidate| candidate.model_ref().to_owned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     pub fn required_server_tools(&self) -> &std::collections::BTreeSet<ManagedServerTool> {
