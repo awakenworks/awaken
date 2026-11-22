@@ -459,3 +459,16 @@ It grants no capability and creates no price authority. A missing Agent toolset
 retains the existing neutral default; explicit disabled membership needs no price.
 Cloud resolves only the requested classes from its existing Billing authority.
 Enabled-but-unpriced remains a refusal, distinct from an explicitly free rate.
+
+The same roster walk retains each complete, secret-free frozen model candidate
+in the price request, rather than losing its upstream model/provider coordinate.
+Snapshot usage keys stay the candidate binding's served model reference. Cloud
+uses the frozen brokered provider and endpoint upstream model for Billing, never
+a display-name guess or a mutable catalog lookup. Multiple candidates sharing a
+usage key must project equal rates or be refused as unrepresentable.
+
+A budgeted Session can narrow its currently enabled metered server-tool classes,
+but cannot enable another class through a later tool update. A new Session must
+freeze the expanded roster and its prices. Descriptive, MCP credential and
+non-metered tool updates retain their existing policy. This aggregate rule
+prevents a later update from turning an absent price into apparently free usage.

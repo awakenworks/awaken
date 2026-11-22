@@ -97,7 +97,7 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
     );
     assert_eq!(
         app.creation_commands
-            .managed_session_model_refs(
+            .managed_session_price_models(
                 "workspace",
                 "profiled",
                 None,
@@ -105,7 +105,10 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
                 Some("native"),
                 None
             )
-            .unwrap(),
+            .unwrap()
+            .iter()
+            .map(|candidate| candidate.model_ref())
+            .collect::<Vec<_>>(),
         ["legacy-model"],
         "P1 no-profile return precedes the required-source branch"
     );
@@ -137,7 +140,7 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
         });
     let error = app
         .creation_commands
-        .managed_session_model_refs(
+        .managed_session_price_models(
             "workspace",
             "profiled",
             Some(&legacy),
@@ -177,7 +180,7 @@ async fn selected_profile_port_keeps_absent_and_missing_snapshot_budget_refusals
         );
         let error = app
             .creation_commands
-            .managed_session_model_refs(
+            .managed_session_price_models(
                 "workspace",
                 "profiled",
                 Some(&profile9),
@@ -403,4 +406,69 @@ async fn assert_unconfigured_roster_reads_the_root_first(
         error.message, "the Session's frozen coordinator Agent `profiled` is unavailable",
         "P8 root lookup precedes the late source defense"
     );
+}
+
+#[tokio::test]
+async fn budget_roster_retains_exact_frozen_upstream_coordinates() {
+    // Cause/effect table: F1 published display alias differs from upstream;
+    // F2 a fallback has the same served key but another exact route/provider;
+    // F3 no current profile source. F1+F2+F3 => both original frozen candidates
+    // survive the one roster walk; no display parsing/current-catalog lookup.
+    // The Billing consumer must reject unequal rates for one usage key; this
+    // test owns only lossless publication transport, never a price authority.
+    use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+    let repository: Arc<dyn crate::SessionStore> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let app = application_with_runtime(
+        Arc::new(RecordingCreateRuntime::default()),
+        repository,
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let candidate = |provider: &str, upstream: &str| {
+        ResolvedModelCandidate::try_brokered_provider(
+            ModelBinding::parse(provider, "display-alias", "genai").unwrap(),
+            provider,
+            format!("{provider}-route@7"),
+            "workspace",
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                api_dialect: "open_ai_chat".into(),
+                base_url: "https://provider.invalid".into(),
+                upstream_model: upstream.into(),
+                processing_placement: None,
+            },
+        )
+        .unwrap()
+    };
+    let primary = candidate("provider-one", "upstream-one");
+    let fallback = candidate("provider-two", "upstream-two");
+    let publication = awaken_session_configuration_contract::SessionModelPublication {
+        primary: primary.clone(),
+        candidates: vec![fallback.clone()],
+    };
+    let models = app
+        .creation_commands
+        .managed_session_price_models(
+            "workspace",
+            "profiled",
+            None,
+            "ignored-current-model",
+            Some("native"),
+            Some(&publication),
+        )
+        .unwrap();
+    assert_eq!(
+        models,
+        [
+            awaken_session_contract::ManagedListPriceModel::Frozen(Box::new(primary)),
+            awaken_session_contract::ManagedListPriceModel::Frozen(Box::new(fallback))
+        ]
+    );
+    let request =
+        awaken_session_contract::ManagedListPriceRequest::new(7, models, Default::default());
+    assert_eq!(request.model_refs(), ["display-alias"]);
+    assert_eq!(request.models().len(), 2);
 }

@@ -2910,3 +2910,82 @@ fn uncounted_failures_count_only_failed_recovery_and_reset_on_counted_progress()
         "R3 zero is omitted"
     );
 }
+
+#[test]
+fn budgeted_tool_updates_cannot_make_an_unpriced_class_executable() {
+    // Cause/effect table: T1 active budget + newly enabled metered class ->
+    // reject with whole root unchanged. T2 active budget + class narrowing ->
+    // allow. T3 no budget + expansion -> existing mutability policy applies.
+    // T4 non-metered builtin/MCP update -> allowed, not a second permission
+    // engine. Explicit prices (including zero) were frozen at creation; a new
+    // Session is required to expand the metered roster after narrowing it.
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
+    };
+    let tools = |enabled| crate::state::SessionToolConfiguration {
+        toolsets: vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled,
+                permission: ToolPermissionRequirement::AlwaysAllow,
+            },
+            overrides: vec![],
+        }],
+        ..Default::default()
+    };
+    for funded in [false, true] {
+        let mut dto = root(SessionExecutionState::Idle, 4).into_snapshot();
+        dto.tools = tools(false);
+        if funded {
+            dto.budget = SessionBudgetState::active(10, budget_snapshot());
+        }
+        let mut aggregate = SessionAggregate::try_from(dto).unwrap();
+        let before = aggregate.clone();
+        let result = aggregate.configuration().unwrap().set_tools(tools(true));
+        if funded {
+            assert_eq!(
+                result,
+                Err(SessionAggregateCommandError::BudgetToolExpansion),
+                "T1"
+            );
+            assert_eq!(aggregate, before, "T1");
+            let mut non_metered = tools(false);
+            non_metered.toolsets[0].overrides.push(
+                awaken_agent_contract::ToolPolicyOverride::with_optional_configuration(
+                    "read",
+                    ToolExecutionPolicy {
+                        enabled: true,
+                        permission: ToolPermissionRequirement::AlwaysAllow,
+                    },
+                    None,
+                ),
+            );
+            non_metered.toolsets.push(ToolsetPolicy {
+                source: ToolsetSource::Mcp {
+                    server_name: "external".into(),
+                },
+                default: ToolExecutionPolicy {
+                    enabled: true,
+                    permission: ToolPermissionRequirement::AlwaysAllow,
+                },
+                overrides: vec![],
+            });
+            aggregate
+                .configuration()
+                .unwrap()
+                .set_tools(non_metered)
+                .unwrap(); // T4
+        } else {
+            result.unwrap();
+        } // T3
+    }
+    let mut dto = root(SessionExecutionState::Idle, 4).into_snapshot();
+    dto.tools = tools(true);
+    dto.budget = SessionBudgetState::active(10, budget_snapshot());
+    let mut aggregate = SessionAggregate::try_from(dto).unwrap();
+    aggregate
+        .configuration()
+        .unwrap()
+        .set_tools(tools(false))
+        .unwrap(); // T2
+}

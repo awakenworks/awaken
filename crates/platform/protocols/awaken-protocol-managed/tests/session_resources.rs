@@ -783,7 +783,7 @@ impl awaken_session_contract::ManagedListPriceProvider for RecordingListPricePro
         self.model_rosters
             .lock()
             .unwrap()
-            .push(request.model_refs.clone());
+            .push(request.model_refs());
         let rates = awaken_session_contract::ManagedTokenListRates {
             input_micros_per_million: 1,
             output_micros_per_million: 1,
@@ -793,10 +793,10 @@ impl awaken_session_contract::ManagedListPriceProvider for RecordingListPricePro
         Ok(awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "budget-backend-test".into(),
             version: 1,
-            effective_at_unix_ms: request.occurred_at_unix_ms,
+            effective_at_unix_ms: request.occurred_at_unix_ms(),
             arithmetic_version: 1,
             model_rates: request
-                .model_refs
+                .model_refs()
                 .into_iter()
                 .map(|model| (model, rates))
                 .collect(),

@@ -297,6 +297,8 @@ pub enum SessionAggregateCommandError {
     ConfigurationNotIdle,
     #[error("Session frozen authoring policy does not permit changing tools")]
     FrozenTools,
+    #[error("budgeted Session cannot enable additional metered server tools; create a new Session")]
+    BudgetToolExpansion,
     #[error("MCP projection lease cannot advance: {0}")]
     ProjectionLease(String),
     #[error("Session realization lease epoch is not its exact successor")]

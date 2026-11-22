@@ -111,7 +111,9 @@ async fn frozen_pins_survive_a_moved_price_catalog_through_later_commands() {
         prices.as_ref(),
         ManagedListPriceRequest::new(
             3,
-            vec![model.clone()],
+            vec![awaken_session_contract::ManagedListPriceModel::Exact(
+                model.clone(),
+            )],
             std::collections::BTreeSet::from([
                 awaken_session_contract::ManagedServerTool::WebFetch,
                 awaken_session_contract::ManagedServerTool::WebSearch,

@@ -111,7 +111,7 @@ impl SessionCreationCommands {
             )
         })?;
         let snapshot = provider.resolve_snapshot(request.clone()).await?;
-        snapshot.validate(&request.model_refs)?;
+        snapshot.validate(&request.model_refs())?;
         Ok(snapshot)
     }
 
@@ -221,7 +221,7 @@ impl SessionCreationCommands {
     /// comes from that same executable snapshot. Primary and fallback candidates
     /// cross this one walk. It owns both backend compatibility and the complete
     /// price-snapshot model request.
-    pub fn managed_session_model_refs(
+    pub fn managed_session_price_models(
         &self,
         workspace_id: &str,
         root_agent_id: &str,
@@ -231,9 +231,9 @@ impl SessionCreationCommands {
         root_model_publication: Option<
             &awaken_session_configuration_contract::SessionModelPublication,
         >,
-    ) -> Result<Vec<String>, RunError> {
+    ) -> Result<Vec<awaken_session_contract::ManagedListPriceModel>, RunError> {
         fn add_candidate(
-            models: &mut std::collections::BTreeSet<String>,
+            models: &mut Vec<awaken_session_contract::ManagedListPriceModel>,
             agent_id: &str,
             candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
         ) -> Result<(), RunError> {
@@ -248,11 +248,15 @@ impl SessionCreationCommands {
                     "budget_price_roster_unavailable: Agent `{agent_id}` has no model"
                 )));
             }
-            models.insert(candidate.binding().identity().1.to_owned());
+            let model =
+                awaken_session_contract::ManagedListPriceModel::Frozen(Box::new(candidate.clone()));
+            if !models.contains(&model) {
+                models.push(model);
+            }
             Ok(())
         }
 
-        let mut models = std::collections::BTreeSet::new();
+        let mut models = Vec::new();
         let root_snapshot = root_profile
             .filter(|profile| profile.source_revision > 0)
             .map(|profile| {
@@ -301,7 +305,9 @@ impl SessionCreationCommands {
                     "budget_price_roster_unavailable: Agent `{root_agent_id}` has no model"
                 )));
             }
-            models.insert(root_execution_model_ref.to_owned());
+            models.push(awaken_session_contract::ManagedListPriceModel::Exact(
+                root_execution_model_ref.to_owned(),
+            ));
         }
         if let Some(advisor) = root_snapshot
             .as_ref()
@@ -315,10 +321,10 @@ impl SessionCreationCommands {
         }
 
         let Some(root_profile) = root_profile else {
-            return Ok(models.into_iter().collect());
+            return Ok(models);
         };
         if root_profile.delegates.is_empty() {
-            return Ok(models.into_iter().collect());
+            return Ok(models);
         }
         if !self.queries.has_agent_profile_source() {
             return Err(RunError::bad_request(
@@ -351,7 +357,7 @@ impl SessionCreationCommands {
                 add_candidate(&mut models, agent_id, candidate)?;
             }
         }
-        Ok(models.into_iter().collect())
+        Ok(models)
     }
 
     /// Validate that one published Agent can start new Sessions in this scope.

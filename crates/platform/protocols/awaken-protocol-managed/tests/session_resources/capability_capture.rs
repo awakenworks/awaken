@@ -144,10 +144,7 @@ impl ManagedListPriceProvider for GatedPrices {
         &self,
         request: ManagedListPriceRequest,
     ) -> Result<ManagedListPriceSnapshot, ManagedListPriceError> {
-        self.requests
-            .lock()
-            .unwrap()
-            .push(request.model_refs.clone());
+        self.requests.lock().unwrap().push(request.model_refs());
         self.entered.notify_one();
         tokio::time::timeout(WAIT, self.release.notified())
             .await

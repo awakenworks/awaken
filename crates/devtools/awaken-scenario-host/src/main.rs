@@ -36,10 +36,10 @@ impl awaken_session_contract::ManagedListPriceProvider for ScenarioListPriceProv
         Ok(awaken_session_contract::ManagedListPriceSnapshot {
             snapshot_id: "scenario-list-prices-v1".into(),
             version: 1,
-            effective_at_unix_ms: request.occurred_at_unix_ms,
+            effective_at_unix_ms: request.occurred_at_unix_ms(),
             arithmetic_version: 1,
             model_rates: request
-                .model_refs
+                .model_refs()
                 .into_iter()
                 .map(|model_ref| (model_ref, rates))
                 .collect(),
