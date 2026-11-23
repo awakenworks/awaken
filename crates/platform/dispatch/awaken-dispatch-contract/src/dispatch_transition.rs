@@ -652,8 +652,9 @@ impl DispatchTransition {
         }
     }
 
-    /// Record cancellation. A live lease is revoked by minting the next epoch;
-    /// repeated cancellation of the resulting pending row is a state stutter.
+    /// Record cancellation. The first request revokes an ordinary live lease.
+    /// Repeats preserve the current cancellation drainer's phase and epoch;
+    /// cancelling the canceller would strand its unconfirmed physical slot.
     pub fn cancel(self) -> Result<CancelTransition, DispatchTransitionError> {
         match self.state {
             crate::DispatchState::Reserved
@@ -669,6 +670,13 @@ impl DispatchTransition {
                 clear_retry_deadline: !self.cancellation_requested,
             }),
             crate::DispatchState::ReservationLeased | crate::DispatchState::Leased => {
+                if self.cancellation_requested {
+                    return Ok(CancelTransition::Applied {
+                        state: self,
+                        revoked_lease: false,
+                        clear_retry_deadline: false,
+                    });
+                }
                 let lease_epoch = self.next_lease_epoch()?;
                 Ok(CancelTransition::Applied {
                     state: Self {
@@ -1413,6 +1421,11 @@ mod tests {
 
     #[test]
     fn cancellation_revokes_a_live_epoch_and_is_then_idempotent() {
+        // C1 first cancel of an ordinary lease -> revoke once and wake retry.
+        // C2 cancellation is already recorded and its drainer has a live lease
+        // -> repeat must preserve that exact lease, including at epoch MAX.
+        // R1 !C2 -> original cancellation fence; R2 C2 -> state stutter, no
+        // second revocation/deadline reset or cancelled cancellation executor.
         let old = leased(8);
         let CancelTransition::Applied {
             state: cancelled,
@@ -1445,6 +1458,27 @@ mod tests {
                 clear_retry_deadline: false,
             }
         );
+        for phase in [
+            crate::DispatchState::ReservationLeased,
+            crate::DispatchState::Leased,
+        ] {
+            for epoch in [0, 8, u64::MAX] {
+                let cancelling = DispatchTransition {
+                    state: phase,
+                    lease_epoch: epoch,
+                    cancellation_requested: true,
+                };
+                assert_eq!(
+                    cancelling.cancel().unwrap(),
+                    CancelTransition::Applied {
+                        state: cancelling,
+                        revoked_lease: false,
+                        clear_retry_deadline: false,
+                    },
+                    "R2 claimed cancellation {phase:?} at {epoch}"
+                );
+            }
+        }
     }
 
     /// Retry-exhaustion cause/effect graph:
@@ -1822,17 +1856,29 @@ mod proofs {
         // Causes: C1 the row is superseded, dead-lettered, live-leased, or another cancellable
         // phase; C2 its lease epoch is incrementable; C3 cancellation repeats.
         // Effects: E1 superseded rows reject cancellation; E2 a live lease returns
-        // to its non-leased phase, advances exactly one epoch, and fences the old
-        // claim; E3 other cancellable phases retain phase/epoch and set the flag;
+        // on its first cancellation to a non-leased phase, advances exactly one
+        // epoch, and fences the old claim; E3 other phases retain phase/epoch;
         // E4 a repeat is an applied state stutter with no second revocation or
         // retry-deadline reset; E5 the first request clears any prior deadline.
         // Constraint/invariant: the epoch remains the sole claim fence and
         // cancellation neither reopens terminal rows nor mints an extra owner.
-        // Decision rules: R1 terminal=>E1; R2 leased+C2=>E2; R3 other=>E3;
-        // R4 any applied result+C3=>E4.
+        // Decision rules: R1 terminal=>E1; R2 leased+first+C2=>E2;
+        // R3 non-leased first=>E3;
+        // R4 any applied result+C3=>E4, including a newly claimed cancellation;
+        // R5 exhausted first cancellation -> error; an exhausted repeat stutters.
         let state = arbitrary_transition();
-        kani::assume(state.lease_epoch < u64::MAX);
-        let first = state.cancel().unwrap();
+        let first = match state.cancel() {
+            Ok(result) => result,
+            Err(DispatchTransitionError::LeaseEpochExhausted) => {
+                assert!(matches!(
+                    state.state,
+                    crate::DispatchState::ReservationLeased | crate::DispatchState::Leased
+                ));
+                assert!(!state.cancellation_requested);
+                assert_eq!(state.lease_epoch, u64::MAX);
+                return;
+            }
+        };
         match first {
             CancelTransition::NotCancellable => {
                 assert_eq!(state.state, crate::DispatchState::Superseded);
@@ -1847,7 +1893,8 @@ mod proofs {
                 if matches!(
                     state.state,
                     crate::DispatchState::ReservationLeased | crate::DispatchState::Leased
-                ) {
+                ) && !state.cancellation_requested
+                {
                     assert!(revoked_lease);
                     assert_eq!(
                         cancelled.state,

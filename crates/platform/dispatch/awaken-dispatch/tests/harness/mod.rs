@@ -2148,6 +2148,20 @@ pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch + awaken_dispatch
         .unwrap()
         .expect("cancellation intent is claimable");
     assert!(cancelled.cancellation_requested);
+    // C6 a Worker is already processing the durable cancellation. Another
+    // interrupt must preserve the exact current cancellation claim (E5), so
+    // this same original guard and terminal settlement can still complete.
+    // All Memory/SQLite/PostgreSQL adapters consume the one transition law.
+    assert_eq!(
+        store.cancel(&RunId("run-1".to_string())).await.unwrap(),
+        thread,
+        "C6 repeat accepted"
+    );
+    assert_eq!(
+        store.cancel(&RunId("run-1".to_string())).await.unwrap(),
+        thread,
+        "C6 repeats remain idempotent"
+    );
     let cancelled_guard = store
         .lock_commit_epoch(&awaken_dispatch::RunClaim::from(&cancelled.lease))
         .await
