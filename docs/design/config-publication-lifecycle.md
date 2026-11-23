@@ -120,6 +120,16 @@ registration route. Idempotency belongs to the application identity and
 Coordinator state machine, not to an HTTP-method convention. Transport naming
 is secondary to the port contract.
 
+Coordinator registrar previews execute the same catalog transition as writes
+against a disposable view of only the command's exact current, revision,
+fingerprint and time-evidence keys. Withdrawal needs only its current lifecycle
+entry. Retained history therefore does not multiply a point preview's temporary
+memory. PostgreSQL refresh still stages a complete projection transaction before
+atomic installation; that explicit snapshot preserves replay consistency and is
+not a second registration path. The owning catalog tests compare point previews
+with full transitions and, on Linux, measure their incremental peak memory in
+fresh processes. These checks do not replace deployed memory-soak acceptance.
+
 ## Implemented Scope
 
 ### Reused unchanged
