@@ -450,6 +450,21 @@ impl SessionMcpAttachmentSet {
         desired.into_values().collect()
     }
 
+    /// Current desired heads that need their claimed physical effect staged.
+    /// Superseded generations keep their cleanup claims; their old credentials
+    /// are never a prerequisite for preparing a successor.
+    #[must_use]
+    pub fn staging_attachments(&self) -> Vec<&SessionMcpAttachment> {
+        self.desired_attachments()
+            .into_iter()
+            .filter(|attachment| {
+                attachment.state == McpAttachmentState::Realizing
+                    || (attachment.state == McpAttachmentState::Active
+                        && !attachment.publication_acknowledged)
+            })
+            .collect()
+    }
+
     /// Any nonterminal generation is durable reconciliation work. `Active` is
     /// included because Runtime projections are process-local and must be
     /// restaged/published after ownership replacement.

@@ -1,5 +1,16 @@
 # Wiki Update Log
 
+## 2026-11-23 — Recover current MCP heads without reopening retired credentials
+
+- [Session realization](../adr/0066-session-service-binding-and-realization.md)
+  reuses the aggregate's desired-head selector for new preparation. Superseded
+  Active generations retain cleanup responsibility instead of blocking a new
+  credential on another attempt to materialize the old one.
+- Current receipts remain mandatory. Already completed predecessor receipts
+  pass the existing complete verifier and must become Draining through canonical
+  activation; response-loss replay never publishes them again. Source regression
+  evidence is separate from the updated Flow cohort and deployed acceptance.
+
 ## 2026-11-23 — Serialize operational Session repair before row-locking writers
 
 - [Migration and startup](../design/config-to-run-execution-flow.md) retain one

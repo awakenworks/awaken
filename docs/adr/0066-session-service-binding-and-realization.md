@@ -224,9 +224,14 @@ owner/epoch, a future expiry or changed binding fails closed. An MCP-only Stage
 cannot consume a pending Resource mutation, and a mismatched prepared revision
 commits nothing. No new scheduler, store, wire field or phase driver is added.
 
-Recovery overlapping a full MCP replacement can Stage both an old Active
-generation and its successor. Activation may then move the old generation to
-Draining. The committed aggregate's existing publication selector partitions
+Recovery stages only the aggregate's current desired head for each logical
+name. A superseded Active generation retains its cleanup claim; preparation must
+not reopen its old credential, which may already be invalid after rotation.
+An already completed predecessor receipt from an in-flight earlier directive
+passes the same complete binding/fingerprint verifier and is admissible only if
+canonical activation retires it. The current head's required receipts cannot be
+omitted; replaced and removed names remain cleanup authority. The committed
+aggregate's existing publication selector partitions
 the validated receipts: only still-Active/unacknowledged generations publish;
 obsolete generations use the drain lane. A lost activation response may be
 retried with old receipts now backed by Draining claims. Those receipts still
