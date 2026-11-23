@@ -6,8 +6,10 @@ use std::str::FromStr as _;
 async fn postgres_normalization_serializes_before_a_root_writer_upgrades_its_lock() {
     // Causes: C1 a real writer holds SELECT FOR UPDATE (RowShare table lock);
     // C2 operational normalization starts before that writer's UPDATE needs
-    // RowExclusive; C3 normalization rewrites root bytes or only repairs the
-    // derived FK indexes. Effects: E1 neither transaction deadlocks; E2 the
+    // RowExclusive; C3 repair is required by legacy root bytes or a deliberately
+    // corrupt derived FK index. Healthy catalogs skip repair in the current
+    // owner (their additive-open law stays in outbox_bootstrap). Effects:
+    // E1 neither transaction deadlocks; E2 the
     // writer commits before normalization reads/repairs; E3 root, indexes and
     // command receipts stay consistent and an ordinary read-only reopen works.
     // Rules N1: C1+C2+root rewrite; N2: C1+C2+index-only repair -> E1-E3.
@@ -48,6 +50,25 @@ async fn postgres_normalization_serializes_before_a_root_writer_upgrades_its_loc
             overwrite_postgres_aggregate(&pool, root.session_id.as_str(), &original).await;
         }
         let before = postgres_session_snapshot(&pool).await;
+        if !rewrite {
+            let removed = sqlx::query(
+                "DELETE FROM managed_session_credential_source_reference WHERE session_id=$1",
+            )
+            .bind(root.session_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+            assert!(
+                removed.rows_affected() > 0,
+                "N2 actual index-only corruption"
+            );
+        }
+        assert!(
+            PostgresManagedSessionRepository::with_existing_pool(pool.clone())
+                .await
+                .is_err(),
+            "N1/N2 read-only admission proves operational repair is required"
+        );
         let migrator = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
             .connect_with(
@@ -123,7 +144,9 @@ async fn postgres_normalization_serializes_before_a_root_writer_upgrades_its_loc
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_normalization_keeps_plain_reads_open_and_queues_new_row_writers() {
     // N3 reverses N1/N2's order: normalization already owns its root-table
-    // lock when a new FOR UPDATE writer arrives. Hold only the fixture's source
+    // lock when a new FOR UPDATE writer arrives. First invalidate its source
+    // index so the current owner enters repair instead of healthy verification.
+    // Hold only the fixture's source
     // index table to stop repair at its original DELETE, after root admission.
     // Effects: a plain repository read completes; a row-locking writer waits;
     // releasing the index barrier lets repair then writer settle, with no root
@@ -142,6 +165,19 @@ async fn postgres_normalization_keeps_plain_reads_open_and_queues_new_row_writer
         Vec::new(),
     )
     .await;
+    let removed =
+        sqlx::query("DELETE FROM managed_session_credential_source_reference WHERE session_id=$1")
+            .bind(root.session_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+    assert!(removed.rows_affected() > 0, "N3 actual repair prerequisite");
+    assert!(
+        PostgresManagedSessionRepository::with_existing_pool(pool.clone())
+            .await
+            .is_err(),
+        "N3 read-only admission refuses the missing source index"
+    );
     let app = format!("normalize-first-{}", std::process::id());
     let migrator = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
