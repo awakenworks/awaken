@@ -1,5 +1,15 @@
 # Wiki Update Log
 
+## 2026-11-23 — Serialize operational Session repair before row-locking writers
+
+- [Migration and startup](../design/config-to-run-execution-flow.md) retain one
+  operational normalization/index-repair transaction and read-only server open.
+  Its table lock excludes writers before their row-lock/update sequence, while
+  ordinary readers remain admitted.
+- A live PostgreSQL lock-wait barrier reproduces the former deadlock for
+  index-only repair; the regression also covers root rewriting. Existing
+  failure-injection tests continue to own atomic rollback acceptance.
+
 ## 2026-11-23 — Bound executable Agent previews to the command's keys
 
 - [Publication lifecycle](../design/config-publication-lifecycle.md) keeps the
