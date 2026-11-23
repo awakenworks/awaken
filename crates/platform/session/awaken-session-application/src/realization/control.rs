@@ -583,17 +583,30 @@ impl SessionRealizations {
                 .iter()
                 .map(|receipt| receipt.generation.clone())
                 .collect::<Vec<_>>();
-            // Recovery can Stage an old Active generation together with its
-            // replacement. After activation commits, that old claim is Draining.
-            // An exact activation retry may still carry its completed receipt;
-            // reconstruct and verify it from the same durable claim, without
-            // requiring unrelated drains or authorizing their publication.
+            // New directives stage only current desired heads. A completed
+            // in-flight predecessor receipt may still arrive from an earlier
+            // directive. Admit it through the same complete claim/fingerprint
+            // verifier, then require canonical activation to retire it. This
+            // covers replaced and removed names without predicting a second
+            // set of aggregate transitions. Current receipts remain required.
+            let desired = session.mcp.desired_attachments();
+            let mut predecessor_receipts = Vec::new();
             for attachment in &session.mcp.attachments {
-                if attachment.state == McpAttachmentState::Draining
+                let predecessor = attachment.state == McpAttachmentState::Active
+                    && !desired
+                        .iter()
+                        .any(|head| head.generation == attachment.generation)
+                    && !expected
+                        .iter()
+                        .any(|request| request.generation.generation() == &attachment.generation);
+                if (attachment.state == McpAttachmentState::Draining || predecessor)
                     && receipt_generations
                         .iter()
                         .any(|generation| generation.generation() == &attachment.generation)
                 {
+                    if predecessor {
+                        predecessor_receipts.push(attachment.generation.clone());
+                    }
                     expected.push(
                         projection::stage_mcp_request(
                             &owner_scope,
@@ -672,12 +685,23 @@ impl SessionRealizations {
             } else {
                 false
             };
-            if apply_activation(
+            let changed = apply_activation(
                 &mut session,
                 expected,
                 prepared_pending_resources,
                 prepared_legacy_resources,
-            )? {
+            )?;
+            if predecessor_receipts.iter().any(|generation| {
+                !session.mcp.attachments.iter().any(|attachment| {
+                    &attachment.generation == generation
+                        && attachment.state == McpAttachmentState::Draining
+                })
+            }) {
+                return Err(SessionRealizationControlFailure::Invalid(
+                    "predecessor receipt was not retired by canonical activation".into(),
+                ));
+            }
+            if changed {
                 session = self
                     .resource_references
                     .commit(
@@ -828,7 +852,7 @@ impl SessionRealizations {
                 .realization_ready(self.clock.now_ms())
                 .map_err(unavailable)?;
             let ready_fact = initial_ready.then(|| {
-                initial_idle_fact(
+                ManagedLifecycleFact::initial_idle(
                     &owner_scope,
                     command.session_id.as_str(),
                     self.clock.now_ms(),

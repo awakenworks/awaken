@@ -36,6 +36,10 @@ mod control;
 mod local_lock;
 mod publication;
 
+#[cfg(test)]
+#[path = "tests/realization/mcp_stage_requests.rs"]
+mod stage_requests_tests;
+
 use publication::{draining_generations, publication_action, publication_generations};
 
 use authority::exact_generation_key;
@@ -48,17 +52,6 @@ pub(crate) use local_lock::LocalRealizationLocks;
 /// Terminal cleanup uses the same lease horizon but renews at one third of it
 /// while its canonical drive is still pending.
 pub(crate) use awaken_session_realization_driver::LOCAL_SESSION_REALIZATION_LEASE_MS;
-
-fn initial_idle_fact(owner_scope: &str, session_id: &str, now_ms: u64) -> ManagedLifecycleFact {
-    ManagedLifecycleFact {
-        id: format!("session:{session_id}:created"),
-        object_id: session_id.to_string(),
-        workspace_id: Some(owner_scope.to_string()),
-        event_type: "session.status_idled".to_string(),
-        timestamp: i64::try_from(now_ms / 1_000).unwrap_or(i64::MAX),
-        runtime_interval: None,
-    }
-}
 
 pub(crate) fn unavailable(error: impl std::fmt::Display) -> SessionRealizationControlFailure {
     SessionRealizationControlFailure::Unavailable(error.to_string())
@@ -659,13 +652,8 @@ impl SessionRealizations {
     ) -> Result<Vec<StageMcpAttachment>, SessionRealizationControlFailure> {
         session
             .mcp
-            .attachments
-            .iter()
-            .filter(|attachment| {
-                attachment.state == McpAttachmentState::Realizing
-                    || (attachment.state == McpAttachmentState::Active
-                        && !attachment.publication_acknowledged)
-            })
+            .staging_attachments()
+            .into_iter()
             .map(|attachment| {
                 projection::stage_mcp_request(owner_scope, &session.session_id, attachment)
                     .map_err(unavailable)

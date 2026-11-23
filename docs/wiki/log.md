@@ -1,5 +1,16 @@
 # Wiki Update Log
 
+## 2026-11-24 — Share credential retirement across recovery and preparation
+
+- [Session realization](../adr/0066-session-service-binding-and-realization.md)
+  reuses one viable same-source credential-retirement predicate in recovery and
+  preparation inside an already active lease. Ordinary replacement and failed
+  successor fallback retain their required physical receipts.
+- Completed optional predecessor receipts pass the existing complete verifier
+  and must become Draining through canonical activation. Unknown physical
+  evidence remains unproven; response-loss replay preserves exact cleanup and
+  publication authority. Source tests remain separate from deployed acceptance.
+
 ## 2026-11-23 — Serialize operational Session repair before row-locking writers
 
 - [Migration and startup](../design/config-to-run-execution-flow.md) retain one

@@ -494,73 +494,6 @@ impl SessionMcpAttachmentSet {
         self.bump_revision()
     }
 
-    /// Fence crash recovery to a new Session lease before any Runtime effect.
-    /// Requested generations enter Realizing; already Realizing or Active
-    /// generations retain their durable visibility while replacing only the
-    /// expired process-local realization claim. Only a viable same-source
-    /// credential advance retires its predecessor to the existing drain path;
-    /// a Failed successor cannot supersede it.
-    pub fn claim_recovery(
-        &mut self,
-        generation: &McpGeneration,
-        claim: McpRealizationClaim,
-    ) -> Result<(), McpAttachmentError> {
-        let index = exact_index(&self.attachments, generation)?;
-        let current = &self.attachments[index];
-        // Only a typed advance of this credential source makes reopening its
-        // predecessor impossible. Ordinary target/name replacement keeps the
-        // existing recovery and receipt-validation contract. This does not
-        // authorize an advance: the Session's original credential owner has
-        // already admitted the successor before it enters the desired set.
-        let retired_credential = current.realization.is_some()
-            && self
-                .desired_attachments()
-                .into_iter()
-                .find(|desired| desired.name == current.name)
-                .is_some_and(|desired| {
-                    matches!(
-                        desired.state,
-                        McpAttachmentState::Requested
-                            | McpAttachmentState::Realizing
-                            | McpAttachmentState::Active
-                    ) && desired.generation != *generation
-                        && current
-                            .credential
-                            .as_ref()
-                            .zip(desired.credential.as_ref())
-                            .is_some_and(|(old, new)| {
-                                old.credential.id == new.credential.id
-                                    && new.credential.revision > old.credential.revision
-                            })
-                });
-        if retired_credential
-            && matches!(
-                current.state,
-                McpAttachmentState::Realizing | McpAttachmentState::Active
-            )
-        {
-            self.attachments[index].state = McpAttachmentState::Draining;
-            return self.bump_revision();
-        }
-        let attachment = exact_mut(&mut self.attachments, generation)?;
-        match attachment.state {
-            McpAttachmentState::Requested => {
-                attachment.state = McpAttachmentState::Realizing;
-            }
-            McpAttachmentState::Realizing | McpAttachmentState::Active => {}
-            McpAttachmentState::Draining
-            | McpAttachmentState::Removed
-            | McpAttachmentState::Failed => return Err(McpAttachmentError::InvalidTransition),
-        }
-        attachment.attempts = attachment
-            .attempts
-            .checked_add(1)
-            .ok_or(McpAttachmentError::CounterExhausted)?;
-        attachment.realization = Some(claim);
-        attachment.publication_acknowledged = false;
-        self.bump_revision()
-    }
-
     /// Diff one canonical desired set into durable generation intent. This is a
     /// pure aggregate command: no transport, credential material, or Runtime
     /// effect occurs here.
@@ -1048,6 +981,7 @@ pub use generation::{
 pub(crate) use generation::{test_generation, test_generation_at_version};
 
 mod quiescence;
+mod recovery;
 
 mod credential_grant;
 pub use credential_grant::{McpCredentialGrantRefusal, McpCredentialRefresh};

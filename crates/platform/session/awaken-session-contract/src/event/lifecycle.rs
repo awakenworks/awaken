@@ -135,6 +135,18 @@ pub struct ManagedLifecycleFact {
 }
 
 impl ManagedLifecycleFact {
+    /// The idempotent initial-ready notification on the shared lifecycle outbox.
+    pub fn initial_idle(owner_scope: &str, session_id: &str, now_ms: u64) -> Self {
+        Self {
+            id: format!("session:{session_id}:created"),
+            object_id: session_id.to_string(),
+            workspace_id: Some(owner_scope.to_string()),
+            event_type: "session.status_idled".to_string(),
+            timestamp: i64::try_from(now_ms / 1_000).unwrap_or(i64::MAX),
+            runtime_interval: None,
+        }
+    }
+
     pub fn runtime_interval_closed(
         owner_scope: &str,
         session_id: &str,

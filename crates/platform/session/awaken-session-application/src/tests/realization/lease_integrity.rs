@@ -5,6 +5,183 @@
 use super::*;
 
 #[tokio::test]
+async fn replacement_activation_requires_current_head_and_checks_predecessor_receipts() {
+    // Cause/effect table: the same lease retains an old Active/unacknowledged
+    // physical claim while a viable same-source credential successor is staged.
+    // A1 current only and A2 exact old/current pair -> publish current, drain old;
+    // A3 missing current and A4 corrupt optional old -> atomic refusal;
+    // A5 exact replay -> identical publication/drain authority;
+    // A6 failed successor + a REAL old Stage receipt -> preserve the canonical
+    // fallback, publish old and drain nothing; A7 missing fallback proof -> refuse;
+    // A8 unknown historical old claim -> refuse before writes, never invent cleanup.
+    // Ordinary replacement/recovery and corrupt drain identity remain covered
+    // in realization_replacement. The real SQLite root, canonical MCP commands
+    // and public Control port own transitions. NoopMcpRealizer supplies physical
+    // receipts only; it does not manufacture root adoption or external acceptance.
+    for mode in [
+        "current",
+        "complete",
+        "old-only",
+        "corrupt-old",
+        "failed-current",
+        "failed-missing",
+        "unknown-predecessor",
+    ] {
+        let repo = sqlite_session_repository("MCP predecessor receipt repository").await;
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let id = format!("mcp-predecessor-{mode}");
+        let (mut root, lease, _) = publication_fixture(&id);
+        let old = root.mcp.attachments[0].clone();
+        let old_claim = old.realization.clone().unwrap();
+        let holder = root
+            .frozen_baseline()
+            .unwrap()
+            .environment
+            .credential_realization
+            .mcp_holder
+            .clone();
+        let draft = |revision| crate::session_mcp::McpAttachmentDraft {
+            name: old.name.clone(),
+            target: old.target.clone(),
+            prompts_as_skills: false,
+            origin: old.origin,
+            credential: Some(awaken_agent_contract::credential::CredentialAccess::new(
+                awaken_agent_contract::credential::CredentialRef {
+                    id: "receipt-source".into(),
+                    revision,
+                },
+                awaken_agent_contract::credential::CredentialMaterialSource::ControlPlaneReference,
+                awaken_agent_contract::credential::CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+                awaken_agent_contract::credential::CredentialExecutionPolicy::exact(
+                    holder.clone(),
+                    awaken_agent_contract::credential::ModelExposurePolicy::Forbidden,
+                ),
+            )),
+        };
+        root.mcp = crate::session_mcp::SessionMcpAttachmentSet::from_initial(
+            vec![draft(1)],
+            Some(holder.clone()),
+        )
+        .unwrap();
+        let old_generation = root.mcp.attachments[0].generation.clone();
+        root.mcp
+            .claim_realization(&old_generation, old_claim.clone())
+            .unwrap();
+        root.mcp
+            .activate(&old_generation, &old_claim.realization_id)
+            .unwrap();
+        let plan = root
+            .mcp
+            .request_full_replacement(vec![draft(2)], Some(holder.clone()))
+            .unwrap();
+        let current = plan.requested[0].clone();
+        root.mcp
+            .claim_realization(
+                &current,
+                crate::session_mcp::McpRealizationClaim {
+                    realization_id: "realize-browser-2".into(),
+                    stage_idempotency_key: "stage-browser-2".into(),
+                    ..old_claim
+                },
+            )
+            .unwrap();
+        if matches!(mode, "failed-current" | "failed-missing") {
+            root.mcp
+                .fail_realization(&current, "realize-browser-2", "stage failed")
+                .unwrap();
+        }
+        if mode == "unknown-predecessor" {
+            // Explicit historical missing evidence, not a newly admitted state.
+            root.mcp.attachments[0].realization = None;
+        }
+        let mut receipts = Vec::new();
+        for attachment in &root.mcp.attachments {
+            if mode == "failed-missing"
+                || (matches!(mode, "current" | "unknown-predecessor")
+                    && attachment.generation.version() == 1)
+                || (matches!(mode, "old-only" | "failed-current")
+                    && attachment.generation.version() == 2)
+            {
+                continue;
+            }
+            let request =
+                crate::projection::stage_mcp_request("workspace", &root.session_id, attachment)
+                    .unwrap();
+            let mut receipt = NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap();
+            if mode == "corrupt-old" && attachment.generation.version() == 1 {
+                receipt.receipt_fingerprint.push_str("-corrupt");
+            }
+            receipts.push(receipt);
+        }
+        create(repo.as_ref(), root).await;
+        let before = repo.get(&SessionId::from(&id)).await.unwrap();
+        let command = awaken_session_execution_contract::ActivateSessionRealization {
+            session_id: SessionId::from(&id),
+            lease,
+            prepared_resource_revision: None,
+            mcp_receipts: receipts,
+        };
+        let result = app
+            .realizations
+            .activate_session_realization(command.clone())
+            .await;
+        if matches!(
+            mode,
+            "old-only" | "corrupt-old" | "failed-missing" | "unknown-predecessor"
+        ) {
+            assert!(result.is_err(), "atomic refusal: {mode}");
+            assert_eq!(
+                repo.get(&SessionId::from(&id)).await.unwrap(),
+                before,
+                "refusal writes nothing: {mode}"
+            );
+            continue;
+        }
+        let directive = result.expect("exact required Stage receipts are sufficient");
+        let awaken_session_execution_contract::SessionRealizationAction::Publish { publish, drain } =
+            directive.action
+        else {
+            panic!("expected Publish: {mode}");
+        };
+        assert_eq!(publish.len(), 1);
+        assert_eq!(
+            publish[0].generation().version(),
+            if mode == "failed-current" { 1 } else { 2 }
+        );
+        assert_eq!(drain.len(), if mode == "failed-current" { 0 } else { 1 });
+        if let Some(drained) = drain.first() {
+            assert_eq!(drained.generation().version(), 1);
+        }
+        let applied = repo.get(&SessionId::from(&id)).await.unwrap();
+        let replay = app
+            .realizations
+            .activate_session_realization(command)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get(&SessionId::from(&id)).await.unwrap(),
+            applied,
+            "A5 no second mutation"
+        );
+        let awaken_session_execution_contract::SessionRealizationAction::Publish {
+            publish: replay_publish,
+            drain: replay_drain,
+        } = replay.action
+        else {
+            panic!("A5 expected retained publication");
+        };
+        assert_eq!(replay_publish, publish, "A5 publication unchanged");
+        assert_eq!(replay_drain, drain, "A5 drain unchanged");
+    }
+}
+
+#[tokio::test]
 async fn an_untrustworthy_persisted_lease_generation_refuses_begin_permanently_without_retry() {
     // C1 the Session root's persisted realization lease generation: 0, or
     // u64::MAX on an expired lease that begin must succeed. Effects: E1 the
