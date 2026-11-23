@@ -24,6 +24,7 @@ use std::time::Duration;
 
 mod environment_count_stream;
 mod keyset_query_plans;
+mod normalization_concurrency;
 mod private_binding;
 mod repository_reads;
 pub(crate) mod root_update_history;

@@ -144,12 +144,16 @@ impl PostgresManagedSessionRepository {
         pool: &PgPool,
         sync_indexes: bool,
     ) -> Result<(), SessionRepositoryError> {
-        // Root writers use ROW EXCLUSIVE before updating their projections.
-        // This lock serializes the one normalization/index-repair transaction
-        // with writers and other migrators. Pre-convergence lacks final indexes;
-        // only the final pass repairs them. Server connect_existing stays read-only.
+        // Root writers first take ROW SHARE through SELECT FOR UPDATE, then
+        // need ROW EXCLUSIVE for UPDATE/DELETE. Exclude that first step too:
+        // SHARE ROW EXCLUSIVE allowed a writer to retain a root row while this
+        // transaction blocked its table-lock upgrade and waited for the same
+        // row through normalization/FK index repair. EXCLUSIVE serializes before
+        // either path reads repairable state, while ACCESS SHARE readers remain
+        // admitted. Pre-convergence lacks final indexes; only the final pass
+        // repairs them. Server connect_existing stays read-only.
         let mut tx = pool.begin().await.map_err(storage)?;
-        sqlx::query("LOCK TABLE managed_session IN SHARE ROW EXCLUSIVE MODE")
+        sqlx::query("LOCK TABLE managed_session IN EXCLUSIVE MODE")
             .execute(&mut *tx)
             .await
             .map_err(storage)?;

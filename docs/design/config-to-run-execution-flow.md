@@ -183,6 +183,18 @@ server process start
   -> serve, or fail closed without DDL
 ```
 
+Operational Session aggregate normalization and derived-index repair share one
+PostgreSQL transaction. Its `EXCLUSIVE` lock on `managed_session` precedes the
+first root read and conflicts with both the `ROW SHARE` lock from a writer's
+`SELECT FOR UPDATE` and its later `ROW EXCLUSIVE` update. Existing writers settle
+before repair begins; new writers wait until repair commits or rolls back.
+Ordinary `ACCESS SHARE` readers remain admitted. Allowing the initial row-locking
+read while blocking its later update creates a deadlock when repair needs the
+same row directly or through a foreign-key check. The Session store's live
+PostgreSQL concurrency test covers both root rewriting and index-only repair;
+the existing failure-injection tests retain atomic rollback coverage. This does
+not make server startup a migration or repair authority.
+
 | Role | Migration manifest |
 |---|---|
 | `control` | Control, including Environment and sandbox policy, + Control Data Subject |
