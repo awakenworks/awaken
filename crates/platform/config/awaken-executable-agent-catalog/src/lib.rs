@@ -31,7 +31,12 @@ use awaken_sync::InvariantRwLock;
 
 mod http;
 mod postgres;
+#[cfg(test)]
+mod preview_tests;
 mod schema;
+
+#[cfg(all(test, target_os = "linux"))]
+mod preview_memory_tests;
 
 pub use http::{
     EXECUTABLE_AGENT_PUBLISH_PERMISSION, EXECUTABLE_AGENT_REGISTER_PATH,
@@ -52,13 +57,88 @@ struct CurrentEntry {
     registration: Option<ExecutableAgentRegistration>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct CatalogState {
     current: BTreeMap<AgentKey, CurrentEntry>,
     revisions: BTreeMap<RevisionKey, ExecutableAgentRegistration>,
     fingerprints: BTreeMap<FingerprintKey, ExecutableAgentSnapshot>,
     /// Replay provenance for legacy registrations amended by a later command.
     time_amendments: BTreeSet<RevisionKey>,
+}
+
+impl CatalogState {
+    /// PostgreSQL refreshes stage a complete projection before atomic install.
+    /// Keep that deliberate transaction snapshot explicit; point-command
+    /// previews must use the bounded views below rather than a generic Clone.
+    fn clone_for_projection_transaction(&self) -> Self {
+        Self {
+            current: self.current.clone(),
+            revisions: self.revisions.clone(),
+            fingerprints: self.fingerprints.clone(),
+            time_amendments: self.time_amendments.clone(),
+        }
+    }
+
+    /// Read exactly the keys used by the canonical registration transition.
+    /// History outside this command must not increase disposable preview size.
+    fn registration_preview_state(&self, registration: &ExecutableAgentRegistration) -> Self {
+        let agent_key = (
+            registration.workspace_id.clone(),
+            registration.agent_id.clone(),
+        );
+        let revision_key = (
+            registration.workspace_id.clone(),
+            registration.agent_id.clone(),
+            registration.source_revision,
+        );
+        let fingerprint_key = (
+            registration.workspace_id.clone(),
+            registration.snapshot.fingerprint.0.clone(),
+        );
+        Self {
+            current: self
+                .current
+                .get(&agent_key)
+                .cloned()
+                .map(|value| (agent_key, value))
+                .into_iter()
+                .collect(),
+            revisions: self
+                .revisions
+                .get(&revision_key)
+                .cloned()
+                .map(|value| (revision_key.clone(), value))
+                .into_iter()
+                .collect(),
+            fingerprints: self
+                .fingerprints
+                .get(&fingerprint_key)
+                .cloned()
+                .map(|value| (fingerprint_key, value))
+                .into_iter()
+                .collect(),
+            time_amendments: self
+                .time_amendments
+                .contains(&revision_key)
+                .then_some(revision_key)
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn withdrawal_preview_state(&self, withdrawal: &ExecutableAgentWithdrawal) -> Self {
+        let key = (withdrawal.workspace_id.clone(), withdrawal.agent_id.clone());
+        Self {
+            current: self
+                .current
+                .get(&key)
+                .cloned()
+                .map(|value| (key, value))
+                .into_iter()
+                .collect(),
+            ..Self::default()
+        }
+    }
 }
 
 /// An upgrade of one historical registration whose original command lacked
@@ -443,7 +523,7 @@ impl ExecutableAgentCatalog {
         &self,
         registration: ExecutableAgentRegistration,
     ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
-        let mut state = self.read_state()?.clone();
+        let mut state = self.read_state()?.registration_preview_state(&registration);
         Self::register_locked(&mut state, registration)
     }
 
@@ -481,7 +561,7 @@ impl ExecutableAgentCatalog {
         &self,
         withdrawal: ExecutableAgentWithdrawal,
     ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
-        let mut state = self.read_state()?.clone();
+        let mut state = self.read_state()?.withdrawal_preview_state(&withdrawal);
         Self::withdraw_locked(&mut state, withdrawal)
     }
 }

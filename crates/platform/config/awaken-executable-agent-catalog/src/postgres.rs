@@ -411,7 +411,7 @@ fn clone_catalog(
         .state
         .read()
         .map_err(|_| storage("executable Agent catalog lock poisoned"))?
-        .clone();
+        .clone_for_projection_transaction();
     Ok(cloned)
 }
 
@@ -423,7 +423,7 @@ fn install_catalog(
         .state
         .read()
         .map_err(|_| storage("refreshed executable Agent catalog lock poisoned"))?
-        .clone();
+        .clone_for_projection_transaction();
     *target
         .state
         .write()

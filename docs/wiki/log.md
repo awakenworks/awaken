@@ -1,5 +1,14 @@
 # Wiki Update Log
 
+## 2026-11-23 — Bound executable Agent previews to the command's keys
+
+- [Publication lifecycle](../design/config-publication-lifecycle.md) keeps the
+  canonical registration/withdrawal transition and deliberate PostgreSQL refresh
+  transaction. Point previews no longer copy unrelated retained history.
+- Differential cause/effect tests preserve replay, conflicts, lifecycle and
+  Workspace isolation. Isolated Linux resource cases reproduce history-sized
+  copying; deployed long-term memory stability remains separate acceptance.
+
 ## 2026-11-20 — Keep resident source quiescence with its physical provider
 
 - The [Sandbox provider contract](../design/sandbox-provider-contract.md#lifecycle-resource-safety-2026-11-18)
